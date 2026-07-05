@@ -12,12 +12,12 @@ If same-day realized loss reaches `max_utc_daily_realized_loss`, the controller:
 - transitions the shared kill-switch state from `Armed` to `Halting`
 - persists the halt evidence and loss-protection snapshot to `state_path`
 - replaces submit-admission state so new entry orders are rejected
-- emits the flatten-positions halt action for proof and retry bookkeeping
+- emits the flatten-positions halt action; when live flatten routing is enabled, that action builds forced-reduction submits through the shared execution policy
 - moves the NT risk engine to `Reducing`
 
-The accepted #738 boundary is proof-only for cancel and flatten side effects.
+The accepted #738 boundary remains proof-only for cancel side effects.
 Active market exit is intentionally not wired: direct NT `ExitMarket` or market-exit control paths bypass Bolt's submit/cancel chokepoints.
-Config validation rejects `flatten_open_positions_on_breach = true` until a shared execution-policy flatten path exists.
+Config validation accepts `flatten_open_positions_on_breach = true` only when the flatten block is enabled with `route_kind = "live_node_command_router"`, so flatten submits pass through the shared execution-policy and submit-admission path.
 
 ## Runtime Snapshot
 

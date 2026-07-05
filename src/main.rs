@@ -27,6 +27,9 @@ use bolt_v2::{
         build_bolt_v3_strategy_free_data_client_probe_live_node, current_build_head_sha,
         run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe, run_bolt_v3_live_node,
     },
+    bolt_v3_loss_governor_manual_recovery_ops::{
+        LossGovernorManualRecoveryCommand, recover_loss_governor_manual_halt,
+    },
     bolt_v3_operator_artifacts::{
         LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
         write_launch_identity,
@@ -79,6 +82,12 @@ const OPS_STATUS_KILL_SWITCH_STORE_UNREADABLE_HALT_ID: &str =
     "ops-status-kill-switch-store-unreadable";
 const OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_REASON_PREFIX: &str =
     "kill-switch store fail-closed";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_COMPLETED_OUTPUT_FIELD: &str =
+    "loss_governor_manual_recovery_completed";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_PREVIOUS_STATE_OUTPUT_FIELD: &str = "previous_state";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_RECOVERED_STATE_OUTPUT_FIELD: &str = "recovered_state";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_COUNT_OUTPUT_FIELD: &str = "manual_recovery_count";
 const REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR: &str =
     "reference_current_price health did not observe every configured source";
 
@@ -170,6 +179,27 @@ enum OpsCommand {
     InitKillSwitchStore {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    #[command(
+        about = "Recover only loss-governor halts whose triggering condition has verifiably passed by clock - daily UTC day rolled or rolling window elapsed. Rolling recovery uses the CURRENT config value: more than the full window must have elapsed; exact-equality refuses. every limit is re-checked live at next node start. node must be stopped because state is last-writer-wins; not an operator override. FailedManualIntervention is terminal for this command and needs out-of-band repair. The audit file is unbounded append-only and operators rotate it externally; last audit record per attempt is authoritative. evidence_path/evidence_sha256 are operator-attested audit metadata, not file or hash verification."
+    )]
+    LossGovernorManualRecovery {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        operator_id: String,
+        #[arg(
+            long,
+            help = "Operator-attested audit metadata path; the file is not opened by this command"
+        )]
+        evidence_path: String,
+        #[arg(
+            long,
+            help = "Operator-attested audit metadata digest; the file is not hash-verified by this command"
+        )]
+        evidence_sha256: String,
+        #[arg(long)]
+        observed_at_ns: u64,
     },
     ReferenceLiveProbe {
         #[arg(short, long)]
@@ -357,6 +387,19 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
             intended_sha,
         } => run_ops_status(&config_root, &profile, intended_sha.as_deref()),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
+        OpsCommand::LossGovernorManualRecovery {
+            config,
+            operator_id,
+            evidence_path,
+            evidence_sha256,
+            observed_at_ns,
+        } => run_loss_governor_manual_recovery(
+            &config,
+            operator_id,
+            evidence_path,
+            evidence_sha256,
+            observed_at_ns,
+        ),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
             run_reference_current_price_health_command(&config)
@@ -659,6 +702,35 @@ fn run_init_kill_switch_store(config: &Path) -> Result<(), Box<dyn std::error::E
     let output = serde_json::json!({
         KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: true,
         KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: store.path().display().to_string(),
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn run_loss_governor_manual_recovery(
+    config: &Path,
+    operator_id: String,
+    evidence_path: String,
+    evidence_sha256: String,
+    observed_at_ns: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    let outcome = recover_loss_governor_manual_halt(
+        &loaded,
+        LossGovernorManualRecoveryCommand {
+            operator_id,
+            evidence_path,
+            evidence_sha256,
+            observed_at_ns,
+            now_ns: current_unix_nanos_for_cli()?,
+        },
+    )?;
+    let output = serde_json::json!({
+        LOSS_GOVERNOR_MANUAL_RECOVERY_COMPLETED_OUTPUT_FIELD: true,
+        LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: outcome.state_path.display().to_string(),
+        LOSS_GOVERNOR_MANUAL_RECOVERY_PREVIOUS_STATE_OUTPUT_FIELD: format!("{:?}", outcome.previous_state),
+        LOSS_GOVERNOR_MANUAL_RECOVERY_RECOVERED_STATE_OUTPUT_FIELD: format!("{:?}", outcome.recovered_state),
+        LOSS_GOVERNOR_MANUAL_RECOVERY_COUNT_OUTPUT_FIELD: outcome.manual_recovery_count,
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
@@ -1715,6 +1787,11 @@ fn current_unix_seconds_for_cli() -> Result<u64, Box<dyn std::error::Error>> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
+fn current_unix_nanos_for_cli() -> Result<u64, Box<dyn std::error::Error>> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(u64::try_from(nanos)?)
+}
+
 fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         SecretsCommand::Check { config } => {
@@ -1822,6 +1899,7 @@ fn run_loaded_secrets_resolve(
 mod tests {
     use super::*;
     use bolt_v2::bolt_v3_prod_profile::GENERATED_MARKER_PREFIX;
+    use clap::{CommandFactory, error::ErrorKind};
     use std::fs;
 
     fn parsed_ops_command(cli: Cli) -> OpsCommand {
@@ -1851,6 +1929,102 @@ mod tests {
             }
             _ => panic!("expected ops data-client-probe command"),
         }
+    }
+
+    #[test]
+    fn ops_loss_governor_manual_recovery_cli_parses_evidence_fields() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "loss-governor-manual-recovery",
+            "--config",
+            "config/root.toml",
+            "--operator-id",
+            "operator-primary",
+            "--evidence-path",
+            "loss-governor/manual-recovery.json",
+            "--evidence-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--observed-at-ns",
+            "2500",
+        ])
+        .expect("loss-governor manual recovery command should parse");
+
+        match parsed_ops_command(cli) {
+            OpsCommand::LossGovernorManualRecovery {
+                config,
+                operator_id,
+                evidence_path,
+                evidence_sha256,
+                observed_at_ns,
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+                assert_eq!(operator_id, "operator-primary");
+                assert_eq!(evidence_path, "loss-governor/manual-recovery.json");
+                assert_eq!(
+                    evidence_sha256,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                );
+                assert_eq!(observed_at_ns, 2_500);
+            }
+            _ => panic!("expected ops loss-governor-manual-recovery command"),
+        }
+    }
+
+    #[test]
+    fn ops_loss_governor_manual_recovery_help_does_not_require_config() {
+        let error = Cli::command()
+            .try_get_matches_from(["bolt-v2", "ops", "loss-governor-manual-recovery", "--help"])
+            .expect_err("help should exit through clap without loading config");
+
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("node must be stopped"),
+            "help must state the node-stopped operator posture: {help}"
+        );
+        assert!(
+            help.contains("last-writer-wins"),
+            "help must state the state race consequence: {help}"
+        );
+        assert!(
+            help.contains("not an operator override"),
+            "help must state the command is not an override: {help}"
+        );
+        assert!(
+            help.contains("triggering condition has verifiably passed by clock")
+                && help.contains("daily UTC day rolled")
+                && help.contains("rolling window elapsed"),
+            "help must state the A2 clock-verified recovery semantics: {help}"
+        );
+        assert!(
+            help.contains("CURRENT config value")
+                && help.contains("more than the full window must have elapsed")
+                && help.contains("exact-equality refuses"),
+            "help must state current-config rolling authority and strict window boundary: {help}"
+        );
+        assert!(
+            help.contains("every limit is re-checked live at next node start"),
+            "help must state the runtime re-check backstop: {help}"
+        );
+        assert!(
+            help.contains("last audit record per attempt is authoritative"),
+            "help must state authoritative audit ordering: {help}"
+        );
+        assert!(
+            help.contains("FailedManualIntervention is terminal")
+                && help.contains("out-of-band repair"),
+            "help must state terminal failed-intervention posture: {help}"
+        );
+        assert!(
+            help.contains("unbounded append-only") && help.contains("rotate it externally"),
+            "help must state audit rotation posture: {help}"
+        );
+        assert!(
+            help.contains("operator-attested audit metadata")
+                && help.contains("not file or hash verification"),
+            "help must document evidence attestation semantics: {help}"
+        );
     }
 
     #[test]

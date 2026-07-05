@@ -6965,12 +6965,12 @@ classification = "kill_switch_loss_protection_time_unit_conversion"
 reason = "Fixed nanoseconds-per-millisecond unit conversion used with TOML-owned retry intervals; not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_loss_protection.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''86_400_000_000_000'''
-context = '''const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
-classification = "kill_switch_loss_protection_utc_day_unit"
-reason = "Fixed UTC day nanosecond unit used to bucket realized PnL; the loss threshold is TOML-owned."
+context = '''pub(crate) const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
+classification = "bolt_v3_utc_day_unit"
+reason = "Fixed UTC day nanosecond unit used to bucket realized PnL and decide whether a stored daily-loss trigger's calendar day has rolled; configured loss limits remain TOML-owned and are re-checked live at node start."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
@@ -14090,6 +14090,206 @@ classification = "decision_evidence_legacy_non_recovery_skip_kind"
 reason = "Legacy pre-v14 audit-only discriminator retained only so below-schema rebuild audit records skip instead of blocking reservation recovery."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"loss_governor_manual_recovery_completed"'''
+context = '''"loss_governor_manual_recovery_completed";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting that the loss-governor manual recovery command completed its durable write."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"state_path"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: &str = "state_path";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the configured kill-switch state_path recovered by the loss-governor manual recovery command."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"previous_state"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_PREVIOUS_STATE_OUTPUT_FIELD: &str = "previous_state";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the prior kill-switch state kind before loss-governor manual recovery."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"recovered_state"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_RECOVERED_STATE_OUTPUT_FIELD: &str = "recovered_state";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the recovered kill-switch state kind after loss-governor manual recovery."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"manual_recovery_count"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_COUNT_OUTPUT_FIELD: &str = "manual_recovery_count";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting the append-only manual recovery audit record count."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"kill-switch store at {} is fail-closed ({reason}); refusing manual recovery"'''
+context = '''"kill-switch store at {} is fail-closed ({reason}); refusing manual recovery",'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing fail-closed diagnostic for a classified durable kill-switch store refusal; no runtime threshold or venue value is hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"kill-switch store at {} has no loss-protection snapshot; refusing manual recovery"'''
+context = '''"kill-switch store at {} has no loss-protection snapshot; refusing manual recovery",'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing fail-closed diagnostic for a durable store missing its loss-protection snapshot; no runtime threshold or venue value is hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"repair-the-audit-file-and-retry: loss-governor manual recovery audit file {} has a torn final line; halt state was left untouched"'''
+context = '''"repair-the-audit-file-and-retry: loss-governor manual recovery audit file {} has a torn final line; halt state was left untouched",'''
+classification = "kill_switch_manual_recovery_audit_repair_diagnostic"
+reason = "Operator-facing remediation diagnostic for a torn append-only manual-recovery audit file; it carries no runtime threshold or venue value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"loss-governor manual recovery cannot recover kill-switch state {state:?}"'''
+context = '''"loss-governor manual recovery cannot recover kill-switch state {state:?}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing refusal diagnostic for kill-switch states outside the loss-governor recovery contract; the state comes from the durable store."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"refusing to recover non-loss-governor kill-switch state {state:?}"'''
+context = '''"refusing to recover non-loss-governor kill-switch state {state:?}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing no-downgrade diagnostic for non-loss-governor halt classes; the state comes from the durable store."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"loss-governor manual recovery refused by the recovery state machine: {reason}"'''
+context = '''"loss-governor manual recovery refused by the recovery state machine: {reason}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing refusal diagnostic when the loss-governor manual recovery policy returns no Active recovery target; the appended reason is computed from durable state and policy."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "string"
+literal = '''"-manual-recoveries.jsonl"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_AUDIT_SUFFIX: &str = "-manual-recoveries.jsonl";'''
+classification = "kill_switch_manual_recovery_audit_path_contract"
+reason = "Stable sibling audit filename suffix derived from the configured kill-switch state path; the state path remains TOML-owned and no new runtime config key is introduced."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "string"
+literal = '''"kill-switch"'''
+context = '''.map_or_else(|| OsString::from("kill-switch"), OsString::from);'''
+classification = "kill_switch_manual_recovery_audit_path_fallback"
+reason = "Defensive fallback stem used only if the configured state path has no file stem while deriving the sibling audit path; it does not select a runtime path by itself."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''Ok(previous_count.saturating_add(1))'''
+classification = "kill_switch_manual_recovery_audit_counter_step"
+reason = "Append-only audit count increments by one after writing exactly one manual-recovery JSONL record; this is structural count arithmetic, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''let final_line_index = lines.len().saturating_sub(1);'''
+classification = "kill_switch_manual_recovery_audit_line_index_offset"
+reason = "Structural final-line index offset used to distinguish the sole tolerable torn final JSONL line from hard mid-file corruption; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0"
+context = '''return Ok(0);'''
+classification = "kill_switch_manual_recovery_audit_empty_count"
+reason = "Structural empty-audit line count for missing or zero-byte audit files; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "-1"
+context = '''file.seek(SeekFrom::End(-1))'''
+classification = "kill_switch_manual_recovery_audit_last_byte_seek"
+reason = "Structural seek offset for inspecting the audit file's trailing byte before append; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0_u8"
+context = '''let mut last_byte = [0_u8; 1];'''
+classification = "kill_switch_manual_recovery_audit_byte_buffer_seed"
+reason = "Structural single-byte read buffer initialization for the audit trailing-newline check; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''let mut last_byte = [0_u8; 1];'''
+classification = "kill_switch_manual_recovery_audit_byte_buffer_len"
+reason = "Structural single-byte read buffer length for the audit trailing-newline check; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0"
+context = '''file.seek(SeekFrom::Start(0))'''
+classification = "kill_switch_manual_recovery_audit_rewind_offset"
+reason = "Structural file rewind offset used before streaming audit lines for a count; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0"
+context = '''let mut count = 0;'''
+classification = "kill_switch_manual_recovery_audit_counter_seed"
+reason = "Structural line-count seed for streaming audit JSONL records; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''count += 1;'''
+classification = "kill_switch_manual_recovery_audit_counter_step"
+reason = "Structural line-count increment for each nonempty audit JSONL record; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"future-dated trigger check refused: trigger_observed_at_ns={trigger_observed_at_ns} is after now_ns={now_ns}"'''
+context = '''"future-dated trigger check refused: trigger_observed_at_ns={trigger_observed_at_ns} is after now_ns={now_ns}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing manual recovery refusal diagnostic for a durable halt trigger timestamp later than the command clock; displayed timestamps come from durable state and the command clock."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"stale evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is before trigger observed_at_ns={trigger_observed_at_ns}"'''
+context = '''"stale evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is before trigger observed_at_ns={trigger_observed_at_ns}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing manual recovery refusal diagnostic for operator-attested evidence older than the durable halt trigger; displayed timestamps come from command metadata and durable state."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"future-dated evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is after now_ns={now_ns}"'''
+context = '''"future-dated evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is after now_ns={now_ns}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing manual recovery refusal diagnostic for future-dated operator-attested evidence metadata; timestamps come from the command and clock."
+
+[[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"submit_reservation_metadata"'''
@@ -17978,14 +18178,6 @@ classification = "requote_budget_zero_submit_cost_skip_guard"
 reason = "A zero submit cost (a standalone cancel) skips the submit-governor acquisition entirely, leaving the submit budget untouched. A structural sentinel guard, not a tunable value."
 
 [[allowed]]
-path = "src/bolt_v3_maker_market_selection.rs"
-kind = "number"
-literal = '''0.0'''
-context = '''value.is_finite() && value > 0.0'''
-classification = "maker_market_selection_positive_notional_guard"
-reason = "This is the zero lower-bound sentinel for caller/TOML-owned maker portfolio notional validation; the bankroll and slot-floor values remain runtime-owned by config."
-
-[[allowed]]
 path = "src/strategies/binary_oracle_maker/archetype.rs"
 kind = "string"
 literal = '''"market_portfolio_max_active_markets"'''
@@ -20249,3 +20441,59 @@ literal = "0_u32"
 context = '''.fold(0_u32, |total, episode| total.saturating_add(episode.count));'''
 classification = "order_reject_observer_episode_counter_identity"
 reason = "Reject-observer retry totals fold from zero before observed episodes contribute counts; this is observability aggregation state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
+context = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
+classification = "kill_switch_flatten_submit_sink_diagnostic"
+reason = "Fail-loud diagnostic for an impossible cancel call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"'''
+context = '''"kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"'''
+classification = "kill_switch_flatten_submit_sink_diagnostic"
+reason = "Fail-loud diagnostic for an impossible cancel-all call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
+context = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
+classification = "kill_switch_flatten_submit_sink_diagnostic"
+reason = "Fail-loud diagnostic for an impossible modify call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill switch flatten command failures: halt_id={} failures={}"'''
+context = '''"kill switch flatten command failures: halt_id={} failures={}",'''
+classification = "kill_switch_flatten_command_failure_diagnostic"
+reason = "Fail-loud aggregate diagnostic returned after attempting every planned kill-switch flatten command; it reports observed failures and does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''" | "'''
+context = '''failures.join(" | ")'''
+classification = "kill_switch_flatten_command_failure_diagnostic_separator"
+reason = "Structural separator for the fail-loud aggregate kill-switch flatten command diagnostic; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = '''Decimal::ZERO'''
+context = '''max_fee_bps: Decimal::ZERO,'''
+classification = "kill_switch_flatten_structural_fee_bound"
+reason = "Emergency kill-switch flatten routes bypass fee-adjusted entry admission and submit only venue-clamped risk reduction, so the max-fee bound is the structural zero-fee sentinel for that forced-reduction path, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "boolean"
+literal = '''false'''
+context = '''submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),'''
+classification = "kill_switch_flatten_no_replace_lifecycle_policy"
+reason = "Emergency kill-switch flatten creates fresh risk-reducing submits only; replacement lifecycle is structurally disabled for the submit-only flatten executor, not configured as an operator runtime value."

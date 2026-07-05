@@ -18,14 +18,15 @@ use bolt_v2::bolt_v3_capital_admission_state::{
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
-use bolt_v2::bolt_v3_kill_switch::KillSwitchStateKind;
+use bolt_v2::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use bolt_v2::bolt_v3_providers::polymarket::{
     PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
-    BoltV3CompiledProductKind, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
+    BoltV3CompiledProductKind, BoltV3KillSwitchForcedReductionClaim,
+    BoltV3KillSwitchForcedReductionPolicy, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
@@ -2668,6 +2669,65 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
 }
 
 #[test]
+fn forced_reduction_terminal_nt_order_event_releases_live_forced_reduction_cap() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    admission.replace_kill_switch_state(KillSwitchState::Flattening {
+        halt_id: "halt-001".to_string(),
+    });
+    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    let first = forced_reduction_submit_request("halt-001", "forced-reduction-1");
+    let second = forced_reduction_submit_request("halt-001", "forced-reduction-2");
+    let third = forced_reduction_submit_request("halt-001", "forced-reduction-3");
+
+    admission
+        .admit_at(&first, 1_000)
+        .expect("first forced reduction should reserve the live slot")
+        .commit_submitted();
+
+    let capped = admission
+        .admit_at(&second, 1_050)
+        .expect_err("second forced reduction should hit the unreleased live cap");
+    assert!(matches!(
+        capped,
+        BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+    ));
+
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "forced-reduction-1",
+            1_100,
+        )))
+        .is_none(),
+        "forced-reduction terminal release is independent of capital-reservation ownership"
+    );
+
+    admission
+        .admit_at(&second, 1_200)
+        .expect("terminal forced-reduction order event should release the live cap")
+        .commit_submitted();
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "forced-reduction-2",
+            "forced-reduction-trade-2",
+            1_300,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(1),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none(),
+        "filled forced-reduction terminals also release outside capital ownership"
+    );
+
+    admission
+        .admit_at(&third, 1_400)
+        .expect("filled forced-reduction order event should release the live cap")
+        .commit_submitted();
+}
+
+#[test]
 fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
@@ -2982,6 +3042,37 @@ fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmiss
             prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
         }),
     }
+}
+
+fn forced_reduction_policy() -> BoltV3KillSwitchForcedReductionPolicy {
+    BoltV3KillSwitchForcedReductionPolicy::new(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1,
+        Decimal::new(10, 0),
+    )
+    .expect("forced-reduction policy should be valid")
+}
+
+fn forced_reduction_claim(halt_id: &str) -> BoltV3KillSwitchForcedReductionClaim {
+    BoltV3KillSwitchForcedReductionClaim::new(
+        halt_id,
+        "flatten-positions",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("forced-reduction claim should be valid")
+}
+
+fn forced_reduction_submit_request(
+    halt_id: &str,
+    client_order_id: &str,
+) -> BoltV3SubmitAdmissionRequest {
+    let mut request = capital_admission_sell_submit_request(client_order_id);
+    request.notional = Decimal::new(5, 0);
+    request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
+    request.lifecycle_policy = BoltV3SubmitLifecyclePolicy::new(false);
+    request.risk_reducing_exit_proof = None;
+    request.kill_switch_forced_reduction = Some(forced_reduction_claim(halt_id));
+    request
 }
 
 fn capital_admission_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {

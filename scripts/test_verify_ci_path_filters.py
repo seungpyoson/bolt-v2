@@ -122,7 +122,7 @@ def assert_classifies_changed_paths() -> None:
         ("AGENTS.md",): True,
         ("SECURITY.md",): True,
         (".codex/settings.json", ".specify/init-options.json"): True,
-        (".claude/skills/speckit-plan/SKILL.md",): True,
+        (".claude/settings.local.json",): True,
         (".github/ISSUE_TEMPLATE/bug.yml",): True,
         (".claude/rust-verification.toml",): False,
         ("./.claude/rust-verification.toml",): False,

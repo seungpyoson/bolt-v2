@@ -399,15 +399,7 @@ pub fn write_source_selection_readiness_report(
 
     Ok(SourceSelectionReadinessArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
     })
-}
-
-fn content_hash(
-    report: &SourceSelectionReadinessReport,
-) -> Result<String, SourceSelectionReadinessError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| SourceSelectionReadinessError::Serialize(error.to_string()))?;
-    Ok(sha256_hex(&bytes))
 }

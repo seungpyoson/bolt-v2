@@ -17,10 +17,20 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
         )),
     }
     if block.flatten_open_positions_on_breach {
-        errors.push(
-            "risk.kill_switch.flatten_open_positions_on_breach=true is not supported until a shared execution-policy flatten path exists"
-                .to_string(),
-        );
+        match block.flatten.as_ref() {
+            Some(flatten) if flatten.enabled => {
+                if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
+                    errors.push(
+                        "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => errors.push(
+                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true"
+                    .to_string(),
+            ),
+        }
     }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());
@@ -145,21 +155,6 @@ fn validate_kill_switch_cancel_block(block: &KillSwitchCancelConfigBlock) -> Vec
     }
 
     let mut errors = Vec::new();
-    if block.retry_max_attempts == 0 {
-        errors.push("risk.kill_switch.cancel.retry_max_attempts must be positive".to_string());
-    }
-    if block.retry_timeout_ms == 0 {
-        errors.push("risk.kill_switch.cancel.retry_timeout_ms must be positive".to_string());
-    }
-    if block.retry_backoff_ms == 0 {
-        errors.push("risk.kill_switch.cancel.retry_backoff_ms must be positive".to_string());
-    }
-    if block.source_freshness_max_age_ms == 0 {
-        errors.push(
-            "risk.kill_switch.cancel.source_freshness_max_age_ms must be positive".to_string(),
-        );
-    }
-
     let mut configured_surfaces = BTreeSet::new();
     for surface in &block.mandatory_surfaces {
         match parse_kill_switch_cancel_surface(surface.trim()) {
@@ -212,25 +207,6 @@ fn validate_kill_switch_flatten_block(
     }
 
     let mut errors = Vec::new();
-    if block.retry_max_attempts == 0 {
-        errors.push("risk.kill_switch.flatten.retry_max_attempts must be positive".to_string());
-    }
-    if block.retry_timeout_ms == 0 {
-        errors.push("risk.kill_switch.flatten.retry_timeout_ms must be positive".to_string());
-    }
-    if block.retry_backoff_ms == 0 {
-        errors.push("risk.kill_switch.flatten.retry_backoff_ms must be positive".to_string());
-    }
-    if block.source_freshness_max_age_ms == 0 {
-        errors.push(
-            "risk.kill_switch.flatten.source_freshness_max_age_ms must be positive".to_string(),
-        );
-    }
-    if block.max_position_proof_age_ms == 0 {
-        errors.push(
-            "risk.kill_switch.flatten.max_position_proof_age_ms must be positive".to_string(),
-        );
-    }
     if block.max_live_order_count == 0 {
         errors.push("risk.kill_switch.flatten.max_live_order_count must be positive".to_string());
     }

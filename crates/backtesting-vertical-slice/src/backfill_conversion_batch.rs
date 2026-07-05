@@ -394,7 +394,7 @@ pub fn write_backfill_conversion_batch_plan(
     }
     Ok(BackfillConversionBatchPlanArtifact {
         path,
-        content_hash: content_hash(plan)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
         record_count: plan.record_count,
     })
@@ -567,13 +567,5 @@ fn required_record_string(value: Option<&str>) -> Option<&str> {
 
 fn file_sha256(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-fn content_hash(
-    plan: &BackfillConversionBatchPlan,
-) -> Result<String, BackfillConversionBatchPlanError> {
-    let bytes = serde_json::to_vec(plan)
-        .map_err(|error| BackfillConversionBatchPlanError::Serialize(error.to_string()))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }

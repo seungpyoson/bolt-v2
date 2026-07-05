@@ -277,7 +277,7 @@ pub fn write_selected_source_slice(
     let report_bytes =
         serde_json::to_vec_pretty(&report).context("serialize selected source report")?;
     write_idempotent_artifact_bytes(&spec.report_path, &report_bytes, "selected source report")?;
-    let report_hash = report_hash(&report)?;
+    let report_hash = sha256_hex(&report_bytes);
 
     Ok(SelectedSourceSliceArtifact {
         output_parquet_path: spec.output_parquet_path.clone(),
@@ -390,10 +390,6 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(sha256_hex(&bytes))
 }
 
-fn report_hash(report: &SelectedSourceSliceReport) -> Result<String> {
-    let bytes = serde_json::to_vec(report).context("serialize selected source report for hash")?;
-    Ok(sha256_hex(&bytes))
-}
 fn temp_artifact_path(path: &Path) -> PathBuf {
     let mut temp = path.as_os_str().to_os_string();
     temp.push(".tmp");

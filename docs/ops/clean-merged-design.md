@@ -191,17 +191,17 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
   are manifest-owned; direct edits to runtime copies are diagnosed as outside
   the allowed state and should be removed before re-running setup.
   Setup records adopted source directories as well as hook files, so later setup
-  runs re-list those source directories and adopt newly added sibling hooks
-  without guessing hook body content. Local, worktree, global, and system hook
-  path moves follow current Git config; unsupported effective-only config scopes
-  fail closed instead of creating an untrackable fork. Unset sources or
-  disappeared files remove manifest-owned runtime copies. Same-name external
-  hooks, including initial default `.git/hooks` collisions, are preserved in the
-  shadow store and recorded in the manifest instead of guessed, merged, or
-  dispatched. Symlink hooks are refused, and external hook executable mode is
-  preserved.
-  Setup records hook source path, source directory, Git config scope, and byte hashes in
-  `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
+  runs re-list those source directories and adopt newly added sibling files only
+  when their names are Git-recognized hook names, without guessing hook body
+  content. Local, worktree, global, and system hook path moves follow current
+  Git config; unsupported effective-only config scopes fail closed instead of
+  creating an untrackable fork. Unset sources or disappeared files remove
+  manifest-owned runtime copies. Same-name external hooks, including initial
+  default `.git/hooks` collisions, are preserved in the shadow store and
+  recorded in the manifest instead of guessed, merged, or dispatched. Symlink
+  hooks are refused, and external hook executable mode is preserved.
+  Setup records hook source path, source directory, Git config scope, and byte
+  hashes in `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
   Runtime overwrites are allowed only for exact byte matches or entries whose
   current runtime hash matches that installer manifest; otherwise setup refuses.
   Linked worktrees install from the main worktree's tracked `.githooks/` source

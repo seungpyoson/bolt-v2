@@ -1466,10 +1466,7 @@ class CleanupContractTests(unittest.TestCase):
             (runtime_hooks / "commit-msg").read_text(encoding="utf-8"),
             local_hook.read_text(encoding="utf-8"),
         )
-        self.assertEqual(
-            (runtime_hooks / "post-rewrite.pre-entire").read_text(encoding="utf-8"),
-            chained_hook.read_text(encoding="utf-8"),
-        )
+        self.assertFalse((runtime_hooks / "post-rewrite.pre-entire").exists())
 
     def test_install_hooks_syncs_new_source_local_hook_after_runtime_path_is_active(
         self,
@@ -1531,6 +1528,24 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         runtime_hook = git_common_dir_compat(self.work) / "hooks" / "prepare-commit-msg"
         self.assertFalse(runtime_hook.exists())
+
+    def test_install_hooks_ignores_tracked_non_hook_githooks_file(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        non_hook = source_hooks / "README"
+        non_hook.write_text("not a git hook\n", encoding="utf-8")
+        _run(["git", "add", ".githooks/README"], cwd=self.work)
+        _run(["git", "commit", "-m", "track non hook file"], cwd=self.work)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_non_hook = git_common_dir_compat(self.work) / "hooks" / "README"
+        self.assertFalse(runtime_non_hook.exists())
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertNotIn("README", manifest["hooks"])
 
     def test_install_hooks_does_not_sync_tracked_nested_githooks_file(self) -> None:
         source_hooks = self._write_clean_merged_hook_sources(self.work)
@@ -1594,6 +1609,39 @@ class CleanupContractTests(unittest.TestCase):
             .read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["hooks"]["commit-msg"]["source_scope"], "global")
+
+    def test_install_hooks_ignores_non_hook_files_in_active_hooks_dir(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-non-hooks"
+        global_hooks.mkdir()
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text("#!/bin/sh\nprintf global-commit-msg\n",
+                                     encoding="utf-8")
+        global_commit_msg.chmod(0o755)
+        non_hook = global_hooks / "not-a-hook"
+        non_hook.write_text("#!/bin/sh\nprintf not-a-hook\n", encoding="utf-8")
+        non_hook.chmod(0o755)
+        global_config = self.tmp / "global-non-hooks.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(
+            self.work,
+            "--install-hooks",
+            env={"GIT_CONFIG_GLOBAL": str(global_config)},
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        self.assertTrue((runtime_hooks / "commit-msg").is_file())
+        self.assertFalse((runtime_hooks / "not-a-hook").exists())
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertNotIn("not-a-hook", manifest["hooks"])
 
     def test_install_hooks_refreshes_adopted_global_hook_from_manifest(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -1907,6 +1955,102 @@ class CleanupContractTests(unittest.TestCase):
             proc.stdout,
         )
         self.assertNotIn("runtime is outside allowed state", proc.stdout)
+
+    def test_install_hooks_refuses_invalid_manifest_hook_entry(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["hooks"]["commit-msg"] = "not an object"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("hooks.commit-msg must be object", proc.stderr)
+
+    def test_install_hooks_refuses_legacy_effective_manifest_scope(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-effective-manifest"
+        global_hooks.mkdir()
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text("#!/bin/sh\nprintf global\n", encoding="utf-8")
+        global_commit_msg.chmod(0o755)
+        global_config = self.tmp / "global-effective-manifest.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["hooks"]["commit-msg"]["source_scope"] = "effective"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks", env=env)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("unsupported source_scope effective", proc.stderr)
+
+    def test_install_hooks_refuses_non_hook_manifest_key(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["hooks"]["not-a-hook"] = {
+            "source_kind": "active-hook",
+            "source_scope": "default",
+            "source_path": str(git_common_dir_compat(self.work) / "hooks" / "not-a-hook"),
+            "source_sha256": "0" * 64,
+            "runtime_sha256": "0" * 64,
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("hooks.not-a-hook must be known Git hook name", proc.stderr)
+
+    def test_install_hooks_refuses_invalid_shadowed_manifest_entry(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-invalid-shadow"
+        global_hooks.mkdir()
+        global_post_rewrite = global_hooks / "post-rewrite"
+        global_post_rewrite.write_text("#!/bin/sh\nprintf shadow\n", encoding="utf-8")
+        global_post_rewrite.chmod(0o755)
+        global_config = self.tmp / "global-invalid-shadow.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["shadowed_hooks"]["post-rewrite"][0]["source_scope"] = "effective"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks", env=env)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(
+            "shadowed_hooks.post-rewrite[0] unsupported source_scope effective",
+            proc.stderr,
+        )
+
+    def test_install_hooks_refuses_invalid_manifest_source_dir_entry(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["source_dirs"] = [{"source_scope": "effective", "source_path": ".old-hooks"}]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("source_dirs[0] unsupported source_scope effective", proc.stderr)
 
     def test_doctor_on_config_error_reports_manifest_hook_source_drift(self) -> None:
         self._write_clean_merged_hook_sources(self.work)

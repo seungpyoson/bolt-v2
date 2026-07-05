@@ -63,7 +63,42 @@ CLEAN_MERGED_HOOKS = ("post-merge", "post-checkout", "post-rewrite")
 HOOK_MANIFEST_NAME = "clean-merged.hooks-manifest.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 LOCK_FILE = "clean-merged.lock"
+GIT_HOOK_NAMES = frozenset(
+    (
+        "applypatch-msg",
+        "pre-applypatch",
+        "post-applypatch",
+        "pre-commit",
+        "pre-merge-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+        "pre-rebase",
+        "post-checkout",
+        "post-merge",
+        "pre-push",
+        "pre-receive",
+        "update",
+        "proc-receive",
+        "post-receive",
+        "post-update",
+        "reference-transaction",
+        "push-to-checkout",
+        "pre-auto-gc",
+        "post-rewrite",
+        "sendemail-validate",
+        "fsmonitor-watchman",
+        "p4-changelist",
+        "p4-prepare-changelist",
+        "p4-post-changelist",
+        "p4-pre-submit",
+        "post-index-change",
+    )
+)
+HOOK_MANIFEST_ACTIVE_SCOPES = frozenset(("default", "local", "worktree", "global", "system"))
+HOOK_MANIFEST_SOURCE_DIR_SCOPES = frozenset(("local", "worktree", "global", "system"))
 # Internal marker that _lane_w_eligible prefixes onto the reason for a refused
 # detached-HEAD worktree; run_lane_w strips it and maps it to the distinct
 # 'refused-detached-head' action. Single source of truth shared by the producer
@@ -477,6 +512,10 @@ class ActiveHookDir:
     source_scope: str
 
 
+def _is_git_hook_name(name: str) -> bool:
+    return name in GIT_HOOK_NAMES
+
+
 def _git_config_value(repo_root: pathlib.Path, args: list[str]) -> str | None:
     proc = _git(repo_root, ["config", *args], check=False)
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -495,6 +534,7 @@ def _tracked_hook_source_paths(repo_root: pathlib.Path) -> list[str]:
     return sorted(
         path for path in proc.stdout.split("\0")
         if pathlib.PurePosixPath(path).parent == pathlib.PurePosixPath(".githooks")
+        and _is_git_hook_name(pathlib.PurePosixPath(path).name)
     )
 
 
@@ -515,6 +555,104 @@ def _dirty_tracked_hook_sources(repo_root: pathlib.Path) -> list[str]:
 
 def _hook_manifest_path(common_dir: pathlib.Path) -> pathlib.Path:
     return common_dir / HOOK_MANIFEST_NAME
+
+
+def _manifest_invalid(manifest_path: pathlib.Path, message: str) -> CleanMergedError:
+    return CleanMergedError(f"hook manifest invalid at {manifest_path}: {message}")
+
+
+def _manifest_required_string(
+    manifest_path: pathlib.Path,
+    entry: dict[str, Any],
+    field: str,
+    label: str,
+) -> str:
+    value = entry.get(field)
+    if not isinstance(value, str) or not value:
+        raise _manifest_invalid(manifest_path, f"{label}.{field} must be non-empty string")
+    return value
+
+
+def _validate_manifest_sha256(
+    manifest_path: pathlib.Path,
+    entry: dict[str, Any],
+    field: str,
+    label: str,
+) -> None:
+    value = entry.get(field)
+    if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+        raise _manifest_invalid(manifest_path, f"{label}.{field} must be sha256 hex")
+
+
+def _validate_hook_manifest_hook_entry(
+    manifest_path: pathlib.Path,
+    hook_name: str,
+    entry: Any,
+) -> None:
+    label = f"hooks.{hook_name}"
+    if not _is_git_hook_name(hook_name):
+        raise _manifest_invalid(manifest_path, f"{label} must be known Git hook name")
+    if not isinstance(entry, dict):
+        raise _manifest_invalid(manifest_path, f"{label} must be object")
+    source_kind = entry.get("source_kind")
+    if source_kind not in {"repo-source", "active-hook"}:
+        raise _manifest_invalid(manifest_path, f"{label} source_kind is invalid")
+    source_scope = entry.get("source_scope")
+    if source_kind == "repo-source":
+        if source_scope != "repo":
+            raise _manifest_invalid(manifest_path, f"{label} source_scope must be repo")
+    elif source_scope not in HOOK_MANIFEST_ACTIVE_SCOPES:
+        raise _manifest_invalid(
+            manifest_path,
+            f"{label} unsupported source_scope {source_scope}",
+        )
+    _manifest_required_string(manifest_path, entry, "source_path", label)
+    _validate_manifest_sha256(manifest_path, entry, "source_sha256", label)
+    _validate_manifest_sha256(manifest_path, entry, "runtime_sha256", label)
+
+
+def _validate_hook_manifest_shadowed_entry(
+    manifest_path: pathlib.Path,
+    hook_name: str,
+    entries: Any,
+) -> None:
+    label = f"shadowed_hooks.{hook_name}"
+    if not _is_git_hook_name(hook_name):
+        raise _manifest_invalid(manifest_path, f"{label} must be known Git hook name")
+    if not isinstance(entries, list):
+        raise _manifest_invalid(manifest_path, f"{label} must be array")
+    for index, entry in enumerate(entries):
+        entry_label = f"{label}[{index}]"
+        if not isinstance(entry, dict):
+            raise _manifest_invalid(manifest_path, f"{entry_label} must be object")
+        if entry.get("source_kind") != "active-hook":
+            raise _manifest_invalid(manifest_path, f"{entry_label} source_kind must be active-hook")
+        source_scope = entry.get("source_scope")
+        if source_scope not in HOOK_MANIFEST_ACTIVE_SCOPES:
+            raise _manifest_invalid(
+                manifest_path,
+                f"{entry_label} unsupported source_scope {source_scope}",
+            )
+        _manifest_required_string(manifest_path, entry, "source_path", entry_label)
+        _validate_manifest_sha256(manifest_path, entry, "source_sha256", entry_label)
+        _manifest_required_string(manifest_path, entry, "shadowed_by", entry_label)
+
+
+def _validate_hook_manifest_source_dir_entry(
+    manifest_path: pathlib.Path,
+    index: int,
+    entry: Any,
+) -> None:
+    label = f"source_dirs[{index}]"
+    if not isinstance(entry, dict):
+        raise _manifest_invalid(manifest_path, f"{label} must be object")
+    source_scope = entry.get("source_scope")
+    if source_scope not in HOOK_MANIFEST_SOURCE_DIR_SCOPES:
+        raise _manifest_invalid(
+            manifest_path,
+            f"{label} unsupported source_scope {source_scope}",
+        )
+    _manifest_required_string(manifest_path, entry, "source_path", label)
 
 
 def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
@@ -546,6 +684,12 @@ def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
         raise CleanMergedError(
             f"hook manifest invalid at {manifest_path}: source_dirs must be array"
         )
+    for hook_name, entry in hooks.items():
+        _validate_hook_manifest_hook_entry(manifest_path, hook_name, entry)
+    for hook_name, entries in shadowed.items():
+        _validate_hook_manifest_shadowed_entry(manifest_path, hook_name, entries)
+    for index, entry in enumerate(source_dirs):
+        _validate_hook_manifest_source_dir_entry(manifest_path, index, entry)
     return manifest
 
 
@@ -600,10 +744,6 @@ def _repo_relative_path(repo_root: pathlib.Path, path: pathlib.Path) -> str:
         return str(path)
 
 
-def _is_git_hook_name(name: str) -> bool:
-    return not name.endswith(".sample")
-
-
 def _is_executable(path: pathlib.Path) -> bool:
     try:
         return bool(path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
@@ -625,7 +765,7 @@ def _manifest_authorizes_overwrite(
         and entry.get("source_scope") == source_scope
         and (
             entry.get("source_path") == source_path
-            or source_scope in {"global", "local", "worktree", "system", "effective"}
+            or source_scope in {"global", "local", "worktree", "system"}
         )
         and entry.get("runtime_sha256") == destination_sha
     )
@@ -768,7 +908,7 @@ def _manifest_source_file(
     )
     if hook_scope in {"global", "system"}:
         return None if current_dir is None else current_dir / hook_name
-    if hook_scope in {"local", "worktree", "effective"}:
+    if hook_scope in {"local", "worktree"}:
         if current_dir is None:
             return None
         if runtime_hooks_dir is not None and _same_path(current_dir, runtime_hooks_dir):
@@ -870,9 +1010,6 @@ def _current_hooks_dir_for_scope(
     elif source_scope == "system":
         raw = _git_config_value(invoke_root, ["--system", "--get", "core.hooksPath"])
         base = invoke_root
-    elif source_scope == "effective":
-        raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
-        base = invoke_root
     else:
         return None
     if raw is None:
@@ -929,7 +1066,7 @@ def _hook_manifest_source_dir_entry(
     )
     if source_scope in {"global", "system"}:
         return None if current_dir is None else ActiveHookDir(current_dir, source_scope)
-    if source_scope in {"local", "worktree", "effective"}:
+    if source_scope in {"local", "worktree"}:
         if current_dir is None:
             return None
         if _same_path(current_dir, runtime_hooks_dir):
@@ -1029,7 +1166,7 @@ def _active_hook_dirs(
 
     bases = (
         [invoke_root]
-        if source_scope in {"worktree", "global", "system", "effective"}
+        if source_scope in {"worktree", "global", "system"}
         else [source_root]
     )
     if source_scope == "local" and not _same_path(invoke_root, source_root):
@@ -1269,13 +1406,7 @@ def install_hooks(
                 home_dir=home_dir,
             )
             if source_file is None:
-                if entry.get("source_scope") in {
-                    "global",
-                    "local",
-                    "worktree",
-                    "system",
-                    "effective",
-                }:
+                if entry.get("source_scope") in {"global", "local", "worktree", "system"}:
                     continue
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} has invalid source_path"
@@ -1314,13 +1445,7 @@ def install_hooks(
             home_dir=home_dir,
         )
         if source_file is None:
-            if entry.get("source_scope") in {
-                "global",
-                "local",
-                "worktree",
-                "system",
-                "effective",
-            }:
+            if entry.get("source_scope") in {"global", "local", "worktree", "system"}:
                 _remove_hook_with_provenance(
                     runtime_hooks_dir=runtime_hooks_dir,
                     hook_name=hook_name,

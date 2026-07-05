@@ -37,7 +37,11 @@ use crate::bolt_v3_maker_go_live_gate::{
     MakerBacktestEvidence, MakerBacktestVerdict, maker_backtest_gate_blockers,
 };
 use crate::bolt_v3_maker_market_selection::{
-    MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
+    MakerMarketPortfolioBlocker, MakerMarketPortfolioDeclarationBlocker,
+    MakerMarketPortfolioDeclarationInputs, MakerMarketPortfolioPolicy,
+    MakerRuntimeParameterBlocker, MakerRuntimeParameterBounds,
+    maker_market_portfolio_declaration_blockers, maker_market_portfolio_policy_blockers,
+    maker_runtime_parameter_bound_blockers,
 };
 use crate::bolt_v3_operator_artifacts::{
     build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
@@ -46,7 +50,6 @@ use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
 };
-use crate::bolt_v3_trade_flow::SignedTradeFlowConfig;
 use crate::strategies::binary_oracle_maker::binding::MakerMarketDeclaration;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
 use crate::strategies::production_strategy_registry;
@@ -428,70 +431,17 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
     let runtime = &parameters.runtime;
     let market_portfolio = &parameters.market_portfolio;
     let mut errors = Vec::new();
-    if runtime.trade_flow_window_secs == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.trade_flow_window_secs must be > 0 (a zero retention window holds no trades, so a μ can never be produced)"
-        ));
-    }
-    let trade_flow = SignedTradeFlowConfig {
-        window_secs: runtime.trade_flow_window_secs,
-        max_samples: runtime.trade_flow_max_samples,
+    let runtime_bounds = MakerRuntimeParameterBounds {
+        trade_flow_window_secs: runtime.trade_flow_window_secs,
+        trade_flow_max_samples: runtime.trade_flow_max_samples,
+        mu_min_classified_samples: runtime.mu_min_classified_samples,
+        mu_stale_window_ms: runtime.mu_stale_window_ms,
+        mu_min_floor: runtime.mu_min_floor,
+        requote_min_interval_ms: runtime.requote_min_interval_ms,
+        quote_interval_ms: runtime.quote_interval_ms,
     };
-    if trade_flow.window_ms().is_none() {
-        errors.push(format!(
-            "{context}: parameters.runtime.trade_flow_window_secs ({}) must be small enough that its second-to-millisecond conversion does not overflow u64 (a larger window silently saturates the retention window instead of meaning the configured value)",
-            runtime.trade_flow_window_secs
-        ));
-    }
-    if runtime.trade_flow_max_samples == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.trade_flow_max_samples must be > 0 (a zero sample cap retains no trades, so a μ can never be produced)"
-        ));
-    }
-    if runtime.mu_min_classified_samples == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.mu_min_classified_samples must be > 0 (a zero warmup threshold would admit a μ from an empty window)"
-        ));
-    }
-    if runtime.mu_min_classified_samples > runtime.trade_flow_max_samples {
-        errors.push(format!(
-            "{context}: parameters.runtime.mu_min_classified_samples ({}) must be <= parameters.runtime.trade_flow_max_samples ({}) (a warmup threshold above the buffer cap is unsatisfiable, so a μ can never be produced)",
-            runtime.mu_min_classified_samples, runtime.trade_flow_max_samples
-        ));
-    }
-    if runtime.mu_stale_window_ms == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.mu_stale_window_ms must be > 0 (a zero staleness window marks every reading stale, blocking μ permanently)"
-        ));
-    }
-    if !crate::bolt_v3_numeric::is_positive_finite(runtime.mu_min_floor)
-        || runtime.mu_min_floor >= crate::bolt_v3_numeric::UNIT_F64
-    {
-        errors.push(format!(
-            "{context}: parameters.runtime.mu_min_floor ({}) must be finite and in the open interval (0, 1) (a floor of 0 admits the degenerate constant-0 μ the health gate rejects; a floor >= 1 blocks every non-degenerate μ)",
-            runtime.mu_min_floor
-        ));
-    }
-    if runtime.requote_min_interval_ms == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
-        ));
-    }
-    if runtime.quote_interval_ms == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.quote_interval_ms must be > 0 (a zero quote-loop interval would schedule a degenerate timer that never advances the runtime's market resolution and requote cadence)"
-        ));
-    }
-    if runtime.quote_interval_ms != 0
-        && runtime
-            .quote_interval_ms
-            .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
-            .is_none()
-    {
-        errors.push(format!(
-            "{context}: parameters.runtime.quote_interval_ms ({}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64 (a larger interval silently saturates the quote-timer cadence instead of meaning the configured value)",
-            runtime.quote_interval_ms
-        ));
+    for blocker in maker_runtime_parameter_bound_blockers(runtime_bounds) {
+        errors.push(runtime_parameter_blocker_error(context, blocker));
     }
     validate_market_portfolio_policy(
         context,
@@ -499,12 +449,7 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
         parameters.markets.len(),
         &mut errors,
     );
-    validate_market_declarations(
-        context,
-        &parameters.markets,
-        market_portfolio.max_active_markets,
-        &mut errors,
-    );
+    validate_market_declarations(context, &parameters.markets, &mut errors);
     for blocker in maker_backtest_gate_blockers(&parameters.backtest.evidence()) {
         errors.push(format!(
             "{context}: parameters.backtest.{} {}",
@@ -513,6 +458,44 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
         ));
     }
     errors
+}
+
+fn runtime_parameter_blocker_error(context: &str, blocker: MakerRuntimeParameterBlocker) -> String {
+    match blocker {
+        MakerRuntimeParameterBlocker::ZeroTradeFlowWindowSecs => format!(
+            "{context}: parameters.runtime.trade_flow_window_secs must be > 0 (a zero retention window holds no trades, so a μ can never be produced)"
+        ),
+        MakerRuntimeParameterBlocker::TradeFlowWindowMillisOverflow { window_secs } => format!(
+            "{context}: parameters.runtime.trade_flow_window_secs ({window_secs}) must be small enough that its second-to-millisecond conversion does not overflow u64 (a larger window silently saturates the retention window instead of meaning the configured value)"
+        ),
+        MakerRuntimeParameterBlocker::ZeroTradeFlowMaxSamples => format!(
+            "{context}: parameters.runtime.trade_flow_max_samples must be > 0 (a zero sample cap retains no trades, so a μ can never be produced)"
+        ),
+        MakerRuntimeParameterBlocker::ZeroMuMinClassifiedSamples => format!(
+            "{context}: parameters.runtime.mu_min_classified_samples must be > 0 (a zero warmup threshold would admit a μ from an empty window)"
+        ),
+        MakerRuntimeParameterBlocker::MuMinClassifiedSamplesAboveMax {
+            min_classified_samples,
+            max_samples,
+        } => format!(
+            "{context}: parameters.runtime.mu_min_classified_samples ({min_classified_samples}) must be <= parameters.runtime.trade_flow_max_samples ({max_samples}) (a warmup threshold above the buffer cap is unsatisfiable, so a μ can never be produced)"
+        ),
+        MakerRuntimeParameterBlocker::ZeroMuStaleWindowMs => format!(
+            "{context}: parameters.runtime.mu_stale_window_ms must be > 0 (a zero staleness window marks every reading stale, blocking μ permanently)"
+        ),
+        MakerRuntimeParameterBlocker::MuMinFloorOutOfRange { floor } => format!(
+            "{context}: parameters.runtime.mu_min_floor ({floor}) must be finite and in the open interval (0, 1) (a floor of 0 admits the degenerate constant-0 μ the health gate rejects; a floor >= 1 blocks every non-degenerate μ)"
+        ),
+        MakerRuntimeParameterBlocker::ZeroRequoteMinIntervalMs => format!(
+            "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
+        ),
+        MakerRuntimeParameterBlocker::ZeroQuoteIntervalMs => format!(
+            "{context}: parameters.runtime.quote_interval_ms must be > 0 (a zero quote-loop interval would schedule a degenerate timer that never advances the runtime's market resolution and requote cadence)"
+        ),
+        MakerRuntimeParameterBlocker::QuoteIntervalNanosOverflow { quote_interval_ms } => format!(
+            "{context}: parameters.runtime.quote_interval_ms ({quote_interval_ms}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64 (a larger interval silently saturates the quote-timer cadence instead of meaning the configured value)"
+        ),
+    }
 }
 
 fn validate_market_portfolio_policy(
@@ -529,35 +512,37 @@ fn validate_market_portfolio_policy(
             market_portfolio_blocker_required_state(blocker)
         ));
     }
-    // The shared planner equal-splits `total_bankroll_notional` across the markets it
-    // selects (`bolt_v3_maker_market_selection`) and admits NO plan when that per-slot
-    // split falls below `min_slot_notional`, so an under-funded bankroll blocks the
-    // ENTIRE active set (a silent idle), not just the marginal slot. The planner can
-    // select up to `min(declared markets, max_active_markets)` slots, so this gate must
-    // reject exactly when the worst-case per-slot allocation would fall below the floor.
-    //
-    // It reproduces the planner's admission test BIT-FOR-BIT: the same
-    // `total_bankroll_notional / slot_count` division, NOT the algebraically-equal
-    // `total < slot_count * min_slot` multiply. The multiply rounds differently in f64
-    // and can reject a config the planner would actually admit (the gate and the planner
-    // must agree to the ULP — single source of truth), so the load-time verdict can never
-    // diverge from the runtime planner it predicts.
-    //
-    // Keyed on the declared count, not `max_active_markets` alone, so a generous cap with
-    // fewer declared markets is not wrongly rejected; `fundable_slots == 1` reduces to the
-    // single-slot floor (`total_bankroll >= min_slot`). The `fundable_slots > 0` guard
-    // skips the separately-rejected degenerate cases (zero declared markets or a zero cap),
-    // mirroring the planner short-circuiting before it divides on an empty selection.
-    let fundable_slots = declared_market_count.min(policy.max_active_markets);
-    if fundable_slots > 0
-        && crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
-        && crate::bolt_v3_numeric::is_positive_finite(policy.min_slot_notional)
-        && policy.total_bankroll_notional / (fundable_slots as f64) < policy.min_slot_notional
+    for blocker in
+        maker_market_portfolio_declaration_blockers(MakerMarketPortfolioDeclarationInputs {
+            policy: Some(policy),
+            declared_market_count,
+        })
     {
-        errors.push(format!(
-            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= min(declared markets, max_active_markets) * parameters.market_portfolio.min_slot_notional (the planner equal-splits the bankroll across the up-to-{fundable_slots} selected markets, so too small a total drives every per-slot allocation below the minimum and blocks the entire active set; configured total_bankroll_notional={}, min_slot_notional={})",
-            policy.total_bankroll_notional, policy.min_slot_notional
-        ));
+        errors.push(market_portfolio_declaration_blocker_error(context, blocker));
+    }
+}
+
+fn market_portfolio_declaration_blocker_error(
+    context: &str,
+    blocker: MakerMarketPortfolioDeclarationBlocker,
+) -> String {
+    match blocker {
+        MakerMarketPortfolioDeclarationBlocker::EmptyMarkets => format!(
+            "{context}: parameters.markets must declare at least one market (an empty market set would silently idle the maker instead of failing closed at load)"
+        ),
+        MakerMarketPortfolioDeclarationBlocker::MarketsAboveActiveCap {
+            declared_market_count,
+            max_active_markets,
+        } => format!(
+            "{context}: parameters.markets declares {declared_market_count} markets but parameters.market_portfolio.max_active_markets is {max_active_markets} (the portfolio can never admit more declared markets than the concurrency cap)"
+        ),
+        MakerMarketPortfolioDeclarationBlocker::BankrollBelowMinSlotFloor {
+            fundable_slots,
+            total_bankroll_notional,
+            min_slot_notional,
+        } => format!(
+            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= min(declared markets, max_active_markets) * parameters.market_portfolio.min_slot_notional (the planner equal-splits the bankroll across the up-to-{fundable_slots} selected markets, so too small a total drives every per-slot allocation below the minimum and blocks the entire active set; configured total_bankroll_notional={total_bankroll_notional}, min_slot_notional={min_slot_notional})"
+        ),
     }
 }
 
@@ -579,21 +564,8 @@ fn validate_market_portfolio_policy(
 fn validate_market_declarations(
     context: &str,
     markets: &[MarketBindingParametersBlock],
-    max_active_markets: usize,
     errors: &mut Vec<String>,
 ) {
-    if markets.is_empty() {
-        errors.push(format!(
-            "{context}: parameters.markets must declare at least one market (an empty market set would silently idle the maker instead of failing closed at load)"
-        ));
-        return;
-    }
-    if markets.len() > max_active_markets {
-        errors.push(format!(
-            "{context}: parameters.markets declares {} markets but parameters.market_portfolio.max_active_markets is {max_active_markets} (the portfolio can never admit more declared markets than the concurrency cap)",
-            markets.len()
-        ));
-    }
     let mut seen_keys = std::collections::BTreeSet::new();
     for market in markets {
         if market.market_key.trim().is_empty() {

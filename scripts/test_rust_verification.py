@@ -1442,7 +1442,7 @@ def assert_managed_env_scrubs_then_injects_fast_linker_wrapper() -> None:
         wrapper = wrapper_dir / "cc"
         if not wrapper.is_file():
             raise AssertionError("managed_env must prepend a generated cc wrapper for the configured fast linker")
-        run = subprocess.run([str(wrapper), "input.o", "-o", "output"], check=False)
+        run = subprocess.run(["cc", "input.o", "-o", "output"], executable=str(wrapper), check=False)
         if run.returncode != 0:
             raise AssertionError(f"fast linker wrapper failed with rc={run.returncode}")
         if "RUSTFLAGS" in env:
@@ -1453,7 +1453,7 @@ def assert_managed_env_scrubs_then_injects_fast_linker_wrapper() -> None:
                 f"fast linker wrapper must add mold link arg before link command args: {logged_args!r}"
             )
         cc_log.write_text("", encoding="utf-8")
-        run = subprocess.run([str(wrapper), "-c", "input.c"], check=False)
+        run = subprocess.run(["cc", "-c", "input.c"], executable=str(wrapper), check=False)
         if run.returncode != 0:
             raise AssertionError(f"fast linker wrapper compile pass-through failed with rc={run.returncode}")
         compile_args = cc_log.read_text(encoding="utf-8").splitlines()

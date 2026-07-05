@@ -1,0 +1,16 @@
+---REVIEW PACKET — PR #1232 round 1 external, full-PR scope
+- PR: https://github.com/seungpyoson/bolt-v2/pull/1232 — "CI debuggability: archive/classification/reuse summaries + partition failure annotations"
+- HEAD: 722521d17f543aa1bd822ad84baa7bc731097d74 · BASE (merge-base with main): 73de51be8a515e0b29400bb281bd8348a558a54b
+- Review the full diff base→head at the PR URL. 4 files: ci.yml + backtester-ci.yml gain always-run step-summary lines (S3 restore state incl. AssumeRole outcome, CI classification, nextest reuse decision) and per-shard ::error annotations with log tails; verifier + self-test pin every new surface. Known context: an earlier revision read needs.detector.* without declaring the need (fabricated-summary bug) — fixed and pin-enforced at this head. Focus areas: real-outcome fidelity of every summary field (no recomputed/assumed values), pin completeness vs bypass, bash -e -o pipefail semantics in the partition wrappers. Verdict: APPROVE or REQUEST_CHANGES with file-anchored findings.
+---
+BRIEF — Codex: fast remote debug lane (#1215 WS6, design locked in #1215 comment 4883234383 — read it first; it is the spec). One PR off main: new debug-test.yml, workflow_dispatch only, inputs ref + filter + optional package; runner ${{ vars.CI_RUNNER_MANAGED_HEAVY }}, timeout-minutes: 30, no concurrency group. permissions: contents: read ONLY — no provenance, no check-runs, never referenced by Mergify/rulesets. sccache via the PR-readonly role; optional S3 archive restore on digest match. The cargo invocation goes through a new managed justfile recipe debug-test FILTER [PACKAGE] (nextest filter expression, --locked, managed env + JOBS cap) — no raw cargo in the workflow body. Job summary: pass/fail + failing test names + tail lines (same debuggability format as #1232). Hygiene-verifier contract for the new workflow in the same PR: pinned envelope (triggers, permissions, runner var, timeout, recipe call line) + differential tests + a fixture proving ci_provenance's require_gate_check excludes it as a reuse source (verify, don't assume). Usage contract as a header comment: iteration here; full CI only at merge + final evidence. Acceptance: dispatch on a branch with a deliberately failing test completes ≤6 min warm with the failure named in the summary; two dispatches from different branches run concurrently (run IDs + timestamps); hygiene green; everything else's gating unchanged. Done-contract: push, report head SHA, detach.
+
+---
+
+<task-notification>
+<task-id>bf0t21v1n</task-id>
+<tool-use-id>toolu_011ForP2bdpnhiFdtufqFnE1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/31ac09d3-6684-4e1a-97a1-9be9df47d558/tasks/bf0t21v1n.output</output-file>
+<status>completed</status>
+<summary>Background command "Run self-test and verifier at HEAD" completed (exit code 0)</summary>
+</task-notification>

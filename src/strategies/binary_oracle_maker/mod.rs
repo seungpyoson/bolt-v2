@@ -1159,6 +1159,20 @@ mod tests {
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
             anyhow::bail!("maker noop writer received requote-throttle evidence")
         }
+
+        fn record_settlement(
+            &self,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("maker noop writer received settlement evidence")
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("maker noop writer received settlement booking-error evidence")
+        }
     }
 
     fn test_context() -> StrategyBuildContext {

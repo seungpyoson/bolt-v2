@@ -758,6 +758,31 @@ pub(super) fn submit_reservation_recovery_config_from_loaded(
     }))
 }
 
+/// Resolve the startup settlement-recovery source from the owning decision
+/// evidence store when the settlement sink exists. The sink replays settled and
+/// booking-error keys from durable evidence, so it must not depend on capital
+/// admission submit-reservation recovery being enabled.
+pub(super) fn settlement_recovery_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+    settlement_sink_configured: bool,
+) -> Result<Option<BoltV3SettlementRecoveryConfig>, BoltV3LiveNodeError> {
+    if !settlement_sink_configured {
+        return Ok(None);
+    }
+    let Some(max_bytes) = loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes
+    else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SettlementRecoveryConfig {
+        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        max_bytes,
+    }))
+}
+
 pub(super) fn capital_admission_venue_spendability_snapshot_from_source_config(
     config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
 ) -> Result<VenueSpendabilitySnapshot, BoltV3LiveNodeError> {
@@ -2334,6 +2359,17 @@ mod tests {
             Ok(())
         }
 
+        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_venue_truth_divergence(
             &self,
             evidence: &VenueTruthDivergenceEvidence,
@@ -2655,6 +2691,17 @@ mod tests {
         }
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
             Ok(())
         }
     }

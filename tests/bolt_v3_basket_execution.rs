@@ -1410,4 +1410,18 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn record_settlement(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket execution noop writer received settlement evidence")
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket execution noop writer received settlement booking-error evidence")
+    }
 }

@@ -273,6 +273,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_settlement(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -370,6 +384,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> Result<()> {
         anyhow::bail!("requote throttle write failed")
+    }
+
+    fn record_settlement(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("settlement write failed")
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("settlement booking-error write failed")
     }
 }
 
@@ -485,6 +513,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     fn record_requote_throttle(
         &self,
         _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
         Ok(())
     }

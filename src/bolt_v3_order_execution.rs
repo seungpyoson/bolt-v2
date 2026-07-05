@@ -25,7 +25,8 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentClampNotEvaluatedReason,
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields,
+        BoltV3OrderIntentOrderFields, BoltV3SettlementBookingErrorEvidence,
+        BoltV3SettlementEvidence,
     },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
@@ -1442,6 +1443,19 @@ mod tests {
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
             anyhow::bail!("recording order-execution writer received requote-throttle evidence")
+        }
+
+        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+            anyhow::bail!("recording order-execution writer received settlement evidence")
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
+            anyhow::bail!(
+                "recording order-execution writer received settlement booking-error evidence"
+            )
         }
     }
 

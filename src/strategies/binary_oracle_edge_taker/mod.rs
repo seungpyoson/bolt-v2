@@ -74,6 +74,7 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
+    bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_providers::{
         market_quote_buy_min_notional_for_execution_venue,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
@@ -874,7 +875,7 @@ impl BinaryOracleEdgeTaker {
         let Some(position) = self.settlement_position_candidate() else {
             return Ok(());
         };
-        let settlement_key = settlement_key_for_position(&position);
+        let settlement_key = settlement_key_for_position(&position)?;
         if self.settled_position_keys.contains(&settlement_key)
             || self.settlement_booking_error_keys.contains(&settlement_key)
         {
@@ -908,7 +909,7 @@ impl BinaryOracleEdgeTaker {
         let Some(position) = self.settlement_position_candidate() else {
             return Ok(());
         };
-        let settlement_key = settlement_key_for_position(&position);
+        let settlement_key = settlement_key_for_position(&position)?;
         if self.settled_position_keys.contains(&settlement_key)
             || self.settlement_booking_error_keys.contains(&settlement_key)
         {
@@ -977,9 +978,22 @@ impl BinaryOracleEdgeTaker {
             )?;
             return Ok(());
         };
+        let Some(market_id) = settlement_market_id(&position, &self.active) else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                "settlement input missing market id".to_string(),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let product_id = settlement_product_id(position.instrument_id)?;
         let evidence = self.settlement_evidence(
             &position,
             settlement_key.clone(),
+            market_id,
+            product_id,
             update,
             settlement_currency,
             SettlementEvidenceComputation {
@@ -1053,6 +1067,8 @@ impl BinaryOracleEdgeTaker {
         &self,
         position: &OpenPositionState,
         settlement_key: String,
+        market_id: String,
+        product_id: String,
         update: &IndexPriceUpdate,
         settlement_currency: Currency,
         computation: SettlementEvidenceComputation,
@@ -1060,10 +1076,10 @@ impl BinaryOracleEdgeTaker {
         BoltV3SettlementEvidence {
             strategy_id: self.config.strategy_id.clone(),
             settlement_key,
-            market_id: settlement_market_id(position, &self.active),
+            market_id,
             position_id: position.position_id.to_string(),
             instrument_id: position.instrument_id.to_string(),
-            product_id: settlement_product_id(position.instrument_id),
+            product_id,
             outcome_side: outcome_side_to_evidence(computation.outcome_side),
             entry_order_side: position.entry_order_side.to_string(),
             quantity: position.quantity.to_string(),
@@ -2054,7 +2070,14 @@ impl BinaryOracleEdgeTaker {
         let recovery_scope_settlement_keys = settlement_scope_positions
             .iter()
             .map(settlement_key_for_position)
-            .collect::<BTreeSet<_>>();
+            .collect::<Result<BTreeSet<_>>>();
+        let recovery_scope_settlement_keys = match recovery_scope_settlement_keys {
+            Ok(keys) => keys,
+            Err(error) => {
+                self.enter_blind_settlement_recovery(error);
+                return false;
+            }
+        };
         if recovery_scope_settlement_keys.is_empty() {
             return true;
         }
@@ -7344,23 +7367,30 @@ fn settlement_order_side_from_evidence(value: &str) -> Result<OrderSide> {
     }
 }
 
-fn settlement_key_for_position(position: &OpenPositionState) -> String {
-    let mut key = settlement_product_id(position.instrument_id);
+fn settlement_key_for_position(position: &OpenPositionState) -> Result<String> {
+    let mut key = settlement_product_id(position.instrument_id)?;
     key.push(':');
     key.push_str(position.position_id.as_ref());
-    key
+    Ok(key)
 }
 
-fn settlement_market_id(position: &OpenPositionState, active: &ActiveMarketState) -> String {
+fn settlement_market_id(
+    position: &OpenPositionState,
+    active: &ActiveMarketState,
+) -> Option<String> {
     position
         .market_id
         .clone()
         .or_else(|| active.market_id.clone())
-        .unwrap_or_else(|| position.instrument_id.to_string())
 }
 
-fn settlement_product_id(instrument_id: InstrumentId) -> String {
-    instrument_id.to_string()
+fn settlement_product_id(instrument_id: InstrumentId) -> Result<String> {
+    prediction_market_product_id_from_instrument_id(&instrument_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "settlement product id is unbound for instrument `{}`",
+            instrument_id
+        )
+    })
 }
 
 fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> BoltV3ForcedFlatReason {

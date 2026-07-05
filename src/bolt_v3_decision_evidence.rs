@@ -138,17 +138,11 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         Ok(())
     }
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
-    fn record_settlement(&self, evidence: &BoltV3SettlementEvidence) -> Result<()> {
-        let _ = evidence;
-        Ok(())
-    }
+    fn record_settlement(&self, evidence: &BoltV3SettlementEvidence) -> Result<()>;
     fn record_settlement_booking_error(
         &self,
         evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        let _ = evidence;
-        Ok(())
-    }
+    ) -> Result<()>;
     fn record_venue_truth_capture_failure(
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,

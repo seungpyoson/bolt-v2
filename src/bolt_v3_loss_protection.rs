@@ -1094,5 +1094,19 @@ mod tests {
         fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
             Ok(())
         }
+
+        fn record_settlement(
+            &self,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received settlement evidence")
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received settlement booking-error evidence")
+        }
     }
 }

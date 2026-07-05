@@ -325,7 +325,6 @@ struct VenueTruthEventProjection {
     fill_collateral_lots: Vec<VenueTruthFillCollateralLot>,
     settlement_lots: Vec<VenueTruthSettlementLot>,
     drainable_collateral_balance_delta: Decimal,
-    drainable_settlement_collateral_balance_delta: Decimal,
     drainable_collateral_allowance_delta: Decimal,
 }
 
@@ -345,6 +344,7 @@ struct VenueTruthSettlementLot {
     side: OrderSide,
     remaining_quantity: Decimal,
     remaining_collateral_balance_delta: Decimal,
+    restart_collateral_window_open: bool,
     recorded_capture_number: u64,
     fully_consumed_at_capture_number: Option<u64>,
 }
@@ -599,7 +599,6 @@ impl VenueTruthEventProjection {
             fill_collateral_lots: Vec::new(),
             settlement_lots: Vec::new(),
             drainable_collateral_balance_delta: Decimal::ZERO,
-            drainable_settlement_collateral_balance_delta: Decimal::ZERO,
             drainable_collateral_allowance_delta: Decimal::ZERO,
         }
     }
@@ -684,7 +683,7 @@ impl VenueTruthEventProjection {
     ) -> Result<(), VenueTruthSettlementRecordError> {
         self.event_count += 1;
         self.local_event_count += 1;
-        if !matches!(explanation.side, OrderSide::Buy | OrderSide::Sell)
+        if explanation.side != OrderSide::Sell
             || explanation.market_id.trim().is_empty()
             || explanation.product_id.trim().is_empty()
             || explanation.settled_quantity <= Decimal::ZERO
@@ -709,6 +708,7 @@ impl VenueTruthEventProjection {
             side: explanation.side,
             remaining_quantity: explanation.settled_quantity,
             remaining_collateral_balance_delta: explanation.collateral_payout,
+            restart_collateral_window_open: false,
             recorded_capture_number: capture_number,
             fully_consumed_at_capture_number: None,
         });
@@ -786,10 +786,18 @@ impl VenueTruthEventProjection {
                 .unwrap_or(Decimal::ZERO);
             if baseline_quantity == Decimal::ZERO {
                 lot.remaining_quantity = Decimal::ZERO;
+                lot.restart_collateral_window_open =
+                    lot.remaining_collateral_balance_delta > Decimal::ZERO;
             } else if baseline_quantity < lot.remaining_quantity {
                 lot.remaining_quantity = baseline_quantity;
+                lot.restart_collateral_window_open =
+                    lot.remaining_collateral_balance_delta > Decimal::ZERO;
             } else if baseline_quantity == lot.remaining_quantity {
                 lot.remaining_collateral_balance_delta = Decimal::ZERO;
+                lot.restart_collateral_window_open = false;
+            }
+            if lot.remaining_collateral_balance_delta == Decimal::ZERO {
+                lot.restart_collateral_window_open = false;
             }
             mark_settlement_lot_fully_consumed(lot, capture_number);
         }
@@ -878,8 +886,11 @@ impl VenueTruthEventProjection {
             if remaining == Decimal::ZERO {
                 break;
             }
-            if lot.market_id.is_empty()
-                || lot.product_id != product_id
+            debug_assert!(
+                !lot.market_id.is_empty(),
+                "settlement lot market id is bound"
+            );
+            if lot.product_id != product_id
                 || market_id_hint.is_some_and(|market_id| lot.market_id != market_id)
                 || lot.side != side
                 || lot.remaining_quantity <= Decimal::ZERO
@@ -950,10 +961,12 @@ impl VenueTruthEventProjection {
         capture_number: u64,
     ) -> bool {
         let available = self.drainable_collateral_balance_delta
-            + self.drainable_settlement_collateral_balance_delta
             + self.available_settlement_collateral_balance_delta();
         if amount == Decimal::ZERO {
-            return allow_deferred_collateral || available == Decimal::ZERO;
+            self.close_unconsumed_restart_collateral_windows(capture_number);
+            let available_after_window_close = self.drainable_collateral_balance_delta
+                + self.available_settlement_collateral_balance_delta();
+            return allow_deferred_collateral || available_after_window_close == Decimal::ZERO;
         }
         if available == Decimal::ZERO {
             return false;
@@ -967,10 +980,6 @@ impl VenueTruthEventProjection {
         }
         let mut remaining = amount;
         consume_from_drainable_amount(&mut remaining, &mut self.drainable_collateral_balance_delta);
-        consume_from_drainable_amount(
-            &mut remaining,
-            &mut self.drainable_settlement_collateral_balance_delta,
-        );
         self.consume_settlement_collateral_balance_delta(&mut remaining, capture_number);
         remaining == Decimal::ZERO
     }
@@ -994,7 +1003,11 @@ impl VenueTruthEventProjection {
             if *remaining == Decimal::ZERO {
                 break;
             }
-            if lot.market_id.is_empty() || lot.remaining_collateral_balance_delta <= Decimal::ZERO {
+            debug_assert!(
+                !lot.market_id.is_empty(),
+                "settlement lot market id is bound"
+            );
+            if lot.remaining_collateral_balance_delta <= Decimal::ZERO {
                 continue;
             }
             let consumed = if lot.remaining_collateral_balance_delta <= *remaining {
@@ -1003,7 +1016,23 @@ impl VenueTruthEventProjection {
                 *remaining
             };
             lot.remaining_collateral_balance_delta -= consumed;
+            if lot.remaining_collateral_balance_delta == Decimal::ZERO {
+                lot.restart_collateral_window_open = false;
+            }
             *remaining -= consumed;
+            mark_settlement_lot_fully_consumed(lot, capture_number);
+        }
+    }
+
+    fn close_unconsumed_restart_collateral_windows(&mut self, capture_number: u64) {
+        for lot in &mut self.settlement_lots {
+            if !lot.restart_collateral_window_open
+                || lot.remaining_collateral_balance_delta <= Decimal::ZERO
+            {
+                continue;
+            }
+            lot.remaining_collateral_balance_delta = Decimal::ZERO;
+            lot.restart_collateral_window_open = false;
             mark_settlement_lot_fully_consumed(lot, capture_number);
         }
     }

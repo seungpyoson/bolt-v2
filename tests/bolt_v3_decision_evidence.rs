@@ -1943,6 +1943,17 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
         anyhow::bail!("decision evidence path noop writer received requote-throttle evidence")
     }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[test]

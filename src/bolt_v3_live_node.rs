@@ -136,7 +136,8 @@ use crate::{
         BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
         BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
         BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
+        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
         read_submit_reservation_recovery_evidence,
@@ -257,7 +258,8 @@ use risk_admission_loss::{
     loss_governor_halt_action_policy_from_loaded, loss_governor_policy_from_loaded,
     loss_governor_runtime_feed_config_from_loaded, order_reject_observer_account_id_from_loaded,
     recover_kill_switch_state_before_live_node_build,
-    refresh_capital_admission_venue_spendability_from_source, spawn_venue_truth_runtime,
+    refresh_capital_admission_venue_spendability_from_source,
+    settlement_recovery_config_from_loaded, spawn_venue_truth_runtime,
     submit_reservation_recovery_config_from_loaded, sync_nt_trading_state_for_kill_switch,
     venue_truth_runtime_config_from_loaded, wire_bolt_v3_loss_protection_runtime,
 };
@@ -410,6 +412,17 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     }
 
     fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -2064,12 +2077,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         capital_admission_runtime_feed.as_ref(),
     );
     let settlement_recovery =
-        submit_reservation_recovery
-            .as_ref()
-            .map(|config| BoltV3SettlementRecoveryConfig {
-                path: config.path.clone(),
-                max_bytes: config.max_bytes,
-            });
+        settlement_recovery_config_from_loaded(loaded, settlement_runtime_sink.is_some())?;
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,

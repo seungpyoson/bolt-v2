@@ -661,7 +661,8 @@ fn losing_settlement_moves_durable_loss_governor() {
         Quantity::new(10.0, 2),
         0.45,
     );
-    let settlement_key = settlement_key_for_position(&position);
+    let settlement_key = settlement_key_for_position(&position)
+        .expect("fixture position should derive settlement key");
 
     emit_resolution_update(&mut strategy, 3_099.0);
 
@@ -747,11 +748,13 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
         seconds_to_expiry_at_selection: None,
         book: OutcomeBookState::from_instrument_id(instrument_id),
     };
+    let settlement_key = settlement_key_for_position(&scope_position)
+        .expect("fixture cache position should derive settlement key");
     write_settlement_evidence_line(
         &evidence_path,
         BoltV3SettlementEvidence {
             strategy_id: strategy.config.strategy_id.clone(),
-            settlement_key: settlement_key_for_position(&scope_position),
+            settlement_key: settlement_key.clone(),
             market_id: "settlement-recovery-market".to_string(),
             position_id: position_id.to_string(),
             instrument_id: instrument_id.to_string(),
@@ -777,10 +780,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
 
     let explanations = sink.venue_explanations();
     assert_eq!(explanations.len(), 1);
-    assert_eq!(
-        explanations[0].settlement_key,
-        settlement_key_for_position(&scope_position)
-    );
+    assert_eq!(explanations[0].settlement_key, settlement_key);
 }
 
 fn settlement_loss_config(

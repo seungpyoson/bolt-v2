@@ -1905,8 +1905,18 @@ mod tests {
             "help must state the A2 clock-verified recovery semantics: {help}"
         );
         assert!(
+            help.contains("CURRENT config value")
+                && help.contains("more than the full window must have elapsed")
+                && help.contains("exact-equality refuses"),
+            "help must state current-config rolling authority and strict window boundary: {help}"
+        );
+        assert!(
             help.contains("every limit is re-checked live at next node start"),
             "help must state the runtime re-check backstop: {help}"
+        );
+        assert!(
+            help.contains("last audit record per attempt is authoritative"),
+            "help must state authoritative audit ordering: {help}"
         );
         assert!(
             help.contains("unbounded append-only") && help.contains("rotate it externally"),

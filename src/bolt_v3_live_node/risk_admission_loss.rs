@@ -1765,15 +1765,12 @@ mod tests {
         clock::{Clock, TestClock},
         factories::OrderFactory,
     };
-    use nautilus_core::{Params, UnixNanos};
+    use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{AssetClass, OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
-        identifiers::{
-            AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
-            TraderId,
-        },
+        enums::{AssetClass, OrderType, PositionSide, TimeInForce, TradingState},
+        identifiers::{AccountId, InstrumentId, PositionId, StrategyId, Symbol, TraderId},
         instruments::{BinaryOption, InstrumentAny},
-        orders::{Order, OrderAny},
+        orders::Order,
         types::{Currency, Money, Price, Quantity},
     };
     use ustr::Ustr;
@@ -2807,6 +2804,10 @@ mod tests {
         }
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn drain_shutdown(&self) -> Result<()> {
             Ok(())
         }
     }

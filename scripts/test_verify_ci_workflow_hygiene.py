@@ -8569,6 +8569,56 @@ def assert_debug_test_workflow_contract() -> None:
             workflow.replace("AWS_CI_CACHE_PR_READONLY_ROLE_ARN", "AWS_CI_CACHE_ROLE_ARN", 1),
         ),
         (
+            "Resolve debug archive cache eligibility' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var",
+            replace_once(
+                workflow,
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "          PR_READONLY_ROLE_ARN: ${{ vars.CI_SCCACHE_BUCKET }}\n",
+            ),
+        ),
+        (
+            "Resolve sccache eligibility' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var",
+            replace_once_after(
+                workflow,
+                "      - name: Resolve sccache eligibility\n",
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "          PR_READONLY_ROLE_ARN: ${{ vars.CI_SCCACHE_BUCKET }}\n",
+            ),
+        ),
+        (
+            "Resolve debug archive cache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
+            replace_once(
+                workflow,
+                '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
+                '          echo "role_arn=arn:aws:iam::123456789012:role/debug-archive-hijack" >> "$GITHUB_OUTPUT"\n',
+            ),
+        ),
+        (
+            "Resolve sccache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
+            replace_once_after(
+                workflow,
+                "      - name: Resolve sccache eligibility\n",
+                '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
+                '          echo "role_arn=arn:aws:iam::123456789012:role/sccache-hijack" >> "$GITHUB_OUTPUT"\n',
+            ),
+        ),
+        (
+            "Configure AWS credentials for debug archive cache' must assume the resolved debug archive role",
+            replace_once(
+                workflow,
+                "          role-to-assume: ${{ steps.debug-archive-cache.outputs.role_arn }}\n",
+                "          role-to-assume: arn:aws:iam::123456789012:role/debug-archive-hijack\n",
+            ),
+        ),
+        (
+            "Configure AWS credentials for sccache' must assume the resolved sccache role",
+            replace_once(
+                workflow,
+                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
+                "          role-to-assume: arn:aws:iam::123456789012:role/sccache-hijack\n",
+            ),
+        ),
+        (
             "debug-test workflow must not reference provenance or gate jobs",
             workflow.replace("name: debug-test", "name: debug-test\ngate: ignored", 1),
         ),

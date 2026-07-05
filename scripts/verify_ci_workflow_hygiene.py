@@ -14991,6 +14991,27 @@ def verify_debug_test_workflow(
         ):
             if named_step_block(job, step_name) is None:
                 errors.append(f"{workflow_name} debug-test workflow must include step {step_name!r}")
+        for step_name in (
+            "Resolve debug archive cache eligibility",
+            "Resolve sccache eligibility",
+        ):
+            step_block = named_step_block(job, step_name)
+            step_text = uncommented_text(step_block) if step_block is not None else ""
+            if "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}" not in step_text:
+                errors.append(
+                    f"{workflow_name} {step_name}' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var"
+                )
+            if 'echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"' not in step_text:
+                errors.append(f"{workflow_name} {step_name}' must output PR_READONLY_ROLE_ARN as role_arn")
+        for step_name, role_output in (
+            ("Configure AWS credentials for debug archive cache", "steps.debug-archive-cache.outputs.role_arn"),
+            ("Configure AWS credentials for sccache", "steps.sccache-eligible.outputs.role_arn"),
+        ):
+            step_block = named_step_block(job, step_name)
+            step_text = uncommented_text(step_block) if step_block is not None else ""
+            if f"role-to-assume: ${{{{ {role_output} }}}}" not in step_text:
+                label = "debug archive" if "debug archive" in step_name else "sccache"
+                errors.append(f"{workflow_name} {step_name}' must assume the resolved {label} role")
         run_step = named_step_block(job, "Run debug test")
         run_text = uncommented_text(run_step) if run_step is not None else ""
         if "shell: bash" not in run_text or 'rc="${PIPESTATUS[0]}"' not in run_text:

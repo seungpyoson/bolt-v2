@@ -521,17 +521,21 @@ fn configured_reference_current_price_source_count(loaded: &LoadedBoltV3Config) 
         .sum()
 }
 
+struct BoltV3LiveNodeRuntimeComponents {
+    iv_runtime: Option<IvRuntimeEngine>,
+    iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
+    operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
+    input_health_configured_source_count: usize,
+    redaction_values: Vec<Zeroizing<String>>,
+}
+
 impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         feeds: BoltV3LiveNodeRuntimeFeeds,
-        iv_runtime: Option<IvRuntimeEngine>,
-        iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
-        operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
-        input_health_configured_source_count: usize,
-        redaction_values: Vec<Zeroizing<String>>,
+        runtime_components: BoltV3LiveNodeRuntimeComponents,
     ) -> Self {
         Self {
             node,
@@ -551,11 +555,12 @@ impl BoltV3LiveNodeRuntime {
             capital_admission_venue_spendability_source: feeds
                 .capital_admission_venue_spendability_source,
             submit_reservation_recovery: feeds.submit_reservation_recovery,
-            iv_runtime,
-            iv_event_bindings,
-            operator_health_transition_logger,
-            input_health_configured_source_count,
-            redaction_values,
+            iv_runtime: runtime_components.iv_runtime,
+            iv_event_bindings: runtime_components.iv_event_bindings,
+            operator_health_transition_logger: runtime_components.operator_health_transition_logger,
+            input_health_configured_source_count: runtime_components
+                .input_health_configured_source_count,
+            redaction_values: runtime_components.redaction_values,
         }
     }
 
@@ -2139,7 +2144,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let submit_admission = submit_admission.clone();
         let logger = operator_health_transition_logger.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
-        let input_health_configured_source_count = input_health_configured_source_count;
         Arc::new(move |reason| {
             let surface = live_operator_health_surface(
                 order_reject_observer_feed.as_ref(),
@@ -2350,11 +2354,13 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             capital_admission_venue_spendability_source,
             submit_reservation_recovery,
         },
-        iv_runtime,
-        iv_event_bindings,
-        operator_health_transition_logger,
-        input_health_configured_source_count,
-        resolved.redaction_values(),
+        BoltV3LiveNodeRuntimeComponents {
+            iv_runtime,
+            iv_event_bindings,
+            operator_health_transition_logger,
+            input_health_configured_source_count,
+            redaction_values: resolved.redaction_values(),
+        },
     );
     runtime.refresh_capital_admission_venue_spendability_from_configured_source()?;
     Ok((runtime, summary))

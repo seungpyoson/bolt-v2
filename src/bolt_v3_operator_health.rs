@@ -393,34 +393,31 @@ pub fn node_scoped_runtime_source_announcements(
                 status,
             }
         });
-    let iv_runtime_sources = loaded
-        .root
-        .iv
-        .as_ref()
-        .map(|iv| {
-            iv.profiles
-                .iter()
-                .flat_map(|profile| {
-                    profile
-                        .sources
-                        .iter()
-                        .map(|source| BoltV3IvRuntimeSourceAnnouncement {
-                            profile_id: profile.profile_id.clone(),
-                            source_id: source.source_id.clone(),
-                            source_kind: format!("{:?}", source.source_kind),
-                            client_id: source.client_id.clone(),
-                            subscription_generation: source.subscription_generation,
-                            selector_fingerprint: source.selector_fingerprint.clone(),
-                            nt_symbol: source.nt_provenance.nt_symbol.clone(),
-                            nt_revision: cargo_pinned_nt_revision().to_string(),
-                            enabled: true,
-                            runtime_available: true,
-                            status: BoltV3RuntimeFeedAnnouncementStatus::Active,
-                        })
-                })
-                .collect()
-        })
-        .unwrap_or_else(Vec::new);
+    let iv_runtime_sources = match loaded.root.iv.as_ref() {
+        Some(iv) => iv
+            .profiles
+            .iter()
+            .flat_map(|profile| {
+                profile
+                    .sources
+                    .iter()
+                    .map(|source| BoltV3IvRuntimeSourceAnnouncement {
+                        profile_id: profile.profile_id.clone(),
+                        source_id: source.source_id.clone(),
+                        source_kind: format!("{:?}", source.source_kind),
+                        client_id: source.client_id.clone(),
+                        subscription_generation: source.subscription_generation,
+                        selector_fingerprint: source.selector_fingerprint.clone(),
+                        nt_symbol: source.nt_provenance.nt_symbol.clone(),
+                        nt_revision: cargo_pinned_nt_revision().to_string(),
+                        enabled: true,
+                        runtime_available: true,
+                        status: BoltV3RuntimeFeedAnnouncementStatus::Active,
+                    })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     BoltV3NodeScopedRuntimeSourceAnnouncements {
         venue_truth_rest_capture,
         iv_runtime_sources,

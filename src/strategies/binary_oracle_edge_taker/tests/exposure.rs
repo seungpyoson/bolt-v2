@@ -3350,7 +3350,7 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
 
 #[test]
 fn new_entry_submit_clears_stale_flat_terminal_override() {
-    let mut strategy = ready_to_trade_strategy();
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let instrument_id = selected_entry_instrument(&strategy);
     let pending = pending_entry_for_terminal_override(
         &mut strategy,
@@ -3359,11 +3359,13 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
     );
     strategy.remember_flat_terminal_entry_override(&pending);
 
-    let result = strategy.try_submit_entry_order(1_200);
+    let submitted_client_order_id = strategy
+        .try_submit_entry_order(1_200)
+        .expect("entry submit setup should be admissible");
 
     assert!(
-        result.is_ok(),
-        "entry submit setup should be admissible: {result:#?}"
+        submitted_client_order_id.is_some(),
+        "entry submit setup must create a fresh pending entry"
     );
     assert!(
         strategy.last_flat_terminal_entry_override.is_none(),

@@ -3351,6 +3351,11 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
 #[test]
 fn new_entry_submit_clears_stale_flat_terminal_override() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
     let instrument_id = selected_entry_instrument(&strategy);
     let pending = pending_entry_for_terminal_override(
         &mut strategy,
@@ -3358,6 +3363,15 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
         ClientOrderId::from("ENTRY-SUBMIT-CLEAR-001"),
     );
     strategy.remember_flat_terminal_entry_override(&pending);
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert!(
+        decision.instrument_id.is_some()
+            && decision.order_side.is_some()
+            && decision.price.is_some()
+            && decision.quantity_value.is_some()
+            && decision.blocked_reason.is_none(),
+        "entry submit setup must reach the submit path; got {decision:#?}"
+    );
 
     let submitted_client_order_id = strategy
         .try_submit_entry_order(1_200)

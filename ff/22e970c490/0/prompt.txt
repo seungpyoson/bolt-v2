@@ -1,0 +1,49 @@
+Final focused panel packet for PR #1226, round 4:
+
+Review request: bolt-v2 PR #1226, round 4 (final) — focused delta review + full-PR carry-over.
+LIVE KILL-SWITCH SAFETY CODE.
+
+Repo: https://github.com/seungpyoson/bolt-v2
+PR:   https://github.com/seungpyoson/bolt-v2/pull/1226
+Head: fe74d50c72161504a368b5c922c003bbcb618f3b (round-3 head 50354ebe8 was panel-reviewed:
+A2 semantics verified sound; one panel HIGH was DISPROVEN by direct read — the production halt
+writer DOES populate loss_halt_reason via loss_governor_breach_with_reason at
+src/bolt_v3_loss_protection.rs:437).
+
+Round-4 delta (polish, all panel-prescribed):
+1. Audit truth: the pre-state-write audit line is now outcome="attempted"; outcome="recovered"
+   appended ONLY after the Armed write succeeds; last-record-per-attempt documented as
+   authoritative.
+2. A torn final audit line no longer escalates the next recovery into FailedManualIntervention —
+   it returns a distinct repair-and-retry error that leaves halt state UNTOUCHED.
+3. Audit completeness: all post-config refusals audited (non-loss-governor, unsupported state,
+   invalid evidence, missing snapshot, store-fail-closed); non-auditable boundary documented.
+4. Docs: rolling-window authority = CURRENT config (explicit); strict > boundary wording.
+5. NANOS_PER_UTC_DAY consolidated into bolt_v3_numeric (single home).
+6. Tests persist halts via the typed constructor (production serialization path), not JSON
+   patching.
+
+Try to break (focused):
+1. The attempted→recovered ordering: enumerate crash points (after attempted-append; after
+   state write, before recovered-append; audit-append fails after successful state write) —
+   each must leave a truthful, interpretable audit trail + correct store state; no path may
+   report success without the Armed write having happened.
+2. Torn-audit repair error: verify halt state is genuinely untouched on that path, the error
+   names the file, and a retry after manual repair works.
+3. Newly-audited refusal paths: none of them can fail INTO a state write; audit-append failure
+   on a refusal still returns the original refusal.
+4. Carry-over: A2 clock logic, schema compat (loss_halt_reason optional both directions),
+   evidence contract, fail-closed store handling, sidecar separation — all unchanged from the
+   round-3-approved state (delta should not touch them; confirm).
+5. Body nit to fix in the same pass: the disproven-HIGH anchor cites a local worktree absolute
+   path — should be repo-relative (src/bolt_v3_loss_protection.rs:437).
+
+Declared deviation (4th consecutive — pre-acknowledged): the Rust Probe red run died on infra
+again (28733086460, exit 143 compiling deps). Differential rests on construction + green tests;
+verify the attempted/recovered tests would fail against round-3's single-"recovered" labeling.
+
+Evidence (verify, don't trust): full dispatch 28734069447 green at exactly fe74d50c7;
+post-ready PR checks pass/skip.
+
+Report findings as: severity / file + symbol anchor / concrete failure scenario.
+"Looks fine" only per-guarantee, with reasoning stated.

@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "ff22e970c490",
+  "strategy": "manual-commit",
+  "branch": "codex/linker-ci-proof",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/ci.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ff/22e970c490/0/metadata.json",
+      "transcript": "/ff/22e970c490/0/full.jsonl",
+      "compact_transcript": "/ff/22e970c490/0/transcript.jsonl",
+      "content_hash": "/ff/22e970c490/0/content_hash.txt",
+      "prompt": "/ff/22e970c490/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 16511,
+    "cache_creation_tokens": 126658,
+    "cache_read_tokens": 1779991,
+    "output_tokens": 33990,
+    "api_call_count": 18
+  }
+}

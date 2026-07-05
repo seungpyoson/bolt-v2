@@ -630,7 +630,7 @@ impl BackfillCoverageLedger {
     }
 
     pub fn content_hash(&self) -> Result<String, BackfillCoverageLedgerError> {
-        let bytes = serde_json::to_vec(self)
+        let bytes = serde_json::to_vec_pretty(self)
             .map_err(|error| BackfillCoverageLedgerError::Serialize(error.to_string()))?;
         let mut hasher = Sha256::new();
         hasher.update(bytes);
@@ -668,9 +668,7 @@ pub fn write_coverage_ledger_artifact(
         })?;
     }
 
-    let content_hash = ledger
-        .content_hash()
-        .map_err(|error| BackfillCoverageWriteError::Serialize(error.to_string()))?;
+    let content_hash = hex::encode(Sha256::digest(&bytes));
     Ok(BackfillCoverageLedgerArtifact {
         path,
         content_hash,

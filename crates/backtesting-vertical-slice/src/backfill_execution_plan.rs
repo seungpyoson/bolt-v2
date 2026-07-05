@@ -470,7 +470,7 @@ pub fn write_backfill_execution_plan_with_overwrite(
 
     Ok(BackfillExecutionPlanArtifact {
         path,
-        content_hash: content_hash(plan)?,
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
     })
 }
@@ -523,10 +523,4 @@ fn default_source_usage_scope() -> SourceProofUsageScope {
 
 fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
     *value == SourceProofUsageScope::CanonicalBackfillInput
-}
-
-fn content_hash(plan: &BackfillExecutionPlan) -> Result<String, BackfillExecutionPlanError> {
-    let bytes = serde_json::to_vec(plan)
-        .map_err(|error| BackfillExecutionPlanError::Serialize(error.to_string()))?;
-    Ok(sha256_hex(&bytes))
 }

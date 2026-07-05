@@ -653,7 +653,7 @@ pub fn write_backfill_execution_readiness_report(
     }
     Ok(BackfillExecutionReadinessArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
     })
 }
@@ -897,12 +897,4 @@ fn source_selection_readiness_proven(report: &SourceSelectionReadinessReport) ->
         && report.claim_limits_recorded
         && report.source_proof_acceptance_error.is_none()
         && report.unmet_required_checks.is_empty()
-}
-
-fn content_hash(
-    report: &BackfillExecutionReadinessReport,
-) -> Result<String, BackfillExecutionReadinessError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| BackfillExecutionReadinessError::Serialize(error.to_string()))?;
-    Ok(sha256_hex(&bytes))
 }

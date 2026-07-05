@@ -183,6 +183,10 @@ SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS = (
     "ci/doc-decoupling-residuals.toml",
     "specs/711-capital-admission-rename/misnomer-allowlist.txt",
 )
+SELF_AUTHORIZING_CAPABILITY_PATHS = (
+    *SELF_AUTHORIZING_GITHUB_AUTOMATION_PREFIXES,
+    *SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS,
+)
 SELF_AUTHORIZING_SECRET_REF_RE = re.compile(
     r"""\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)\b"""
     r"""|\[\s*'([A-Za-z_][A-Za-z0-9_]*)'\s*\]"""
@@ -10394,9 +10398,10 @@ def self_authorizing_added_lines(
     repo: pathlib.Path,
     base_ref: str,
     head_ref: str,
+    pathspecs: tuple[str, ...],
 ) -> list[tuple[str, str]]:
     added: list[tuple[str, str]] = []
-    for relative_path in self_authorizing_changed_paths(repo, base_ref, head_ref, tuple()):
+    for relative_path in self_authorizing_changed_paths(repo, base_ref, head_ref, pathspecs):
         head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
         if not head_text:
             continue
@@ -10741,8 +10746,18 @@ def self_authorizing_capability_signals(
     base_ref: str,
     head_ref: str,
 ) -> list[SelfAuthorizingCapabilitySignal]:
-    changed_paths = self_authorizing_changed_paths(repo, base_ref, head_ref, tuple())
-    added_lines = self_authorizing_added_lines(repo, base_ref, head_ref)
+    changed_paths = self_authorizing_changed_paths(
+        repo,
+        base_ref,
+        head_ref,
+        SELF_AUTHORIZING_CAPABILITY_PATHS,
+    )
+    added_lines = self_authorizing_added_lines(
+        repo,
+        base_ref,
+        head_ref,
+        SELF_AUTHORIZING_CAPABILITY_PATHS,
+    )
     return dedupe_self_authorizing_signals(
         [
             *self_authorizing_secret_ref_signals(added_lines),

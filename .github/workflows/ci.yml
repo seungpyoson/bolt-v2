@@ -1097,6 +1097,83 @@ jobs:
           echo "sccache enabled=$enabled"
       # -----------------------------------------------------------------------
 
+      - name: Confirm nextest compile link timing
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" != "1" ]]; then
+            echo "::error::sccache must be active for link timing confirmation"
+            exit 1
+          fi
+
+          timing_dir="$RUNNER_TEMP/link-timing"
+          wrapper_dir="$timing_dir/bin"
+          mkdir -p "$wrapper_dir"
+          csv="$timing_dir/linker.csv"
+          printf 'class,elapsed_ms\n' > "$csv"
+
+          real_cc="$(command -v cc)"
+          cat > "$wrapper_dir/cc" <<'SH'
+          #!/usr/bin/env bash
+          set +e
+          class=link
+          for arg in "$@"; do
+            if [[ "$arg" == "-c" ]]; then
+              class=cc_compile
+              break
+            fi
+          done
+          start_ns="$(date +%s%N)"
+          "$REAL_CC" "$@"
+          rc=$?
+          end_ns="$(date +%s%N)"
+          elapsed_ms="$(( (end_ns - start_ns) / 1000000 ))"
+          printf '%s,%s\n' "$class" "$elapsed_ms" >> "$LINK_TIMING_CSV"
+          exit "$rc"
+          SH
+          chmod +x "$wrapper_dir/cc"
+          export REAL_CC="$real_cc"
+          export LINK_TIMING_CSV="$csv"
+          export PATH="$wrapper_dir:$PATH"
+
+          start_ns="$(date +%s%N)"
+          python3 scripts/rust_verification.py cargo --repo "$GITHUB_WORKSPACE" -- test --locked --no-run --timings
+          end_ns="$(date +%s%N)"
+          total_ms="$(( (end_ns - start_ns) / 1000000 ))"
+          python3 - "$csv" "$total_ms" <<'PY'
+          import csv
+          import sys
+          from collections import defaultdict
+
+          totals = defaultdict(int)
+          counts = defaultdict(int)
+          with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+              for row in csv.DictReader(handle):
+                  kind = row["class"]
+                  totals[kind] += int(row["elapsed_ms"])
+                  counts[kind] += 1
+
+          total_ms = int(sys.argv[2])
+          link_ms = totals["link"]
+          cc_compile_ms = totals["cc_compile"]
+          non_link_ms = max(total_ms - link_ms, 0)
+          print(
+              "LINK_TIMING_SUMMARY "
+              f"total_seconds={total_ms / 1000:.3f} "
+              f"link_seconds={link_ms / 1000:.3f} "
+              f"non_link_seconds={non_link_ms / 1000:.3f} "
+              f"cc_compile_seconds={cc_compile_ms / 1000:.3f} "
+              f"link_invocations={counts['link']} "
+              f"cc_compile_invocations={counts['cc_compile']} "
+              f"link_wall_share={link_ms / total_ms if total_ms else 0:.3f}"
+          )
+          PY
+
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         env:

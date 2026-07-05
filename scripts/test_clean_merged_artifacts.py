@@ -1252,6 +1252,23 @@ class CleanupContractTests(unittest.TestCase):
         )
         return hook, marker
 
+    def _write_clean_merged_hook_sources(
+        self,
+        root: pathlib.Path,
+        *,
+        label: str = "source",
+    ) -> pathlib.Path:
+        source_hooks = root / ".githooks"
+        source_hooks.mkdir()
+        for hook in cm.CLEAN_MERGED_HOOKS:
+            hook_file = source_hooks / hook
+            hook_file.write_text(
+                f"#!/bin/sh\n# clean-merged-managed\nprintf {label}-{hook}\n",
+                encoding="utf-8",
+            )
+            hook_file.chmod(0o755)
+        return source_hooks
+
     def test_lane_summary_prints_full_refusal_reason(self) -> None:
         reason = (
             "detached-HEAD worktree refused "
@@ -1390,15 +1407,7 @@ class CleanupContractTests(unittest.TestCase):
     def test_install_hooks_preserves_existing_local_hooks_when_moving_to_runtime_dir(
         self,
     ) -> None:
-        source_hooks = self.work / ".githooks"
-        source_hooks.mkdir()
-        for hook in ("post-merge", "post-checkout", "post-rewrite"):
-            hook_file = source_hooks / hook
-            hook_file.write_text(
-                f"#!/bin/sh\n# clean-merged-managed\n# generated {hook}\n",
-                encoding="utf-8",
-            )
-            hook_file.chmod(0o755)
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
         local_hook = source_hooks / "commit-msg"
         local_hook.write_text("#!/bin/sh\nprintf local-hook\n", encoding="utf-8")
         local_hook.chmod(0o755)
@@ -1435,6 +1444,102 @@ class CleanupContractTests(unittest.TestCase):
             (runtime_hooks / "post-rewrite.pre-entire").read_text(encoding="utf-8"),
             chained_hook.read_text(encoding="utf-8"),
         )
+
+    def test_install_hooks_refuses_nonmanaged_same_name_hook_collision(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        legacy_hooks = self.work / ".legacy-hooks"
+        legacy_hooks.mkdir()
+        colliding_hook = legacy_hooks / "post-rewrite"
+        colliding_hook.write_text("#!/bin/sh\nprintf local-post-rewrite\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to overwrite non-managed hook post-rewrite", proc.stderr)
+
+    def test_install_hooks_refuses_default_runtime_same_name_hook_collision(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = pathlib.Path(
+            _run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=self.work,
+            ).stdout.strip()
+        ) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to overwrite non-managed hook post-merge", proc.stderr)
+
+    def test_install_hooks_refuses_dirty_tracked_hook_sources(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        _run(["git", "add", ".githooks"], cwd=self.work)
+        _run(["git", "commit", "-m", "track hook sources"], cwd=self.work)
+        (source_hooks / "post-rewrite").write_text(
+            "#!/bin/sh\n# clean-merged-managed\nprintf dirty-post-rewrite\n",
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(
+            "tracked clean-merged hook source(s) have local changes: .githooks/post-rewrite",
+            proc.stderr,
+        )
+
+    def test_install_hooks_uses_main_worktree_hook_sources_from_linked_worktree(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work, label="main")
+        _run(["git", "branch", "feat/hook-install"], cwd=self.work)
+        linked = add_worktree(self.work, "feat/hook-install", self.tmp / "linked-hook-install")
+        linked_source_hooks = self._write_clean_merged_hook_sources(linked, label="linked")
+
+        proc = run_clean_proc(linked, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        common_dir = pathlib.Path(
+            _run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=self.work,
+            ).stdout.strip()
+        )
+        runtime_hook = common_dir / "hooks" / "post-merge"
+        self.assertEqual(
+            runtime_hook.read_text(encoding="utf-8"),
+            (source_hooks / "post-merge").read_text(encoding="utf-8"),
+        )
+        self.assertNotEqual(
+            runtime_hook.read_text(encoding="utf-8"),
+            (linked_source_hooks / "post-merge").read_text(encoding="utf-8"),
+        )
+
+    def test_doctor_rejects_legacy_tracked_hooks_path(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        _run(["git", "config", "core.hooksPath", ".githooks"], cwd=self.work)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("core.hooksPath is not git-common hooks directory", proc.stdout)
+
+    def test_doctor_reports_stale_runtime_hooks(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        (source_hooks / "post-merge").write_text(
+            "#!/bin/sh\n# clean-merged-managed\nprintf updated-post-merge\n",
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hook post-merge runtime does not match tracked source", proc.stdout)
 
     def test_setup_remote_prune_snippet_sets_configured_remote(self) -> None:
         cfg = self.work / "config" / "clean-merged.toml"

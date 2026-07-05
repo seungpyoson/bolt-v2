@@ -437,25 +437,104 @@ def _resolve_hooks_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
     return path if path.is_absolute() else repo_root / path
 
 
-def install_hooks(repo_root: pathlib.Path) -> pathlib.Path:
-    source_hooks_dir = repo_root / ".githooks"
+def _same_path(left: pathlib.Path, right: pathlib.Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left.absolute() == right.absolute()
+
+
+def _hook_is_managed(path: pathlib.Path) -> bool:
+    return path.is_file() and HOOK_MARKER in path.read_text(encoding="utf-8", errors="replace")
+
+
+def _dirty_tracked_hook_sources(repo_root: pathlib.Path) -> list[str]:
+    rel_paths = [f".githooks/{hook}" for hook in CLEAN_MERGED_HOOKS]
+    dirty: set[str] = set()
+    for args in (
+        ["diff", "--name-only", "--", *rel_paths],
+        ["diff", "--cached", "--name-only", "--", *rel_paths],
+    ):
+        proc = _git(repo_root, args, check=False)
+        if proc.returncode == 0:
+            dirty.update(line for line in proc.stdout.splitlines() if line in rel_paths)
+    return sorted(dirty)
+
+
+def _active_hook_dirs(
+    *,
+    invoke_root: pathlib.Path,
+    source_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+) -> list[pathlib.Path]:
+    active = _git(source_root, ["config", "--get", "core.hooksPath"], check=False)
+    if active.returncode != 0 or not active.stdout.strip():
+        return [runtime_hooks_dir]
+
+    raw = active.stdout.strip()
+    path = pathlib.Path(raw)
+    if path.is_absolute():
+        return [path]
+
+    candidates = [source_root / path]
+    if not _same_path(invoke_root, source_root):
+        candidates.append(invoke_root / path)
+    return candidates
+
+
+def install_hooks(
+    invoke_root: pathlib.Path,
+    *,
+    source_root: pathlib.Path | None = None,
+) -> pathlib.Path:
+    source_root = _main_worktree_root(invoke_root) if source_root is None else source_root
+    source_hooks_dir = source_root / ".githooks"
     missing = [name for name in CLEAN_MERGED_HOOKS if not (source_hooks_dir / name).is_file()]
     if missing:
         raise CleanMergedError(
             "missing tracked clean-merged hook source(s): " + ", ".join(missing)
         )
+    dirty_sources = _dirty_tracked_hook_sources(source_root)
+    if dirty_sources:
+        raise CleanMergedError(
+            "tracked clean-merged hook source(s) have local changes: "
+            + ", ".join(dirty_sources)
+            + "; restore or commit them before installing hooks"
+        )
 
-    runtime_hooks_dir = git_common_dir(repo_root) / "hooks"
+    runtime_hooks_dir = git_common_dir(source_root) / "hooks"
     runtime_hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    active = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
-    if active.returncode == 0 and active.stdout.strip():
-        active_hooks_dir = _resolve_hooks_path(repo_root, active.stdout.strip())
-        if active_hooks_dir.is_dir() and active_hooks_dir.resolve() != runtime_hooks_dir.resolve():
-            for hook_file in active_hooks_dir.iterdir():
-                if hook_file.name in CLEAN_MERGED_HOOKS or not hook_file.is_file():
-                    continue
-                shutil.copy2(hook_file, runtime_hooks_dir / hook_file.name)
+    active_hook_dirs = _active_hook_dirs(
+        invoke_root=invoke_root,
+        source_root=source_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+    )
+    hook_dirs_to_check = [runtime_hooks_dir, *active_hook_dirs]
+    for hook_dir in hook_dirs_to_check:
+        if not hook_dir.is_dir():
+            continue
+        for hook_name in CLEAN_MERGED_HOOKS:
+            existing = hook_dir / hook_name
+            if existing.is_file() and not _hook_is_managed(existing):
+                raise CleanMergedError(
+                    f"refusing to overwrite non-managed hook {hook_name} at {existing}"
+                )
+
+    for active_hooks_dir in active_hook_dirs:
+        if not active_hooks_dir.is_dir() or _same_path(active_hooks_dir, runtime_hooks_dir):
+            continue
+        for hook_file in active_hooks_dir.iterdir():
+            if hook_file.name in CLEAN_MERGED_HOOKS or not hook_file.is_file():
+                continue
+            destination = runtime_hooks_dir / hook_file.name
+            if destination.exists() and not _same_path(destination, hook_file):
+                if destination.read_bytes() != hook_file.read_bytes():
+                    raise CleanMergedError(
+                        f"refusing to overwrite preserved hook {hook_file.name} at "
+                        f"{destination}"
+                    )
+            shutil.copy2(hook_file, destination)
 
     for hook_name in CLEAN_MERGED_HOOKS:
         destination = runtime_hooks_dir / hook_name
@@ -467,7 +546,7 @@ def install_hooks(repo_root: pathlib.Path) -> pathlib.Path:
             | stat.S_IXOTH
         )
 
-    _git(repo_root, ["config", "core.hooksPath", str(runtime_hooks_dir)])
+    _git(source_root, ["config", "core.hooksPath", str(runtime_hooks_dir)])
     return runtime_hooks_dir
 
 
@@ -2529,6 +2608,8 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     # git-common-dir
     common = git_common_dir(repo_root)
     print(f"  git-common-dir           = {common}")
+    expected_hooks_dir = common / "hooks"
+    source_hooks_dir = repo_root / ".githooks"
 
     # hooks install
     active_hooks_dir_raw = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
@@ -2537,16 +2618,35 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         if not active_hooks_dir.is_absolute():
             active_hooks_dir = repo_root / active_hooks_dir
         print(f"  core.hooksPath           = {active_hooks_dir}")
+        if not _same_path(active_hooks_dir, expected_hooks_dir):
+            problems.append("core.hooksPath is not git-common hooks directory (run `just setup`)")
         for h in CLEAN_MERGED_HOOKS:
             hook_file = active_hooks_dir / h
             exists = hook_file.is_file()
-            managed = exists and HOOK_MARKER in hook_file.read_text(encoding="utf-8", errors="replace")
-            print(f"  hook {h:14s} exists={exists} managed={managed}")
+            managed = exists and _hook_is_managed(hook_file)
+            source_file = source_hooks_dir / h
+            source_match = (
+                exists
+                and source_file.is_file()
+                and hook_file.read_bytes() == source_file.read_bytes()
+            )
+            print(
+                f"  hook {h:14s} exists={exists} managed={managed} "
+                f"source_match={source_match}"
+            )
             if not managed:
                 problems.append(f"hook {h} not marked managed")
+            if _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
+                problems.append(f"hook {h} runtime does not match tracked source (run `just setup`)")
     else:
         print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
         problems.append("core.hooksPath unset; clean-merged hooks not active")
+    dirty_sources = _dirty_tracked_hook_sources(repo_root)
+    if dirty_sources:
+        problems.append(
+            "tracked clean-merged hook source(s) have local changes: "
+            + ", ".join(dirty_sources)
+        )
 
     # remote.<remote>.prune must follow the configured remote name.
     prune_key = f"remote.{config.remote_name}.prune"
@@ -2812,12 +2912,12 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = pathlib.Path.cwd()
     try:
         invoke_root = _resolve_repo_root(pathlib.Path.cwd())
+        repo_root = _main_worktree_root(invoke_root)
         if args.install_hooks:
-            hooks_dir = install_hooks(invoke_root)
+            hooks_dir = install_hooks(invoke_root, source_root=repo_root)
             if not args.quiet:
                 print(f"[{SCRIPT_NAME}] installed hooks in {hooks_dir}")
             return 0
-        repo_root = _main_worktree_root(invoke_root)
         config = load_config(repo_root)
     except CleanMergedError as exc:
         # Don't crash the hook chain on config or git-resolution errors.

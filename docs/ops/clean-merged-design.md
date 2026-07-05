@@ -186,14 +186,19 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
   hook installers can mutate active hooks without dirtying tracked repo files.
   During that move, setup preserves existing non-managed hooks from the previous
   active hook directory so local agent hooks keep firing after the path changes.
+  If a non-managed hook already owns a clean-merged hook name (`post-merge`,
+  `post-checkout`, or `post-rewrite`), setup refuses instead of overwriting it.
+  Linked worktrees install from the main worktree's tracked `.githooks/` source
+  into the shared git-common runtime directory.
 - Restructure existing `post-checkout` (its `prev_head != 000…` early-exit
   moves BELOW our dispatch so cleanup runs first when gated).
 - Extend existing `post-rewrite` (Entire CLI line preserved).
 - `git config remote.<configured-remote>.prune true` owned here (NO DUAL PATHS).
 - `post-merge` also spawns Lane R detached.
 - `just clean-merged-doctor`: install state, hook-marker presence, config
-  validity, gh availability, gh cache health, last-run heartbeat freshness,
-  quarantine disk usage, backup-ref count, and rotated-log usage.
+  validity, runtime-vs-source hook drift, gh availability, gh cache health,
+  last-run heartbeat freshness, quarantine disk usage, backup-ref count, and
+  rotated-log usage.
 
 ## Audit log (JSONL)
 
@@ -216,6 +221,8 @@ The "always-on" contract has two precise limits:
   hooks, and points `core.hooksPath` at that generated directory. Git cannot
   auto-run hooks on clone without local config; there is no in-tree bootstrap.
   `just clean-merged-doctor` reports an unset hooksPath as a problem.
+  Re-run `just setup` after changing tracked `.githooks/` sources; doctor
+  reports stale runtime copies that no longer match tracked source.
 - **Always-on for branch ref cleanup (Lane H + Lane R).** Every `git pull`
   (incl. FF — empirically verified) and checkout of the configured trunk fires
   the hooks and cleans eligible branches automatically.

@@ -787,7 +787,7 @@ def _record_hook_provenance(
     }
 
 
-def _copy_hook_with_provenance(
+def _validate_hook_copy_with_provenance(
     *,
     source_file: pathlib.Path,
     destination: pathlib.Path,
@@ -810,21 +810,6 @@ def _copy_hook_with_provenance(
                 f"refusing to adopt modified runtime hook {destination.name} "
                 f"without installer provenance at {destination}"
             )
-        if source_kind == "repo-source":
-            destination.chmod(
-                destination.stat().st_mode
-                | stat.S_IXUSR
-                | stat.S_IXGRP
-                | stat.S_IXOTH
-            )
-        _record_hook_provenance(
-            source_file=source_file,
-            destination=destination,
-            source_kind=source_kind,
-            source_scope=source_scope,
-            source_path=source_path,
-            manifest_hooks=manifest_hooks,
-        )
         return
     source_sha = _file_sha256(source_file)
     if destination.exists():
@@ -845,6 +830,42 @@ def _copy_hook_with_provenance(
                 f"refusing to overwrite hook {destination.name} without "
                 f"installer provenance at {destination}"
             )
+
+
+def _copy_hook_with_provenance(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+) -> None:
+    _validate_hook_copy_with_provenance(
+        source_file=source_file,
+        destination=destination,
+        source_kind=source_kind,
+        source_scope=source_scope,
+        source_path=source_path,
+        manifest_hooks=manifest_hooks,
+    )
+    if _same_path(source_file, destination):
+        if source_kind == "repo-source":
+            destination.chmod(
+                destination.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+        _record_hook_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind=source_kind,
+            source_scope=source_scope,
+            source_path=source_path,
+            manifest_hooks=manifest_hooks,
+        )
+        return
     shutil.copy2(source_file, destination)
     if source_kind == "repo-source":
         destination.chmod(
@@ -889,7 +910,7 @@ def _is_shadowed_hook_backup_path(common_dir: pathlib.Path, path: pathlib.Path) 
     return _same_path(path.parent, common_dir / "clean-merged.shadowed-hooks")
 
 
-def _remove_hook_with_provenance(
+def _validate_hook_removal_with_provenance(
     *,
     runtime_hooks_dir: pathlib.Path,
     hook_name: str,
@@ -905,6 +926,40 @@ def _remove_hook_with_provenance(
             f"refusing to remove hook {hook_name} without "
             f"installer provenance at {destination}"
         )
+
+
+def _validate_active_hook_runtime_unchanged(
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hook_name: str,
+    entry: dict[str, Any],
+) -> None:
+    destination = runtime_hooks_dir / hook_name
+    if (
+        destination.exists()
+        and destination.is_file()
+        and entry.get("runtime_sha256") != _file_sha256(destination)
+    ):
+        raise CleanMergedError(
+            f"refusing to adopt modified runtime hook {hook_name} "
+            f"without installer provenance at {destination}"
+        )
+
+
+def _remove_hook_with_provenance(
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hook_name: str,
+    entry: dict[str, Any],
+) -> None:
+    _validate_hook_removal_with_provenance(
+        runtime_hooks_dir=runtime_hooks_dir,
+        hook_name=hook_name,
+        entry=entry,
+    )
+    destination = runtime_hooks_dir / hook_name
+    if not destination.exists() and not destination.is_symlink():
+        return
     destination.unlink()
 
 
@@ -1058,6 +1113,105 @@ def _preflight_default_shadow_backups(
             hook_name=hook_name,
             entry=entry,
             source_file=source_file,
+        )
+
+
+def _preflight_manifest_hook_runtime_state(
+    *,
+    manifest: dict[str, Any],
+    source_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    common_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+    source_hook_names: set[str],
+) -> None:
+    manifest_hooks = _hook_manifest_hooks(manifest)
+    source_hooks_dir = source_root / ".githooks"
+    removable_scopes = {"global", "local", "worktree", "system"}
+    for hook_name, entry in sorted(manifest_hooks.items()):
+        if not isinstance(entry, dict):
+            raise CleanMergedError(f"hook manifest entry for {hook_name} is invalid")
+        source_kind = entry.get("source_kind")
+        if source_kind == "repo-source":
+            if hook_name in source_hook_names:
+                source_file = source_hooks_dir / hook_name
+                _validate_hook_copy_with_provenance(
+                    source_file=source_file,
+                    destination=runtime_hooks_dir / hook_name,
+                    source_kind="repo-source",
+                    source_scope="repo",
+                    source_path=_repo_relative_path(source_root, source_file),
+                    manifest_hooks=manifest_hooks,
+                )
+            else:
+                _validate_hook_removal_with_provenance(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+            continue
+        if source_kind != "active-hook":
+            raise CleanMergedError(f"hook manifest entry for {hook_name} is invalid")
+
+        source_file = _manifest_source_file(
+            source_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        source_scope = str(entry.get("source_scope") or "manifest")
+        if source_file is None:
+            if entry.get("source_scope") in removable_scopes:
+                _validate_active_hook_runtime_unchanged(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+                _validate_hook_removal_with_provenance(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+                continue
+            raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if source_scope == "default" and _is_shadowed_hook_backup_path(common_dir, source_file):
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
+        if not source_file.is_file():
+            _validate_active_hook_runtime_unchanged(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+            _validate_hook_removal_with_provenance(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+            continue
+        if hook_name in source_hook_names:
+            if source_file.is_symlink():
+                raise CleanMergedError(f"refusing to record symlink hook at {source_file}")
+            continue
+        destination = runtime_hooks_dir / hook_name
+        _validate_active_hook_runtime_unchanged(
+            runtime_hooks_dir=runtime_hooks_dir,
+            hook_name=hook_name,
+            entry=entry,
+        )
+        _validate_hook_copy_with_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind="active-hook",
+            source_scope=source_scope,
+            source_path=str(source_file),
+            manifest_hooks=manifest_hooks,
         )
 
 
@@ -1407,6 +1561,15 @@ def install_hooks(
         runtime_hooks_dir=runtime_hooks_dir,
         common_dir=common_dir,
         home_dir=home_dir,
+    )
+    _preflight_manifest_hook_runtime_state(
+        manifest=manifest,
+        source_root=source_root,
+        invoke_root=invoke_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        common_dir=common_dir,
+        home_dir=home_dir,
+        source_hook_names=source_hook_names,
     )
     source_dirs: list[dict[str, str]] = []
     adopted_source_paths: set[str] = set()

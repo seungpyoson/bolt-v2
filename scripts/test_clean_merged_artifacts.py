@@ -2339,6 +2339,37 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("refusing to adopt modified runtime hook commit-msg", proc.stderr)
 
+    def test_install_hooks_preflights_modified_runtime_before_shadowing_collision(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        local_hook = runtime_hooks / "commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf default-commit-msg\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        local_hook.write_text("#!/bin/sh\nprintf modified-runtime\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        repo_hook = source_hooks / "applypatch-msg"
+        repo_hook.write_text("#!/bin/sh\nprintf repo-applypatch\n", encoding="utf-8")
+        repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/applypatch-msg"], cwd=self.work)
+        _run(["git", "commit", "-m", "track applypatch hook"], cwd=self.work)
+        colliding_hook = runtime_hooks / "applypatch-msg"
+        colliding_hook.write_text("#!/bin/sh\nprintf local-applypatch\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to adopt modified runtime hook commit-msg", proc.stderr)
+        self.assertTrue(colliding_hook.exists())
+        self.assertEqual(
+            colliding_hook.read_text(encoding="utf-8"),
+            "#!/bin/sh\nprintf local-applypatch\n",
+        )
+
     def test_install_hooks_repeated_default_runtime_collision_keeps_manifest_valid(
         self,
     ) -> None:

@@ -486,9 +486,7 @@ fn settlement_currency_for_execution_account(
         .as_ref()?
         .iter()
         .find(|pool| {
-            pool.enforce_submit_admission
-                && pool.venue_id == execution_venue.as_str()
-                && pool.account_id.to_string() == account_id
+            pool.venue_id == execution_venue.as_str() && pool.account_id.to_string() == account_id
         })
         .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
 }

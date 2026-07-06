@@ -998,6 +998,69 @@ def _validate_default_shadowed_hook_backup(
         )
 
 
+def _preflight_default_shadow_backups(
+    *,
+    manifest: dict[str, Any],
+    source_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    common_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> None:
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if not isinstance(entries, list):
+            raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} is invalid"
+                )
+            if entry.get("source_scope") != "default":
+                continue
+            source_file = _manifest_source_file(
+                source_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+            if source_file is None:
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} has invalid source_path"
+                )
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
+
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        if (
+            not isinstance(entry, dict)
+            or entry.get("source_kind") != "active-hook"
+            or entry.get("source_scope") != "default"
+        ):
+            continue
+        source_file = _manifest_source_file(
+            source_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        if source_file is None:
+            raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if not _is_shadowed_hook_backup_path(common_dir, source_file):
+            continue
+        _validate_default_shadowed_hook_backup(
+            hook_name=hook_name,
+            entry=entry,
+            source_file=source_file,
+        )
+
+
 def _configured_hooks_path(
     *,
     invoke_root: pathlib.Path,
@@ -1337,6 +1400,14 @@ def install_hooks(
         key=lambda path: path.name,
     )
     source_hook_names = {hook_file.name for hook_file in source_hook_files}
+    _preflight_default_shadow_backups(
+        manifest=manifest,
+        source_root=source_root,
+        invoke_root=invoke_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        common_dir=common_dir,
+        home_dir=home_dir,
+    )
     source_dirs: list[dict[str, str]] = []
     adopted_source_paths: set[str] = set()
     runtime_source_scope = next(
@@ -1424,36 +1495,6 @@ def install_hooks(
             source_path=_repo_relative_path(source_root, hook_file),
             manifest_hooks=manifest_hooks,
         )
-
-    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
-        if hook_name in source_hook_names:
-            continue
-        if not isinstance(entries, list):
-            raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise CleanMergedError(
-                    f"shadowed hook manifest entry for {hook_name} is invalid"
-                )
-            if entry.get("source_scope") != "default":
-                continue
-            source_file = _manifest_source_file(
-                source_root,
-                entry,
-                hook_name=hook_name,
-                invoke_root=invoke_root,
-                runtime_hooks_dir=runtime_hooks_dir,
-                home_dir=home_dir,
-            )
-            if source_file is None:
-                raise CleanMergedError(
-                    f"shadowed hook manifest entry for {hook_name} has invalid source_path"
-                )
-            _validate_default_shadowed_hook_backup(
-                hook_name=hook_name,
-                entry=entry,
-                source_file=source_file,
-            )
 
     for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
         if (

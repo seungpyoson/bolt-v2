@@ -2490,6 +2490,44 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual((runtime_hooks / "pre-push").read_text(encoding="utf-8"),
                          repo_runtime_content)
 
+    def test_install_hooks_preflights_default_shadow_before_repo_source_copy(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        repo_hook = source_hooks / "pre-push"
+        repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
+        repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        default_hook = runtime_hooks / "pre-push"
+        default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
+        default_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        backup_path = pathlib.Path(manifest["shadowed_hooks"]["pre-push"][0]["source_path"])
+        post_merge_runtime = runtime_hooks / "post-merge"
+        post_merge_runtime_content = post_merge_runtime.read_text(encoding="utf-8")
+        (source_hooks / "post-merge").write_text(
+            "#!/bin/sh\n# clean-merged-managed\nprintf updated-post-merge\n",
+            encoding="utf-8",
+        )
+        (source_hooks / "post-merge").chmod(0o755)
+        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "add", ".githooks/post-merge"], cwd=self.work)
+        _run(["git", "commit", "-m", "update post-merge and remove pre-push"], cwd=self.work)
+        backup_path.write_text("#!/bin/sh\nprintf modified-before-promotion\n", encoding="utf-8")
+        backup_path.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("shadowed hook pre-push backup changed since install", proc.stderr)
+        self.assertEqual(post_merge_runtime.read_text(encoding="utf-8"),
+                         post_merge_runtime_content)
+
     def test_install_hooks_refuses_missing_promoted_default_shadow_backup(
         self,
     ) -> None:
@@ -2550,6 +2588,46 @@ class CleanupContractTests(unittest.TestCase):
                          repo_runtime_content)
         self.assertIn("shadowed hook pre-push backup missing", doctor.stdout)
         self.assertNotIn("hook pre-push missing (run `just setup`)", doctor.stdout)
+
+    def test_install_hooks_preflights_promoted_shadow_before_repo_source_copy(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        repo_hook = source_hooks / "pre-push"
+        repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
+        repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        default_hook = runtime_hooks / "pre-push"
+        default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
+        default_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        backup_path = pathlib.Path(manifest["hooks"]["pre-push"]["source_path"])
+        post_merge_runtime = runtime_hooks / "post-merge"
+        post_merge_runtime_content = post_merge_runtime.read_text(encoding="utf-8")
+        (source_hooks / "post-merge").write_text(
+            "#!/bin/sh\n# clean-merged-managed\nprintf updated-post-merge\n",
+            encoding="utf-8",
+        )
+        (source_hooks / "post-merge").chmod(0o755)
+        _run(["git", "add", ".githooks/post-merge"], cwd=self.work)
+        _run(["git", "commit", "-m", "update post-merge hook"], cwd=self.work)
+        backup_path.write_text("#!/bin/sh\nprintf modified-promoted-backup\n", encoding="utf-8")
+        backup_path.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("shadowed hook pre-push backup changed since install", proc.stderr)
+        self.assertEqual(post_merge_runtime.read_text(encoding="utf-8"),
+                         post_merge_runtime_content)
 
     def test_install_hooks_shadow_records_runtime_collision_with_nondefault_active_dir(
         self,

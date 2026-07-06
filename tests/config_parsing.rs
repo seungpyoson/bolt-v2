@@ -6843,6 +6843,20 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
     fixture.replace(needle, replacement)
 }
 
+fn fixture_root_without_decision_evidence_recovery_bound() -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    fixture
+        .lines()
+        .filter(|line| {
+            !line
+                .trim_start()
+                .starts_with("recovery_evidence_max_bytes =")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn fixture_polymarket_execution_block() -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
@@ -7217,7 +7231,7 @@ fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding
 fn enforced_submit_admission_rejects_missing_recovery_evidence_max_bytes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let source = replace_in_fixture_root(
+    let source = fixture_root_without_decision_evidence_recovery_bound().replace(
         "enforce_submit_admission = false",
         "enforce_submit_admission = true",
     );
@@ -7235,10 +7249,36 @@ fn enforced_submit_admission_rejects_missing_recovery_evidence_max_bytes() {
 }
 
 #[test]
+fn configured_settlement_sink_rejects_missing_recovery_evidence_max_bytes() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let temp = tempfile::tempdir().expect("config-load tempdir should create");
+    let strategies_dir = temp.path().join("strategies");
+    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
+    fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategies_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+    let source = fixture_root_without_decision_evidence_recovery_bound();
+    let root_path = temp.path().join("root.toml");
+    fs::write(&root_path, source).expect("mutated root fixture should write");
+    let error = load_bolt_v3_config(&root_path)
+        .expect_err("configured settlement sink without recovery bound should fail at load");
+    let rendered = error.to_string();
+
+    assert!(
+        rendered.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+            && rendered.contains("settlement runtime sink"),
+        "configured settlement sink should require bounded recovery evidence reads at load: {rendered}"
+    );
+}
+
+#[test]
 fn rejects_zero_decision_evidence_recovery_evidence_max_bytes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let source = replace_in_fixture_root(
+    let source = fixture_root_without_decision_evidence_recovery_bound().replace(
         "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
         "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 0",
     );
@@ -7262,10 +7302,6 @@ fn enforced_submit_admission_accepts_positive_recovery_evidence_max_bytes() {
     let source = replace_in_fixture_root(
         "enforce_submit_admission = false",
         "enforce_submit_admission = true",
-    )
-    .replace(
-        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
-        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 1048576",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&source).expect("positive recovery evidence cap fixture should parse");
@@ -7288,10 +7324,6 @@ fn rejects_enabled_risk_reservation_substrate_until_live_arming_exists() {
         replace_in_fixture_root(
             "enforce_submit_admission = false",
             "enforce_submit_admission = true",
-        )
-        .replace(
-            "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
-            "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 1048576",
         ),
         r#"
 [risk.risk_reservation_substrate]

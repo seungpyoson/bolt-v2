@@ -1160,6 +1160,38 @@ fn replayed_settlement_collateral_window_closes_before_unrelated_positive_delta(
 }
 
 #[test]
+fn replayed_settlement_collateral_window_rejects_partial_positive_delta_before_zero_close() {
+    let mut restarted = VenueTruthReconciler::new();
+    restarted
+        .record_settlement(settlement_explanation(
+            "MKT-1:P-RESTART-PARTIAL",
+            Decimal::new(4, 0),
+            Decimal::ONE,
+        ))
+        .expect("replayed settlement explanation should record");
+    restarted
+        .record_snapshot_completion(empty_snapshot(1_100, Decimal::new(50_000_000, 0)))
+        .expect("restart baseline should be accepted after position burn arrived");
+
+    assert_eq!(
+        restarted
+            .reconcile_snapshot(empty_snapshot(1_200, Decimal::new(52_000_000, 0)))
+            .expect("partial replayed-payout delta should pend before its fence"),
+        VenueTruthReconciliation::DeltaPending
+    );
+
+    let divergence = restarted
+        .reconcile_snapshot(empty_snapshot(1_300, Decimal::new(52_000_000, 0)))
+        .expect_err(
+            "partial replayed-payout delta must halt rather than consuming part of the lot",
+        );
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
+    );
+}
+
+#[test]
 fn stale_settlement_lot_cannot_explain_position_decrease_for_other_market_hint() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler

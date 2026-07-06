@@ -493,6 +493,51 @@ fn settlement_currency_for_execution_account(
         .map(|pool| Currency::from(pool.collateral_currency.as_str()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_oracle_archetype_maps_settlement_identity_from_capital_pool() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("bolt-v3 fixture root should load");
+        let strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| strategy.config.strategy_archetype.as_str() == KEY)
+            .expect("fixture should include a binary oracle strategy");
+        let execution_client_id = strategy.config.execution_client_id.as_str();
+        let execution_venue = loaded
+            .root
+            .clients
+            .get(execution_client_id)
+            .expect("fixture strategy execution client should exist")
+            .venue;
+        let account_id = execution_account_id(&loaded.root, execution_client_id)
+            .expect("fixture execution client should bind an account id");
+        let pool = loaded
+            .root
+            .risk
+            .capital_pools
+            .as_ref()
+            .and_then(|pools| {
+                pools.iter().find(|pool| {
+                    pool.venue_id == execution_venue.as_str()
+                        && pool.account_id.to_string() == account_id
+                })
+            })
+            .expect("fixture capital pool should bind the strategy execution account");
+
+        assert_eq!(pool.account_id.to_string(), account_id);
+        assert_eq!(
+            settlement_currency_for_execution_account(&loaded.root, execution_venue, account_id),
+            Some(Currency::from(pool.collateral_currency.as_str()))
+        );
+    }
+}
+
 pub fn raw_taker_config(
     strategy: &LoadedStrategy,
     loaded: &crate::bolt_v3_config::LoadedBoltV3Config,

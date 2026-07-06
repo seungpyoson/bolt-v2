@@ -1028,9 +1028,17 @@ impl BinaryOracleEdgeTaker {
             .record_settlement(&evidence)?;
         self.settled_position_keys.insert(settlement_key);
         if let Some(sink) = self.context.settlement_runtime_sink() {
-            sink.record_venue_truth_settlement(venue_truth_settlement_explanation_from_evidence(
-                &evidence,
-            )?)?;
+            let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence) {
+                Ok(explanation) => explanation,
+                Err(error) => {
+                    self.enter_blind_settlement_recovery(error);
+                    return Ok(());
+                }
+            };
+            if let Err(error) = sink.record_venue_truth_settlement(explanation) {
+                self.enter_blind_settlement_recovery(error);
+                return Ok(());
+            }
         }
         self.exposure = ExposureState::Flat;
         self.sync_exposure_context_from_active();

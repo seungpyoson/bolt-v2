@@ -844,6 +844,36 @@ pub(super) fn fixture_execution_venue() -> Venue {
     Venue::from("POLYMARKET")
 }
 
+pub(super) fn fixture_settlement_account_id() -> String {
+    fixture_settlement_identity().0
+}
+
+pub(super) fn fixture_settlement_currency() -> Currency {
+    fixture_settlement_identity().1
+}
+
+fn fixture_settlement_identity() -> (String, Currency) {
+    let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+        "tests/fixtures/bolt_v3/root.toml",
+    ))
+    .expect("bolt-v3 fixture root should load for settlement identity");
+    let pool = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_ref()
+        .and_then(|pools| {
+            pools
+                .iter()
+                .find(|pool| pool.venue_id == fixture_execution_venue().as_str())
+        })
+        .expect("bolt-v3 fixture root should declare a capital pool for the fixture venue");
+    (
+        pool.account_id.to_string(),
+        Currency::from(pool.collateral_currency.as_str()),
+    )
+}
+
 pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
     test_strategy_with_fee_provider(RecordingFeeProvider::cold())
 }
@@ -1087,8 +1117,8 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
-        .with_settlement_account_id(Some("POLYMARKET-001".to_string()))
-        .with_settlement_currency(Some(Currency::USDC())),
+        .with_settlement_account_id(Some(fixture_settlement_account_id()))
+        .with_settlement_currency(Some(fixture_settlement_currency())),
     )
 }
 
@@ -1367,8 +1397,8 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
-    .with_settlement_account_id(Some("POLYMARKET-001".to_string()))
-    .with_settlement_currency(Some(Currency::USDC()));
+    .with_settlement_account_id(Some(fixture_settlement_account_id()))
+    .with_settlement_currency(Some(fixture_settlement_currency()));
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy

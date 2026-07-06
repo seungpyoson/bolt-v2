@@ -1010,7 +1010,12 @@ impl VenueTruthEventProjection {
             if lot.remaining_collateral_balance_delta <= Decimal::ZERO {
                 continue;
             }
-            let consumed = if lot.remaining_collateral_balance_delta <= *remaining {
+            let consumed = if lot.restart_collateral_window_open {
+                if *remaining < lot.remaining_collateral_balance_delta {
+                    continue;
+                }
+                lot.remaining_collateral_balance_delta
+            } else if lot.remaining_collateral_balance_delta <= *remaining {
                 lot.remaining_collateral_balance_delta
             } else {
                 *remaining

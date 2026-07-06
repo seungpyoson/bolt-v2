@@ -117,6 +117,36 @@ impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
     }
 }
 
+#[derive(Debug, Default)]
+struct VenueTruthFailingSettlementRuntimeSink {
+    loss_observations: RefCell<Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation>>,
+}
+
+impl VenueTruthFailingSettlementRuntimeSink {
+    fn loss_observation_count(&self) -> usize {
+        self.loss_observations.borrow().len()
+    }
+}
+
+impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
+    for VenueTruthFailingSettlementRuntimeSink
+{
+    fn record_loss_governor_position_realized_pnl(
+        &self,
+        observation: crate::bolt_v3_loss_protection::PositionRealizedPnlObservation,
+    ) -> Result<()> {
+        self.loss_observations.borrow_mut().push(observation);
+        Ok(())
+    }
+
+    fn record_venue_truth_settlement(
+        &self,
+        _explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    ) -> Result<()> {
+        anyhow::bail!("venue-truth settlement sink failed")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IncidentLifecycleCounts {
     initialized: u16,
@@ -552,6 +582,57 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
 }
 
 #[test]
+fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let sink = Rc::new(VenueTruthFailingSettlementRuntimeSink::default());
+    let sink_handle: crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle =
+        sink.clone();
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_runtime_sink(Some(sink_handle));
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-RUNTIME-SINK-FAIL"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let settlement_key = settlement_key_for_position(&position)
+        .expect("fixture position should derive settlement key");
+
+    try_emit_resolution_update(&mut strategy, 3_101.0)
+        .expect("post-evidence venue-truth sink failure should fail closed without bubbling");
+
+    let events = evidence.events();
+    assert_eq!(settlement_evidence_count(&events), 1);
+    assert_eq!(settlement_booking_error_count(&events), 0);
+    assert!(strategy.settled_position_keys.contains(&settlement_key));
+    assert_eq!(sink.loss_observation_count(), 1);
+    assert!(
+        matches!(
+            strategy.exposure,
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed
+            })
+        ),
+        "post-settled-key venue-truth failure must enter blind settlement recovery; exposure={:?}",
+        strategy.exposure
+    );
+}
+
+#[test]
 fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
     assert_reality_fixtures();
 
@@ -638,9 +719,14 @@ fn losing_settlement_moves_durable_loss_governor() {
     );
     let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let settlement_account_id = strategy
+        .context
+        .settlement_account_id()
+        .expect("fixture strategy should derive settlement account id")
+        .to_string();
     let temp = tempfile::tempdir().expect("loss-governor tempdir should create");
     let loss_protection = crate::bolt_v3_loss_protection::KillSwitchLossProtection::new(
-        settlement_loss_config(instrument_id),
+        settlement_loss_config(instrument_id, &settlement_account_id),
         submit_admission,
         crate::bolt_v3_kill_switch_store::KillSwitchStore::new(
             temp.path().join("kill-switch.json"),
@@ -681,6 +767,90 @@ fn losing_settlement_moves_durable_loss_governor() {
     );
     assert_eq!(sink.venue_explanation_count(), 1);
     assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn missing_settlement_currency_records_booking_error_from_config_derived_fixture() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let fixture_account_id = fixture_settlement_account_id();
+    assert_eq!(
+        strategy.context.settlement_account_id(),
+        Some(fixture_account_id.as_str())
+    );
+    assert_eq!(
+        strategy.context.settlement_currency(),
+        Some(fixture_settlement_currency())
+    );
+    strategy.context = strategy.context.clone().with_settlement_currency(None);
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-MISSING-SETTLEMENT-CURRENCY"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+
+    let events = evidence.events();
+    assert_eq!(settlement_evidence_count(&events), 0);
+    assert_eq!(settlement_booking_error_count(&events), 1);
+    assert!(!matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn missing_settlement_account_records_booking_error_from_config_derived_fixture() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let fixture_account_id = fixture_settlement_account_id();
+    assert_eq!(
+        strategy.context.settlement_account_id(),
+        Some(fixture_account_id.as_str())
+    );
+    assert_eq!(
+        strategy.context.settlement_currency(),
+        Some(fixture_settlement_currency())
+    );
+    let sink = Rc::new(RecordingSettlementRuntimeSink::default());
+    attach_settlement_runtime_sink(&mut strategy, sink.clone());
+    strategy.context = strategy.context.clone().with_settlement_account_id(None);
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-MISSING-SETTLEMENT-ACCOUNT"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+
+    let events = evidence.events();
+    assert_eq!(settlement_evidence_count(&events), 0);
+    assert_eq!(settlement_booking_error_count(&events), 1);
+    assert!(sink.loss_observations().is_empty());
+    assert!(sink.venue_explanations().is_empty());
+    assert!(!matches!(strategy.exposure, ExposureState::Flat));
 }
 
 #[test]
@@ -783,16 +953,18 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     let explanations = sink.venue_explanations();
     assert_eq!(explanations.len(), 1);
     assert_eq!(explanations[0].settlement_key, settlement_key);
+    assert!(strategy.settled_position_keys.contains(&settlement_key));
 }
 
 fn settlement_loss_config(
     instrument_id: InstrumentId,
+    account_id: &str,
 ) -> crate::bolt_v3_loss_protection::KillSwitchLossProtectionConfig {
     crate::bolt_v3_loss_protection::KillSwitchLossProtectionConfig {
         max_utc_daily_realized_loss: Decimal::new(100, 0),
         action_retry_interval_ms: TEST_LOSS_ACTION_RETRY_INTERVAL_MS,
         action_retry_timeout_ms: TEST_LOSS_ACTION_RETRY_TIMEOUT_MS,
-        account_ids: vec!["POLYMARKET-001".to_string()],
+        account_ids: vec![account_id.to_string()],
         instrument_ids: vec![instrument_id.to_string()],
     }
 }
@@ -874,6 +1046,14 @@ fn hold_to_resolution_case(
 }
 
 fn emit_resolution_update(strategy: &mut BinaryOracleEdgeTaker, reference_close_price: f64) {
+    try_emit_resolution_update(strategy, reference_close_price)
+        .expect("resolution index price should route through the strategy handler");
+}
+
+fn try_emit_resolution_update(
+    strategy: &mut BinaryOracleEdgeTaker,
+    reference_close_price: f64,
+) -> Result<()> {
     let close_report_ts_ms = strategy
         .active
         .interval_end_ms
@@ -887,7 +1067,6 @@ fn emit_resolution_update(strategy: &mut BinaryOracleEdgeTaker, reference_close_
         UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
     );
     DataActor::on_index_price(strategy, &resolution_update)
-        .expect("resolution index price should route through the strategy handler");
 }
 
 fn partial_fill_residual_is_managed_or_fresh_reexit(

@@ -523,10 +523,8 @@ clean-merged-purge days='30':
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Setting git hooks path..."
-    git config core.hooksPath .githooks
-    # Ensure managed hooks are executable (git warns + skips otherwise).
-    chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
+    echo "Installing generated git hooks..."
+    python3 scripts/clean_merged_artifacts.py --install-hooks
 
     echo "Asserting machine-global Cargo target dir..."
     python3 "{{rust_verification_owner}}" assert-global-cargo-target-dir --repo "{{repo_root}}"

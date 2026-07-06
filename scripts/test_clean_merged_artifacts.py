@@ -1397,6 +1397,43 @@ class CleanupContractTests(unittest.TestCase):
                       cwd=self.work, check=False)
         self.assertNotEqual(config.returncode, 0)
 
+    def test_install_hooks_copies_planned_bytes_after_preflight_window(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        hook_source = self.work / ".githooks" / "post-merge"
+        planned_content = hook_source.read_text(encoding="utf-8")
+
+        def mutate_source_after_preflight(plan: cm.HookInstallPlan) -> None:
+            for operation in plan.preflight_operations:
+                operation()
+            hook_source.write_text(
+                "#!/bin/sh\nprintf changed-after-preflight\n",
+                encoding="utf-8",
+            )
+            hook_source.chmod(0o755)
+            for operation in plan.operations:
+                operation()
+
+        with mock.patch.dict(os.environ, GIT_ENV, clear=False):
+            with mock.patch.object(
+                cm.HookInstallPlan,
+                "apply",
+                mutate_source_after_preflight,
+            ):
+                runtime_hooks_dir = cm.install_hooks(
+                    self.work,
+                    home_dir=pathlib.Path(GIT_ENV["HOME"]),
+                )
+
+        runtime_hook = runtime_hooks_dir / "post-merge"
+        self.assertEqual(runtime_hook.read_text(encoding="utf-8"), planned_content)
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        runtime_sha = file_sha256(runtime_hook)
+        self.assertEqual(manifest["hooks"]["post-merge"]["source_sha256"], runtime_sha)
+        self.assertEqual(manifest["hooks"]["post-merge"]["runtime_sha256"], runtime_sha)
+
     def test_git_common_dir_does_not_require_path_format_flag(self) -> None:
         source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
             encoding="utf-8")

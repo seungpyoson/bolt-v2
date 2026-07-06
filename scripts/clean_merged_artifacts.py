@@ -734,6 +734,25 @@ def _file_sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def _bytes_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_hook_snapshot(source_file: pathlib.Path) -> tuple[bytes, int, str]:
+    if source_file.is_symlink():
+        raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+    try:
+        source_stat = source_file.stat()
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        source_bytes = source_file.read_bytes()
+    except OSError as exc:
+        raise CleanMergedError(
+            f"hook source changed during install planning at {source_file}; retry setup"
+        ) from exc
+    return source_bytes, stat.S_IMODE(source_stat.st_mode), _bytes_sha256(source_bytes)
+
+
 def _repo_relative_path(repo_root: pathlib.Path, path: pathlib.Path) -> str:
     try:
         return str(path.relative_to(repo_root))
@@ -789,14 +808,13 @@ def _record_hook_provenance(
 
 def _record_planned_hook_provenance(
     *,
-    source_file: pathlib.Path,
     destination_name: str,
     source_kind: str,
     source_scope: str,
     source_path: str,
+    source_sha: str,
     manifest_hooks: dict[str, Any],
-) -> str:
-    source_sha = _file_sha256(source_file)
+) -> None:
     manifest_hooks[destination_name] = {
         "source_kind": source_kind,
         "source_scope": source_scope,
@@ -804,7 +822,6 @@ def _record_planned_hook_provenance(
         "source_sha256": source_sha,
         "runtime_sha256": source_sha,
     }
-    return source_sha
 
 
 def _validate_hook_copy_with_provenance(
@@ -877,6 +894,45 @@ def _apply_hook_copy(
         )
 
 
+def _apply_hook_snapshot(
+    *,
+    destination: pathlib.Path,
+    source_bytes: bytes,
+    source_mode: int,
+    source_kind: str,
+    source_sha: str,
+    same_path: bool,
+) -> None:
+    if same_path:
+        if _file_sha256(destination) != source_sha:
+            raise CleanMergedError(
+                f"hook source changed during install planning at {destination}; retry setup"
+            )
+        if source_kind == "repo-source":
+            destination.chmod(
+                destination.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mode = source_mode
+    if source_kind == "repo-source":
+        mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    tmp = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_bytes(source_bytes)
+        tmp.chmod(mode)
+        os.replace(str(tmp), str(destination))
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _copy_hook_with_provenance(
     *,
     source_file: pathlib.Path,
@@ -914,8 +970,16 @@ def _shadowed_hook_destination(
     hook_file: pathlib.Path,
 ) -> pathlib.Path:
     source_sha = _file_sha256(hook_file)
+    return _shadowed_hook_destination_for_sha(common_dir, hook_file.name, source_sha)
+
+
+def _shadowed_hook_destination_for_sha(
+    common_dir: pathlib.Path,
+    hook_name: str,
+    source_sha: str,
+) -> pathlib.Path:
     shadow_dir = common_dir / "clean-merged.shadowed-hooks"
-    return shadow_dir / f"{hook_file.name}.{source_sha}"
+    return shadow_dir / f"{hook_name}.{source_sha}"
 
 
 def _validate_shadowed_hook_copy(
@@ -950,6 +1014,31 @@ def _apply_shadowed_hook_copy(
     if not destination.exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(hook_file, destination)
+
+
+def _apply_shadowed_hook_snapshot(
+    *,
+    destination: pathlib.Path,
+    source_bytes: bytes,
+    source_mode: int,
+    source_sha: str,
+) -> None:
+    if destination.exists():
+        if _file_sha256(destination) != source_sha:
+            raise CleanMergedError(f"shadowed hook copy changed since install at {destination}")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_bytes(source_bytes)
+        tmp.chmod(source_mode)
+        os.replace(str(tmp), str(destination))
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _is_shadowed_hook_backup_path(common_dir: pathlib.Path, path: pathlib.Path) -> bool:
@@ -1038,14 +1127,30 @@ class HookInstallPlan:
         hook_file: pathlib.Path,
     ) -> pathlib.Path:
         destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+        source_bytes, source_mode, source_sha = _read_hook_snapshot(hook_file)
+        if destination != _shadowed_hook_destination_for_sha(
+            common_dir,
+            hook_file.name,
+            source_sha,
+        ):
+            raise CleanMergedError(
+                f"hook {hook_file.name} changed during install planning at {hook_file}; "
+                "retry setup"
+            )
         self.preflight_operations.append(
             lambda common_dir=common_dir, hook_file=hook_file, destination=destination:
             _validate_planned_shadow_copy(common_dir, hook_file, destination)
         )
         if not destination.exists():
             self.operations.append(
-                lambda hook_file=hook_file, destination=destination:
-                _apply_shadowed_hook_copy(hook_file, destination)
+                lambda destination=destination, source_bytes=source_bytes,
+                source_mode=source_mode, source_sha=source_sha:
+                _apply_shadowed_hook_snapshot(
+                    destination=destination,
+                    source_bytes=source_bytes,
+                    source_mode=source_mode,
+                    source_sha=source_sha,
+                )
             )
         return destination
 
@@ -1081,12 +1186,13 @@ class HookInstallPlan:
                 source_path=source_path,
                 manifest_hooks=validation_manifest_hooks,
             )
-        source_sha = _record_planned_hook_provenance(
-            source_file=source_file,
+        source_bytes, source_mode, source_sha = _read_hook_snapshot(source_file)
+        _record_planned_hook_provenance(
             destination_name=destination.name,
             source_kind=source_kind,
             source_scope=source_scope,
             source_path=source_path,
+            source_sha=source_sha,
             manifest_hooks=manifest_hooks,
         )
         self.preflight_operations.append(
@@ -1106,12 +1212,18 @@ class HookInstallPlan:
             )
         )
         self.unlinked_paths.discard(_install_plan_path_key(destination))
+        same_path = _same_path(source_file, destination)
         self.operations.append(
-            lambda source_file=source_file, destination=destination, source_kind=source_kind:
-            _apply_hook_copy(
-                source_file=source_file,
+            lambda destination=destination, source_bytes=source_bytes,
+            source_mode=source_mode, source_kind=source_kind, source_sha=source_sha,
+            same_path=same_path:
+            _apply_hook_snapshot(
                 destination=destination,
+                source_bytes=source_bytes,
+                source_mode=source_mode,
                 source_kind=source_kind,
+                source_sha=source_sha,
+                same_path=same_path,
             )
         )
 

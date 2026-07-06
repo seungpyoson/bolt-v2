@@ -1443,6 +1443,10 @@ mod tests {
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
             anyhow::bail!("recording order-execution writer received requote-throttle evidence")
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug, Default)]

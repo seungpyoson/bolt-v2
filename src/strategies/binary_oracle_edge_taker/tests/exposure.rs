@@ -3073,6 +3073,43 @@ fn residual_position_after_terminal_preserves_fill_precision() {
 }
 
 #[test]
+fn residual_position_after_terminal_uses_observed_position_after_fill() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-OBSERVED-RESIDUAL-001"),
+        Quantity::new(7.0, 2),
+        0.450,
+    );
+    let exit_pending = ExitPendingState {
+        position: Some(ManagedPositionState {
+            position: open_position.clone(),
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
+        }),
+        pending_exit: PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-OBSERVED-RESIDUAL-001"),
+            market_id: open_position.market_id.clone(),
+            position_id: Some(open_position.position_id),
+            fill_received: true,
+            filled_quantity: Some(Quantity::new(4.0, 2)),
+            close_received: false,
+            terminal_received: true,
+            residual_position_observed_after_fill: true,
+        },
+    };
+
+    let residual = exit_pending
+        .residual_position_after_terminal()
+        .expect("observed residual position should be authoritative");
+
+    assert_eq!(residual.position_id, open_position.position_id);
+    assert_eq!(residual.quantity, Quantity::new(7.0, 2));
+}
+
+#[test]
 fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state() {
     let mut strategy = ready_to_trade_strategy();
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
@@ -3143,4 +3180,261 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
         managed.position.position_id,
         PositionId::from("P-RECOVERY-001")
     );
+}
+
+#[test]
+fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidence() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-REMATERIALIZED-001");
+    let entry_client_order_id = ClientOrderId::from("ENTRY-REMATERIALIZED-001");
+    let pending = PendingEntryState {
+        client_order_id: entry_client_order_id,
+        market_id: Some("MKT-1".to_string()),
+        instrument_id,
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: configured_book_for_instrument(&mut strategy, instrument_id),
+    };
+    set_pending_entry(&mut strategy, pending);
+
+    strategy.on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id));
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        Quantity::new(5.0, 2),
+        0.450,
+    ));
+
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionTruthRematerialized
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                    && record.source == "position_event"
+                    && record.client_order_id.as_deref() == Some("ENTRY-REMATERIALIZED-001")
+                    && record.position_id.as_deref() == Some("P-REMATERIALIZED-001")
+                    && record.residual_quantity.as_deref() == Some("5.00")
+        )),
+        "position truth rematerialization after a terminal Flat override must write linking lifecycle evidence"
+    );
+}
+
+#[test]
+fn flat_terminal_override_clears_without_linking_on_instrument_mismatch() {
+    let mut strategy = ready_to_trade_strategy();
+    let configured_instruments = configured_outcome_instruments(&strategy);
+    assert!(
+        configured_instruments.len() >= 2,
+        "fixture must expose two outcome instruments"
+    );
+    let stored_instrument_id = configured_instruments[0];
+    let mismatch_instrument_id = configured_instruments[1];
+    let pending = pending_entry_for_terminal_override(
+        &mut strategy,
+        stored_instrument_id,
+        ClientOrderId::from("ENTRY-MISMATCH-001"),
+    );
+    strategy.remember_flat_terminal_entry_override(&pending);
+
+    assert!(
+        strategy
+            .take_position_truth_rematerialization_override(
+                mismatch_instrument_id,
+                ManagedPositionOrigin::RecoveryBootstrap,
+            )
+            .is_none(),
+        "a recovery event for another instrument must not link to the stored terminal entry"
+    );
+
+    assert!(
+        strategy
+            .take_position_truth_rematerialization_override(
+                stored_instrument_id,
+                ManagedPositionOrigin::RecoveryBootstrap,
+            )
+            .is_none(),
+        "instrument mismatch clears the stored override without linking it"
+    );
+}
+
+#[test]
+fn flat_terminal_override_clears_for_non_recovery_bootstrap_origin() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let pending = pending_entry_for_terminal_override(
+        &mut strategy,
+        instrument_id,
+        ClientOrderId::from("ENTRY-NON-RECOVERY-001"),
+    );
+    strategy.remember_flat_terminal_entry_override(&pending);
+
+    assert!(
+        strategy
+            .take_position_truth_rematerialization_override(
+                instrument_id,
+                ManagedPositionOrigin::StrategyEntry,
+            )
+            .is_none()
+    );
+    assert!(
+        strategy
+            .take_position_truth_rematerialization_override(
+                instrument_id,
+                ManagedPositionOrigin::RecoveryBootstrap,
+            )
+            .is_none(),
+        "non-RecoveryBootstrap materialization clears the stale override"
+    );
+}
+
+#[test]
+fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let pending = pending_entry_for_terminal_override(
+        &mut strategy,
+        instrument_id,
+        ClientOrderId::from("ENTRY-NON-FLAT-001"),
+    );
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-NON-FLAT-001"),
+        Quantity::new(5.0, 2),
+        0.450,
+    );
+    set_managed_position(
+        &mut strategy,
+        position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    strategy.remember_flat_terminal_entry_override(&pending);
+
+    assert!(
+        strategy
+            .take_position_truth_rematerialization_override(
+                instrument_id,
+                ManagedPositionOrigin::RecoveryBootstrap,
+            )
+            .is_none(),
+        "non-Flat exposure must not consume the stored override"
+    );
+
+    strategy.exposure = ExposureState::Flat;
+    assert_eq!(
+        strategy
+            .take_position_truth_rematerialization_override(
+                instrument_id,
+                ManagedPositionOrigin::RecoveryBootstrap,
+            )
+            .map(|terminal_override| terminal_override.client_order_id),
+        Some(ClientOrderId::from("ENTRY-NON-FLAT-001"))
+    );
+}
+
+#[test]
+fn new_entry_submit_clears_stale_flat_terminal_override() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let instrument_id = selected_entry_instrument(&strategy);
+    let pending = pending_entry_for_terminal_override(
+        &mut strategy,
+        instrument_id,
+        ClientOrderId::from("ENTRY-SUBMIT-CLEAR-001"),
+    );
+    strategy.remember_flat_terminal_entry_override(&pending);
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert!(
+        decision.instrument_id.is_some()
+            && decision.order_side.is_some()
+            && decision.price.is_some()
+            && decision.quantity_value.is_some()
+            && decision.blocked_reason.is_none(),
+        "entry submit setup must reach the submit path; got {decision:#?}"
+    );
+
+    let submitted_client_order_id = strategy
+        .try_submit_entry_order(1_200)
+        .expect("entry submit setup should be admissible");
+
+    assert!(
+        submitted_client_order_id.is_some(),
+        "entry submit setup must create a fresh pending entry"
+    );
+    assert!(
+        strategy.last_flat_terminal_entry_override.is_none(),
+        "new entry submit must clear stale terminal-entry override state"
+    );
+}
+
+#[test]
+fn direct_entry_fill_materialization_clears_stale_flat_terminal_override() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let stale_pending = pending_entry_for_terminal_override(
+        &mut strategy,
+        instrument_id,
+        ClientOrderId::from("ENTRY-DIRECT-STALE-001"),
+    );
+    strategy.remember_flat_terminal_entry_override(&stale_pending);
+    let fill_pending = pending_entry_for_terminal_override(
+        &mut strategy,
+        instrument_id,
+        ClientOrderId::from("ENTRY-DIRECT-FILL-001"),
+    );
+    set_pending_entry(&mut strategy, fill_pending.clone());
+
+    strategy
+        .on_order_filled(&order_filled_event(
+            fill_pending.client_order_id,
+            instrument_id,
+            PositionId::from("P-DIRECT-CLEAR-001"),
+        ))
+        .expect("direct entry fill materialization should succeed");
+
+    assert!(
+        strategy.last_flat_terminal_entry_override.is_none(),
+        "direct entry fill materialization must clear stale terminal-entry override state"
+    );
+}
+
+fn pending_entry_for_terminal_override(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+    client_order_id: ClientOrderId,
+) -> PendingEntryState {
+    let outcome_fees = strategy.active.outcome_fees.clone();
+    let book = configured_book_for_instrument(strategy, instrument_id);
+    PendingEntryState {
+        client_order_id,
+        market_id: Some("MKT-1".to_string()),
+        instrument_id,
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees,
+        historical_entry_fee_bps: Some(0.0),
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book,
+    }
 }

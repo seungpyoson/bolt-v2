@@ -196,12 +196,15 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
   content. Local, worktree, global, and system hook path moves follow current
   Git config; unsupported effective-only config scopes fail closed instead of
   creating an untrackable fork. Unset sources or disappeared files remove
-  manifest-owned runtime copies. Same-name external hooks, including initial
-  default `.git/hooks` collisions, are preserved in the shadow store and
-  recorded in the manifest instead of guessed, merged, or dispatched. Default
-  `.git/hooks` shadow backups are provenance files; deleting or editing them
-  makes setup fail closed until the manifest is repaired or removed. Symlink
-  hooks are refused, and external hook executable mode is preserved.
+  manifest-owned runtime copies. Same-name hooks from default/runtime hook
+  directories, including initial default `.git/hooks` collisions, are preserved
+  in the shadow store and recorded in the manifest instead of guessed, merged,
+  or dispatched. Same-name hooks from non-runtime local, worktree, global, or
+  system hook directories remain in place and are manifest-recorded by source
+  path, Git config scope, and byte hash; they do not get shadow-store backups.
+  Default `.git/hooks` shadow backups are provenance files; deleting or editing
+  them makes setup fail closed until the manifest is repaired or removed.
+  Symlink hooks are refused, and external hook executable mode is preserved.
   Setup records hook source path, source directory, Git config scope, and byte
   hashes in `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
   Runtime overwrites are allowed only for exact byte matches or entries whose

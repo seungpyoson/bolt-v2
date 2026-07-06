@@ -23,6 +23,7 @@ MERGIFY_YML = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
 EXPECTED_RESIDUAL_RISKS = [
     "full_ci_result",
     "batch_verifier_scope",
+    "source_fence_test_phase_skipped",
     "mergify_proof_pr_behavior",
     "remote_runner_availability",
     "flaky_checks_and_external_services",
@@ -33,6 +34,21 @@ EXPECTED_RESIDUAL_RISKS = [
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 ]
+EXPECTED_RESIDUAL_RISK_MESSAGES = {
+    "batch_verifier_scope": "verifier proof is batch-scoped for passing optimistic batches",
+    "source_fence_test_phase_skipped": "source-fence fast path may skip fixture test suites for eligible diffs",
+}
+DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS = [
+    "scripts",
+    "justfile",
+    "ci/rust-verification.toml",
+    "ci/fail-closed-contracts.toml",
+    "ci/fail-closed-exceptions.toml",
+    "crates/backtesting-vertical-slice/ci/rust-verification.toml",
+]
+DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES = {
+    "just source-fence-static": "just source-fence-static-fences-only",
+}
 SOURCE_PR_CHECK_WORKFLOWS = {
     "gate-iteration": "CI",
     "backtester-gate-iteration": "Backtester CI",
@@ -182,7 +198,7 @@ def residual_risk_findings() -> list[dict[str, object]]:
             "scope": "run",
             "status": "residual_risk",
             "reason_code": reason_code,
-            "message": reason_code,
+            "message": EXPECTED_RESIDUAL_RISK_MESSAGES.get(reason_code, reason_code),
             "evidence": {},
         }
         for reason_code in EXPECTED_RESIDUAL_RISKS
@@ -522,6 +538,16 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
         )
         loaded = module.load_config(config)
     assert_equal(loaded.input_timeout_seconds, 17, "input timeout config")
+    assert_equal(
+        loaded.source_fence_full_profile_pathspecs,
+        tuple(DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS),
+        "source fence full-profile pathspec config",
+    )
+    assert_equal(
+        loaded.source_fence_fences_only_rewrites,
+        DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES,
+        "source fence fences-only rewrite config",
+    )
 
 
 def assert_source_check_alias_targets_must_have_workflows() -> None:
@@ -872,12 +898,24 @@ def write_preflight_config(
     profile: str,
     commands: list[str],
     *,
+    source_fence_full_profile_pathspecs: list[str] | None = None,
+    source_fence_fences_only_rewrites: dict[str, str] | None = None,
     verifier_stream_max_lines: int = 40,
     verifier_stream_max_bytes: int = 4000,
     input_timeout_seconds: int = 30,
     verifier_timeout_seconds: int = 60,
 ) -> pathlib.Path:
     rendered_commands = ", ".join(json.dumps(command) for command in commands)
+    rendered_pathspecs = ", ".join(
+        json.dumps(pathspec)
+        for pathspec in (source_fence_full_profile_pathspecs or DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS)
+    )
+    rendered_rewrites = "\n".join(
+        f"{json.dumps(source)} = {json.dumps(target)}"
+        for source, target in (
+            source_fence_fences_only_rewrites or DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES
+        ).items()
+    )
     rendered_workflows = "\n".join(
         f"{json.dumps(name)} = {json.dumps(workflow)}"
         for name, workflow in SOURCE_PR_CHECK_WORKFLOWS.items()
@@ -893,6 +931,7 @@ def write_preflight_config(
         'origin = "origin"\n'
         'base = "main"\n'
         f"default_verifier_profile = {json.dumps(profile)}\n\n"
+        f"source_fence_full_profile_pathspecs = [{rendered_pathspecs}]\n\n"
         "[merge_queue_preflight.timeouts]\n"
         f"input_seconds = {input_timeout_seconds}\n"
         f"verifier_seconds = {verifier_timeout_seconds}\n\n"
@@ -900,6 +939,8 @@ def write_preflight_config(
         f"{rendered_workflows}\n\n"
         "[merge_queue_preflight.source_check_aliases]\n"
         f"{rendered_aliases}\n\n"
+        "[merge_queue_preflight.source_fence_fences_only_rewrites]\n"
+        f"{rendered_rewrites}\n\n"
         "[merge_queue_preflight.output]\n"
         f"verifier_stream_max_lines = {verifier_stream_max_lines}\n"
         f"verifier_stream_max_bytes = {verifier_stream_max_bytes}\n\n"
@@ -2323,9 +2364,29 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pa
         if "--fences-only" in bte_config_run:
             raise AssertionError(bte_config_run)
 
+        fail_closed_contracts_head = fixture.make_pr(
+            6,
+            {"ci/fail-closed-contracts.toml": "[fail_closed_contracts]\n"},
+        )
+        result = run_preflight_with_config(fixture, config, {6: fail_closed_contracts_head})
+        assert_equal(result.returncode, 3, "fail-closed contracts source fence profile rc")
+        fail_closed_contracts_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in fail_closed_contracts_run:
+            raise AssertionError(fail_closed_contracts_run)
+
+        fail_closed_exceptions_head = fixture.make_pr(
+            7,
+            {"ci/fail-closed-exceptions.toml": "[fail_closed_exceptions]\n"},
+        )
+        result = run_preflight_with_config(fixture, config, {7: fail_closed_exceptions_head})
+        assert_equal(result.returncode, 3, "fail-closed exceptions source fence profile rc")
+        fail_closed_exceptions_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in fail_closed_exceptions_run:
+            raise AssertionError(fail_closed_exceptions_run)
+
         direct_config = write_preflight_config(root, "static", ["./scripts/run_fences.py"])
-        direct_head = fixture.make_pr(6, {"direct.txt": "direct\n"})
-        result = run_preflight_with_config(fixture, direct_config, {6: direct_head})
+        direct_head = fixture.make_pr(8, {"direct.txt": "direct\n"})
+        result = run_preflight_with_config(fixture, direct_config, {8: direct_head})
         assert_equal(result.returncode, 3, "direct source fence profile rc")
         direct_run = log.read_text(encoding="utf-8").splitlines()[-1]
         if "--fences-only" not in direct_run:
@@ -2334,8 +2395,8 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pa
         gate_log = root / "source-fence-gate.log"
         install_synthetic_source_fence_static(fixture, log, gate_log)
         just_config = write_preflight_config(root, "static", ["just source-fence-static"])
-        just_head = fixture.make_pr(7, {"just.txt": "just\n"})
-        result = run_preflight_with_config(fixture, just_config, {7: just_head})
+        just_head = fixture.make_pr(9, {"just.txt": "just\n"})
+        result = run_preflight_with_config(fixture, just_config, {9: just_head})
         assert_equal(result.returncode, 3, "just source fence profile rc")
         just_run = log.read_text(encoding="utf-8").splitlines()[-1]
         if "--fences-only" not in just_run:

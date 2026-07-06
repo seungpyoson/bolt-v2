@@ -440,6 +440,9 @@ Verifier command names may be emitted as audit metadata.
 Verifier profiles must not be maintained as a second copy of the cheap gate set.
 If the default profile claims to catch cheap deterministic Mergify waste, it must
 cover the full cheap deterministic gate set or narrow its name and description.
+The source-fence reduced-profile selector must read its full-profile pathspecs
+from config, including source-fence governance files whose changes require the
+full fixture test phase.
 
 ## Residual-Risk Lane
 
@@ -449,6 +452,8 @@ not prove. At minimum:
 - full CI result.
 - verifier proof is batch-scoped, not standalone per-PR proof for passing
   optimistic batches.
+- source-fence reduced-profile runs may skip fixture test suites for eligible
+  diffs.
 - Mergify proof PR behavior.
 - remote runner availability and environment.
 - flaky checks and external services.

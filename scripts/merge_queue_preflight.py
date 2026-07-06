@@ -173,6 +173,7 @@ HEAD_IDENTITY_FINDING_STATES = {
 RESIDUAL_RISK_REASON_CODES = (
     "full_ci_result",
     "batch_verifier_scope",
+    "source_fence_test_phase_skipped",
     "mergify_proof_pr_behavior",
     "remote_runner_availability",
     "flaky_checks_and_external_services",
@@ -183,6 +184,10 @@ RESIDUAL_RISK_REASON_CODES = (
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 )
+RESIDUAL_RISK_MESSAGES = {
+    "batch_verifier_scope": "verifier proof is batch-scoped for passing optimistic batches",
+    "source_fence_test_phase_skipped": "source-fence fast path may skip fixture test suites for eligible diffs",
+}
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -266,14 +271,6 @@ CHECK_STATE_ISSUE_MESSAGES = {
 VERIFIER_STREAMS = ("stdout", "stderr")
 FENCES_ONLY_FLAG = "--fences-only"
 RUN_FENCES_SCRIPT = "scripts/run_fences.py"
-SOURCE_FENCE_STATIC_COMMAND = ("just", "source-fence-static")
-SOURCE_FENCE_STATIC_FENCES_ONLY_COMMAND = ("just", "source-fence-static-fences-only")
-SOURCE_FENCE_FULL_PROFILE_PATHSPECS = (
-    "scripts",
-    "justfile",
-    "ci/rust-verification.toml",
-    "crates/backtesting-vertical-slice/ci/rust-verification.toml",
-)
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -573,7 +570,7 @@ def residual_risk_findings() -> tuple[dict[str, object], ...]:
             "scope": "run",
             "status": STATUS_RESIDUAL_RISK,
             "reason_code": reason_code,
-            "message": reason_code,
+            "message": RESIDUAL_RISK_MESSAGES.get(reason_code, reason_code),
             "evidence": {},
         }
         for reason_code in RESIDUAL_RISK_REASON_CODES
@@ -1782,6 +1779,8 @@ class PreflightConfig:
     base: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
+    source_fence_full_profile_pathspecs: tuple[str, ...]
+    source_fence_fences_only_rewrites: dict[str, str]
     required_check_workflows: dict[str, str]
     source_check_aliases: dict[str, str]
     input_timeout_seconds: int
@@ -1960,6 +1959,18 @@ def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict
     return result
 
 
+def require_string_tuple(parent: dict[str, object], key: str, prefix: str) -> tuple[str, ...]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not value:
+        raise PreflightError(f"{prefix}.{key} must be a non-empty string array")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise PreflightError(f"{prefix}.{key}[{index}] must be a non-empty string")
+        result.append(item)
+    return tuple(result)
+
+
 def validate_source_check_aliases(
     source_check_aliases: Mapping[str, str],
     required_check_workflows: Mapping[str, str],
@@ -1970,6 +1981,23 @@ def validate_source_check_aliases(
                 "config.merge_queue_preflight.source_check_aliases."
                 f"{merge_check} target {source_check!r} must exist in "
                 "config.merge_queue_preflight.required_check_workflows"
+            )
+
+
+def validate_source_fence_fences_only_rewrites(rewrites: Mapping[str, str]) -> None:
+    for source, target in rewrites.items():
+        try:
+            source_parts = shlex.split(source)
+            target_parts = shlex.split(target)
+        except ValueError as exc:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+                f"contains an invalid shell command: {exc}"
+            ) from exc
+        if not source_parts or not target_parts:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+                "commands must not be empty"
             )
 
 
@@ -1984,6 +2012,17 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     profiles_root = require_table(
         settings, "verifier_profiles", "config.merge_queue_preflight"
     )
+    source_fence_full_profile_pathspecs = require_string_tuple(
+        settings,
+        "source_fence_full_profile_pathspecs",
+        "config.merge_queue_preflight",
+    )
+    source_fence_fences_only_rewrites = require_string_map(
+        settings,
+        "source_fence_fences_only_rewrites",
+        "config.merge_queue_preflight",
+    )
+    validate_source_fence_fences_only_rewrites(source_fence_fences_only_rewrites)
     timeout_settings = require_table(settings, "timeouts", "config.merge_queue_preflight")
     verifier_timeout_seconds = require_positive_int(
         timeout_settings,
@@ -2042,6 +2081,8 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         base=base,
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
+        source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+        source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
         required_check_workflows=required_check_workflows,
         source_check_aliases=source_check_aliases,
         input_timeout_seconds=input_timeout_seconds,
@@ -2329,7 +2370,10 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
     }
 
 
-def source_fence_fences_only_command(command: str) -> str:
+def source_fence_fences_only_command(
+    command: str,
+    source_fence_fences_only_rewrites: Mapping[str, str],
+) -> str:
     """Append the fast source-fence flag for the supported source-fence command shapes."""
     try:
         parts = shlex.split(command)
@@ -2337,8 +2381,9 @@ def source_fence_fences_only_command(command: str) -> str:
         return command
     if not parts or FENCES_ONLY_FLAG in parts:
         return command
-    if tuple(parts) == SOURCE_FENCE_STATIC_COMMAND:
-        return shlex.join(SOURCE_FENCE_STATIC_FENCES_ONLY_COMMAND)
+    for source, target in source_fence_fences_only_rewrites.items():
+        if tuple(parts) == tuple(shlex.split(source)):
+            return target
     if any(pathlib.PurePosixPath(part).as_posix().endswith(RUN_FENCES_SCRIPT) for part in parts):
         return shlex.join((*parts, FENCES_ONLY_FLAG))
     return command
@@ -2348,6 +2393,7 @@ def commit_touches_source_fence_full_profile_path(
     repo: pathlib.Path,
     base_sha: str,
     commit: str,
+    pathspecs: Sequence[str],
     input_timeout_seconds: int,
 ) -> bool:
     """Return True when the commit changes source-fence governance, failing closed."""
@@ -2358,7 +2404,7 @@ def commit_touches_source_fence_full_profile_path(
         base_sha,
         commit,
         "--",
-        *SOURCE_FENCE_FULL_PROFILE_PATHSPECS,
+        *pathspecs,
         check=False,
         timeout_seconds=input_timeout_seconds,
     )
@@ -2373,14 +2419,25 @@ def verifier_commands_for_commit(
     base_sha: str,
     commit: str,
     commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
 ) -> tuple[str, ...]:
     """Select full or fences-only verifier commands for a synthetic commit."""
     if not commands:
         return ()
-    if commit_touches_source_fence_full_profile_path(repo, base_sha, commit, input_timeout_seconds):
+    if commit_touches_source_fence_full_profile_path(
+        repo,
+        base_sha,
+        commit,
+        source_fence_full_profile_pathspecs,
+        input_timeout_seconds,
+    ):
         return tuple(commands)
-    return tuple(source_fence_fences_only_command(command) for command in commands)
+    return tuple(
+        source_fence_fences_only_command(command, source_fence_fences_only_rewrites)
+        for command in commands
+    )
 
 
 def unverified_batches_for_ready_prs(
@@ -2485,6 +2542,8 @@ def verified_fallback_batches(
     base_commits: Mapping[int, SyntheticCommit],
     batch_max_limits: Mapping[str, int],
     verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     verifier_timeout_seconds: int,
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
@@ -2504,6 +2563,8 @@ def verified_fallback_batches(
                 base_sha=base_sha,
                 commit=synthetic.commit,
                 commands=verifier_commands,
+                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
                 input_timeout_seconds=input_timeout_seconds,
             ),
             verifier_timeout_seconds,
@@ -2579,6 +2640,8 @@ def verified_fallback_batches(
                 base_sha=base_sha,
                 commit=synthetic.commit,
                 commands=verifier_commands,
+                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
                 input_timeout_seconds=input_timeout_seconds,
             ),
             verifier_timeout_seconds,
@@ -2633,6 +2696,8 @@ def verify_final_batches_with_fallback(
     base_commits: Mapping[int, SyntheticCommit],
     batch_max_limits: Mapping[str, int],
     verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     verifier_timeout_seconds: int,
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
@@ -2652,6 +2717,8 @@ def verify_final_batches_with_fallback(
                 base_sha=base_sha,
                 commit=batch.commit,
                 commands=verifier_commands,
+                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
                 input_timeout_seconds=input_timeout_seconds,
             ),
             verifier_timeout_seconds,
@@ -2679,6 +2746,8 @@ def verify_final_batches_with_fallback(
             base_commits=base_commits,
             batch_max_limits=batch_max_limits,
             verifier_commands=verifier_commands,
+            source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+            source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
             verifier_timeout_seconds=verifier_timeout_seconds,
             input_timeout_seconds=input_timeout_seconds,
             output_policy=output_policy,
@@ -3095,6 +3164,8 @@ def preflight(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
@@ -3112,6 +3183,8 @@ def preflight(
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
             verifier_commands=verifier_commands,
+            source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+            source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
             input_timeout_seconds=input_timeout_seconds,
             verifier_timeout_seconds=verifier_timeout_seconds,
             required_check_workflows=required_check_workflows,
@@ -3133,6 +3206,8 @@ def preflight_with_fetch_refs(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
@@ -3229,6 +3304,8 @@ def preflight_with_fetch_refs(
         base_commits=base_commits,
         batch_max_limits=batch_max_limits,
         verifier_commands=verifier_commands,
+        source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+        source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
         verifier_timeout_seconds=verifier_timeout_seconds,
         input_timeout_seconds=input_timeout_seconds,
         output_policy=output_policy,
@@ -3434,6 +3511,8 @@ def main(argv: list[str] | None = None) -> int:
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
+            source_fence_full_profile_pathspecs=config.source_fence_full_profile_pathspecs,
+            source_fence_fences_only_rewrites=config.source_fence_fences_only_rewrites,
             input_timeout_seconds=config.input_timeout_seconds,
             verifier_timeout_seconds=config.verifier_timeout_seconds,
             required_check_workflows=config.required_check_workflows,

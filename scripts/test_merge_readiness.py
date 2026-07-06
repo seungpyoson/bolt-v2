@@ -44,10 +44,8 @@ max_watch_seconds = 1
 [ci_provenance.gate_names]
 gate_required = "gate"
 gate_iteration = "gate-iteration"
-gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
 backtester_iteration = "backtester-gate-iteration"
-backtester_dispatch_full = "backtester-gate-dispatch"
 
 [ci_provenance.required_checks.gate]
 context = "gate"

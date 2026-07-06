@@ -1,0 +1,26 @@
+<task-notification>
+<task-id>bff114nrp</task-id>
+<summary>Monitor event: "Live trading session on bolt-prod-eu-west-2c: orders, fills, settlements, errors, halts, service state"</summary>
+<event>EVIDENCE: order-intents grew 0 -&gt; 380658
+EV: strategy_input_snapshot
+EV: strategy_input_snapshot
+EV: strategy_input_snapshot</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bff114nrp</task-id>
+<summary>Monitor event: "Live trading session on bolt-prod-eu-west-2c: orders, fills, settlements, errors, halts, service state"</summary>
+<event>EVIDENCE: order-intents grew 380658 -&gt; 0</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+some position fired 0 but it's almost at a loss now. let's investigate why it didn't exit (stop loss)
+
+---
+
+hmm not sure if that's really true - maybe we should have replay capability, but that's for later. but I'm very skeptical that exit fired 680 times and orderbook was empty, unless it was at the end of the market. I did review before it ended,  but it's difficult to believe that 680 times exits were tried and there was no liquidity - literally we had around $2 worth of position

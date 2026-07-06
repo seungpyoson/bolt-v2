@@ -9,10 +9,12 @@ import io
 import json
 import os
 import pathlib
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,6 +22,8 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
 MERGIFY_YML = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
 EXPECTED_RESIDUAL_RISKS = [
     "full_ci_result",
+    "batch_verifier_scope",
+    "source_fence_test_phase_skipped",
     "mergify_proof_pr_behavior",
     "remote_runner_availability",
     "flaky_checks_and_external_services",
@@ -30,6 +34,21 @@ EXPECTED_RESIDUAL_RISKS = [
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 ]
+EXPECTED_RESIDUAL_RISK_MESSAGES = {
+    "batch_verifier_scope": "verifier proof is batch-scoped for passing optimistic batches",
+    "source_fence_test_phase_skipped": "source-fence fast path may skip fixture test suites for eligible diffs",
+}
+DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS = [
+    "scripts",
+    "justfile",
+    "ci/rust-verification.toml",
+    "ci/fail-closed-contracts.toml",
+    "ci/fail-closed-exceptions.toml",
+    "crates/backtesting-vertical-slice/ci/rust-verification.toml",
+]
+DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES = {
+    "just source-fence-static": "just source-fence-static-fences-only",
+}
 SOURCE_PR_CHECK_WORKFLOWS = {
     "gate-iteration": "CI",
     "backtester-gate-iteration": "Backtester CI",
@@ -179,7 +198,7 @@ def residual_risk_findings() -> list[dict[str, object]]:
             "scope": "run",
             "status": "residual_risk",
             "reason_code": reason_code,
-            "message": reason_code,
+            "message": EXPECTED_RESIDUAL_RISK_MESSAGES.get(reason_code, reason_code),
             "evidence": {},
         }
         for reason_code in EXPECTED_RESIDUAL_RISKS
@@ -519,6 +538,303 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
         )
         loaded = module.load_config(config)
     assert_equal(loaded.input_timeout_seconds, 17, "input timeout config")
+    assert_equal(
+        loaded.source_fence_full_profile_pathspecs,
+        tuple(DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS),
+        "source fence full-profile pathspec config",
+    )
+    assert_equal(
+        loaded.source_fence_fences_only_rewrites,
+        DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES,
+        "source fence fences-only rewrite config",
+    )
+
+
+def assert_real_preflight_config_loads() -> None:
+    module = load_preflight_module()
+    loaded = module.load_config(REPO_ROOT / "ci" / "rust-verification.toml")
+    assert_equal(
+        loaded.source_fence_full_profile_pathspecs,
+        tuple(DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS),
+        "real source fence full-profile pathspec config",
+    )
+    assert_equal(
+        loaded.source_fence_fences_only_rewrites,
+        DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES,
+        "real source fence fences-only rewrite config",
+    )
+
+
+def assert_fast_path_config_validation_fails_closed() -> None:
+    module = load_preflight_module()
+    rewrite_block = (
+        "[merge_queue_preflight.source_fence_fences_only_rewrites]\n"
+        '"just source-fence-static" = "just source-fence-static-fences-only"\n\n'
+    )
+    cases = [
+        (
+            "empty source-fence full-profile pathspecs",
+            lambda text: text.replace(
+                'source_fence_full_profile_pathspecs = ["scripts", "justfile", '
+                '"ci/rust-verification.toml", "ci/fail-closed-contracts.toml", '
+                '"ci/fail-closed-exceptions.toml", '
+                '"crates/backtesting-vertical-slice/ci/rust-verification.toml"]',
+                "source_fence_full_profile_pathspecs = []",
+            ),
+            "config.merge_queue_preflight.source_fence_full_profile_pathspecs must be a non-empty string array",
+        ),
+        (
+            "empty source-fence rewrite table",
+            lambda text: text.replace(rewrite_block, "[merge_queue_preflight.source_fence_fences_only_rewrites]\n\n"),
+            "config.merge_queue_preflight.source_fence_fences_only_rewrites must be a non-empty table",
+        ),
+        (
+            "malformed source-fence rewrite target",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "\'"',
+            ),
+            "target contains an invalid shell command",
+        ),
+        (
+            "source-fence rewrite target is not just",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "true"',
+            ),
+            "target must be exactly 'just <public-recipe>'",
+        ),
+        (
+            "source-fence rewrite target is direct script",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "python3 scripts/run_fences.py --fences-only"',
+            ),
+            "target must be exactly 'just <public-recipe>'",
+        ),
+        (
+            "source-fence rewrite target is ungated public recipe",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "just source-fence"',
+            ),
+            "target 'just source-fence' must route through a configured public local-gate label",
+        ),
+        (
+            "source-fence rewrite target is private inner recipe",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "just source-fence-static-fences-only-inner"',
+            ),
+            "must route through a configured public local-gate label",
+        ),
+        (
+            "source-fence rewrite source is private inner recipe",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static-inner" = "just source-fence-static-fences-only"',
+            ),
+            "source 'just source-fence-static-inner' must route through a configured public local-gate label",
+        ),
+        (
+            "verifier profile command is source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just source-fence-static-fences-only"]',
+            ),
+            "config.merge_queue_preflight.verifier_profiles.none.commands "
+            "must not use reduced-profile rewrite target 'just source-fence-static-fences-only'",
+        ),
+        (
+            "verifier profile command is path-qualified source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["/usr/bin/just source-fence-static-fences-only"]',
+            ),
+            "config.merge_queue_preflight.verifier_profiles.none.commands "
+            "must not use reduced-profile rewrite target '/usr/bin/just source-fence-static-fences-only'",
+        ),
+        (
+            "verifier profile command is source-fence rewrite target with args",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just source-fence-static-fences-only --extra"]',
+            ),
+            "config.merge_queue_preflight.verifier_profiles.none.commands "
+            "must not use reduced-profile rewrite target 'just source-fence-static-fences-only --extra'",
+        ),
+        (
+            "verifier profile command is source-fence rewrite target inner recipe",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just source-fence-static-fences-only-inner"]',
+            ),
+            "must not use reduced-profile rewrite target 'just source-fence-static-fences-only-inner'",
+        ),
+        (
+            "verifier profile command is direct source-fence reduced script",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["python3 scripts/run_fences.py --fences-only"]',
+            ),
+            "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences-only'",
+        ),
+        (
+            "verifier profile command is direct source-fence reduced script abbreviated",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["python3 scripts/run_fences.py --fences"]',
+            ),
+            "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences'",
+        ),
+        (
+            "verifier profile command is direct source-fence reduced script partial abbreviation",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["python3 scripts/run_fences.py --fences-o"]',
+            ),
+            "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences-o'",
+        ),
+        (
+            "verifier profile command is env-wrapped source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["env just source-fence-static-fences-only"]',
+            ),
+            "must not use reduced-profile rewrite target 'env just source-fence-static-fences-only'",
+        ),
+        (
+            "verifier profile command is shell-wrapped source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["bash -c \'just source-fence-static-fences-only\'"]',
+            ),
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is shell-positional source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["bash -c \'just \\"$@\\"\' _ source-fence-static-fences-only"]',
+            ),
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is quoted source-fence rewrite target",
+            lambda text, command="bash -c \"just \\'source-fence-static-fences-only\\'\"": text.replace(
+                "commands = []",
+                f"commands = [{json.dumps(command)}]",
+            ),
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is shell-wrapped direct source-fence reduced script",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["sh -c \'python3 scripts/run_fences.py --fences-only\'"]',
+            ),
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is deeply shell-wrapped source-fence rewrite target",
+            lambda text, command='sh -c "sh -c \'just source-fence-static-fences-only\'"': text.replace(
+                "commands = []",
+                f"commands = [{json.dumps(command)}]",
+            ),
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is source-fence rewrite target with just options",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just -f /other/justfile source-fence-static-fences-only"]',
+            ),
+            "must not use reduced-profile rewrite target "
+            "'just -f /other/justfile source-fence-static-fences-only'",
+        ),
+    ]
+    for label, mutate, expected in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_preflight_config(pathlib.Path(tmp), "none", [])
+            write(config, mutate(config.read_text(encoding="utf-8")))
+            try:
+                module.load_config(config)
+            except module.PreflightError as exc:
+                if expected not in str(exc):
+                    raise AssertionError((label, str(exc), expected))
+            else:
+                raise AssertionError(f"{label} did not fail config load")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(pathlib.Path(tmp), "static", ["just source-fence-static"])
+        loaded = module.load_config(config)
+    assert_equal(
+        loaded.verifier_profiles["static"],
+        ("just source-fence-static",),
+        "rewrite source profile command remains valid",
+    )
+
+
+def assert_run_verifier_reduced_profile_commands_fail_closed() -> None:
+    module = load_preflight_module()
+    cases = [
+        (
+            "just source-fence-static-fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "just source-fence-static-fences-only-inner",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "python3 scripts/run_fences.py --fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "python3 scripts/run_fences.py --fences",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "python3 scripts/run_fences.py --fences-o",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "env just source-fence-static-fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "bash -c 'just source-fence-static-fences-only'",
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "bash -c 'just \"$@\"' _ source-fence-static-fences-only",
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "sh -c 'python3 scripts/run_fences.py --fences-only'",
+            "must not use shell wrapper syntax",
+        ),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(pathlib.Path(tmp), "none", [])
+        loaded = module.load_config(config)
+    for command, expected in cases:
+        try:
+            module.verifier_commands(loaded, None, [command])
+        except module.PreflightError as exc:
+            if expected not in str(exc):
+                raise AssertionError((command, str(exc), expected))
+        else:
+            raise AssertionError(f"--run-verifier accepted reduced-profile command {command!r}")
+    assert_equal(
+        module.verifier_commands(loaded, None, ["just source-fence-static"]),
+        ("just source-fence-static",),
+        "--run-verifier rewrite source remains valid",
+    )
+    assert_equal(
+        module.verifier_commands(loaded, None, ["python3 scripts/verify_thing.py"]),
+        ("python3 scripts/verify_thing.py",),
+        "--run-verifier ordinary command remains valid",
+    )
 
 
 def assert_source_check_alias_targets_must_have_workflows() -> None:
@@ -869,12 +1185,24 @@ def write_preflight_config(
     profile: str,
     commands: list[str],
     *,
+    source_fence_full_profile_pathspecs: list[str] | None = None,
+    source_fence_fences_only_rewrites: dict[str, str] | None = None,
     verifier_stream_max_lines: int = 40,
     verifier_stream_max_bytes: int = 4000,
     input_timeout_seconds: int = 30,
     verifier_timeout_seconds: int = 60,
 ) -> pathlib.Path:
     rendered_commands = ", ".join(json.dumps(command) for command in commands)
+    rendered_pathspecs = ", ".join(
+        json.dumps(pathspec)
+        for pathspec in (source_fence_full_profile_pathspecs or DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS)
+    )
+    rendered_rewrites = "\n".join(
+        f"{json.dumps(source)} = {json.dumps(target)}"
+        for source, target in (
+            source_fence_fences_only_rewrites or DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES
+        ).items()
+    )
     rendered_workflows = "\n".join(
         f"{json.dumps(name)} = {json.dumps(workflow)}"
         for name, workflow in SOURCE_PR_CHECK_WORKFLOWS.items()
@@ -886,10 +1214,13 @@ def write_preflight_config(
     path = root / "preflight.toml"
     write(
         path,
+        "[local_lane_policy]\n"
+        'cheap_lane_labels = ["local-gate:source-fence-static", "local-gate:source-fence-static-fences-only"]\n\n'
         "[merge_queue_preflight]\n"
         'origin = "origin"\n'
         'base = "main"\n'
         f"default_verifier_profile = {json.dumps(profile)}\n\n"
+        f"source_fence_full_profile_pathspecs = [{rendered_pathspecs}]\n\n"
         "[merge_queue_preflight.timeouts]\n"
         f"input_seconds = {input_timeout_seconds}\n"
         f"verifier_seconds = {verifier_timeout_seconds}\n\n"
@@ -897,6 +1228,8 @@ def write_preflight_config(
         f"{rendered_workflows}\n\n"
         "[merge_queue_preflight.source_check_aliases]\n"
         f"{rendered_aliases}\n\n"
+        "[merge_queue_preflight.source_fence_fences_only_rewrites]\n"
+        f"{rendered_rewrites}\n\n"
         "[merge_queue_preflight.output]\n"
         f"verifier_stream_max_lines = {verifier_stream_max_lines}\n"
         f"verifier_stream_max_bytes = {verifier_stream_max_bytes}\n\n"
@@ -1479,6 +1812,131 @@ def assert_clean_prs_batch_together() -> None:
         assert_equal(payload["conflicts"], [], "clean conflicts")
 
 
+def assert_clean_prs_verify_final_batch_once() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        second_head = fixture.make_pr(2, {"two.txt": "two\n"})
+        third_head = fixture.make_pr(3, {"three.txt": "three\n"})
+        counter = root / "verifier-count.txt"
+        verifier = root / "count_verifier.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            f"counter = Path({str(counter)!r})\n"
+            "value = int(counter.read_text(encoding='utf-8')) if counter.exists() else 0\n"
+            "counter.write_text(str(value + 1), encoding='utf-8')\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--expected-head-sha",
+            f"3={third_head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+            "3",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 3, "clean batch verifier no-gh rc")
+        payload = parse_json(result.stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1, 2, 3]], "clean final batch")
+        assert_equal(counter.read_text(encoding="utf-8"), "1", "clean batch verifier runs")
+
+
+def assert_batch_verifier_scope_residual_covers_standalone_masking() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"bad.txt": "bad\n"})
+        second_head = fixture.make_pr(2, {"mask.txt": "mask\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(first_head),
+                2: approved_pr_view(second_head),
+            },
+            checks=passing_source_pr_checks(1, 2),
+        )
+        verifier = root / "reject_unmasked_bad.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('bad.txt').exists() and not Path('mask.txt').exists():\n"
+            "    print('bad.txt requires mask.txt')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 0, "batch-scoped verifier rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["verdict"], "queue_as_one_wave", "batch-scoped verifier verdict")
+        assert_equal(payload["batches"][0]["prs"], [1, 2], "batch-scoped verifier batch")
+        assert_equal(payload["blocked_prs"], [], "batch-scoped verifier blocked_prs")
+        assert_equal(payload["conflicts"], [], "batch-scoped verifier conflicts")
+        assert "batch_verifier_scope" in payload["residual_risks"], payload["residual_risks"]
+        residual_reason_codes = {
+            finding["reason_code"]
+            for finding in payload["findings"]
+            if finding["lane"] == "residual_risk"
+        }
+        assert "batch_verifier_scope" in residual_reason_codes, payload["findings"]
+
+
 def assert_conflicting_pr_starts_later_batch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
@@ -1702,6 +2160,700 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
         if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
             raise AssertionError(blocked)
         if "fail.txt is not allowed" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+
+
+def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        poison_head = fixture.make_pr(2, {"poison.txt": "poison\n", "shared.txt": "poison\n"})
+        third_head = fixture.make_pr(3, {"shared.txt": "third\n", "three.txt": "three\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(first_head),
+                2: approved_pr_view(poison_head),
+                3: approved_pr_view(third_head),
+            },
+            checks=passing_source_pr_checks(1, 2, 3),
+        )
+        log = root / "verifier-log.txt"
+        verifier = root / "reject_poison.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"log = Path({str(log)!r})\n"
+            "files = ','.join(sorted(path.name for path in Path('.').glob('*.txt')))\n"
+            "with log.open('a', encoding='utf-8') as stream:\n"
+            "    stream.write(files + '\\n')\n"
+            "if Path('poison.txt').exists():\n"
+            "    print('poison.txt is not allowed')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={poison_head}",
+            "--expected-head-sha",
+            f"3={third_head}",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+            "3",
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "poison fallback rc")
+        payload = parse_json(result.stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1, 3]], "poison fallback batches")
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        if "poison.txt is not allowed" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+        if payload["conflicts"]:
+            raise AssertionError(payload["conflicts"])
+        runs = log.read_text(encoding="utf-8").splitlines()
+        assert_equal(runs[0], "one.txt,poison.txt,shared.txt", "initial batch-first verifier run")
+        if "one.txt,shared.txt,three.txt" not in runs:
+            raise AssertionError(runs)
+
+
+def assert_fallback_recombines_survivors_after_batch_max_split() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        heads = {
+            pr: fixture.make_pr(pr, {"poison.txt" if pr == 2 else f"pr{pr:02}.txt": f"pr {pr}\n"})
+            for pr in range(1, 12)
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={pr: approved_pr_view(head) for pr, head in heads.items()},
+            checks=passing_source_pr_checks(*heads),
+        )
+        log = root / "verifier-log.txt"
+        verifier = root / "reject_poison.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"log = Path({str(log)!r})\n"
+            "files = ','.join(sorted(path.name for path in Path('.').glob('*.txt')))\n"
+            "with log.open('a', encoding='utf-8') as stream:\n"
+            "    stream.write(files + '\\n')\n"
+            "if Path('poison.txt').exists():\n"
+            "    print('poison.txt is not allowed')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={heads[1]}",
+            *[
+                item
+                for pr in range(2, 12)
+                for item in ("--expected-head-sha", f"{pr}={heads[pr]}")
+            ],
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            *(str(pr) for pr in range(1, 12)),
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "poison fallback max split rc")
+        payload = parse_json(result.stdout)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
+            "poison fallback max split batches",
+        )
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        runs = log.read_text(encoding="utf-8").splitlines()
+        if "poison.txt" not in runs[0] or "pr11.txt" in runs[0]:
+            raise AssertionError(runs[0])
+        if "poison.txt" in runs[-1] or "pr11.txt" not in runs[-1]:
+            raise AssertionError(runs)
+
+
+def assert_fallback_replaces_suffix_optimistic_conflicts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        heads = {
+            1: fixture.make_pr(1, {"poison.txt": "poison\n"}),
+            2: fixture.make_pr(2, {"shared.txt": "second\n", "two.txt": "two\n"}),
+            3: fixture.make_pr(3, {"three.txt": "three\n"}),
+            4: fixture.make_pr(4, {"four.txt": "four\n"}),
+            5: fixture.make_pr(5, {"shared.txt": "fifth\n", "five.txt": "five\n"}),
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(heads[1], labels=("hotfix",)),
+                **{pr: approved_pr_view(head) for pr, head in heads.items() if pr != 1},
+            },
+            checks=passing_source_pr_checks(*heads),
+        )
+        verifier = root / "reject_poison.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('poison.txt').exists():\n"
+            "    print('poison.txt is not allowed')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            *[
+                item
+                for pr, head in heads.items()
+                for item in ("--expected-head-sha", f"{pr}={head}")
+            ],
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            *(str(pr) for pr in heads),
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "suffix conflict replacement rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[2, 3, 4], [5]],
+            "suffix conflict replacement batches",
+        )
+        conflicts = payload["conflicts"]
+        expected = [
+            {
+                "pr": 5,
+                "against_batch": [2, 3, 4],
+                "files": ["shared.txt"],
+                "type": "batch_conflict",
+            }
+        ]
+        assert_equal(conflicts, expected, "suffix conflict replacement conflicts")
+
+
+def assert_fallback_retains_prefix_suffix_seam_conflict() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        heads = {
+            1: fixture.make_pr(1, {"shared.txt": "first\n", "one.txt": "one\n"}),
+            2: fixture.make_pr(2, {"shared.txt": "second\n", "two.txt": "two\n"}),
+            3: fixture.make_pr(3, {"three.txt": "three\n"}),
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={pr: approved_pr_view(head) for pr, head in heads.items()},
+            checks=passing_source_pr_checks(*heads),
+        )
+        verifier = root / "reject_two_three.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('two.txt').exists() and Path('three.txt').exists():\n"
+            "    print('two.txt and three.txt cannot batch together')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            *[
+                item
+                for pr, head in heads.items()
+                for item in ("--expected-head-sha", f"{pr}={head}")
+            ],
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            *(str(pr) for pr in heads),
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 1, "prefix suffix seam conflict rc")
+        payload = parse_json(result.stdout)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1], [2], [3]],
+            "prefix suffix seam conflict batches",
+        )
+        conflicts = payload["conflicts"]
+        expected = [
+            {
+                "pr": 2,
+                "against_batch": [1],
+                "files": ["shared.txt"],
+                "type": "batch_conflict",
+            },
+            {
+                "pr": 3,
+                "against_batch": [2],
+                "type": "batch_verifier_failed",
+                "classification": "verifier_failed",
+                "command": f"{sys.executable} {verifier}",
+                "returncode": 7,
+                "stdout_preview": "two.txt and three.txt cannot batch together",
+                "stdout_truncated": False,
+                "stderr_preview": "",
+                "stderr_truncated": False,
+            },
+        ]
+        assert_equal(conflicts, expected, "prefix suffix seam conflict artifacts")
+
+
+def install_synthetic_run_fences(fixture: GitFixture, log: pathlib.Path, body: str = "") -> None:
+    git(fixture.repo, "checkout", "main")
+    script = fixture.repo / "scripts" / "run_fences.py"
+    write(
+        script,
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"log = Path({str(log)!r})\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        f"{body}"
+        "raise SystemExit(0)\n",
+    )
+    script.chmod(0o755)
+    fixture.base = commit(fixture.repo, "install synthetic run_fences")
+    git(fixture.repo, "push", "origin", "main")
+
+
+def install_synthetic_source_fence_static(fixture: GitFixture, log: pathlib.Path, gate_log: pathlib.Path) -> None:
+    git(fixture.repo, "checkout", "main")
+    write(
+        fixture.repo / "scripts" / "local_verification_gate.py",
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "import sys\n"
+        f"log = Path({str(gate_log)!r})\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "separator = sys.argv.index('--')\n"
+        "raise SystemExit(subprocess.run(sys.argv[separator + 1:]).returncode)\n",
+    )
+    write(
+        fixture.repo / "justfile",
+        "source-fence-static:\n"
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n\n"
+        "source-fence-static-fences-only:\n"
+        "    python3 scripts/local_verification_gate.py source-fence-static-fences-only -- just source-fence-static-fences-only-inner\n\n"
+        "[private]\n"
+        "source-fence-static-inner:\n"
+        "    python3 scripts/run_fences.py\n\n"
+        "[private]\n"
+        "source-fence-static-fences-only-inner:\n"
+        "    python3 scripts/run_fences.py --fences-only\n",
+    )
+    fixture.base = commit(fixture.repo, "install synthetic source fence static")
+    git(fixture.repo, "push", "origin", "main")
+
+
+def run_preflight_with_config(
+    fixture: GitFixture,
+    config: pathlib.Path,
+    heads: Mapping[int, str],
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--origin",
+        str(fixture.remote),
+        "--base",
+        "main",
+        "--expected-base-sha",
+        fixture.base,
+        *[
+            item
+            for pr, head in heads.items()
+            for item in ("--expected-head-sha", f"{pr}={head}")
+        ],
+        "--config",
+        str(config),
+        "--no-gh",
+        "--json",
+        *(str(pr) for pr in heads),
+    ]
+    return subprocess.run(
+        command,
+        cwd=fixture.repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def read_line_with_timeout(stream, timeout_seconds: float) -> str | None:
+    readable, _, _ = select.select([stream], [], [], timeout_seconds)
+    if not readable:
+        return None
+    return stream.readline()
+
+
+def wait_for_stderr_line(
+    process: subprocess.Popen[str],
+    needle: str,
+    timeout_seconds: float,
+) -> tuple[str | None, list[str]]:
+    deadline = time.monotonic() + timeout_seconds
+    lines: list[str] = []
+    while time.monotonic() < deadline:
+        line = read_line_with_timeout(process.stderr, max(0.0, deadline - time.monotonic()))
+        if line is None:
+            break
+        if line == "":
+            break
+        lines.append(line)
+        if needle in line:
+            return line, lines
+    return None, lines
+
+
+def stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.kill()
+        process.communicate()
+
+
+def open_fifo_gate(path: pathlib.Path) -> int:
+    os.mkfifo(path)
+    return os.open(path, os.O_RDWR)
+
+
+def release_fifo_gate(fd: int) -> None:
+    os.write(fd, b"x")
+
+
+def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pathspecs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        log = root / "run-fences-argv.log"
+        install_synthetic_run_fences(fixture, log)
+        gate_log = root / "source-fence-gate.log"
+        install_synthetic_source_fence_static(fixture, log, gate_log)
+        config = write_preflight_config(root, "static", ["just source-fence-static"])
+
+        nonscripts_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        result = run_preflight_with_config(fixture, config, {1: nonscripts_head})
+        assert_equal(result.returncode, 3, "non-scripts source fence profile rc")
+        first_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" not in first_run:
+            raise AssertionError(first_run)
+        first_gate_run = gate_log.read_text(encoding="utf-8").splitlines()[-1]
+        if first_gate_run != "source-fence-static-fences-only -- just source-fence-static-fences-only-inner":
+            raise AssertionError(first_gate_run)
+
+        scripts_head = fixture.make_pr(2, {"scripts/changed.py": "VALUE = 1\n"})
+        result = run_preflight_with_config(fixture, config, {2: scripts_head})
+        assert_equal(result.returncode, 3, "scripts source fence profile rc")
+        second_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in second_run:
+            raise AssertionError(second_run)
+
+        justfile_head = fixture.make_pr(3, {"justfile": "source-fence-static:\n    python3 scripts/run_fences.py\n"})
+        result = run_preflight_with_config(fixture, config, {3: justfile_head})
+        assert_equal(result.returncode, 3, "justfile source fence profile rc")
+        justfile_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in justfile_run:
+            raise AssertionError(justfile_run)
+
+        root_config_head = fixture.make_pr(4, {"ci/rust-verification.toml": "[local_lane_policy]\n"})
+        result = run_preflight_with_config(fixture, config, {4: root_config_head})
+        assert_equal(result.returncode, 3, "root lane config source fence profile rc")
+        root_config_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in root_config_run:
+            raise AssertionError(root_config_run)
+
+        bte_config_head = fixture.make_pr(
+            5,
+            {"crates/backtesting-vertical-slice/ci/rust-verification.toml": "[local_lane_policy]\n"},
+        )
+        result = run_preflight_with_config(fixture, config, {5: bte_config_head})
+        assert_equal(result.returncode, 3, "BTE lane config source fence profile rc")
+        bte_config_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in bte_config_run:
+            raise AssertionError(bte_config_run)
+
+        fail_closed_contracts_head = fixture.make_pr(
+            6,
+            {"ci/fail-closed-contracts.toml": "[fail_closed_contracts]\n"},
+        )
+        result = run_preflight_with_config(fixture, config, {6: fail_closed_contracts_head})
+        assert_equal(result.returncode, 3, "fail-closed contracts source fence profile rc")
+        fail_closed_contracts_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in fail_closed_contracts_run:
+            raise AssertionError(fail_closed_contracts_run)
+
+        fail_closed_exceptions_head = fixture.make_pr(
+            7,
+            {"ci/fail-closed-exceptions.toml": "[fail_closed_exceptions]\n"},
+        )
+        result = run_preflight_with_config(fixture, config, {7: fail_closed_exceptions_head})
+        assert_equal(result.returncode, 3, "fail-closed exceptions source fence profile rc")
+        fail_closed_exceptions_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in fail_closed_exceptions_run:
+            raise AssertionError(fail_closed_exceptions_run)
+
+        direct_config = write_preflight_config(root, "static", ["./scripts/run_fences.py"])
+        direct_head = fixture.make_pr(8, {"direct.txt": "direct\n"})
+        result = run_preflight_with_config(fixture, direct_config, {8: direct_head})
+        assert_equal(result.returncode, 3, "direct source fence full profile rc")
+        direct_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in direct_run:
+            raise AssertionError(direct_run)
+
+
+def assert_scripts_pr_fence_regression_uses_full_profile() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        log = root / "run-fences-regression.log"
+        install_synthetic_run_fences(
+            fixture,
+            log,
+            "if '--fences-only' not in sys.argv and Path('scripts/fence_regression.txt').exists():\n"
+            "    print('full profile caught scripts fence regression')\n"
+            "    raise SystemExit(7)\n",
+        )
+        config = write_preflight_config(root, "static", [f"{sys.executable} scripts/run_fences.py"])
+        head = fixture.make_pr(1, {"scripts/fence_regression.txt": "regression\n"})
+
+        result = run_preflight_with_config(fixture, config, {1: head})
+        assert_equal(result.returncode, 2, "scripts fence regression rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        if "full profile caught scripts fence regression" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+        last_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in last_run:
+            raise AssertionError(last_run)
+
+
+def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        verifier = root / "slow_success.py"
+        gate = root / "success-gate.fifo"
+        gate_fd = open_fifo_gate(gate)
+        write(
+            verifier,
+            "import os\n"
+            f"gate = {str(gate)!r}\n"
+            "fd = os.open(gate, os.O_RDONLY)\n"
+            "try:\n"
+            "    os.read(fd, 1)\n"
+            "finally:\n"
+            "    os.close(fd)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier running:", 15.0)
+            if line is None or "merge_queue_preflight: verifier running:" not in line:
+                raise AssertionError(lines)
+            stdout_line = read_line_with_timeout(process.stdout, 0.1)
+            if stdout_line not in (None, ""):
+                raise AssertionError(stdout_line)
+            release_fifo_gate(gate_fd)
+            stdout, _stderr = process.communicate(timeout=20)
+        finally:
+            stop_process(process)
+            os.close(gate_fd)
+        assert_equal(process.returncode, 3, "streaming breadcrumb rc")
+        payload = parse_json(stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "streaming breadcrumb batches")
+
+
+def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"shared.txt": "first\n", "fail.txt": "fail\n"})
+        second_head = fixture.make_pr(2, {"shared.txt": "second\n", "slow.txt": "slow\n"})
+        verifier = root / "fail_then_slow.py"
+        gate = root / "failure-gate.fifo"
+        gate_fd = open_fifo_gate(gate)
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import os\n"
+            "import sys\n"
+            f"gate = {str(gate)!r}\n"
+            "if Path('fail.txt').exists():\n"
+            "    print('fail marker rejected')\n"
+            "    sys.exit(7)\n"
+            "if Path('slow.txt').exists():\n"
+            "    fd = os.open(gate, os.O_RDONLY)\n"
+            "    try:\n"
+            "        os.read(fd, 1)\n"
+            "    finally:\n"
+            "        os.close(fd)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier failed:", 15.0)
+            if line is None:
+                raise AssertionError(lines)
+            if "exit 7" not in line:
+                raise AssertionError(line)
+            release_fifo_gate(gate_fd)
+            stdout, _stderr = process.communicate(timeout=30)
+        finally:
+            stop_process(process)
+            os.close(gate_fd)
+        assert_equal(process.returncode, 2, "first failure breadcrumb rc")
+        payload = parse_json(stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
             raise AssertionError(blocked)
 
 
@@ -2892,6 +4044,9 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
+    assert_real_preflight_config_loads()
+    assert_fast_path_config_validation_fails_closed()
+    assert_run_verifier_reduced_profile_commands_fail_closed()
     assert_source_check_alias_targets_must_have_workflows()
     assert_source_check_evidence_fallback_is_precise()
     assert_git_and_gh_use_input_timeout()
@@ -2915,11 +4070,21 @@ def main() -> int:
     assert_unavailable_base_ref_is_inconclusive()
     assert_stale_expected_head_sha_blocks_pr()
     assert_clean_prs_batch_together()
+    assert_clean_prs_verify_final_batch_once()
     assert_conflicting_pr_starts_later_batch()
     assert_ready_batch_conflict_is_split_advised()
     assert_order_dependent_conflict_context_is_reported()
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
+    assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
+    assert_batch_verifier_scope_residual_covers_standalone_masking()
+    assert_fallback_recombines_survivors_after_batch_max_split()
+    assert_fallback_replaces_suffix_optimistic_conflicts()
+    assert_fallback_retains_prefix_suffix_seam_conflict()
+    assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pathspecs()
+    assert_scripts_pr_fence_regression_uses_full_profile()
+    assert_verifier_progress_breadcrumb_precedes_final_output()
+    assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes()
     assert_missing_verifier_executable_is_inconclusive()
     assert_unexpected_exception_is_not_split_advised()
     assert_verifier_timeout_is_inconclusive()

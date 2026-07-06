@@ -270,7 +270,6 @@ CHECK_STATE_ISSUE_MESSAGES = {
 }
 VERIFIER_STREAMS = ("stdout", "stderr")
 FENCES_ONLY_FLAG = "--fences-only"
-RUN_FENCES_SCRIPT = "scripts/run_fences.py"
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -2021,7 +2020,12 @@ def validate_source_fence_fences_only_rewrites(
     cheap_gate_labels: frozenset[str],
 ) -> None:
     for source, target in rewrites.items():
-        just_recipe_from_rewrite_command(source, field="source")
+        source_recipe = just_recipe_from_rewrite_command(source, field="source")
+        if f"local-gate:{source_recipe}" not in cheap_gate_labels:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+                f"source {source!r} must route through a configured public local-gate label"
+            )
         target_recipe = just_recipe_from_rewrite_command(target, field="target")
         if f"local-gate:{target_recipe}" not in cheap_gate_labels:
             raise PreflightError(
@@ -2404,7 +2408,7 @@ def source_fence_fences_only_command(
     command: str,
     source_fence_fences_only_rewrites: Mapping[str, str],
 ) -> str:
-    """Append the fast source-fence flag for the supported source-fence command shapes."""
+    """Rewrite configured source-fence commands to their governed reduced-profile recipes."""
     try:
         parts = shlex.split(command)
     except ValueError:
@@ -2414,8 +2418,6 @@ def source_fence_fences_only_command(
     for source, target in source_fence_fences_only_rewrites.items():
         if tuple(parts) == tuple(shlex.split(source)):
             return target
-    if any(pathlib.PurePosixPath(part).as_posix().endswith(RUN_FENCES_SCRIPT) for part in parts):
-        return shlex.join((*parts, FENCES_ONLY_FLAG))
     return command
 
 

@@ -550,6 +550,21 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
     )
 
 
+def assert_real_preflight_config_loads() -> None:
+    module = load_preflight_module()
+    loaded = module.load_config(REPO_ROOT / "ci" / "rust-verification.toml")
+    assert_equal(
+        loaded.source_fence_full_profile_pathspecs,
+        tuple(DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS),
+        "real source fence full-profile pathspec config",
+    )
+    assert_equal(
+        loaded.source_fence_fences_only_rewrites,
+        DEFAULT_SOURCE_FENCE_FENCES_ONLY_REWRITES,
+        "real source fence fences-only rewrite config",
+    )
+
+
 def assert_fast_path_config_validation_fails_closed() -> None:
     module = load_preflight_module()
     rewrite_block = (
@@ -590,12 +605,36 @@ def assert_fast_path_config_validation_fails_closed() -> None:
             "target must be exactly 'just <public-recipe>'",
         ),
         (
+            "source-fence rewrite target is direct script",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "python3 scripts/run_fences.py --fences-only"',
+            ),
+            "target must be exactly 'just <public-recipe>'",
+        ),
+        (
+            "source-fence rewrite target is ungated public recipe",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "just source-fence"',
+            ),
+            "target 'just source-fence' must route through a configured public local-gate label",
+        ),
+        (
             "source-fence rewrite target is private inner recipe",
             lambda text: text.replace(
                 '"just source-fence-static" = "just source-fence-static-fences-only"',
                 '"just source-fence-static" = "just source-fence-static-fences-only-inner"',
             ),
             "must route through a configured public local-gate label",
+        ),
+        (
+            "source-fence rewrite source is private inner recipe",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static-inner" = "just source-fence-static-fences-only"',
+            ),
+            "source 'just source-fence-static-inner' must route through a configured public local-gate label",
         ),
     ]
     for label, mutate, expected in cases:
@@ -2387,7 +2426,9 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pa
         fixture = GitFixture(root)
         log = root / "run-fences-argv.log"
         install_synthetic_run_fences(fixture, log)
-        config = write_preflight_config(root, "static", [f"{sys.executable} scripts/run_fences.py"])
+        gate_log = root / "source-fence-gate.log"
+        install_synthetic_source_fence_static(fixture, log, gate_log)
+        config = write_preflight_config(root, "static", ["just source-fence-static"])
 
         nonscripts_head = fixture.make_pr(1, {"one.txt": "one\n"})
         result = run_preflight_with_config(fixture, config, {1: nonscripts_head})
@@ -2395,6 +2436,9 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pa
         first_run = log.read_text(encoding="utf-8").splitlines()[-1]
         if "--fences-only" not in first_run:
             raise AssertionError(first_run)
+        first_gate_run = gate_log.read_text(encoding="utf-8").splitlines()[-1]
+        if first_gate_run != "source-fence-static-fences-only -- just source-fence-static-fences-only-inner":
+            raise AssertionError(first_gate_run)
 
         scripts_head = fixture.make_pr(2, {"scripts/changed.py": "VALUE = 1\n"})
         result = run_preflight_with_config(fixture, config, {2: scripts_head})
@@ -2450,23 +2494,10 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pa
         direct_config = write_preflight_config(root, "static", ["./scripts/run_fences.py"])
         direct_head = fixture.make_pr(8, {"direct.txt": "direct\n"})
         result = run_preflight_with_config(fixture, direct_config, {8: direct_head})
-        assert_equal(result.returncode, 3, "direct source fence profile rc")
+        assert_equal(result.returncode, 3, "direct source fence full profile rc")
         direct_run = log.read_text(encoding="utf-8").splitlines()[-1]
-        if "--fences-only" not in direct_run:
+        if "--fences-only" in direct_run:
             raise AssertionError(direct_run)
-
-        gate_log = root / "source-fence-gate.log"
-        install_synthetic_source_fence_static(fixture, log, gate_log)
-        just_config = write_preflight_config(root, "static", ["just source-fence-static"])
-        just_head = fixture.make_pr(9, {"just.txt": "just\n"})
-        result = run_preflight_with_config(fixture, just_config, {9: just_head})
-        assert_equal(result.returncode, 3, "just source fence profile rc")
-        just_run = log.read_text(encoding="utf-8").splitlines()[-1]
-        if "--fences-only" not in just_run:
-            raise AssertionError(just_run)
-        gate_run = gate_log.read_text(encoding="utf-8").splitlines()[-1]
-        if gate_run != "source-fence-static-fences-only -- just source-fence-static-fences-only-inner":
-            raise AssertionError(gate_run)
 
 
 def assert_scripts_pr_fence_regression_uses_full_profile() -> None:
@@ -3799,6 +3830,7 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
+    assert_real_preflight_config_loads()
     assert_fast_path_config_validation_fails_closed()
     assert_source_check_alias_targets_must_have_workflows()
     assert_source_check_evidence_fallback_is_precise()

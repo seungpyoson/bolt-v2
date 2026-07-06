@@ -4241,10 +4241,15 @@ impl BinaryOracleEdgeTaker {
                 active_seconds_to_expiry_at_selection,
             );
             open_position.lifecycle.fill_missing_from(&active_lifecycle);
-            if open_position.outcome_fees.instrument_ids().is_empty() {
-                open_position.outcome_fees = active_outcome_fees.clone();
+            if open_position
+                .lifecycle
+                .interval_end_matches(&active_lifecycle)
+            {
+                if open_position.outcome_fees.instrument_ids().is_empty() {
+                    open_position.outcome_fees = active_outcome_fees.clone();
+                }
+                open_position.book = active_up_book;
             }
-            open_position.book = active_up_book;
         } else if active_down_instrument_id == Some(open_position.instrument_id) {
             if !open_position
                 .lifecycle
@@ -4262,10 +4267,15 @@ impl BinaryOracleEdgeTaker {
                 active_seconds_to_expiry_at_selection,
             );
             open_position.lifecycle.fill_missing_from(&active_lifecycle);
-            if open_position.outcome_fees.instrument_ids().is_empty() {
-                open_position.outcome_fees = active_outcome_fees;
+            if open_position
+                .lifecycle
+                .interval_end_matches(&active_lifecycle)
+            {
+                if open_position.outcome_fees.instrument_ids().is_empty() {
+                    open_position.outcome_fees = active_outcome_fees;
+                }
+                open_position.book = active_down_book;
             }
-            open_position.book = active_down_book;
         }
     }
 

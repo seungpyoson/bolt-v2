@@ -553,22 +553,68 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
         .active
         .interval_end_ms
         .expect("fixture should configure position interval end");
+    let captured_position = managed_position_ref(&strategy)
+        .cloned()
+        .expect("position should be managed after materialization");
+    let captured_lifecycle = captured_position.lifecycle.clone();
+    let captured_book = captured_position.book.clone();
 
-    strategy.active.price_to_beat = None;
-    strategy.active.interval_open = None;
+    strategy.active.price_to_beat = Some(3_200.0);
+    strategy.active.interval_open = Some(3_200.0);
     strategy.active.interval_end_ms = Some(position_interval_end_ms.saturating_add(60_000));
+    strategy.active.selection_published_at_ms = captured_lifecycle
+        .selection_published_at_ms()
+        .map(|published_at_ms| published_at_ms.saturating_add(1));
+    strategy.active.seconds_to_expiry_at_selection = captured_lifecycle
+        .seconds_to_expiry_at_selection()
+        .map(|seconds_to_expiry| seconds_to_expiry.saturating_add(60));
+    strategy.active.books.up.best_bid = Some(0.51);
+    strategy.active.books.up.best_ask = Some(0.52);
+    strategy.active.books.up.liquidity_available = Some(25.0);
     strategy.sync_exposure_context_from_active();
 
     let managed = managed_position_ref(&strategy).expect("position should remain managed");
     assert_eq!(
+        managed.lifecycle.market_id(),
+        captured_lifecycle.market_id(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured market id"
+    );
+    assert_eq!(
+        managed.lifecycle.outcome_side(),
+        captured_lifecycle.outcome_side(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured outcome side"
+    );
+    assert_eq!(
         managed.lifecycle.settlement_strike(),
-        Some(3_100.0),
+        captured_lifecycle.settlement_strike(),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not erase captured strike"
     );
     assert_eq!(
         managed.lifecycle.interval_end_ms(),
-        Some(position_interval_end_ms),
+        captured_lifecycle.interval_end_ms(),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not overwrite captured interval end"
+    );
+    assert_eq!(
+        managed.lifecycle.selection_published_at_ms(),
+        captured_lifecycle.selection_published_at_ms(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured selection publish time"
+    );
+    assert_eq!(
+        managed.lifecycle.seconds_to_expiry_at_selection(),
+        captured_lifecycle.seconds_to_expiry_at_selection(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured selection expiry"
+    );
+    assert_eq!(
+        managed.book.best_bid, captured_book.best_bid,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not refresh the held book from a mismatched interval"
+    );
+    assert_eq!(
+        managed.book.best_ask, captured_book.best_ask,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not refresh the held book from a mismatched interval"
+    );
+    assert_eq!(
+        managed.book.liquidity_available, captured_book.liquidity_available,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not refresh held liquidity from a mismatched interval"
     );
 
     emit_resolution_update_at(&mut strategy, 3_101.0, position_interval_end_ms);

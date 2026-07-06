@@ -136,6 +136,12 @@ impl BoltV3PositionMarketLifecycle {
         self.market_id().is_none() || self.market_id() == market_id
     }
 
+    pub fn interval_end_matches(&self, other: &Self) -> bool {
+        self.interval_end_ms()
+            .zip(other.interval_end_ms())
+            .is_some_and(|(left, right)| left == right)
+    }
+
     pub fn fill_missing_from(&mut self, other: &Self) {
         if self.market_id.is_none() {
             self.market_id = other.market_id.clone();

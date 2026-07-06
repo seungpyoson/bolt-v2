@@ -75,10 +75,12 @@ a strategy type through a third module under a new name.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,7 +88,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from git_remote_utils import fetchable_remote_url  # noqa: E402
+from git_remote_utils import fetchable_remote_url, github_actions_git_auth_env  # noqa: E402
 
 REPO_ROOT = SCRIPT_DIR.parent
 MAX_SCAN_FILE_BYTES = 1024 * 1024
@@ -838,12 +840,20 @@ BASELINE_REF = f"{BASELINE_REMOTE}/{BASELINE_BRANCH}"
 BASELINE_TEMP_REF = f"refs/dependency-direction-baseline/{BASELINE_BRANCH}"
 
 
-def _git(args: list[str], *, cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
+def _git(
+    args: list[str],
+    *,
+    cwd: Path,
+    check: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    process_env = None if env is None else {**os.environ, **env}
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
+        env=process_env,
     )
     if check and result.returncode != 0:
         raise PolicyError(f"git {' '.join(args)} failed: {result.stderr}")
@@ -921,6 +931,7 @@ def _read_baseline_source() -> str | None:
             f"to enforce allowlist shrink-only{git_failure_details(remote)}"
         )
     remote_url = fetchable_remote_url(remote_url, REPO_ROOT)
+    fetch_env = github_actions_git_auth_env(remote_url)
     with tempfile.TemporaryDirectory(prefix="dependency-direction-baseline-") as tmp:
         git_dir = Path(tmp) / "repo.git"
         _git(["init", "--bare", str(git_dir)], cwd=Path(tmp), check=True)
@@ -937,6 +948,7 @@ def _read_baseline_source() -> str | None:
                 f"refs/heads/{BASELINE_BRANCH}:{BASELINE_TEMP_REF}",
             ],
             cwd=git_dir,
+            env=fetch_env or None,
         )
         if fetch.returncode != 0:
             raise PolicyError(

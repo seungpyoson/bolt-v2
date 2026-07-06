@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -878,7 +879,9 @@ def test_shrink_only_fetches_baseline_without_checkout_tracking_ref() -> None:
             *,
             cwd: Path,
             check: bool = False,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
+            del env
             git_commands.append(tuple(args))
             return original_git(args, cwd=cwd, check=check)
 
@@ -913,6 +916,92 @@ def test_shrink_only_fetches_baseline_without_checkout_tracking_ref() -> None:
         )
         if tracking_ref.returncode == 0:
             raise AssertionError("baseline fetch must not recreate checkout refs/remotes/origin/main")
+
+
+def test_shrink_only_fetch_uses_actions_token_for_matching_github_repo() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_allow = VERIFIER.FINDING_ALLOWANCES
+    original_git = VERIFIER._git
+    old_env = {
+        key: os.environ.get(key)
+        for key in ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "GIT_CONFIG_COUNT")
+    }
+    git_commands: list[tuple[str, ...]] = []
+    fetch_envs: list[dict[str, str]] = []
+
+    def completed(
+        args: list[str],
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
+
+    def fake_git(
+        args: list[str],
+        *,
+        cwd: Path,
+        check: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, check
+        git_commands.append(tuple(args))
+        if any("fake-ci-token" in part for part in args):
+            raise AssertionError(f"token leaked into git argv: {args!r}")
+        if args == ["remote", "get-url", "origin"]:
+            return completed(args, stdout="https://github.com/Owner/Repo.git\n")
+        if args[:2] == ["init", "--bare"]:
+            Path(args[2]).mkdir(parents=True, exist_ok=True)
+            return completed(args)
+        if args[:1] == ["fetch"]:
+            fetch_envs.append(dict(env or {}))
+            return completed(args)
+        if args[:1] == ["rev-parse"]:
+            return completed(args, stdout="baseline-sha\n")
+        if args[:1] == ["show"]:
+            return completed(
+                args,
+                stdout=baseline_source({("src/bolt_v3_a.rs", "strategies::x::A")}),
+            )
+        raise AssertionError(f"unexpected git command: {args!r}")
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        VERIFIER.REPO_ROOT = Path("/workspace/repo")
+        VERIFIER.FINDING_ALLOWANCES = (
+            allowance("src/bolt_v3_a.rs", "strategies::x::A"),
+        )
+        VERIFIER._git = fake_git
+        os.environ["GITHUB_TOKEN"] = "fake-ci-token"
+        os.environ["GITHUB_REPOSITORY"] = "owner/repo"
+        os.environ.pop("GIT_CONFIG_COUNT", None)
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = VERIFIER.main(["--check-shrink-only-vs-main"])
+    finally:
+        VERIFIER.REPO_ROOT = original_root
+        VERIFIER.FINDING_ALLOWANCES = original_allow
+        VERIFIER._git = original_git
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    if code != 0 or "subset of the mainline baseline" not in stdout.getvalue():
+        raise AssertionError(
+            f"expected authenticated baseline fetch to pass, got {code}: "
+            f"stdout={stdout.getvalue()!r} stderr={stderr.getvalue()!r}"
+        )
+    if not fetch_envs:
+        raise AssertionError(f"expected fetch env to be captured, commands={git_commands!r}")
+    fetch_env = fetch_envs[0]
+    if fetch_env.get("GIT_CONFIG_COUNT") != "1":
+        raise AssertionError(f"expected one injected git config, got {fetch_env!r}")
+    if fetch_env.get("GIT_CONFIG_KEY_0") != "http.https://github.com/.extraheader":
+        raise AssertionError(f"expected GitHub extraheader key, got {fetch_env!r}")
+    if not fetch_env.get("GIT_CONFIG_VALUE_0", "").startswith("AUTHORIZATION: basic "):
+        raise AssertionError(f"expected basic auth extraheader value, got {fetch_env!r}")
 
 
 def test_justfile_dependency_baseline_fetch_is_not_checkout_mutation() -> None:
@@ -1018,6 +1107,7 @@ def main() -> int:
         test_shrink_only_remote_get_url_failure_includes_git_stderr,
         test_shrink_only_fetch_failure_includes_git_stderr,
         test_shrink_only_fetches_baseline_without_checkout_tracking_ref,
+        test_shrink_only_fetch_uses_actions_token_for_matching_github_repo,
         test_justfile_dependency_baseline_fetch_is_not_checkout_mutation,
         test_remote_url_normalization_uses_shared_helper,
         test_real_repo_is_green_with_committed_allowlist,

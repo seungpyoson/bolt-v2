@@ -180,16 +180,47 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 
 ## Installation — `just setup`
 
-- Resolve active hooks dir; install additively with markers; abort loudly on
-  foreign-content ambiguity.
+- Keep direct tracked `.githooks/<hook-name>` files as repo hook source and
+  generate active hooks under the untracked git-common hooks directory
+  (`$(git rev-parse --git-common-dir)/hooks`).
+  `just setup` points `core.hooksPath` at that generated directory so generated
+  hook copies can change without dirtying tracked repo files. During that move,
+  setup copies repo hook sources plus existing hooks from the previous active
+  hook directory when those names are not owned by tracked repo hook sources, so
+  local/global agent hooks keep firing after the path changes. Runtime copies
+  are manifest-owned; direct edits to runtime copies are diagnosed as outside
+  the allowed state and should be removed before re-running setup.
+  Setup records adopted source directories as well as hook files, so later setup
+  runs re-list those source directories and adopt newly added sibling files only
+  when their names are Git-recognized hook names, without guessing hook body
+  content. Local, worktree, global, and system hook path moves follow current
+  Git config; unsupported effective-only config scopes fail closed instead of
+  creating an untrackable fork. Unset sources or disappeared files remove
+  manifest-owned runtime copies. Same-name hooks from default/runtime hook
+  directories, including initial default `.git/hooks` collisions, are preserved
+  in the shadow store and recorded in the manifest instead of guessed, merged,
+  or dispatched. Same-name hooks from non-runtime local, worktree, global, or
+  system hook directories remain in place and are manifest-recorded by source
+  path, Git config scope, and byte hash; they do not get shadow-store backups.
+  Default `.git/hooks` shadow backups are provenance files; deleting or editing
+  them makes setup fail closed until the manifest is repaired or removed.
+  Symlink hooks are refused, and external hook executable mode is preserved.
+  Setup records hook source path, source directory, Git config scope, and byte
+  hashes in `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
+  Runtime overwrites are allowed only for exact byte matches or entries whose
+  current runtime hash matches that installer manifest; otherwise setup refuses.
+  Linked worktrees install from the main worktree's tracked `.githooks/` source
+  into the shared git-common runtime directory and repair a worktree-specific
+  `core.hooksPath` override when that override would otherwise keep winning.
 - Restructure existing `post-checkout` (its `prev_head != 000…` early-exit
   moves BELOW our dispatch so cleanup runs first when gated).
 - Extend existing `post-rewrite` (Entire CLI line preserved).
 - `git config remote.<configured-remote>.prune true` owned here (NO DUAL PATHS).
 - `post-merge` also spawns Lane R detached.
-- `just clean-merged-doctor`: install state, hook-marker presence, config
-  validity, gh availability, gh cache health, last-run heartbeat freshness,
-  quarantine disk usage, backup-ref count, and rotated-log usage.
+- `just clean-merged-doctor`: install state, manifest provenance, config
+  validity, runtime-vs-source hook drift, gh availability, gh cache health,
+  last-run heartbeat freshness, quarantine disk usage, backup-ref count, and
+  rotated-log usage.
 
 ## Audit log (JSONL)
 
@@ -207,9 +238,15 @@ survives shell-sensitive branch names). Subprocess diagnostics stored in
 The "always-on" contract has two precise limits:
 
 - **Always-on per clone, after `just setup`.** The tool is inert in a fresh
-  clone until `just setup` runs `git config core.hooksPath .githooks`. Git
-  cannot auto-run hooks on clone without local config; there is no in-tree
-  bootstrap. `just clean-merged-doctor` reports an unset hooksPath as a problem.
+  clone until `just setup` generates active hooks in the git-common hooks
+  directory from `.githooks/` sources, preserves existing active hooks that are
+  not shadowed by repo hook sources, writes the hook provenance manifest, and
+  points `core.hooksPath` at that generated directory. Git cannot auto-run
+  hooks on clone without local config; there is no in-tree bootstrap.
+  `just clean-merged-doctor` reports an unset hooksPath as a problem.
+  Re-run `just setup` after changing tracked `.githooks/` sources or adopted
+  external hook sources; doctor reports stale runtime copies and source drift
+  that no longer match manifest provenance.
 - **Always-on for branch ref cleanup (Lane H + Lane R).** Every `git pull`
   (incl. FF — empirically verified) and checkout of the configured trunk fires
   the hooks and cleans eligible branches automatically.

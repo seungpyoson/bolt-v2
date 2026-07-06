@@ -473,6 +473,13 @@ def _git(repo_root: pathlib.Path, args: list[str], *,
     )
 
 
+def _git_bytes(repo_root: pathlib.Path, args: list[str], *,
+               check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", *args], cwd=repo_root, check=check, capture_output=True,
+    )
+
+
 def _resolve_home_dir() -> pathlib.Path | None:
     try:
         return pathlib.Path.home()
@@ -510,6 +517,21 @@ def _same_path(left: pathlib.Path, right: pathlib.Path) -> bool:
 class ActiveHookDir:
     path: pathlib.Path
     source_scope: str
+
+
+@dataclasses.dataclass(frozen=True)
+class HookSnapshot:
+    source_file: pathlib.Path
+    hook_name: str
+    content: bytes
+    mode: int
+    sha256: str
+
+
+@dataclasses.dataclass(frozen=True)
+class PlannedShadowCopy:
+    destination: pathlib.Path
+    snapshot: HookSnapshot
 
 
 def _is_git_hook_name(name: str) -> bool:
@@ -551,6 +573,16 @@ def _dirty_tracked_hook_sources(repo_root: pathlib.Path) -> list[str]:
         if proc.returncode == 0:
             dirty.update(path for path in proc.stdout.split("\0") if path in rel_paths)
     return sorted(dirty)
+
+
+def _raise_if_dirty_tracked_hook_sources(repo_root: pathlib.Path) -> None:
+    dirty_sources = _dirty_tracked_hook_sources(repo_root)
+    if dirty_sources:
+        raise CleanMergedError(
+            "tracked hook source(s) have local changes: "
+            + ", ".join(dirty_sources)
+            + "; restore or commit them before installing hooks"
+        )
 
 
 def _hook_manifest_path(common_dir: pathlib.Path) -> pathlib.Path:
@@ -738,7 +770,7 @@ def _bytes_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_hook_snapshot(source_file: pathlib.Path) -> tuple[bytes, int, str]:
+def _read_hook_snapshot(source_file: pathlib.Path) -> HookSnapshot:
     if source_file.is_symlink():
         raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
     try:
@@ -750,7 +782,36 @@ def _read_hook_snapshot(source_file: pathlib.Path) -> tuple[bytes, int, str]:
         raise CleanMergedError(
             f"hook source changed during install planning at {source_file}; retry setup"
         ) from exc
-    return source_bytes, stat.S_IMODE(source_stat.st_mode), _bytes_sha256(source_bytes)
+    return HookSnapshot(
+        source_file=source_file,
+        hook_name=source_file.name,
+        content=source_bytes,
+        mode=stat.S_IMODE(source_stat.st_mode),
+        sha256=_bytes_sha256(source_bytes),
+    )
+
+
+def _tracked_hook_snapshot(repo_root: pathlib.Path, rel_path: str) -> HookSnapshot:
+    source_file = repo_root / rel_path
+    tree_entry = _git(repo_root, ["ls-tree", "HEAD", "--", rel_path], check=False)
+    if tree_entry.returncode != 0 or not tree_entry.stdout.strip():
+        raise CleanMergedError(f"tracked hook source missing from HEAD: {rel_path}")
+    mode_text = tree_entry.stdout.split(maxsplit=1)[0]
+    if mode_text == "120000":
+        raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+    if mode_text not in {"100644", "100755"}:
+        raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+    blob = _git_bytes(repo_root, ["show", f"HEAD:{rel_path}"], check=False)
+    if blob.returncode != 0:
+        raise CleanMergedError(f"tracked hook source missing from HEAD: {rel_path}")
+    content = blob.stdout
+    return HookSnapshot(
+        source_file=source_file,
+        hook_name=source_file.name,
+        content=content,
+        mode=0o755 if mode_text == "100755" else 0o644,
+        sha256=_bytes_sha256(content),
+    )
 
 
 def _repo_relative_path(repo_root: pathlib.Path, path: pathlib.Path) -> str:
@@ -832,6 +893,7 @@ def _validate_hook_copy_with_provenance(
     source_scope: str,
     source_path: str,
     manifest_hooks: dict[str, Any],
+    source_sha: str | None = None,
 ) -> None:
     if source_file.is_symlink():
         raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
@@ -848,7 +910,7 @@ def _validate_hook_copy_with_provenance(
                 f"without installer provenance at {destination}"
             )
         return
-    source_sha = _file_sha256(source_file)
+    source_sha = source_sha or _file_sha256(source_file)
     if destination.exists():
         if not destination.is_file():
             raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
@@ -969,7 +1031,7 @@ def _shadowed_hook_destination(
     common_dir: pathlib.Path,
     hook_file: pathlib.Path,
 ) -> pathlib.Path:
-    source_sha = _file_sha256(hook_file)
+    source_sha = _read_hook_snapshot(hook_file).sha256
     return _shadowed_hook_destination_for_sha(common_dir, hook_file.name, source_sha)
 
 
@@ -1125,13 +1187,13 @@ class HookInstallPlan:
         *,
         common_dir: pathlib.Path,
         hook_file: pathlib.Path,
-    ) -> pathlib.Path:
+    ) -> PlannedShadowCopy:
         destination = _validate_shadowed_hook_copy(common_dir, hook_file)
-        source_bytes, source_mode, source_sha = _read_hook_snapshot(hook_file)
+        snapshot = _read_hook_snapshot(hook_file)
         if destination != _shadowed_hook_destination_for_sha(
             common_dir,
             hook_file.name,
-            source_sha,
+            snapshot.sha256,
         ):
             raise CleanMergedError(
                 f"hook {hook_file.name} changed during install planning at {hook_file}; "
@@ -1143,16 +1205,15 @@ class HookInstallPlan:
         )
         if not destination.exists():
             self.operations.append(
-                lambda destination=destination, source_bytes=source_bytes,
-                source_mode=source_mode, source_sha=source_sha:
+                lambda destination=destination, snapshot=snapshot:
                 _apply_shadowed_hook_snapshot(
                     destination=destination,
-                    source_bytes=source_bytes,
-                    source_mode=source_mode,
-                    source_sha=source_sha,
+                    source_bytes=snapshot.content,
+                    source_mode=snapshot.mode,
+                    source_sha=snapshot.sha256,
                 )
             )
-        return destination
+        return PlannedShadowCopy(destination=destination, snapshot=snapshot)
 
     def stage_unlink(self, path: pathlib.Path) -> None:
         self.unlinked_paths.add(_install_plan_path_key(path))
@@ -1167,8 +1228,10 @@ class HookInstallPlan:
         source_scope: str,
         source_path: str,
         manifest_hooks: dict[str, Any],
+        source_snapshot: HookSnapshot | None = None,
     ) -> None:
         validation_manifest_hooks = dict(manifest_hooks)
+        snapshot = source_snapshot or _read_hook_snapshot(source_file)
         destination_will_be_unlinked = (
             self.will_unlink(destination) and not _same_path(source_file, destination)
         )
@@ -1185,21 +1248,22 @@ class HookInstallPlan:
                 source_scope=source_scope,
                 source_path=source_path,
                 manifest_hooks=validation_manifest_hooks,
+                source_sha=snapshot.sha256,
             )
-        source_bytes, source_mode, source_sha = _read_hook_snapshot(source_file)
         _record_planned_hook_provenance(
             destination_name=destination.name,
             source_kind=source_kind,
             source_scope=source_scope,
             source_path=source_path,
-            source_sha=source_sha,
+            source_sha=snapshot.sha256,
             manifest_hooks=manifest_hooks,
         )
         self.preflight_operations.append(
             lambda source_file=source_file, destination=destination, source_kind=source_kind,
             source_scope=source_scope, source_path=source_path,
             manifest_hooks=validation_manifest_hooks,
-            destination_will_be_unlinked=destination_will_be_unlinked, source_sha=source_sha:
+            destination_will_be_unlinked=destination_will_be_unlinked,
+            source_sha=snapshot.sha256:
             _validate_planned_hook_copy(
                 source_file=source_file,
                 destination=destination,
@@ -1214,17 +1278,27 @@ class HookInstallPlan:
         self.unlinked_paths.discard(_install_plan_path_key(destination))
         same_path = _same_path(source_file, destination)
         self.operations.append(
-            lambda destination=destination, source_bytes=source_bytes,
-            source_mode=source_mode, source_kind=source_kind, source_sha=source_sha,
+            lambda destination=destination, snapshot=snapshot,
+            source_kind=source_kind, source_sha=snapshot.sha256,
             same_path=same_path:
             _apply_hook_snapshot(
                 destination=destination,
-                source_bytes=source_bytes,
-                source_mode=source_mode,
+                source_bytes=snapshot.content,
+                source_mode=snapshot.mode,
                 source_kind=source_kind,
                 source_sha=source_sha,
                 same_path=same_path,
             )
+        )
+
+    def stage_validate_clean_tracked_sources(
+        self,
+        *,
+        repo_root: pathlib.Path,
+    ) -> None:
+        self.preflight_operations.insert(
+            0,
+            lambda repo_root=repo_root: _raise_if_dirty_tracked_hook_sources(repo_root)
         )
 
     def stage_remove_hook(
@@ -1334,8 +1408,9 @@ def _validate_planned_hook_copy(
             source_scope=source_scope,
             source_path=source_path,
             manifest_hooks=manifest_hooks,
+            source_sha=source_sha,
         )
-    current_sha = _file_sha256(source_file)
+    current_sha = _read_hook_snapshot(source_file).sha256
     if current_sha != source_sha:
         raise CleanMergedError(
             f"hook source changed during install planning at {source_file}; retry setup"
@@ -1406,24 +1481,20 @@ def _record_shadowed_hook(
 def _record_planned_shadowed_hook(
     *,
     hook_file: pathlib.Path,
-    shadow_path: pathlib.Path,
-    repo_source_file: pathlib.Path,
+    shadow_copy: PlannedShadowCopy,
+    repo_source_snapshot: HookSnapshot,
     source_scope: str,
     shadowed_hooks: dict[str, Any],
     hook_name: str | None = None,
 ) -> None:
-    if hook_file.is_symlink() or repo_source_file.is_symlink():
-        raise CleanMergedError(f"refusing to record symlink hook at {hook_file}")
-    if not hook_file.is_file() or not repo_source_file.is_file():
-        return
-    if hook_file.read_bytes() == repo_source_file.read_bytes():
+    if shadow_copy.snapshot.content == repo_source_snapshot.content:
         return
     manifest_hook_name = hook_name or hook_file.name
     _record_shadowed_hook_entry(
         manifest_hook_name=manifest_hook_name,
-        source_path=str(shadow_path),
-        source_sha=_file_sha256(hook_file),
-        repo_source_file=repo_source_file,
+        source_path=str(shadow_copy.destination),
+        source_sha=shadow_copy.snapshot.sha256,
+        repo_source_file=repo_source_snapshot.source_file,
         shadowed_hooks=shadowed_hooks,
         source_scope=source_scope,
     )
@@ -1979,13 +2050,7 @@ def install_hooks(
         raise CleanMergedError(
             "missing tracked clean-merged hook source(s): " + ", ".join(missing)
         )
-    dirty_sources = _dirty_tracked_hook_sources(source_root)
-    if dirty_sources:
-        raise CleanMergedError(
-            "tracked hook source(s) have local changes: "
-            + ", ".join(dirty_sources)
-            + "; restore or commit them before installing hooks"
-        )
+    _raise_if_dirty_tracked_hook_sources(source_root)
 
     common_dir = git_common_dir(source_root)
     runtime_hooks_dir = common_dir / "hooks"
@@ -2014,15 +2079,18 @@ def install_hooks(
     ]:
         if not any(_same_path(candidate.path, existing.path) for existing in active_hook_dirs):
             active_hook_dirs.append(candidate)
-    source_hook_files = sorted(
+    source_hook_snapshots = sorted(
         (
-            source_root / rel_path
+            _tracked_hook_snapshot(source_root, rel_path)
             for rel_path in tracked_hook_paths
             if (source_root / rel_path).is_file()
         ),
-        key=lambda path: path.name,
+        key=lambda snapshot: snapshot.hook_name,
     )
-    source_hook_names = {hook_file.name for hook_file in source_hook_files}
+    source_hook_snapshots_by_name = {
+        snapshot.hook_name: snapshot for snapshot in source_hook_snapshots
+    }
+    source_hook_names = set(source_hook_snapshots_by_name)
     _preflight_default_shadow_backups(
         manifest=manifest,
         source_root=source_root,
@@ -2066,8 +2134,8 @@ def install_hooks(
                 or hook_file.name not in source_hook_names
             ):
                 continue
-            repo_source_file = source_hooks_dir / hook_file.name
-            if hook_file.read_bytes() == repo_source_file.read_bytes():
+            repo_source_snapshot = source_hook_snapshots_by_name[hook_file.name]
+            if hook_file.read_bytes() == repo_source_snapshot.content:
                 continue
             if hook_file.name in manifest_hooks:
                 continue
@@ -2077,8 +2145,8 @@ def install_hooks(
             )
             _record_planned_shadowed_hook(
                 hook_file=hook_file,
-                shadow_path=shadow_copy,
-                repo_source_file=repo_source_file,
+                shadow_copy=shadow_copy,
+                repo_source_snapshot=repo_source_snapshot,
                 source_scope=runtime_source_scope,
                 shadowed_hooks=shadowed_hooks,
                 hook_name=hook_file.name,
@@ -2098,8 +2166,8 @@ def install_hooks(
             if not hook_file.is_file() or not _is_git_hook_name(hook_file.name):
                 continue
             if hook_file.name in source_hook_names:
-                repo_source_file = source_hooks_dir / hook_file.name
-                if hook_file.read_bytes() == repo_source_file.read_bytes():
+                repo_source_snapshot = source_hook_snapshots_by_name[hook_file.name]
+                if hook_file.read_bytes() == repo_source_snapshot.content:
                     continue
                 if hook_file.name in manifest_hooks:
                     continue
@@ -2109,8 +2177,8 @@ def install_hooks(
                 )
                 _record_planned_shadowed_hook(
                     hook_file=hook_file,
-                    shadow_path=shadow_copy,
-                    repo_source_file=repo_source_file,
+                    shadow_copy=shadow_copy,
+                    repo_source_snapshot=repo_source_snapshot,
                     source_scope=active_hooks.source_scope,
                     shadowed_hooks=shadowed_hooks,
                     hook_name=hook_file.name,
@@ -2135,8 +2203,9 @@ def install_hooks(
                 manifest_hooks=manifest_hooks,
             )
             adopted_source_paths.add(str(hook_file))
-    for hook_file in source_hook_files:
-        destination = runtime_hooks_dir / hook_file.name
+    for source_snapshot in source_hook_snapshots:
+        hook_file = source_snapshot.source_file
+        destination = runtime_hooks_dir / source_snapshot.hook_name
         plan.stage_copy_hook(
             source_file=hook_file,
             destination=destination,
@@ -2144,6 +2213,7 @@ def install_hooks(
             source_scope="repo",
             source_path=_repo_relative_path(source_root, hook_file),
             manifest_hooks=manifest_hooks,
+            source_snapshot=source_snapshot,
         )
 
     for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
@@ -2303,6 +2373,7 @@ def install_hooks(
                 manifest_hooks=manifest_hooks,
             )
 
+    plan.stage_validate_clean_tracked_sources(repo_root=source_root)
     plan.stage_set_runtime_hooks_path(
         invoke_root=invoke_root,
         source_root=source_root,

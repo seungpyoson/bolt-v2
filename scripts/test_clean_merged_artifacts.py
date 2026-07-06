@@ -1386,7 +1386,7 @@ class CleanupContractTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     cm.CleanMergedError,
-                    "hook source changed during install planning",
+                    "tracked hook source\\(s\\) have local changes",
                 ):
                     cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
 
@@ -1433,6 +1433,76 @@ class CleanupContractTests(unittest.TestCase):
         runtime_sha = file_sha256(runtime_hook)
         self.assertEqual(manifest["hooks"]["post-merge"]["source_sha256"], runtime_sha)
         self.assertEqual(manifest["hooks"]["post-merge"]["runtime_sha256"], runtime_sha)
+
+    def test_install_hooks_does_not_install_repo_source_dirty_after_dirty_check(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        hook_source = self.work / ".githooks" / "post-merge"
+        clean_content = hook_source.read_text(encoding="utf-8")
+        original_dirty_check = cm._dirty_tracked_hook_sources
+
+        def dirty_after_check(repo_root: pathlib.Path) -> list[str]:
+            dirty = original_dirty_check(repo_root)
+            hook_source.write_text(
+                "#!/bin/sh\nprintf dirty-after-check\n",
+                encoding="utf-8",
+            )
+            hook_source.chmod(0o755)
+            return dirty
+
+        with mock.patch.dict(os.environ, GIT_ENV, clear=False):
+            with mock.patch.object(cm, "_dirty_tracked_hook_sources", dirty_after_check):
+                with self.assertRaisesRegex(
+                    cm.CleanMergedError,
+                    "tracked hook source\\(s\\) have local changes",
+                ):
+                    cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
+
+        runtime_hooks_dir = git_common_dir_compat(self.work) / "hooks"
+        self.assertFalse((runtime_hooks_dir / "post-merge").exists())
+        self.assertFalse(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .exists()
+        )
+        self.assertIn("dirty-after-check", hook_source.read_text(encoding="utf-8"))
+
+    def test_install_hooks_records_shadow_from_snapshot_not_live_hook(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks_dir = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks_dir.mkdir(parents=True, exist_ok=True)
+        runtime_hook = runtime_hooks_dir / "post-merge"
+        foreign_content = "#!/bin/sh\nprintf foreign\n"
+        runtime_hook.write_text(foreign_content, encoding="utf-8")
+        runtime_hook.chmod(0o755)
+        repo_content = (self.work / ".githooks" / "post-merge").read_text(encoding="utf-8")
+        original_record = cm._record_planned_shadowed_hook
+
+        def mutate_only_during_record(**kwargs: Any) -> None:
+            hook_file = kwargs["hook_file"]
+            hook_file.write_text(repo_content, encoding="utf-8")
+            hook_file.chmod(0o755)
+            try:
+                original_record(**kwargs)
+            finally:
+                hook_file.write_text(foreign_content, encoding="utf-8")
+                hook_file.chmod(0o755)
+
+        with mock.patch.dict(os.environ, GIT_ENV, clear=False):
+            with mock.patch.object(
+                cm,
+                "_record_planned_shadowed_hook",
+                mutate_only_during_record,
+            ):
+                cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
+
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        shadow_entries = manifest["shadowed_hooks"]["post-merge"]
+        self.assertEqual(len(shadow_entries), 1)
+        backup = pathlib.Path(shadow_entries[0]["source_path"])
+        self.assertEqual(backup.read_text(encoding="utf-8"), foreign_content)
+        self.assertEqual(shadow_entries[0]["source_sha256"], file_sha256(backup))
 
     def test_git_common_dir_does_not_require_path_format_flag(self) -> None:
         source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(

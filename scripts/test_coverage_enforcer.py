@@ -351,7 +351,7 @@ def assert_all_present_and_correct_succeeds() -> None:
 def assert_iteration_pr_does_not_wait_for_boundary_gates() -> None:
     result, fake = run_enforcer(
         [[check_run("host-health"), check_run("actionlint", run_id=2)]],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
     )
     if result.conclusion != "success" or result.findings:
         raise AssertionError(result)
@@ -425,7 +425,7 @@ def assert_same_app_reruns_do_not_count_as_duplicate_drift() -> None:
                 check_run("actionlint", run_id=3, check_suite_id=103),
             ]
         ],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
     )
     if result.conclusion != "success" or result.findings:
         raise AssertionError(result)
@@ -440,7 +440,7 @@ def assert_wrong_app_rerun_remains_drift_even_with_expected_app_success() -> Non
                 check_run("actionlint", run_id=3),
             ]
         ],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
     )
     if result.conclusion != "failure":
         raise AssertionError(result)
@@ -456,7 +456,7 @@ def assert_expected_app_failure_without_success_is_drift() -> None:
                 check_run("actionlint", run_id=2),
             ]
         ],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
     )
     if result.conclusion != "failure":
         raise AssertionError(result)
@@ -473,7 +473,7 @@ def assert_latest_expected_app_failure_after_success_is_drift() -> None:
                 check_run("actionlint", run_id=3),
             ]
         ],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
     )
     if result.conclusion != "failure":
         raise AssertionError(result)
@@ -490,7 +490,7 @@ def assert_latest_expected_app_success_after_failure_succeeds() -> None:
                 check_run("actionlint", run_id=3),
             ]
         ],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
     )
     if result.conclusion != "success" or result.findings:
         raise AssertionError(result)
@@ -510,7 +510,7 @@ def assert_newer_in_progress_expected_app_keeps_context_pending() -> None:
                 check_run("actionlint", run_id=3),
             ],
         ],
-        event=pull_request_event(),
+        event=pull_request_event(draft=True),
         clock=FakeClock([0.0, 0.0, 0.0]),
     )
     if result.conclusion != "success" or result.findings:
@@ -540,10 +540,10 @@ def assert_r2_derivation_mismatch_fails() -> None:
         "runs_on_tags = true",
     ).replace(
         "[ci_provenance.required_checks.actionlint.proof_rule]\n"
-        "fresh = [\"full\", \"docs\", \"iteration\"]\n"
+        "fresh = [\"docs\", \"full\", \"iteration\", \"noop\"]\n"
         "carry_forward = []",
         "[ci_provenance.required_checks.actionlint.proof_rule]\n"
-        "fresh = [\"full\", \"docs\", \"iteration\", \"tag_reuse\"]\n"
+        "fresh = [\"docs\", \"full\", \"iteration\", \"noop\", \"tag_reuse\"]\n"
         "carry_forward = []",
     )
     result, fake = run_enforcer(
@@ -585,7 +585,7 @@ def assert_r2_derives_generic_tag_triggers() -> None:
 def assert_fork_pr_uses_native_job_without_publishing() -> None:
     result, fake = run_enforcer(
         [[check_run("host-health"), check_run("actionlint", run_id=2)]],
-        event=pull_request_event(fork=True),
+        event=pull_request_event(draft=True, fork=True),
     )
     if result.conclusion != "success":
         raise AssertionError(result)
@@ -652,9 +652,15 @@ def assert_docs_only_false_is_not_weaker_for_watchdog_events() -> None:
 def assert_target_contexts_keep_docs_iteration_equivalent() -> None:
     module = load_script()
     config = module.ci_provenance.load_config(CONFIG_PATH)
+    dynamic_gate_contexts = {
+        config.gate_names["gate_required"],
+        config.gate_names["backtester_required"],
+    }
     asymmetric = []
     for check in config.required_checks.values():
         if not check.target or check.reporter == "self":
+            continue
+        if check.context in dynamic_gate_contexts:
             continue
         fresh = set(check.fresh_event_classes)
         if ("docs" in fresh) != ("iteration" in fresh):
@@ -669,7 +675,7 @@ def assert_real_registry_derivation_matches_current_workflows() -> None:
     derived = module.derive_registry_workflow_flags(checks, REPO_ROOT / ".github" / "workflows")
     expected = {
         "gate": (True, True),
-        "backtester-gate": (True, True),
+        "backtester-gate": (True, False),
         "host-health": (False, False),
         "actionlint": (False, False),
         "coverage-enforcer": (False, False),
@@ -684,7 +690,7 @@ def assert_real_registry_derivation_matches_current_workflows() -> None:
 
 def run_cli_for_fork_failure() -> tuple[int, str, str, str]:
     module = load_script()
-    event_text = json.dumps(pull_request_event(fork=True))
+    event_text = json.dumps(pull_request_event(draft=True, fork=True))
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = pathlib.Path(tmp)
         event_path = tmpdir / "event.json"
@@ -748,7 +754,7 @@ def assert_cli_fork_failure_exits_nonzero_without_publish() -> None:
 
 def assert_cli_summary_write_failure_warns_without_failing_green_verdict() -> None:
     module = load_script()
-    event_text = json.dumps(pull_request_event())
+    event_text = json.dumps(pull_request_event(draft=True))
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = pathlib.Path(tmp)
         event_path = tmpdir / "event.json"

@@ -345,13 +345,12 @@ CI_POLICY_ROW_SEMANTICS = {
     "draft_pr_reopened": PolicyRowSemantics(mergeable_without_queue=False),
     "draft_pr_edited": PolicyRowSemantics(changes_base=True, mergeable_without_queue=False),
     "converted_to_draft": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
-    "ready_pr": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True, queue_covered=True),
+    "ready_pr": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True),
     "ready_pr_edited_no_base": PolicyRowSemantics(),
     "ready_pr_reopened": PolicyRowSemantics(),
-    "ready_for_review": PolicyRowSemantics(changes_required_context=True, queue_covered=True),
+    "ready_for_review": PolicyRowSemantics(changes_required_context=True),
     "docs": PolicyRowSemantics(),
     "workflow_dispatch": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
-    "workflow_dispatch_full_ci": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
     "main_push": PolicyRowSemantics(changes_head_sha=True, changes_target=True),
     "merge_group": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_queue_origin=True),
     "mergify_temp_pr": PolicyRowSemantics(changes_head_sha=True, changes_queue_origin=True),
@@ -691,7 +690,7 @@ PR_CONCURRENCY_NON_PR_FALLBACK_RE = re.compile(
     r"\|\|\s*format\(\s*['\"]\{0\}-\{1\}['\"]\s*,\s*github\.ref_name\s*,\s*github\.sha\s*\)"
 )
 PR_CONCURRENCY_CANCEL_SCOPE_ERROR = (
-    "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only"
+    "cancel-in-progress must apply only to pull_request and workflow_dispatch runs"
 )
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(
@@ -1433,8 +1432,7 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
     "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
-    "&& github.event.inputs.full_ci == 'true' && format('{0}-dispatch-full', github.ref_name) "
-    "|| github.event_name == 'workflow_dispatch' && format('{0}-dispatch-iteration', github.ref_name) "
+    "&& format('{0}-dispatch-iteration', github.ref_name) "
     "|| github.event_name == 'merge_group' "
     "&& format('mq-{0}', github.ref) || format('{0}-{1}', github.ref_name, github.sha) }}",
     # .github/workflows/actionlint.yml — simpler prefixed shape, same merge_group
@@ -1459,8 +1457,7 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
     "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
-    "&& github.event.inputs.full_ci == 'true' && format('bvs-{0}-dispatch-full', github.ref_name) "
-    "|| github.event_name == 'workflow_dispatch' && format('bvs-{0}-dispatch-iteration', github.ref_name) "
+    "&& format('bvs-{0}-dispatch-iteration', github.ref_name) "
     "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
     "|| format('bvs-{0}-{1}', github.ref_name, github.sha) }}",
     # .github/workflows/coverage-enforcer.yml — coverage-specific namespace with
@@ -1834,12 +1831,10 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         errors.append("concurrency group must split noop PR runs from full CI runs")
     if READY_PR_NOOP_EXPR not in normalized_group:
         errors.append("concurrency group must use the canonical ready PR noop predicate")
-    if (
-        "github.event.inputs.full_ci == 'true'" not in group_text
-        or "dispatch-full" not in group_text
-        or "dispatch-iteration" not in group_text
-    ):
-        errors.append("workflow_dispatch runs must split full and iteration concurrency groups")
+    if "dispatch-iteration" not in group_text:
+        errors.append("workflow_dispatch runs must use the iteration concurrency group")
+    if "github.event.inputs.full_ci" in group_text or "dispatch-full" in group_text:
+        errors.append("workflow_dispatch runs must not define a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
     cancel_has_pull_request = (
@@ -1876,7 +1871,6 @@ def evaluate_ci_policy(
     pull_request_draft: bool,
     pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
-    workflow_dispatch_full_ci: str = "",
     mergify_temp_pr_head_ref_prefix: str = "",
     mergify_temp_pr_actor_id: int = -1,
     event_sender_id: int = -1,
@@ -1909,7 +1903,6 @@ def evaluate_ci_policy(
             pull_request_draft=pull_request_draft,
             pull_request_head_ref=pull_request_head_ref,
             pull_request_base_changed=pull_request_base_changed,
-            workflow_dispatch_full_ci=workflow_dispatch_full_ci,
             docs_only=False,
             event_sender_id=event_sender_id,
             pull_request_author_id=pull_request_author_id,
@@ -2013,36 +2006,6 @@ def workflow_pull_request_type_errors(
         if required_type not in types:
             errors.append(f"pull_request types must include {required_type}")
     return errors
-
-
-def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[str]:
-    block = workflow_trigger_block(workflow_text, "workflow_dispatch")
-    if not block and "workflow_dispatch:" not in "\n".join(top_level_block(workflow_text, "on")):
-        return ["workflow must define workflow_dispatch"]
-    block_text = "\n".join(block)
-    if "inputs:" not in block_text or not re.search(rf"^\s+{re.escape(input_name)}:\s*$", block_text, re.MULTILINE):
-        return ["workflow_dispatch must define configured full CI input"]
-    input_lines = block_text.splitlines()
-    input_start = next(
-        (
-            index
-            for index, line in enumerate(input_lines)
-            if re.match(rf"^\s+{re.escape(input_name)}:\s*$", strip_comment(line))
-        ),
-        None,
-    )
-    if input_start is None:
-        return ["workflow_dispatch must define configured full CI input"]
-    input_indent = len(input_lines[input_start]) - len(input_lines[input_start].lstrip())
-    input_end = len(input_lines)
-    next_input_re = re.compile(rf"^\s{{{input_indent}}}[A-Za-z0-9_-]+:\s*$")
-    for index in range(input_start + 1, len(input_lines)):
-        if next_input_re.match(strip_comment(input_lines[index])):
-            input_end = index
-            break
-    if not input_block_has_default_false(input_lines[input_start:input_end]):
-        return ["workflow_dispatch full CI input must default to false"]
-    return []
 
 
 SHELL_ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\+)?=[\s\S]*$")
@@ -2154,7 +2117,7 @@ def ci_policy_event_sender_command_errors(job_lines: list[str]) -> list[str]:
     if yaml_structural_key_count(job_lines, "EVENT_SENDER_ID") > 1:
         errors.append("ci-policy must declare EVENT_SENDER_ID env exactly once")
     # Defense-in-depth only: same-repo PRs control their workflow run blocks, so
-    # sender id hygiene is not an unspoofable trust boundary. The queue-only boundary
+    # sender id hygiene is not an unspoofable trust boundary. The merge boundary
     # remains trusted-base check-ci-gate plus branch-protection sp-reviewer approval;
     # this tokenized check blocks known command-level injections.
     for block in step_blocks(job_lines):
@@ -2231,8 +2194,8 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
             errors.append(f"ci-policy must feature-detect pull_request author id support ({required})")
     if f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"' not in text:
         errors.append("ci-policy must pass pull_request base-change state")
-    if '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"' not in text:
-        errors.append("ci-policy must pass workflow_dispatch full_ci input")
+    if "--workflow-dispatch-full-ci" in text or "github.event.inputs.full_ci" in text:
+        errors.append("ci-policy must not pass workflow_dispatch full_ci input")
     if "--docs-only" not in text and "name: ci-policy" in text:
         errors.append("ci-policy must pass detector docs_only output")
     if '--ref "${{ github.ref }}"' not in text:
@@ -11088,23 +11051,6 @@ def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
 
 
-def configured_ci_provenance_dispatch_input() -> tuple[str | None, list[str]]:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return None, [f"github-actions runner config invalid: {exc}"]
-    ci_provenance = config.get("ci_provenance")
-    if not isinstance(ci_provenance, dict):
-        return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]
-    dispatch = ci_provenance.get("dispatch")
-    if not isinstance(dispatch, dict):
-        return None, ["ci_provenance.dispatch must be a table"]
-    workflow_input = dispatch.get("workflow_input")
-    if not isinstance(workflow_input, str) or not workflow_input.strip():
-        return None, ["ci_provenance.dispatch.workflow_input must be a non-empty string"]
-    return workflow_input, []
-
-
 def configured_ci_provenance_dispatch_names() -> tuple[dict[str, str] | None, list[str]]:
     try:
         config = load_github_actions_runners_config()
@@ -11116,7 +11062,7 @@ def configured_ci_provenance_dispatch_names() -> tuple[dict[str, str] | None, li
     dispatch = ci_provenance.get("dispatch")
     if not isinstance(dispatch, dict):
         return None, ["ci_provenance.dispatch must be a table"]
-    required_keys = ("workflow_input", "run_name_default", "run_name_full", "run_name_iteration")
+    required_keys = ("run_name_default", "run_name_iteration")
     missing = sorted(
         key for key in required_keys
         if not isinstance(dispatch.get(key), str) or not cast(str, dispatch.get(key)).strip()
@@ -11148,13 +11094,10 @@ def workflow_run_name_errors(workflow_text: str) -> list[str]:
     if names is None:
         return errors
     run_name_text = top_level_key_block_text(workflow_text, "run-name")
-    full_predicate = f"github.event.inputs.{names['workflow_input']} == 'true'"
     if "run-name: >-" not in run_name_text:
         errors.append("workflow must define run-name for dispatch class markers")
-    if full_predicate not in run_name_text:
-        errors.append("workflow run-name must use strict configured dispatch full predicate")
-    if f"&& '{names['run_name_full']}'" not in run_name_text:
-        errors.append("workflow run-name must publish configured dispatch full marker")
+    if "github.event.inputs.full_ci" in run_name_text or "dispatch:full" in run_name_text:
+        errors.append("workflow run-name must not publish a dispatch full marker")
     if f"&& '{names['run_name_iteration']}'" not in run_name_text:
         errors.append("workflow run-name must publish configured dispatch iteration marker")
     if f"|| '{names['run_name_default']}' " + "}}" not in run_name_text:
@@ -11400,16 +11343,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
         )
     if is_ci_topology:
         errors.extend(workflow_pull_request_type_errors(workflow_text))
-        dispatch_input, dispatch_errors = configured_ci_provenance_dispatch_input()
-        if dispatch_errors:
-            errors.extend(dispatch_errors)
-        elif dispatch_input:
-            errors.extend(
-                workflow_dispatch_input_errors(
-                    workflow_text,
-                    dispatch_input,
-                )
-            )
+        if "workflow_dispatch" not in triggers:
+            errors.append("workflow must define workflow_dispatch")
+        if "full_ci:" in "\n".join(workflow_trigger_block(workflow_text, "workflow_dispatch")):
+            errors.append("workflow_dispatch must not define a full_ci input")
         errors.extend(workflow_run_name_errors(workflow_text))
         if "merge_group" not in triggers:
             # The merge queue dispatches merge_group/checks_requested; required
@@ -11428,7 +11365,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append(f"missing required job {job}")
 
     if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
-        errors.append("detector must force build_required=true for workflow_dispatch full CI")
+        errors.append("detector must force build_required=true for workflow_dispatch runs")
     if "detector" in jobs and not detector_forces_build_on_merge_group(jobs["detector"]):
         errors.append("detector must force build_required=true for merge_group full CI")
     if "detector" in jobs:
@@ -13456,7 +13393,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "github.event.inputs.issue_789 == 'true'",
         ),
         (
-            "backtester bvs-test issue-789 must only run after required gate succeeds",
+            "backtester bvs-test issue-789 must run only on iteration policy",
+            "needs.ci-policy.outputs.ci_policy_path == 'iteration'",
+        ),
+        (
+            "backtester bvs-test issue-789 must only run after iteration gate succeeds",
             "needs.gate.result == 'success'",
         ),
         ("backtester bvs-test issue-789 must declare lib archive path", "BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst"),
@@ -13496,6 +13437,8 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
                 errors.append(message)
+        if "needs.ci-policy.outputs.full_ci_required" in issue_text:
+            errors.append("backtester bvs-test issue-789 must not depend on full CI dispatch")
     return errors
 
 
@@ -13597,8 +13540,10 @@ BACKTESTER_NOOP_CONDITION = '"$policy_path" == "noop"'
 BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
 BACKTESTER_GATE_NAME_OUTPUT = "name: ${{ needs.ci-policy.outputs.backtester_gate_name }}"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
-    "`backtester-gate` after recomputing proof lanes for crate-changing noop/defer\n"
-    "# paths. `backtester-gate-iteration` is feedback-only"
+    "events publish only `backtester-gate-iteration`, which is feedback-only and must not be\n"
+    "# marked required. Ready/non-draft proof paths publish `backtester-gate` after recomputing\n"
+    "# proof lanes for crate-changing noop/defer paths. PRs that do not touch the crate still pass\n"
+    "# through the explicit no-crate proof."
 )
 BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
     r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
@@ -13671,7 +13616,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
     if policy is None:
         errors.append("backtester draft deferral must define ci-policy job")
     else:
-        errors.extend(workflow_dispatch_input_errors(text, "full_ci"))
+        if "full_ci:" in "\n".join(workflow_trigger_block(text, "workflow_dispatch")):
+            errors.append("backtester workflow_dispatch must not define a full_ci input")
         policy_text = uncommented_text(policy)
         for required in [
             "full_ci_required: ${{ steps.policy.outputs.full_ci_required }}",
@@ -13696,7 +13642,6 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
             '"${author_args[@]}"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
-            '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
@@ -13763,12 +13708,10 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester draft deferral concurrency must use the canonical ready PR noop predicate")
     if BACKTESTER_DEFER_ACTION_FILTER not in group_text:
         errors.append("backtester draft deferral concurrency must use the deferred draft action filter")
-    if (
-        "github.event.inputs.full_ci == 'true'" not in group_text
-        or "dispatch-full" not in group_text
-        or "dispatch-iteration" not in group_text
-    ):
-        errors.append("backtester draft deferral concurrency must split workflow_dispatch full and iteration runs")
+    if "dispatch-iteration" not in group_text:
+        errors.append("backtester draft deferral concurrency must use the workflow_dispatch iteration group")
+    if "github.event.inputs.full_ci" in group_text or "dispatch-full" in group_text:
+        errors.append("backtester draft deferral concurrency must not define dispatch-full runs")
     defer_action_lists = backtester_defer_action_lists(group_text)
     if len(defer_action_lists) != 1:
         errors.append("backtester draft deferral must use one deferred draft action list across gate and concurrency")
@@ -14845,16 +14788,12 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         raise ValueError("ci_provenance.deploy.require_gate_check must be true")
 
     dispatch = require_config_table(ci_provenance, "dispatch", "ci_provenance")
-    require_config_string(dispatch, "workflow_input", "ci_provenance.dispatch")
     run_name_default = require_config_string(dispatch, "run_name_default", "ci_provenance.dispatch")
-    run_name_full = require_config_string(dispatch, "run_name_full", "ci_provenance.dispatch")
     run_name_iteration = require_config_string(dispatch, "run_name_iteration", "ci_provenance.dispatch")
     proof_gate_job = require_config_string(dispatch, "proof_gate_job", "ci_provenance.dispatch")
     workflow_name = require_config_string(ci_provenance, "workflow_name", "ci_provenance")
     if run_name_default != workflow_name:
         raise ValueError("ci_provenance.dispatch.run_name_default must match workflow_name")
-    if run_name_full == run_name_iteration:
-        raise ValueError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
 
     gate_names = require_config_table(ci_provenance, "gate_names", "ci_provenance")
     for key in CI_PROVENANCE_GATE_NAME_KEYS:
@@ -14886,8 +14825,8 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         "non_heavy_required_jobs",
         "ci_provenance.docs",
     )
-    if non_heavy_jobs != ["detector"]:
-        raise ValueError("ci_provenance.docs.non_heavy_required_jobs must be ['detector']")
+    if non_heavy_jobs != ["detector", "source-fence"]:
+        raise ValueError("ci_provenance.docs.non_heavy_required_jobs must be ['detector', 'source-fence']")
 
     api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
     for key in (

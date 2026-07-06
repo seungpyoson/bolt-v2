@@ -13525,8 +13525,10 @@ BACKTESTER_NOOP_CONDITION = '"$policy_path" == "noop"'
 BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
 BACKTESTER_GATE_NAME_OUTPUT = "name: ${{ needs.ci-policy.outputs.backtester_gate_name }}"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
-    "`backtester-gate` after recomputing proof lanes for crate-changing noop/defer\n"
-    "# paths. `backtester-gate-iteration` is feedback-only"
+    "events publish only `backtester-gate-iteration`, which is feedback-only and must not be\n"
+    "# marked required. Ready/non-draft proof paths publish `backtester-gate` after recomputing\n"
+    "# proof lanes for crate-changing noop/defer paths. PRs that do not touch the crate still pass\n"
+    "# through the explicit no-crate proof."
 )
 BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
     r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"

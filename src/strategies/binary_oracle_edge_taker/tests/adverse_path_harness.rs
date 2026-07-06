@@ -11,10 +11,7 @@ use crate::{
         MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
     },
     bolt_v3_maker_settlement::{BinarySettlementLot, BinarySettlementResult},
-    bolt_v3_providers::polymarket::{
-        PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
-        extract_polymarket_token_id,
-    },
+    bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::QuoteSide,
     bolt_v3_settlement_runtime::BoltV3SettlementRecoveryConfig,
@@ -24,11 +21,11 @@ use nautilus_model::{
     events::{OrderAccepted, OrderEventAny, OrderSubmitted},
     identifiers::{AccountId, VenueOrderId},
     position::Position,
+    types::Money,
 };
-use nautilus_polymarket::http::{models::DataApiPosition, query::BalanceAllowance};
 use nautilus_trading::Strategy;
 use serde_json::{Value, json};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 pub(super) const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
 pub(super) const BALANCE_REJECT_REASON: &str =
@@ -647,7 +644,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
 }
 
 #[test]
-fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
+fn booked_settlement_explains_shared_product_id_venue_truth_snapshot() {
     assert_reality_fixtures();
 
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -662,8 +659,8 @@ fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
     attach_settlement_runtime_sink(&mut strategy, sink.clone());
     let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
-    let product_id = extract_polymarket_token_id(&instrument_id)
-        .expect("fixture instrument id should derive a Polymarket token id");
+    let product_id = prediction_market_product_id_from_instrument_id(&instrument_id)
+        .expect("fixture instrument id should derive a prediction-market product id");
     materialize_configured_position(
         &mut strategy,
         instrument_id,
@@ -693,11 +690,11 @@ fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
     let mut reconciler = VenueTruthReconciler::new();
     assert_eq!(
         reconciler
-            .reconcile_snapshot(polymarket_snapshot(
+            .reconcile_snapshot(venue_truth_snapshot(
                 1_000,
-                Decimal::new(50_000_000, 0),
-                Decimal::new(50_000_000, 0),
-                Some((&product_id, 10.0)),
+                Decimal::new(50, 0),
+                Decimal::new(50, 0),
+                Some((&product_id, Decimal::new(10, 0))),
             ))
             .expect("venue-source baseline should be accepted"),
         VenueTruthReconciliation::BaselineAccepted
@@ -708,13 +705,13 @@ fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
 
     assert_eq!(
         reconciler
-            .reconcile_snapshot(polymarket_snapshot(
+            .reconcile_snapshot(venue_truth_snapshot(
                 1_100,
-                Decimal::new(60_000_000, 0),
-                Decimal::new(50_000_000, 0),
+                Decimal::new(60, 0),
+                Decimal::new(50, 0),
                 None,
             ))
-            .expect("settlement should explain the venue-source token-id snapshot delta"),
+            .expect("settlement should explain the shared product-id snapshot delta"),
         VenueTruthReconciliation::DeltaExplained
     );
 }
@@ -944,8 +941,8 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             market_id: "settlement-recovery-market".to_string(),
             position_id: position_id.to_string(),
             instrument_id: instrument_id.to_string(),
-            product_id: extract_polymarket_token_id(&instrument_id)
-                .expect("fixture instrument id should derive token id"),
+            product_id: prediction_market_product_id_from_instrument_id(&instrument_id)
+                .expect("fixture instrument id should derive product id"),
             outcome_side: BoltV3OutcomeSide::Up,
             entry_order_side: OrderSide::Buy.to_string(),
             quantity: "10".to_string(),
@@ -1309,32 +1306,27 @@ fn settlement_evidence_matches(
     })
 }
 
-fn polymarket_snapshot(
+fn venue_truth_snapshot(
     captured_at: u64,
     balance: Decimal,
     allowance: Decimal,
-    position: Option<(&str, f64)>,
+    position: Option<(&str, Decimal)>,
 ) -> crate::bolt_v3_venue_truth::VenueTruthSnapshot {
-    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+    let mut positions_by_product_id = BTreeMap::new();
+    if let Some((product_id, quantity)) = position {
+        positions_by_product_id.insert(product_id.to_string(), quantity);
+    }
+
+    crate::bolt_v3_venue_truth::VenueTruthSnapshot {
         captured_at: UnixNanos::from(captured_at),
         account_id: AccountId::from("POLYMARKET-001"),
-        collateral_currency: Currency::pUSD(),
-        collateral: BalanceAllowance {
-            balance,
-            allowance: Some(allowance),
-        },
-        open_orders: Vec::new(),
-        positions: position
-            .map(|(asset, size)| DataApiPosition {
-                asset: asset.to_string(),
-                condition_id: "condition-MKT-1".to_string(),
-                size,
-                avg_price: Some(0.45),
-            })
-            .into_iter()
-            .collect(),
-    })
-    .expect("Polymarket venue-source fixture should build")
+        collateral_balance: Money::from_decimal(balance, Currency::pUSD())
+            .expect("venue-truth fixture balance should construct"),
+        collateral_allowance: Money::from_decimal(allowance, Currency::pUSD())
+            .expect("venue-truth fixture allowance should construct"),
+        open_orders: BTreeMap::new(),
+        positions_by_product_id,
+    }
 }
 
 fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3SettlementEvidence) {

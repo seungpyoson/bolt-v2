@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use bolt_v2::bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id;
 use bolt_v2::bolt_v3_providers::polymarket::{
     PolymarketVenueTruthInput, PolymarketVenueTruthOrderEventMapper,
     build_polymarket_venue_truth_snapshot, extract_polymarket_token_id,
@@ -50,6 +51,73 @@ fn rejects_non_polymarket_token_id_sources() {
     assert_eq!(
         extract_polymarket_token_id(&InstrumentId::from("conditionwithouttoken.POLYMARKET")),
         None
+    );
+}
+
+#[test]
+fn venue_source_product_id_matches_shared_derivation_and_reconciles_settlement() {
+    let instrument_id = InstrumentId::from("condition-token123.POLYMARKET");
+    let product_id = prediction_market_product_id_from_instrument_id(&instrument_id)
+        .expect("fixture instrument id should derive a prediction-market product id");
+    let baseline = build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(1_000),
+        account_id: AccountId::from("POLYMARKET-001"),
+        collateral_currency: Currency::pUSD(),
+        collateral: BalanceAllowance {
+            balance: Decimal::new(50_000_000, 0),
+            allowance: Some(Decimal::new(50_000_000, 0)),
+        },
+        open_orders: Vec::new(),
+        positions: vec![DataApiPosition {
+            asset: "token123".to_string(),
+            condition_id: "condition-token123".to_string(),
+            size: 10.0,
+            avg_price: Some(0.45),
+        }],
+    })
+    .expect("Polymarket venue-source baseline should build");
+    assert_eq!(
+        baseline.positions_by_product_id,
+        BTreeMap::from([(product_id.clone(), Decimal::new(10, 0))])
+    );
+
+    let mut reconciler = VenueTruthReconciler::new();
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(baseline)
+            .expect("venue-source baseline should be accepted"),
+        VenueTruthReconciliation::BaselineAccepted
+    );
+    reconciler
+        .record_settlement(VenueTruthSettlementExplanation {
+            settlement_key: "condition-token123:P-PRODUCT-DOMAIN".to_string(),
+            market_id: "condition-token123".to_string(),
+            product_id,
+            side: OrderSide::Sell,
+            settled_quantity: Decimal::new(10, 0),
+            payout_per_share: Decimal::ONE,
+            collateral_payout: Decimal::new(10, 0),
+        })
+        .expect("settlement explanation should record");
+
+    let after_settlement = build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(1_100),
+        account_id: AccountId::from("POLYMARKET-001"),
+        collateral_currency: Currency::pUSD(),
+        collateral: BalanceAllowance {
+            balance: Decimal::new(60_000_000, 0),
+            allowance: Some(Decimal::new(50_000_000, 0)),
+        },
+        open_orders: Vec::new(),
+        positions: Vec::new(),
+    })
+    .expect("Polymarket venue-source post-settlement snapshot should build");
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(after_settlement)
+            .expect("settlement should explain the venue-source product-id snapshot delta"),
+        VenueTruthReconciliation::DeltaExplained
     );
 }
 

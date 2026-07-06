@@ -16,6 +16,8 @@ import sys
 import tempfile
 import time
 
+import git_remote_utils
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
@@ -1417,6 +1419,350 @@ def assert_fetches_use_private_refs_without_fetch_head() -> None:
         assert_equal(fetched_tag, "", "private fetch must not auto-follow remote tags")
         leaked_refs = git(fixture.repo, "for-each-ref", "--format=%(refname)", "refs/preflight")
         assert_equal(leaked_refs, "", "private fetch refs must be cleaned up")
+
+
+def assert_private_fetches_do_not_write_checkout_refs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        checkout_preflight_refs = fixture.repo / ".git" / "refs" / "preflight"
+        checkout_preflight_refs.mkdir(parents=True, exist_ok=True)
+        original_mode = checkout_preflight_refs.stat().st_mode
+        checkout_preflight_refs.chmod(0o500)
+        try:
+            rc, stdout, _ = run_preflight(
+                fixture.repo,
+                fixture.remote,
+                "1",
+                expect_success=False,
+            )
+        finally:
+            checkout_preflight_refs.chmod(original_mode)
+        payload = parse_json(stdout)
+        assert_equal(rc, 3, "checkout-ref-blocked no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetches must not need checkout refs")
+        leaked_refs = git(fixture.repo, "for-each-ref", "--format=%(refname)", "refs/preflight")
+        assert_equal(leaked_refs, "", "checkout preflight refs must stay empty")
+
+
+def assert_private_fetches_resolve_checkout_remote_names() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
+        checkout_preflight_refs = fixture.repo / ".git" / "refs" / "preflight"
+        checkout_preflight_refs.mkdir(parents=True, exist_ok=True)
+        original_mode = checkout_preflight_refs.stat().st_mode
+        checkout_preflight_refs.chmod(0o500)
+        try:
+            command = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--origin",
+                "origin",
+                "--base",
+                "main",
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--verifier-profile",
+                "none",
+                "--json",
+                "1",
+            ]
+            result = subprocess.run(
+                command,
+                cwd=fixture.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            checkout_preflight_refs.chmod(original_mode)
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "remote-name private fetch no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetches must resolve checkout remote names")
+
+
+def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
+        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+        try:
+            resolved = private_fetch.fetch_origin("origin")
+            assert_equal(resolved, str(fixture.remote.resolve()), "private fetch origin URL")
+            configured_remotes = git(private_fetch.git_repo, "remote")
+            assert_equal(configured_remotes, "", "private fetch must not configure temp remotes")
+        finally:
+            private_fetch.cleanup()
+
+
+def assert_private_fetch_resolves_raw_relative_origin_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            "../origin.git",
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "raw-relative-origin no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "raw relative --origin path must fetch PR heads")
+
+
+def assert_private_fetch_resolves_raw_bare_git_origin_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        os.symlink(fixture.remote, fixture.repo / "origin.git")
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            "origin.git",
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "raw-bare-git-origin no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "origin.git --origin path must fetch PR heads")
+
+
+def loose_object_mtimes(repo: pathlib.Path) -> dict[str, int]:
+    objects = repo / ".git" / "objects"
+    mtimes: dict[str, int] = {}
+    for shard in objects.iterdir():
+        if not shard.is_dir() or len(shard.name) != 2:
+            continue
+        for path in shard.iterdir():
+            if path.is_file():
+                mtimes[str(path.relative_to(objects))] = path.stat().st_mtime_ns
+    return mtimes
+
+
+def assert_private_fetches_do_not_freshen_checkout_objects() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        objects = [
+            path
+            for shard in (fixture.repo / ".git" / "objects").iterdir()
+            if shard.is_dir() and len(shard.name) == 2
+            for path in shard.iterdir()
+            if path.is_file()
+        ]
+        old_ns = 1_700_000_000_000_000_000
+        for path in objects:
+            os.utime(path, ns=(old_ns, old_ns))
+        before = loose_object_mtimes(fixture.repo)
+        rc, stdout, _ = run_preflight(
+            fixture.repo,
+            fixture.remote,
+            "1",
+            expect_success=False,
+        )
+        payload = parse_json(stdout)
+        assert_equal(rc, 3, "object-mtime no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "object-mtime private fetch pr heads")
+        after = loose_object_mtimes(fixture.repo)
+        assert_equal(after, before, "private preflight must not freshen checkout loose objects")
+
+
+def assert_remote_url_normalization_uses_shared_helper() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    if "REMOTE_URL_SCHEME_RE =" in source or "\ndef fetchable_remote_url(" in source:
+        raise AssertionError("remote URL normalization must live in one shared helper")
+
+
+def assert_shared_remote_url_normalization_matrix() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        source_repo = pathlib.Path(tmp) / "repo"
+        source_repo.mkdir()
+        absolute = str((source_repo.parent / "origin.git").resolve())
+        cases = {
+            "https://example.invalid/org/repo.git": "https://example.invalid/org/repo.git",
+            "ssh://example.invalid/org/repo.git": "ssh://example.invalid/org/repo.git",
+            "git@example.invalid:org/repo.git": "git@example.invalid:org/repo.git",
+            "file:///tmp/origin.git": "file:///tmp/origin.git",
+            absolute: absolute,
+            "~/origin.git": "~/origin.git",
+            "../origin.git": str((source_repo / "../origin.git").resolve(strict=False)),
+            "./origin.git": str((source_repo / "./origin.git").resolve(strict=False)),
+            "origin.git": str((source_repo / "origin.git").resolve(strict=False)),
+        }
+        for value, expected in cases.items():
+            assert_equal(
+                git_remote_utils.fetchable_remote_url(value, source_repo),
+                expected,
+                f"fetchable remote URL for {value}",
+            )
+        assert_equal(
+            git_remote_utils.fetchable_origin_argument("origin", source_repo),
+            "origin",
+            "bare remote name must stay a remote name",
+        )
+        assert_equal(
+            git_remote_utils.fetchable_origin_argument("../origin.git", source_repo),
+            str((source_repo / "../origin.git").resolve(strict=False)),
+            "raw relative origin path must resolve from checkout",
+        )
+        assert_equal(
+            git_remote_utils.fetchable_origin_argument("origin.git", source_repo),
+            str((source_repo / "origin.git").resolve(strict=False)),
+            "raw bare .git origin path must resolve from checkout",
+        )
+
+
+def assert_verifier_worktrees_do_not_write_checkout_git_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"fail.txt": "fail\n"})
+        verifier = root / "reject_fail_file.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('fail.txt').exists():\n"
+            "    print('isolated verifier rejected fail.txt')\n"
+            "    sys.exit(7)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier}"])
+        checkout_worktrees = fixture.repo / ".git" / "worktrees"
+        checkout_worktrees.mkdir(parents=True, exist_ok=True)
+        original_mode = checkout_worktrees.stat().st_mode
+        checkout_worktrees.chmod(0o500)
+        try:
+            command = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--origin",
+                str(fixture.remote),
+                "--base",
+                "main",
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--config",
+                str(config),
+                "--json",
+                "1",
+            ]
+            result = subprocess.run(
+                command,
+                cwd=fixture.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            checkout_worktrees.chmod(original_mode)
+        assert_equal(result.returncode, 2, "checkout-worktrees-blocked verifier failure rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        if "isolated verifier rejected fail.txt" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+
+
+def assert_verifier_worktrees_can_read_checkout_object_database() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        local_only_commit = git(
+            fixture.repo,
+            "commit-tree",
+            fixture.base + "^{tree}",
+            "-m",
+            "local-only evidence object",
+        )
+        verifier = root / "require_checkout_object.py"
+        write(
+            verifier,
+            "import subprocess\n"
+            "import sys\n"
+            "subprocess.run(['git', 'cat-file', '-e', sys.argv[1] + '^{commit}'], check=True)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier} {local_only_commit}"])
+
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--config",
+            str(config),
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "checkout-object verifier no-gh rc")
+        if payload["blocked_prs"]:
+            raise AssertionError(payload["blocked_prs"])
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "checkout-object verifier batch")
 
 
 def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
@@ -4060,6 +4406,16 @@ def main() -> int:
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
     assert_fetches_use_private_refs_without_fetch_head()
+    assert_private_fetches_do_not_write_checkout_refs()
+    assert_private_fetches_resolve_checkout_remote_names()
+    assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
+    assert_private_fetch_resolves_raw_relative_origin_path()
+    assert_private_fetch_resolves_raw_bare_git_origin_path()
+    assert_private_fetches_do_not_freshen_checkout_objects()
+    assert_remote_url_normalization_uses_shared_helper()
+    assert_shared_remote_url_normalization_matrix()
+    assert_verifier_worktrees_do_not_write_checkout_git_metadata()
+    assert_verifier_worktrees_can_read_checkout_object_database()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()

@@ -789,6 +789,34 @@ def test_git_check_error_includes_stderr() -> None:
             raise AssertionError(f"expected git stderr in PolicyError, got: {message!r}")
 
 
+def test_shrink_only_fetch_failure_includes_git_stderr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = root / "work"
+        git(root, "init", str(work))
+        git(work, "remote", "add", "origin", str(root / "missing-origin.git"))
+
+        original_root = VERIFIER.REPO_ROOT
+        original_allow = VERIFIER.FINDING_ALLOWANCES
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = work
+            VERIFIER.FINDING_ALLOWANCES = (
+                allowance("src/bolt_v3_a.rs", "strategies::x::A"),
+            )
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main(["--check-shrink-only-vs-main"])
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.FINDING_ALLOWANCES = original_allow
+        message = stderr.getvalue()
+        if code != 1 or "cannot resolve baseline ref origin/main" not in message:
+            raise AssertionError(f"expected baseline fetch failure, got {code}: {message!r}")
+        if "missing-origin.git" not in message and "does not appear to be a git repository" not in message:
+            raise AssertionError(f"expected git stderr in baseline fetch failure, got: {message!r}")
+
+
 def test_shrink_only_fetches_baseline_without_checkout_tracking_ref() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -851,6 +879,13 @@ def test_shrink_only_fetches_baseline_without_checkout_tracking_ref() -> None:
         fetch_commands = [command for command in git_commands if command[:1] == ("fetch",)]
         if not any(str(remote.resolve()) in command for command in fetch_commands):
             raise AssertionError(f"baseline fetch did not use resolved absolute remote URL: {fetch_commands!r}")
+        tracking_ref = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"],
+            cwd=work,
+            check=False,
+        )
+        if tracking_ref.returncode == 0:
+            raise AssertionError("baseline fetch must not recreate checkout refs/remotes/origin/main")
 
 
 def test_justfile_dependency_baseline_fetch_is_not_checkout_mutation() -> None:
@@ -859,6 +894,12 @@ def test_justfile_dependency_baseline_fetch_is_not_checkout_mutation() -> None:
     bad_fetch = "git fetch -q origin main"
     if bad_fetch in text:
         raise AssertionError("dependency-direction baseline fetch must not mutate checkout .git")
+
+
+def test_remote_url_normalization_uses_shared_helper() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    if "REMOTE_URL_SCHEME_RE =" in source or "\ndef fetchable_remote_url(" in source:
+        raise AssertionError("remote URL normalization must live in one shared helper")
 
 
 def test_real_repo_is_green_with_committed_allowlist() -> None:
@@ -947,8 +988,10 @@ def main() -> int:
         test_shrink_only_introducing_pr_passes,
         test_shrink_only_unresolved_baseline_fails_closed,
         test_git_check_error_includes_stderr,
+        test_shrink_only_fetch_failure_includes_git_stderr,
         test_shrink_only_fetches_baseline_without_checkout_tracking_ref,
         test_justfile_dependency_baseline_fetch_is_not_checkout_mutation,
+        test_remote_url_normalization_uses_shared_helper,
         test_real_repo_is_green_with_committed_allowlist,
         test_file_size_limit_exceeded_fails_cleanly,
     ]

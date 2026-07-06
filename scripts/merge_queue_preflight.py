@@ -27,6 +27,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import config_validators as _cv  # noqa: E402
+from git_remote_utils import fetchable_origin_argument, fetchable_remote_url  # noqa: E402
 from verify_ci_workflow_hygiene import parse_mergify_yaml, verify_mergify_config  # noqa: E402
 
 
@@ -42,8 +43,6 @@ CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 PREFLIGHT_REF_PREFIX = "refs/preflight/merge_queue_preflight"
 PROFILE_NONE = "none"
-REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
 GH_PR_CHECKS_JSON_RETURNCODES = (0, 1, 2, 8)
 STATUS_READY = "ready"
 STATUS_BLOCKED = "blocked"
@@ -1580,6 +1579,7 @@ class CommandResult:
 class PrivateFetchRefs:
     source_repo: pathlib.Path
     git_repo: pathlib.Path
+    source_objects: str
     input_timeout_seconds: int
     namespace: str
     temp_dir: tempfile.TemporaryDirectory
@@ -1607,15 +1607,13 @@ class PrivateFetchRefs:
             ).stdout.strip()
             if not source_objects:
                 raise PreflightError("source Git object directory did not resolve")
-            alternates_dir = git_repo / "objects" / "info"
-            alternates_dir.mkdir(parents=True, exist_ok=True)
-            (alternates_dir / "alternates").write_text(f"{source_objects}\n", encoding="utf-8")
         except Exception:
             temp_dir.cleanup()
             raise
         return cls(
             source_repo=repo,
             git_repo=git_repo,
+            source_objects=source_objects,
             input_timeout_seconds=input_timeout_seconds,
             namespace=f"{PREFLIGHT_REF_PREFIX}/{uuid.uuid4().hex}",
             temp_dir=temp_dir,
@@ -1637,8 +1635,9 @@ class PrivateFetchRefs:
         )
         remote_url = result.stdout.strip()
         if result.returncode != 0 or not remote_url:
-            self.remotes[origin] = origin
-            return origin
+            remote_url = fetchable_origin_argument(origin, self.source_repo)
+            self.remotes[origin] = remote_url
+            return remote_url
         remote_url = fetchable_remote_url(remote_url, self.source_repo)
         self.remotes[origin] = remote_url
         return remote_url
@@ -1676,18 +1675,6 @@ class PrivateFetchRefs:
                 timeout_seconds=self.input_timeout_seconds,
             )
         self.temp_dir.cleanup()
-
-
-def fetchable_remote_url(remote_url: str, source_repo: pathlib.Path) -> str:
-    if (
-        pathlib.Path(remote_url).is_absolute()
-        or remote_url.startswith("~")
-        or REMOTE_URL_SCHEME_RE.match(remote_url)
-        or REMOTE_URL_SCP_RE.match(remote_url)
-    ):
-        return remote_url
-    return str((source_repo / remote_url).resolve(strict=False))
-
 
 @dataclasses.dataclass(frozen=True)
 class MergeResult:
@@ -2291,6 +2278,7 @@ def run_verifier_commands(
     commands: Sequence[str],
     timeout_seconds: int,
     input_timeout_seconds: int,
+    alternate_object_dir: str | None = None,
 ) -> tuple[VerifierResult, ...]:
     if not commands:
         return ()
@@ -2312,10 +2300,20 @@ def run_verifier_commands(
                 parts = shlex.split(command)
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
+                env = None
+                if alternate_object_dir:
+                    env = os.environ.copy()
+                    existing_alternates = env.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+                    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = (
+                        alternate_object_dir
+                        if not existing_alternates
+                        else f"{alternate_object_dir}{os.pathsep}{existing_alternates}"
+                    )
                 completed = run_command(
                     parts,
                     cwd=worktree,
                     check=False,
+                    env=env,
                     timeout_seconds=timeout_seconds,
                     process_group=True,
                 )
@@ -2899,6 +2897,7 @@ def preflight_with_fetch_refs(
             verifier_commands,
             verifier_timeout_seconds,
             input_timeout_seconds,
+            fetch_refs.source_objects,
         )
         failed = first_failed_verifier(verifier_results)
         if failed is not None:
@@ -2969,6 +2968,7 @@ def preflight_with_fetch_refs(
             verifier_commands,
             verifier_timeout_seconds,
             input_timeout_seconds,
+            fetch_refs.source_objects,
         )
         failed = first_failed_verifier(candidate_verifiers)
         if failed is not None:

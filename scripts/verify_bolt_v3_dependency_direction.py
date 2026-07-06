@@ -82,8 +82,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from git_remote_utils import fetchable_remote_url  # noqa: E402
+
+REPO_ROOT = SCRIPT_DIR.parent
 MAX_SCAN_FILE_BYTES = 1024 * 1024
 
 # Shared/family layer = everything under `src/bolt_v3_*` (top-level files and
@@ -831,8 +836,6 @@ BASELINE_REMOTE = "origin"
 BASELINE_BRANCH = "main"
 BASELINE_REF = f"{BASELINE_REMOTE}/{BASELINE_BRANCH}"
 BASELINE_TEMP_REF = f"refs/dependency-direction-baseline/{BASELINE_BRANCH}"
-REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
 
 
 def _git(args: list[str], *, cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -847,15 +850,9 @@ def _git(args: list[str], *, cwd: Path, check: bool = False) -> subprocess.Compl
     return result
 
 
-def fetchable_remote_url(remote_url: str, source_repo: Path) -> str:
-    if (
-        Path(remote_url).is_absolute()
-        or remote_url.startswith("~")
-        or REMOTE_URL_SCHEME_RE.match(remote_url)
-        or REMOTE_URL_SCP_RE.match(remote_url)
-    ):
-        return remote_url
-    return str((source_repo / remote_url).resolve(strict=False))
+def git_failure_details(result: subprocess.CompletedProcess[str]) -> str:
+    details = "\n".join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
+    return f"\n{details}" if details else ""
 
 
 def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
@@ -945,7 +942,7 @@ def _read_baseline_source() -> str | None:
         if fetch.returncode != 0:
             raise PolicyError(
                 f"cannot resolve baseline ref {BASELINE_REF} "
-                "to enforce allowlist shrink-only"
+                f"to enforce allowlist shrink-only{git_failure_details(fetch)}"
             )
         rev = _git(
             ["rev-parse", "--verify", "--quiet", f"{BASELINE_TEMP_REF}^{{commit}}"],
@@ -954,7 +951,7 @@ def _read_baseline_source() -> str | None:
         if rev.returncode != 0:
             raise PolicyError(
                 f"cannot resolve baseline ref {BASELINE_REF} "
-                "to enforce allowlist shrink-only"
+                f"to enforce allowlist shrink-only{git_failure_details(rev)}"
             )
         show = _git(["show", f"{BASELINE_TEMP_REF}:{BASELINE_REL}"], cwd=git_dir)
         if show.returncode == 0:

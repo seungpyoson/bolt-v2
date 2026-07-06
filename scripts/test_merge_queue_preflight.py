@@ -1167,6 +1167,86 @@ def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote(
             private_fetch.cleanup()
 
 
+def assert_private_fetch_resolves_raw_relative_origin_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            "../origin.git",
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "raw-relative-origin no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "raw relative --origin path must fetch PR heads")
+
+
+def loose_object_mtimes(repo: pathlib.Path) -> dict[str, int]:
+    objects = repo / ".git" / "objects"
+    mtimes: dict[str, int] = {}
+    for shard in objects.iterdir():
+        if not shard.is_dir() or len(shard.name) != 2:
+            continue
+        for path in shard.iterdir():
+            if path.is_file():
+                mtimes[str(path.relative_to(objects))] = path.stat().st_mtime_ns
+    return mtimes
+
+
+def assert_private_fetches_do_not_freshen_checkout_objects() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        objects = [
+            path
+            for shard in (fixture.repo / ".git" / "objects").iterdir()
+            if shard.is_dir() and len(shard.name) == 2
+            for path in shard.iterdir()
+            if path.is_file()
+        ]
+        old_ns = 1_700_000_000_000_000_000
+        for path in objects:
+            os.utime(path, ns=(old_ns, old_ns))
+        before = loose_object_mtimes(fixture.repo)
+        rc, stdout, _ = run_preflight(
+            fixture.repo,
+            fixture.remote,
+            "1",
+            expect_success=False,
+        )
+        payload = parse_json(stdout)
+        assert_equal(rc, 3, "object-mtime no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "object-mtime private fetch pr heads")
+        after = loose_object_mtimes(fixture.repo)
+        assert_equal(after, before, "private preflight must not freshen checkout loose objects")
+
+
+def assert_remote_url_normalization_uses_shared_helper() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    if "REMOTE_URL_SCHEME_RE =" in source or "\ndef fetchable_remote_url(" in source:
+        raise AssertionError("remote URL normalization must live in one shared helper")
+
+
 def assert_verifier_worktrees_do_not_write_checkout_git_metadata() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -3098,6 +3178,9 @@ def main() -> int:
     assert_private_fetches_do_not_write_checkout_refs()
     assert_private_fetches_resolve_checkout_remote_names()
     assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
+    assert_private_fetch_resolves_raw_relative_origin_path()
+    assert_private_fetches_do_not_freshen_checkout_objects()
+    assert_remote_url_normalization_uses_shared_helper()
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_verifier_worktrees_can_read_checkout_object_database()
     assert_unsupported_mergify_queue_condition_does_not_match()

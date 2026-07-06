@@ -59,10 +59,46 @@ else:
     _TOML_DECODE_ERROR = tomllib.TOMLDecodeError
 
 SCRIPT_NAME = "clean-merged"
-HOOK_MARKER = f"# {SCRIPT_NAME}-managed"
+CLEAN_MERGED_HOOKS = ("post-merge", "post-checkout", "post-rewrite")
+HOOK_MANIFEST_NAME = "clean-merged.hooks-manifest.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 LOCK_FILE = "clean-merged.lock"
+GIT_HOOK_NAMES = frozenset(
+    (
+        "applypatch-msg",
+        "pre-applypatch",
+        "post-applypatch",
+        "pre-commit",
+        "pre-merge-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+        "pre-rebase",
+        "post-checkout",
+        "post-merge",
+        "pre-push",
+        "pre-receive",
+        "update",
+        "proc-receive",
+        "post-receive",
+        "post-update",
+        "reference-transaction",
+        "push-to-checkout",
+        "pre-auto-gc",
+        "post-rewrite",
+        "sendemail-validate",
+        "fsmonitor-watchman",
+        "p4-changelist",
+        "p4-prepare-changelist",
+        "p4-post-changelist",
+        "p4-pre-submit",
+        "post-index-change",
+    )
+)
+HOOK_MANIFEST_ACTIVE_SCOPES = frozenset(("default", "local", "worktree", "global", "system"))
+HOOK_MANIFEST_SOURCE_DIR_SCOPES = frozenset(("local", "worktree", "global", "system"))
 # Internal marker that _lane_w_eligible prefixes onto the reason for a refused
 # detached-HEAD worktree; run_lane_w strips it and maps it to the distinct
 # 'refused-detached-head' action. Single source of truth shared by the producer
@@ -205,10 +241,13 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
     # Fallback for normal repos / linked worktrees (not submodules).
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            ["git", "rev-parse", "--git-common-dir"],
             cwd=repo_root, check=True, capture_output=True, text=True,
         )
         common_dir = pathlib.Path(out.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = repo_root / common_dir
+        common_dir = common_dir.resolve()
         candidate = common_dir.parent
         # Sanity check: parent should be a working tree, not inside .git/.
         if (candidate / ".git").exists() or (candidate.is_dir() and (candidate / "config").exists()):
@@ -412,10 +451,13 @@ def load_config(repo_root: pathlib.Path) -> Config:
 
 def git_common_dir(repo_root: pathlib.Path) -> pathlib.Path:
     out = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "rev-parse", "--git-common-dir"],
         cwd=repo_root, check=True, capture_output=True, text=True,
     )
-    return pathlib.Path(out.stdout.strip())
+    common_dir = pathlib.Path(out.stdout.strip())
+    if not common_dir.is_absolute():
+        common_dir = repo_root / common_dir
+    return common_dir.resolve()
 
 
 def _git(repo_root: pathlib.Path, args: list[str], *,
@@ -429,6 +471,1863 @@ def _git(repo_root: pathlib.Path, args: list[str], *,
         ["git", *args], cwd=repo_root, check=check, capture_output=True,
         text=True, timeout=timeout, env=full_env, input=input,
     )
+
+
+def _git_bytes(repo_root: pathlib.Path, args: list[str], *,
+               check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", *args], cwd=repo_root, check=check, capture_output=True,
+    )
+
+
+def _resolve_home_dir() -> pathlib.Path | None:
+    try:
+        return pathlib.Path.home()
+    except (KeyError, RuntimeError):
+        return None
+
+
+def _resolve_hooks_path(
+    repo_root: pathlib.Path,
+    raw: str,
+    *,
+    home_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    if raw == "~" or raw.startswith("~/"):
+        if home_dir is None:
+            home_dir = _resolve_home_dir()
+        if home_dir is not None:
+            suffix = raw[2:] if raw.startswith("~/") else ""
+            path = home_dir / suffix if suffix else home_dir
+        else:
+            path = pathlib.Path(raw)
+    else:
+        path = pathlib.Path(raw)
+    return path if path.is_absolute() else repo_root / path
+
+
+def _same_path(left: pathlib.Path, right: pathlib.Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left.absolute() == right.absolute()
+
+
+@dataclasses.dataclass(frozen=True)
+class ActiveHookDir:
+    path: pathlib.Path
+    source_scope: str
+
+
+@dataclasses.dataclass(frozen=True)
+class HookSnapshot:
+    source_file: pathlib.Path
+    hook_name: str
+    content: bytes
+    mode: int
+    sha256: str
+
+
+@dataclasses.dataclass(frozen=True)
+class PlannedShadowCopy:
+    destination: pathlib.Path
+    snapshot: HookSnapshot
+
+
+def _is_git_hook_name(name: str) -> bool:
+    return name in GIT_HOOK_NAMES
+
+
+def _git_config_value(repo_root: pathlib.Path, args: list[str]) -> str | None:
+    proc = _git(repo_root, ["config", *args], check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return proc.stdout.strip()
+
+
+def _worktree_config_enabled(repo_root: pathlib.Path) -> bool:
+    return _git_config_value(repo_root, ["--get", "extensions.worktreeConfig"]) == "true"
+
+
+def _tracked_hook_source_paths(repo_root: pathlib.Path) -> list[str]:
+    proc = _git(repo_root, ["ls-files", "-z", "--", ".githooks"], check=False)
+    if proc.returncode != 0:
+        return []
+    return sorted(
+        path for path in proc.stdout.split("\0")
+        if pathlib.PurePosixPath(path).parent == pathlib.PurePosixPath(".githooks")
+        and _is_git_hook_name(pathlib.PurePosixPath(path).name)
+    )
+
+
+def _dirty_tracked_hook_sources(repo_root: pathlib.Path) -> list[str]:
+    rel_paths = _tracked_hook_source_paths(repo_root)
+    if not rel_paths:
+        return []
+    dirty: set[str] = set()
+    for args in (
+        ["diff", "--name-only", "-z", "--", *rel_paths],
+        ["diff", "--cached", "--name-only", "-z", "--", *rel_paths],
+    ):
+        proc = _git(repo_root, args, check=False)
+        if proc.returncode == 0:
+            dirty.update(path for path in proc.stdout.split("\0") if path in rel_paths)
+    return sorted(dirty)
+
+
+def _raise_if_dirty_tracked_hook_sources(repo_root: pathlib.Path) -> None:
+    dirty_sources = _dirty_tracked_hook_sources(repo_root)
+    if dirty_sources:
+        raise CleanMergedError(
+            "tracked hook source(s) have local changes: "
+            + ", ".join(dirty_sources)
+            + "; restore or commit them before installing hooks"
+        )
+
+
+def _hook_manifest_path(common_dir: pathlib.Path) -> pathlib.Path:
+    return common_dir / HOOK_MANIFEST_NAME
+
+
+def _manifest_invalid(manifest_path: pathlib.Path, message: str) -> CleanMergedError:
+    return CleanMergedError(f"hook manifest invalid at {manifest_path}: {message}")
+
+
+def _manifest_required_string(
+    manifest_path: pathlib.Path,
+    entry: dict[str, Any],
+    field: str,
+    label: str,
+) -> str:
+    value = entry.get(field)
+    if not isinstance(value, str) or not value:
+        raise _manifest_invalid(manifest_path, f"{label}.{field} must be non-empty string")
+    return value
+
+
+def _validate_manifest_sha256(
+    manifest_path: pathlib.Path,
+    entry: dict[str, Any],
+    field: str,
+    label: str,
+) -> None:
+    value = entry.get(field)
+    if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+        raise _manifest_invalid(manifest_path, f"{label}.{field} must be sha256 hex")
+
+
+def _validate_hook_manifest_hook_entry(
+    manifest_path: pathlib.Path,
+    hook_name: str,
+    entry: Any,
+) -> None:
+    label = f"hooks.{hook_name}"
+    if not _is_git_hook_name(hook_name):
+        raise _manifest_invalid(manifest_path, f"{label} must be known Git hook name")
+    if not isinstance(entry, dict):
+        raise _manifest_invalid(manifest_path, f"{label} must be object")
+    source_kind = entry.get("source_kind")
+    if source_kind not in {"repo-source", "active-hook"}:
+        raise _manifest_invalid(manifest_path, f"{label} source_kind is invalid")
+    source_scope = entry.get("source_scope")
+    if source_kind == "repo-source":
+        if source_scope != "repo":
+            raise _manifest_invalid(manifest_path, f"{label} source_scope must be repo")
+    elif source_scope not in HOOK_MANIFEST_ACTIVE_SCOPES:
+        raise _manifest_invalid(
+            manifest_path,
+            f"{label} unsupported source_scope {source_scope}",
+        )
+    _manifest_required_string(manifest_path, entry, "source_path", label)
+    _validate_manifest_sha256(manifest_path, entry, "source_sha256", label)
+    _validate_manifest_sha256(manifest_path, entry, "runtime_sha256", label)
+
+
+def _validate_hook_manifest_shadowed_entry(
+    manifest_path: pathlib.Path,
+    hook_name: str,
+    entries: Any,
+) -> None:
+    label = f"shadowed_hooks.{hook_name}"
+    if not _is_git_hook_name(hook_name):
+        raise _manifest_invalid(manifest_path, f"{label} must be known Git hook name")
+    if not isinstance(entries, list):
+        raise _manifest_invalid(manifest_path, f"{label} must be array")
+    for index, entry in enumerate(entries):
+        entry_label = f"{label}[{index}]"
+        if not isinstance(entry, dict):
+            raise _manifest_invalid(manifest_path, f"{entry_label} must be object")
+        if entry.get("source_kind") != "active-hook":
+            raise _manifest_invalid(manifest_path, f"{entry_label} source_kind must be active-hook")
+        source_scope = entry.get("source_scope")
+        if source_scope not in HOOK_MANIFEST_ACTIVE_SCOPES:
+            raise _manifest_invalid(
+                manifest_path,
+                f"{entry_label} unsupported source_scope {source_scope}",
+            )
+        _manifest_required_string(manifest_path, entry, "source_path", entry_label)
+        _validate_manifest_sha256(manifest_path, entry, "source_sha256", entry_label)
+        _manifest_required_string(manifest_path, entry, "shadowed_by", entry_label)
+
+
+def _validate_hook_manifest_source_dir_entry(
+    manifest_path: pathlib.Path,
+    index: int,
+    entry: Any,
+) -> None:
+    label = f"source_dirs[{index}]"
+    if not isinstance(entry, dict):
+        raise _manifest_invalid(manifest_path, f"{label} must be object")
+    source_scope = entry.get("source_scope")
+    if source_scope not in HOOK_MANIFEST_SOURCE_DIR_SCOPES:
+        raise _manifest_invalid(
+            manifest_path,
+            f"{label} unsupported source_scope {source_scope}",
+        )
+    _manifest_required_string(manifest_path, entry, "source_path", label)
+
+
+def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
+    manifest_path = _hook_manifest_path(common_dir)
+    if not manifest_path.is_file():
+        return {"version": 1, "hooks": {}, "source_dirs": []}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CleanMergedError(f"hook manifest unreadable at {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise CleanMergedError(f"hook manifest invalid at {manifest_path}: root must be object")
+    if "hooks" not in manifest:
+        manifest["hooks"] = {}
+    elif not isinstance(manifest["hooks"], dict):
+        raise CleanMergedError(f"hook manifest invalid at {manifest_path}: hooks must be object")
+    if "shadowed_hooks" not in manifest:
+        manifest["shadowed_hooks"] = {}
+    elif not isinstance(manifest["shadowed_hooks"], dict):
+        raise CleanMergedError(
+            f"hook manifest invalid at {manifest_path}: shadowed_hooks must be object"
+        )
+    if "source_dirs" not in manifest:
+        manifest["source_dirs"] = []
+    elif not isinstance(manifest["source_dirs"], list):
+        raise CleanMergedError(
+            f"hook manifest invalid at {manifest_path}: source_dirs must be array"
+        )
+    for hook_name, entry in manifest["hooks"].items():
+        _validate_hook_manifest_hook_entry(manifest_path, hook_name, entry)
+    for hook_name, entries in manifest["shadowed_hooks"].items():
+        _validate_hook_manifest_shadowed_entry(manifest_path, hook_name, entries)
+    for index, entry in enumerate(manifest["source_dirs"]):
+        _validate_hook_manifest_source_dir_entry(manifest_path, index, entry)
+    return manifest
+
+
+def _hook_manifest_hooks(manifest: dict[str, Any]) -> dict[str, Any]:
+    hooks = manifest.get("hooks")
+    return hooks if isinstance(hooks, dict) else {}
+
+
+def _hook_manifest_shadowed(manifest: dict[str, Any]) -> dict[str, Any]:
+    shadowed = manifest.get("shadowed_hooks")
+    return shadowed if isinstance(shadowed, dict) else {}
+
+
+def _hook_manifest_source_dirs(manifest: dict[str, Any]) -> list[Any]:
+    source_dirs = manifest.get("source_dirs")
+    return source_dirs if isinstance(source_dirs, list) else []
+
+
+def _write_hook_manifest(
+    common_dir: pathlib.Path,
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hooks: dict[str, Any],
+    shadowed_hooks: dict[str, Any],
+    source_dirs: list[dict[str, str]],
+) -> None:
+    manifest = {
+        "version": 1,
+        "runtime_hooks_dir": str(runtime_hooks_dir),
+        "hooks": hooks,
+        "shadowed_hooks": shadowed_hooks,
+        "source_dirs": source_dirs,
+    }
+    _atomic_write_text(
+        _hook_manifest_path(common_dir),
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _bytes_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_hook_snapshot(source_file: pathlib.Path) -> HookSnapshot:
+    if source_file.is_symlink():
+        raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+    try:
+        source_stat = source_file.stat()
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        source_bytes = source_file.read_bytes()
+    except OSError as exc:
+        raise CleanMergedError(
+            f"hook source changed during install planning at {source_file}; retry setup"
+        ) from exc
+    return HookSnapshot(
+        source_file=source_file,
+        hook_name=source_file.name,
+        content=source_bytes,
+        mode=stat.S_IMODE(source_stat.st_mode),
+        sha256=_bytes_sha256(source_bytes),
+    )
+
+
+def _tracked_hook_snapshot(repo_root: pathlib.Path, rel_path: str) -> HookSnapshot:
+    source_file = repo_root / rel_path
+    tree_entry = _git(repo_root, ["ls-tree", "HEAD", "--", rel_path], check=False)
+    if tree_entry.returncode != 0 or not tree_entry.stdout.strip():
+        raise CleanMergedError(f"tracked hook source missing from HEAD: {rel_path}")
+    mode_text = tree_entry.stdout.split(maxsplit=1)[0]
+    if mode_text == "120000":
+        raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+    if mode_text not in {"100644", "100755"}:
+        raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+    blob = _git_bytes(repo_root, ["show", f"HEAD:{rel_path}"], check=False)
+    if blob.returncode != 0:
+        raise CleanMergedError(f"tracked hook source missing from HEAD: {rel_path}")
+    content = blob.stdout
+    return HookSnapshot(
+        source_file=source_file,
+        hook_name=source_file.name,
+        content=content,
+        mode=0o755 if mode_text == "100755" else 0o644,
+        sha256=_bytes_sha256(content),
+    )
+
+
+def _repo_relative_path(repo_root: pathlib.Path, path: pathlib.Path) -> str:
+    try:
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return str(path)
+
+
+def _is_executable(path: pathlib.Path) -> bool:
+    try:
+        return bool(path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    except OSError:
+        return False
+
+
+def _manifest_authorizes_overwrite(
+    entry: Any,
+    *,
+    destination_sha: str,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+) -> bool:
+    return (
+        isinstance(entry, dict)
+        and entry.get("source_kind") == source_kind
+        and entry.get("source_scope") == source_scope
+        and (
+            entry.get("source_path") == source_path
+            or source_scope in {"global", "local", "worktree", "system"}
+        )
+        and entry.get("runtime_sha256") == destination_sha
+    )
+
+
+def _record_hook_provenance(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+) -> None:
+    source_sha = _file_sha256(source_file)
+    manifest_hooks[destination.name] = {
+        "source_kind": source_kind,
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "runtime_sha256": _file_sha256(destination),
+    }
+
+
+def _record_planned_hook_provenance(
+    *,
+    destination_name: str,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    source_sha: str,
+    manifest_hooks: dict[str, Any],
+) -> None:
+    manifest_hooks[destination_name] = {
+        "source_kind": source_kind,
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "runtime_sha256": source_sha,
+    }
+
+
+def _validate_hook_copy_with_provenance(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+    source_sha: str | None = None,
+) -> None:
+    if source_file.is_symlink():
+        raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+    if destination.is_symlink():
+        raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
+    if _same_path(source_file, destination):
+        if not source_file.is_file():
+            raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        current_sha = _file_sha256(source_file)
+        entry = manifest_hooks.get(destination.name)
+        if isinstance(entry, dict) and entry.get("runtime_sha256") != current_sha:
+            raise CleanMergedError(
+                f"refusing to adopt modified runtime hook {destination.name} "
+                f"without installer provenance at {destination}"
+            )
+        return
+    source_sha = source_sha or _file_sha256(source_file)
+    if destination.exists():
+        if not destination.is_file():
+            raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
+        destination_sha = _file_sha256(destination)
+        if (
+            destination_sha != source_sha
+            and not _manifest_authorizes_overwrite(
+                manifest_hooks.get(destination.name),
+                destination_sha=destination_sha,
+                source_kind=source_kind,
+                source_scope=source_scope,
+                source_path=source_path,
+            )
+        ):
+            raise CleanMergedError(
+                f"refusing to overwrite hook {destination.name} without "
+                f"installer provenance at {destination}"
+            )
+
+
+def _apply_hook_snapshot(
+    *,
+    destination: pathlib.Path,
+    source_bytes: bytes,
+    source_mode: int,
+    source_kind: str,
+    source_sha: str,
+    same_path: bool,
+) -> None:
+    if same_path:
+        if _file_sha256(destination) != source_sha:
+            raise CleanMergedError(
+                f"hook source changed during install planning at {destination}; retry setup"
+            )
+        if source_kind == "repo-source":
+            destination.chmod(
+                destination.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mode = source_mode
+    if source_kind == "repo-source":
+        mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    tmp = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_bytes(source_bytes)
+        tmp.chmod(mode)
+        os.replace(str(tmp), str(destination))
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _shadowed_hook_destination(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+) -> pathlib.Path:
+    source_sha = _read_hook_snapshot(hook_file).sha256
+    return _shadowed_hook_destination_for_sha(common_dir, hook_file.name, source_sha)
+
+
+def _shadowed_hook_destination_for_sha(
+    common_dir: pathlib.Path,
+    hook_name: str,
+    source_sha: str,
+) -> pathlib.Path:
+    shadow_dir = common_dir / "clean-merged.shadowed-hooks"
+    return shadow_dir / f"{hook_name}.{source_sha}"
+
+
+def _validate_shadowed_hook_copy(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+) -> pathlib.Path:
+    if hook_file.is_symlink():
+        raise CleanMergedError(f"refusing to shadow symlink hook at {hook_file}")
+    destination = _shadowed_hook_destination(common_dir, hook_file)
+    if destination.is_symlink():
+        raise CleanMergedError(f"refusing to shadow into symlink hook at {destination}")
+    if destination.exists() and not destination.is_file():
+        raise CleanMergedError(f"refusing to shadow into non-file hook at {destination}")
+    if destination.exists() and _file_sha256(destination) != _file_sha256(hook_file):
+        raise CleanMergedError(f"refusing to shadow into mismatched hook at {destination}")
+    return destination
+
+
+def _apply_shadowed_hook_snapshot(
+    *,
+    destination: pathlib.Path,
+    source_bytes: bytes,
+    source_mode: int,
+    source_sha: str,
+) -> None:
+    if destination.exists():
+        if _file_sha256(destination) != source_sha:
+            raise CleanMergedError(f"shadowed hook copy changed since install at {destination}")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_bytes(source_bytes)
+        tmp.chmod(source_mode)
+        os.replace(str(tmp), str(destination))
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _is_shadowed_hook_backup_path(common_dir: pathlib.Path, path: pathlib.Path) -> bool:
+    return _same_path(path.parent, common_dir / "clean-merged.shadowed-hooks")
+
+
+def _validate_hook_removal_with_provenance(
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hook_name: str,
+    entry: dict[str, Any],
+) -> None:
+    destination = runtime_hooks_dir / hook_name
+    if not destination.exists() and not destination.is_symlink():
+        return
+    if destination.is_symlink() or not destination.is_file():
+        raise CleanMergedError(f"refusing to remove non-file hook at {destination}")
+    if entry.get("runtime_sha256") != _file_sha256(destination):
+        raise CleanMergedError(
+            f"refusing to remove hook {hook_name} without "
+            f"installer provenance at {destination}"
+        )
+
+
+def _validate_active_hook_runtime_unchanged(
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hook_name: str,
+    entry: dict[str, Any],
+) -> None:
+    destination = runtime_hooks_dir / hook_name
+    if (
+        destination.exists()
+        and destination.is_file()
+        and entry.get("runtime_sha256") != _file_sha256(destination)
+    ):
+        raise CleanMergedError(
+            f"refusing to adopt modified runtime hook {hook_name} "
+            f"without installer provenance at {destination}"
+        )
+
+
+def _apply_hook_removal(destination: pathlib.Path) -> None:
+    if not destination.exists() and not destination.is_symlink():
+        return
+    destination.unlink()
+
+
+def _install_plan_path_key(path: pathlib.Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path.absolute())
+
+
+@dataclasses.dataclass
+class HookInstallPlan:
+    preflight_operations: list[Callable[[], None]] = dataclasses.field(
+        default_factory=list
+    )
+    operations: list[Callable[[], None]] = dataclasses.field(default_factory=list)
+    unlinked_paths: set[str] = dataclasses.field(default_factory=set)
+
+    def will_unlink(self, path: pathlib.Path) -> bool:
+        return _install_plan_path_key(path) in self.unlinked_paths
+
+    def stage_shadow_copy(
+        self,
+        *,
+        common_dir: pathlib.Path,
+        hook_file: pathlib.Path,
+        source_snapshot: HookSnapshot | None = None,
+    ) -> PlannedShadowCopy:
+        destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+        snapshot = source_snapshot or _read_hook_snapshot(hook_file)
+        if destination != _shadowed_hook_destination_for_sha(
+            common_dir,
+            hook_file.name,
+            snapshot.sha256,
+        ):
+            raise CleanMergedError(
+                f"hook {hook_file.name} changed during install planning at {hook_file}; "
+                "retry setup"
+            )
+        self.preflight_operations.append(
+            lambda common_dir=common_dir, hook_file=hook_file, destination=destination:
+            _validate_planned_shadow_copy(common_dir, hook_file, destination)
+        )
+        if not destination.exists():
+            self.operations.append(
+                lambda destination=destination, snapshot=snapshot:
+                _apply_shadowed_hook_snapshot(
+                    destination=destination,
+                    source_bytes=snapshot.content,
+                    source_mode=snapshot.mode,
+                    source_sha=snapshot.sha256,
+                )
+            )
+        return PlannedShadowCopy(destination=destination, snapshot=snapshot)
+
+    def stage_unlink(self, path: pathlib.Path) -> None:
+        self.unlinked_paths.add(_install_plan_path_key(path))
+        self.operations.append(lambda path=path: _apply_hook_removal(path))
+
+    def stage_copy_hook(
+        self,
+        *,
+        source_file: pathlib.Path,
+        destination: pathlib.Path,
+        source_kind: str,
+        source_scope: str,
+        source_path: str,
+        manifest_hooks: dict[str, Any],
+        source_snapshot: HookSnapshot | None = None,
+    ) -> None:
+        validation_manifest_hooks = dict(manifest_hooks)
+        snapshot = source_snapshot or _read_hook_snapshot(source_file)
+        destination_will_be_unlinked = (
+            self.will_unlink(destination) and not _same_path(source_file, destination)
+        )
+        if destination_will_be_unlinked:
+            if source_file.is_symlink():
+                raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+            if not source_file.is_file():
+                raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        else:
+            _validate_hook_copy_with_provenance(
+                source_file=source_file,
+                destination=destination,
+                source_kind=source_kind,
+                source_scope=source_scope,
+                source_path=source_path,
+                manifest_hooks=validation_manifest_hooks,
+                source_sha=snapshot.sha256,
+            )
+        _record_planned_hook_provenance(
+            destination_name=destination.name,
+            source_kind=source_kind,
+            source_scope=source_scope,
+            source_path=source_path,
+            source_sha=snapshot.sha256,
+            manifest_hooks=manifest_hooks,
+        )
+        self.preflight_operations.append(
+            lambda source_file=source_file, destination=destination, source_kind=source_kind,
+            source_scope=source_scope, source_path=source_path,
+            manifest_hooks=validation_manifest_hooks,
+            destination_will_be_unlinked=destination_will_be_unlinked,
+            source_sha=snapshot.sha256:
+            _validate_planned_hook_copy(
+                source_file=source_file,
+                destination=destination,
+                source_kind=source_kind,
+                source_scope=source_scope,
+                source_path=source_path,
+                manifest_hooks=manifest_hooks,
+                destination_will_be_unlinked=destination_will_be_unlinked,
+                source_sha=source_sha,
+            )
+        )
+        self.unlinked_paths.discard(_install_plan_path_key(destination))
+        same_path = _same_path(source_file, destination)
+        self.operations.append(
+            lambda destination=destination, snapshot=snapshot,
+            source_kind=source_kind, source_sha=snapshot.sha256,
+            same_path=same_path:
+            _apply_hook_snapshot(
+                destination=destination,
+                source_bytes=snapshot.content,
+                source_mode=snapshot.mode,
+                source_kind=source_kind,
+                source_sha=source_sha,
+                same_path=same_path,
+            )
+        )
+
+    def stage_validate_clean_tracked_sources(
+        self,
+        *,
+        repo_root: pathlib.Path,
+    ) -> None:
+        self.preflight_operations.insert(
+            0,
+            lambda repo_root=repo_root: _raise_if_dirty_tracked_hook_sources(repo_root)
+        )
+
+    def stage_remove_hook(
+        self,
+        *,
+        runtime_hooks_dir: pathlib.Path,
+        hook_name: str,
+        entry: dict[str, Any],
+    ) -> None:
+        _validate_hook_removal_with_provenance(
+            runtime_hooks_dir=runtime_hooks_dir,
+            hook_name=hook_name,
+            entry=entry,
+        )
+        self.preflight_operations.append(
+            lambda runtime_hooks_dir=runtime_hooks_dir, hook_name=hook_name, entry=entry:
+            _validate_hook_removal_with_provenance(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+        )
+        destination = runtime_hooks_dir / hook_name
+        self.unlinked_paths.add(_install_plan_path_key(destination))
+        self.operations.append(lambda destination=destination: _apply_hook_removal(destination))
+
+    def stage_set_runtime_hooks_path(
+        self,
+        *,
+        invoke_root: pathlib.Path,
+        source_root: pathlib.Path,
+        runtime_hooks_dir: pathlib.Path,
+        home_dir: pathlib.Path | None,
+    ) -> None:
+        self.operations.append(
+            lambda: _set_runtime_hooks_path(
+                invoke_root=invoke_root,
+                source_root=source_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+        )
+
+    def stage_write_hook_manifest(
+        self,
+        common_dir: pathlib.Path,
+        *,
+        runtime_hooks_dir: pathlib.Path,
+        hooks: dict[str, Any],
+        shadowed_hooks: dict[str, Any],
+        source_dirs: list[dict[str, str]],
+    ) -> None:
+        planned_hooks = dict(hooks)
+        planned_shadowed_hooks = dict(shadowed_hooks)
+        planned_source_dirs = list(source_dirs)
+        self.operations.append(
+            lambda: _write_hook_manifest(
+                common_dir,
+                runtime_hooks_dir=runtime_hooks_dir,
+                hooks=planned_hooks,
+                shadowed_hooks=planned_shadowed_hooks,
+                source_dirs=planned_source_dirs,
+            )
+        )
+
+    def apply(self) -> None:
+        for operation in self.preflight_operations:
+            operation()
+        for operation in self.operations:
+            operation()
+
+
+def _validate_planned_shadow_copy(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+    expected_destination: pathlib.Path,
+) -> None:
+    destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+    if not _same_path(destination, expected_destination):
+        raise CleanMergedError(
+            f"hook {hook_file.name} changed during install planning at {hook_file}; "
+            "retry setup"
+        )
+
+
+def _validate_planned_hook_copy(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+    destination_will_be_unlinked: bool,
+    source_sha: str,
+) -> None:
+    if destination_will_be_unlinked:
+        if source_file.is_symlink():
+            raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+        if not source_file.is_file():
+            raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+    else:
+        _validate_hook_copy_with_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind=source_kind,
+            source_scope=source_scope,
+            source_path=source_path,
+            manifest_hooks=manifest_hooks,
+            source_sha=source_sha,
+        )
+    current_sha = _read_hook_snapshot(source_file).sha256
+    if current_sha != source_sha:
+        raise CleanMergedError(
+            f"hook source changed during install planning at {source_file}; retry setup"
+        )
+
+
+def _manifest_source_file(
+    repo_root: pathlib.Path,
+    entry: Any,
+    *,
+    hook_name: str | None = None,
+    invoke_root: pathlib.Path | None = None,
+    runtime_hooks_dir: pathlib.Path | None = None,
+    home_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("source_path")
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = pathlib.Path(raw)
+    manifest_path = path if path.is_absolute() else repo_root / path
+    hook_scope = str(entry.get("source_scope") or "manifest")
+    if hook_name is None:
+        return manifest_path
+    current_dir = _current_hooks_dir_for_scope(
+        hook_scope,
+        repo_root=repo_root,
+        invoke_root=invoke_root or repo_root,
+        home_dir=home_dir,
+    )
+    if hook_scope in {"global", "system"}:
+        return None if current_dir is None else current_dir / hook_name
+    if hook_scope in {"local", "worktree"}:
+        if current_dir is None:
+            return None
+        if runtime_hooks_dir is not None and _same_path(current_dir, runtime_hooks_dir):
+            return manifest_path
+        return current_dir / hook_name
+    return manifest_path
+
+
+def _record_planned_shadowed_hook(
+    *,
+    hook_file: pathlib.Path,
+    shadow_copy: PlannedShadowCopy,
+    repo_source_snapshot: HookSnapshot,
+    source_scope: str,
+    shadowed_hooks: dict[str, Any],
+    hook_name: str | None = None,
+    source_path: str | None = None,
+) -> None:
+    _record_shadowed_hook_snapshot(
+        hook_file=hook_file,
+        source_snapshot=shadow_copy.snapshot,
+        repo_source_snapshot=repo_source_snapshot,
+        source_scope=source_scope,
+        shadowed_hooks=shadowed_hooks,
+        hook_name=hook_name,
+        source_path=source_path,
+    )
+
+
+def _record_shadowed_hook_snapshot(
+    *,
+    hook_file: pathlib.Path,
+    source_snapshot: HookSnapshot,
+    repo_source_snapshot: HookSnapshot,
+    source_scope: str,
+    shadowed_hooks: dict[str, Any],
+    hook_name: str | None = None,
+    source_path: str | None = None,
+) -> None:
+    if source_snapshot.content == repo_source_snapshot.content:
+        return
+    manifest_hook_name = hook_name or hook_file.name
+    _record_shadowed_hook_entry(
+        manifest_hook_name=manifest_hook_name,
+        source_path=source_path or str(hook_file),
+        source_sha=source_snapshot.sha256,
+        repo_source_file=repo_source_snapshot.source_file,
+        shadowed_hooks=shadowed_hooks,
+        source_scope=source_scope,
+    )
+
+
+def _record_shadowed_hook_entry(
+    *,
+    manifest_hook_name: str,
+    source_path: str,
+    source_sha: str,
+    repo_source_file: pathlib.Path,
+    shadowed_hooks: dict[str, Any],
+    source_scope: str,
+) -> None:
+    entries = shadowed_hooks.setdefault(manifest_hook_name, [])
+    if not isinstance(entries, list):
+        entries = []
+        shadowed_hooks[manifest_hook_name] = entries
+    replacement = {
+        "source_kind": "active-hook",
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "shadowed_by": _repo_relative_path(repo_source_file.parent.parent, repo_source_file),
+    }
+    for index, entry in enumerate(entries):
+        if isinstance(entry, dict) and entry.get("source_path") == source_path:
+            entries[index] = replacement
+            break
+    else:
+        entries.append(replacement)
+
+
+def _validate_default_shadowed_hook_backup(
+    *,
+    hook_name: str,
+    entry: dict[str, Any],
+    source_file: pathlib.Path,
+) -> None:
+    if source_file.is_symlink() or not source_file.is_file():
+        raise CleanMergedError(
+            f"shadowed hook {hook_name} backup missing at {source_file}; "
+            "repair or remove hook manifest before running setup"
+        )
+    if entry.get("source_sha256") != _file_sha256(source_file):
+        raise CleanMergedError(
+            f"shadowed hook {hook_name} backup changed since install at {source_file}; "
+            "repair or remove hook manifest before running setup"
+        )
+
+
+def _preflight_default_shadow_backups(
+    *,
+    manifest: dict[str, Any],
+    source_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    common_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> None:
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if not isinstance(entries, list):
+            raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} is invalid"
+                )
+            if entry.get("source_scope") != "default":
+                continue
+            source_file = _manifest_source_file(
+                source_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+            if source_file is None:
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} has invalid source_path"
+                )
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
+
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        if (
+            not isinstance(entry, dict)
+            or entry.get("source_kind") != "active-hook"
+            or entry.get("source_scope") != "default"
+        ):
+            continue
+        source_file = _manifest_source_file(
+            source_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        if source_file is None:
+            raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if not _is_shadowed_hook_backup_path(common_dir, source_file):
+            continue
+        _validate_default_shadowed_hook_backup(
+            hook_name=hook_name,
+            entry=entry,
+            source_file=source_file,
+        )
+
+
+def _preflight_manifest_hook_runtime_state(
+    *,
+    manifest: dict[str, Any],
+    source_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    common_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+    source_hook_names: set[str],
+) -> None:
+    manifest_hooks = _hook_manifest_hooks(manifest)
+    source_hooks_dir = source_root / ".githooks"
+    removable_scopes = {"global", "local", "worktree", "system"}
+    for hook_name, entry in sorted(manifest_hooks.items()):
+        if not isinstance(entry, dict):
+            raise CleanMergedError(f"hook manifest entry for {hook_name} is invalid")
+        source_kind = entry.get("source_kind")
+        if source_kind == "repo-source":
+            if hook_name in source_hook_names:
+                source_file = source_hooks_dir / hook_name
+                _validate_hook_copy_with_provenance(
+                    source_file=source_file,
+                    destination=runtime_hooks_dir / hook_name,
+                    source_kind="repo-source",
+                    source_scope="repo",
+                    source_path=_repo_relative_path(source_root, source_file),
+                    manifest_hooks=manifest_hooks,
+                )
+            else:
+                _validate_hook_removal_with_provenance(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+            continue
+        if source_kind != "active-hook":
+            raise CleanMergedError(f"hook manifest entry for {hook_name} is invalid")
+
+        source_file = _manifest_source_file(
+            source_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        source_scope = str(entry.get("source_scope") or "manifest")
+        if source_file is None:
+            if entry.get("source_scope") in removable_scopes:
+                _validate_active_hook_runtime_unchanged(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+                _validate_hook_removal_with_provenance(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+                continue
+            raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if source_scope == "default" and _is_shadowed_hook_backup_path(common_dir, source_file):
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
+        if not source_file.is_file():
+            _validate_active_hook_runtime_unchanged(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+            _validate_hook_removal_with_provenance(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+            continue
+        if hook_name in source_hook_names:
+            if source_file.is_symlink():
+                raise CleanMergedError(f"refusing to record symlink hook at {source_file}")
+            continue
+        destination = runtime_hooks_dir / hook_name
+        _validate_active_hook_runtime_unchanged(
+            runtime_hooks_dir=runtime_hooks_dir,
+            hook_name=hook_name,
+            entry=entry,
+        )
+        _validate_hook_copy_with_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind="active-hook",
+            source_scope=source_scope,
+            source_path=str(source_file),
+            manifest_hooks=manifest_hooks,
+        )
+
+
+def _preflight_fresh_shadow_collisions(
+    *,
+    active_hook_dirs: list[ActiveHookDir],
+    source_hook_snapshots_by_name: dict[str, HookSnapshot],
+    manifest_hooks: dict[str, Any],
+    runtime_hooks_dir: pathlib.Path,
+    common_dir: pathlib.Path,
+) -> None:
+    seen: set[pathlib.Path] = set()
+    candidate_dirs = [
+        runtime_hooks_dir,
+        *(active_hooks.path for active_hooks in active_hook_dirs),
+    ]
+    source_hook_names = set(source_hook_snapshots_by_name)
+    for active_hooks_dir in candidate_dirs:
+        if not active_hooks_dir.is_dir():
+            continue
+        try:
+            active_dir_key = active_hooks_dir.resolve()
+        except OSError:
+            active_dir_key = active_hooks_dir.absolute()
+        if active_dir_key in seen:
+            continue
+        seen.add(active_dir_key)
+        for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
+            if (
+                not _is_git_hook_name(hook_file.name)
+                or hook_file.name not in source_hook_names
+            ):
+                continue
+            if hook_file.is_symlink() or not hook_file.is_file():
+                _validate_shadowed_hook_copy(common_dir, hook_file)
+                continue
+            if hook_file.name in manifest_hooks:
+                continue
+            snapshot = _read_hook_snapshot(hook_file)
+            if snapshot.content == source_hook_snapshots_by_name[hook_file.name].content:
+                continue
+            _validate_shadowed_hook_copy(common_dir, hook_file)
+
+
+def _configured_hooks_path(
+    *,
+    invoke_root: pathlib.Path,
+    source_root: pathlib.Path,
+) -> tuple[str, str | None]:
+    effective_raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
+    if effective_raw is None:
+        return "default", None
+    scoped = _git(
+        invoke_root,
+        ["config", "--show-scope", "--get", "core.hooksPath"],
+        check=False,
+    )
+    if scoped.returncode != 0 or not scoped.stdout.strip():
+        raise CleanMergedError(
+            "core.hooksPath is configured but Git did not report its config scope; "
+            "set it in repo-local, worktree, global, or system config before installing "
+            "clean-merged hooks"
+        )
+    parts = scoped.stdout.splitlines()[0].split(None, 1)
+    if len(parts) != 2:
+        raise CleanMergedError(
+            "core.hooksPath config scope output was not understood; set it in "
+            "repo-local, worktree, global, or system config before installing "
+            "clean-merged hooks"
+        )
+    source_scope, raw = parts
+    if source_scope in {"worktree", "local", "global", "system"}:
+        return source_scope, raw
+    raise CleanMergedError(
+        f"core.hooksPath comes from unsupported {source_scope} config scope; "
+        "set it in repo-local, worktree, global, or system config before installing "
+        "clean-merged hooks"
+    )
+
+
+def _current_hooks_dir_for_scope(
+    source_scope: str,
+    *,
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> pathlib.Path | None:
+    if source_scope == "worktree":
+        if not _worktree_config_enabled(invoke_root):
+            return None
+        raw = _git_config_value(invoke_root, ["--worktree", "--get", "core.hooksPath"])
+        base = invoke_root
+    elif source_scope == "local":
+        raw = _git_config_value(repo_root, ["--local", "--get", "core.hooksPath"])
+        base = repo_root
+    elif source_scope == "global":
+        raw = _git_config_value(invoke_root, ["--global", "--get", "core.hooksPath"])
+        base = invoke_root
+    elif source_scope == "system":
+        raw = _git_config_value(invoke_root, ["--system", "--get", "core.hooksPath"])
+        base = invoke_root
+    else:
+        return None
+    if raw is None:
+        return None
+    return _resolve_hooks_path(base, raw, home_dir=home_dir)
+
+
+def _hook_manifest_entry_source_dir(
+    repo_root: pathlib.Path,
+    entry: Any,
+    *,
+    hook_name: str,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> ActiveHookDir | None:
+    if not isinstance(entry, dict) or entry.get("source_kind") != "active-hook":
+        return None
+    source_scope = str(entry.get("source_scope") or "manifest")
+    if source_scope not in HOOK_MANIFEST_SOURCE_DIR_SCOPES:
+        return None
+    source_file = _manifest_source_file(
+        repo_root,
+        entry,
+        hook_name=hook_name,
+        invoke_root=invoke_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        home_dir=home_dir,
+    )
+    if source_file is None:
+        return None
+    return ActiveHookDir(source_file.parent, source_scope)
+
+
+def _hook_manifest_source_dir_entry(
+    repo_root: pathlib.Path,
+    entry: Any,
+    *,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> ActiveHookDir | None:
+    if not isinstance(entry, dict):
+        return None
+    source_scope = str(entry.get("source_scope") or "")
+    raw = entry.get("source_path")
+    if not isinstance(raw, str) or not raw:
+        return None
+    manifest_dir = pathlib.Path(raw)
+    if not manifest_dir.is_absolute():
+        manifest_dir = repo_root / manifest_dir
+    current_dir = _current_hooks_dir_for_scope(
+        source_scope,
+        repo_root=repo_root,
+        invoke_root=invoke_root,
+        home_dir=home_dir,
+    )
+    if source_scope in {"global", "system"}:
+        return None if current_dir is None else ActiveHookDir(current_dir, source_scope)
+    if source_scope in {"local", "worktree"}:
+        if current_dir is None:
+            return None
+        if _same_path(current_dir, runtime_hooks_dir):
+            return ActiveHookDir(manifest_dir, source_scope)
+        return ActiveHookDir(current_dir, source_scope)
+    return None
+
+
+def _manifest_active_hook_dirs(
+    manifest: dict[str, Any],
+    *,
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> list[ActiveHookDir]:
+    dirs: list[ActiveHookDir] = []
+    for entry in _hook_manifest_source_dirs(manifest):
+        candidate = _hook_manifest_source_dir_entry(
+            repo_root,
+            entry,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        if candidate is not None:
+            dirs.append(candidate)
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        candidate = _hook_manifest_entry_source_dir(
+            repo_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        if candidate is not None:
+            dirs.append(candidate)
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            candidate = _hook_manifest_entry_source_dir(
+                repo_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+            if candidate is not None:
+                dirs.append(candidate)
+    deduped: list[ActiveHookDir] = []
+    for candidate in dirs:
+        if not any(_same_path(candidate.path, existing.path) for existing in deduped):
+            deduped.append(candidate)
+    return deduped
+
+
+def _record_source_dir(
+    source_dirs: list[dict[str, str]],
+    hook_dir: ActiveHookDir,
+    *,
+    runtime_hooks_dir: pathlib.Path,
+) -> None:
+    if hook_dir.source_scope not in HOOK_MANIFEST_SOURCE_DIR_SCOPES:
+        return
+    if _same_path(hook_dir.path, runtime_hooks_dir):
+        return
+    entry = {
+        "source_scope": hook_dir.source_scope,
+        "source_path": str(hook_dir.path),
+    }
+    if entry not in source_dirs:
+        source_dirs.append(entry)
+
+
+def _active_hook_dirs(
+    *,
+    invoke_root: pathlib.Path,
+    source_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> list[ActiveHookDir]:
+    source_scope, raw = _configured_hooks_path(
+        invoke_root=invoke_root,
+        source_root=source_root,
+    )
+    if raw is None:
+        return [ActiveHookDir(runtime_hooks_dir, "default")]
+
+    if pathlib.Path(raw).is_absolute() or raw == "~" or raw.startswith("~/"):
+        return [
+            ActiveHookDir(
+                _resolve_hooks_path(source_root, raw, home_dir=home_dir),
+                source_scope,
+            )
+        ]
+
+    bases = (
+        [invoke_root]
+        if source_scope in {"worktree", "global", "system"}
+        else [source_root]
+    )
+    if source_scope == "local" and not _same_path(invoke_root, source_root):
+        bases.append(invoke_root)
+
+    candidates: list[ActiveHookDir] = []
+    for base in bases:
+        candidate = _resolve_hooks_path(base, raw, home_dir=home_dir)
+        if not any(_same_path(candidate, existing.path) for existing in candidates):
+            candidates.append(ActiveHookDir(candidate, source_scope))
+    return candidates
+
+
+def _effective_hooks_dir(
+    repo_root: pathlib.Path,
+    *,
+    home_dir: pathlib.Path | None,
+) -> pathlib.Path | None:
+    raw = _git_config_value(repo_root, ["--get", "core.hooksPath"])
+    if raw is None:
+        return None
+    return _resolve_hooks_path(repo_root, raw, home_dir=home_dir)
+
+
+def _set_runtime_hooks_path(
+    *,
+    invoke_root: pathlib.Path,
+    source_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> None:
+    _git(source_root, ["config", "--local", "core.hooksPath", str(runtime_hooks_dir)])
+    effective = _effective_hooks_dir(invoke_root, home_dir=home_dir)
+    if effective is not None and _same_path(effective, runtime_hooks_dir):
+        return
+
+    worktree_set = _git(
+        invoke_root,
+        ["config", "--worktree", "core.hooksPath", str(runtime_hooks_dir)],
+        check=False,
+    )
+    if worktree_set.returncode != 0:
+        raise CleanMergedError(
+            "core.hooksPath is still overridden outside repo-local config and "
+            f"worktree config could not be updated: {worktree_set.stderr.strip()}"
+        )
+    effective = _effective_hooks_dir(invoke_root, home_dir=home_dir)
+    if effective is None or not _same_path(effective, runtime_hooks_dir):
+        raise CleanMergedError(
+            f"core.hooksPath did not resolve to runtime hooks directory {runtime_hooks_dir}"
+        )
+
+
+def install_hooks(
+    invoke_root: pathlib.Path,
+    *,
+    source_root: pathlib.Path | None = None,
+    home_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    source_root = _main_worktree_root(invoke_root) if source_root is None else source_root
+    if not invoke_root.is_dir():
+        raise CleanMergedError(f"invoke worktree does not exist: {invoke_root}")
+    if not source_root.is_dir():
+        raise CleanMergedError(f"source worktree does not exist: {source_root}")
+    source_hooks_dir = source_root / ".githooks"
+    tracked_hook_paths = set(_tracked_hook_source_paths(source_root))
+    missing = [
+        name for name in CLEAN_MERGED_HOOKS
+        if (
+            not (source_hooks_dir / name).is_file()
+            or f".githooks/{name}" not in tracked_hook_paths
+        )
+    ]
+    if missing:
+        raise CleanMergedError(
+            "missing tracked clean-merged hook source(s): " + ", ".join(missing)
+        )
+    _raise_if_dirty_tracked_hook_sources(source_root)
+
+    common_dir = git_common_dir(source_root)
+    runtime_hooks_dir = common_dir / "hooks"
+    runtime_hooks_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _load_hook_manifest(common_dir)
+    manifest_hooks = dict(_hook_manifest_hooks(manifest))
+    shadowed_hooks: dict[str, Any] = {}
+    plan = HookInstallPlan()
+
+    configured_active_hook_dirs = _active_hook_dirs(
+        invoke_root=invoke_root,
+        source_root=source_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        home_dir=home_dir,
+    )
+    active_hook_dirs: list[ActiveHookDir] = []
+    for candidate in [
+        *configured_active_hook_dirs,
+        *_manifest_active_hook_dirs(
+            manifest,
+            repo_root=source_root,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        ),
+    ]:
+        if not any(_same_path(candidate.path, existing.path) for existing in active_hook_dirs):
+            active_hook_dirs.append(candidate)
+    source_hook_snapshots = sorted(
+        (
+            _tracked_hook_snapshot(source_root, rel_path)
+            for rel_path in tracked_hook_paths
+            if (source_root / rel_path).is_file()
+        ),
+        key=lambda snapshot: snapshot.hook_name,
+    )
+    source_hook_snapshots_by_name = {
+        snapshot.hook_name: snapshot for snapshot in source_hook_snapshots
+    }
+    source_hook_names = set(source_hook_snapshots_by_name)
+    _preflight_default_shadow_backups(
+        manifest=manifest,
+        source_root=source_root,
+        invoke_root=invoke_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        common_dir=common_dir,
+        home_dir=home_dir,
+    )
+    _preflight_manifest_hook_runtime_state(
+        manifest=manifest,
+        source_root=source_root,
+        invoke_root=invoke_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        common_dir=common_dir,
+        home_dir=home_dir,
+        source_hook_names=source_hook_names,
+    )
+    _preflight_fresh_shadow_collisions(
+        active_hook_dirs=active_hook_dirs,
+        source_hook_snapshots_by_name=source_hook_snapshots_by_name,
+        manifest_hooks=manifest_hooks,
+        runtime_hooks_dir=runtime_hooks_dir,
+        common_dir=common_dir,
+    )
+    source_dirs: list[dict[str, str]] = []
+    adopted_source_paths: set[str] = set()
+    runtime_source_scope = next(
+        (
+            active_hooks.source_scope
+            for active_hooks in active_hook_dirs
+            if _same_path(active_hooks.path, runtime_hooks_dir)
+        ),
+        "default",
+    )
+    if runtime_hooks_dir.is_dir():
+        for hook_file in sorted(runtime_hooks_dir.iterdir(), key=lambda path: path.name):
+            if (
+                not hook_file.is_file()
+                or not _is_git_hook_name(hook_file.name)
+                or hook_file.name not in source_hook_names
+            ):
+                continue
+            repo_source_snapshot = source_hook_snapshots_by_name[hook_file.name]
+            if hook_file.read_bytes() == repo_source_snapshot.content:
+                continue
+            if hook_file.name in manifest_hooks:
+                continue
+            shadow_copy = plan.stage_shadow_copy(
+                common_dir=common_dir,
+                hook_file=hook_file,
+            )
+            _record_planned_shadowed_hook(
+                hook_file=hook_file,
+                shadow_copy=shadow_copy,
+                repo_source_snapshot=repo_source_snapshot,
+                source_scope=runtime_source_scope,
+                shadowed_hooks=shadowed_hooks,
+                hook_name=hook_file.name,
+                source_path=str(shadow_copy.destination),
+            )
+            plan.stage_unlink(hook_file)
+    for active_hooks in active_hook_dirs:
+        _record_source_dir(
+            source_dirs,
+            active_hooks,
+            runtime_hooks_dir=runtime_hooks_dir,
+        )
+        if not active_hooks.path.is_dir() or not _same_path(active_hooks.path, runtime_hooks_dir):
+            continue
+        for hook_file in sorted(active_hooks.path.iterdir(), key=lambda path: path.name):
+            if plan.will_unlink(hook_file):
+                continue
+            if not hook_file.is_file() or not _is_git_hook_name(hook_file.name):
+                continue
+            if hook_file.name in source_hook_names:
+                repo_source_snapshot = source_hook_snapshots_by_name[hook_file.name]
+                if hook_file.read_bytes() == repo_source_snapshot.content:
+                    continue
+                if hook_file.name in manifest_hooks:
+                    continue
+                shadow_copy = plan.stage_shadow_copy(
+                    common_dir=common_dir,
+                    hook_file=hook_file,
+                )
+                _record_planned_shadowed_hook(
+                    hook_file=hook_file,
+                    shadow_copy=shadow_copy,
+                    repo_source_snapshot=repo_source_snapshot,
+                    source_scope=active_hooks.source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_file.name,
+                    source_path=str(shadow_copy.destination),
+                )
+                plan.stage_unlink(hook_file)
+                continue
+            entry = manifest_hooks.get(hook_file.name)
+            if isinstance(entry, dict):
+                if entry.get("runtime_sha256") != _file_sha256(hook_file):
+                    raise CleanMergedError(
+                        f"refusing to adopt modified runtime hook {hook_file.name} "
+                        f"without installer provenance at {hook_file}"
+                    )
+                adopted_source_paths.add(str(hook_file))
+                continue
+            _record_hook_provenance(
+                source_file=hook_file,
+                destination=hook_file,
+                source_kind="active-hook",
+                source_scope=active_hooks.source_scope,
+                source_path=str(hook_file),
+                manifest_hooks=manifest_hooks,
+            )
+            adopted_source_paths.add(str(hook_file))
+    for source_snapshot in source_hook_snapshots:
+        hook_file = source_snapshot.source_file
+        destination = runtime_hooks_dir / source_snapshot.hook_name
+        plan.stage_copy_hook(
+            source_file=hook_file,
+            destination=destination,
+            source_kind="repo-source",
+            source_scope="repo",
+            source_path=_repo_relative_path(source_root, hook_file),
+            manifest_hooks=manifest_hooks,
+            source_snapshot=source_snapshot,
+        )
+
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        if (
+            not isinstance(entry, dict)
+            or entry.get("source_kind") != "repo-source"
+            or hook_name in source_hook_names
+        ):
+            continue
+        plan.stage_remove_hook(
+            runtime_hooks_dir=runtime_hooks_dir,
+            hook_name=hook_name,
+            entry=entry,
+        )
+        manifest_hooks.pop(hook_name, None)
+
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if not isinstance(entries, list):
+            raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} is invalid"
+                )
+            source_file = _manifest_source_file(
+                source_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+            if source_file is None:
+                if entry.get("source_scope") in {"global", "local", "worktree", "system"}:
+                    continue
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} has invalid source_path"
+                )
+            source_scope = str(entry.get("source_scope") or "manifest")
+            if source_scope == "default":
+                _validate_default_shadowed_hook_backup(
+                    hook_name=hook_name,
+                    entry=entry,
+                    source_file=source_file,
+                )
+            if not source_file.is_file():
+                continue
+            adopted_source_paths.add(str(source_file))
+            if hook_name in source_hook_names:
+                if source_scope == "default":
+                    entries = shadowed_hooks.setdefault(hook_name, [])
+                    if not isinstance(entries, list):
+                        entries = []
+                        shadowed_hooks[hook_name] = entries
+                    entries.append(dict(entry))
+                else:
+                    repo_source_snapshot = source_hook_snapshots_by_name[hook_name]
+                    source_snapshot = _read_hook_snapshot(source_file)
+                    if source_snapshot.content == repo_source_snapshot.content:
+                        continue
+                    _record_shadowed_hook_snapshot(
+                        hook_file=source_file,
+                        source_snapshot=source_snapshot,
+                        repo_source_snapshot=repo_source_snapshot,
+                        source_scope=source_scope,
+                        shadowed_hooks=shadowed_hooks,
+                        hook_name=hook_name,
+                    )
+                continue
+            destination = runtime_hooks_dir / hook_name
+            plan.stage_copy_hook(
+                source_file=source_file,
+                destination=destination,
+                source_kind="active-hook",
+                source_scope=source_scope,
+                source_path=str(source_file),
+                manifest_hooks=manifest_hooks,
+            )
+
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        if not isinstance(entry, dict) or entry.get("source_kind") != "active-hook":
+            continue
+        source_file = _manifest_source_file(
+            source_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        source_scope = str(entry.get("source_scope") or "manifest")
+        if source_file is None:
+            if entry.get("source_scope") in {"global", "local", "worktree", "system"}:
+                plan.stage_remove_hook(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+                manifest_hooks.pop(hook_name, None)
+                continue
+            raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if source_scope == "default" and _is_shadowed_hook_backup_path(common_dir, source_file):
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
+        if not source_file.is_file():
+            plan.stage_remove_hook(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+            manifest_hooks.pop(hook_name, None)
+            continue
+        adopted_source_paths.add(str(source_file))
+        if hook_name in source_hook_names:
+            repo_source_snapshot = source_hook_snapshots_by_name[hook_name]
+            source_snapshot = _read_hook_snapshot(source_file)
+            if source_snapshot.content == repo_source_snapshot.content:
+                continue
+            if source_scope == "default" or _same_path(source_file.parent, runtime_hooks_dir):
+                shadow_copy = plan.stage_shadow_copy(
+                    common_dir=common_dir,
+                    hook_file=source_file,
+                    source_snapshot=source_snapshot,
+                )
+                _record_planned_shadowed_hook(
+                    hook_file=source_file,
+                    shadow_copy=shadow_copy,
+                    repo_source_snapshot=repo_source_snapshot,
+                    source_scope=source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_name,
+                    source_path=str(shadow_copy.destination),
+                )
+            else:
+                _record_shadowed_hook_snapshot(
+                    hook_file=source_file,
+                    source_snapshot=source_snapshot,
+                    repo_source_snapshot=repo_source_snapshot,
+                    source_scope=source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_name,
+                )
+            continue
+        destination = runtime_hooks_dir / hook_name
+        plan.stage_copy_hook(
+            source_file=source_file,
+            destination=destination,
+            source_kind="active-hook",
+            source_scope=source_scope,
+            source_path=str(source_file),
+            manifest_hooks=manifest_hooks,
+        )
+
+    for active_hooks in active_hook_dirs:
+        active_hooks_dir = active_hooks.path
+        if not active_hooks_dir.is_dir() or _same_path(active_hooks_dir, runtime_hooks_dir):
+            continue
+        for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
+            if (
+                not _is_git_hook_name(hook_file.name)
+                or str(hook_file) in adopted_source_paths
+            ):
+                continue
+            if hook_file.name in source_hook_names:
+                if hook_file.is_symlink() or not hook_file.is_file():
+                    _validate_shadowed_hook_copy(common_dir, hook_file)
+                    continue
+                repo_source_snapshot = source_hook_snapshots_by_name[hook_file.name]
+                source_snapshot = _read_hook_snapshot(hook_file)
+                if source_snapshot.content == repo_source_snapshot.content:
+                    continue
+                _record_shadowed_hook_snapshot(
+                    hook_file=hook_file,
+                    source_snapshot=source_snapshot,
+                    repo_source_snapshot=repo_source_snapshot,
+                    source_scope=active_hooks.source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                )
+                continue
+            if not hook_file.is_file():
+                continue
+            destination = runtime_hooks_dir / hook_file.name
+            plan.stage_copy_hook(
+                source_file=hook_file,
+                destination=destination,
+                source_kind="active-hook",
+                source_scope=active_hooks.source_scope,
+                source_path=str(hook_file),
+                manifest_hooks=manifest_hooks,
+            )
+
+    plan.stage_validate_clean_tracked_sources(repo_root=source_root)
+    plan.stage_set_runtime_hooks_path(
+        invoke_root=invoke_root,
+        source_root=source_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        home_dir=home_dir,
+    )
+    plan.stage_write_hook_manifest(
+        common_dir,
+        runtime_hooks_dir=runtime_hooks_dir,
+        hooks=manifest_hooks,
+        shadowed_hooks=shadowed_hooks,
+        source_dirs=source_dirs,
+    )
+    plan.apply()
+    return runtime_hooks_dir
 
 
 _REPORT_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -2421,7 +4320,239 @@ def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_da
     return handle
 
 
-def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
+def _hook_runtime_outside_allowed_problem(
+    hook_name: str,
+    hook_file: pathlib.Path,
+) -> str:
+    return (
+        f"hook {hook_name} runtime is outside allowed state; "
+        f"remove {hook_file} and run `just setup`"
+    )
+
+
+def _diagnose_hook_install_state(
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    common: pathlib.Path,
+    problems: list[str],
+) -> None:
+    expected_hooks_dir = common / "hooks"
+    committed_source_snapshots: dict[str, HookSnapshot] = {}
+    for rel_path in _tracked_hook_source_paths(repo_root):
+        try:
+            snapshot = _tracked_hook_snapshot(repo_root, rel_path)
+        except CleanMergedError:
+            continue
+        committed_source_snapshots[snapshot.hook_name] = snapshot
+    home_dir = _resolve_home_dir()
+    try:
+        hook_manifest = _load_hook_manifest(common)
+        manifest_hooks = _hook_manifest_hooks(hook_manifest)
+        manifest_shadowed = _hook_manifest_shadowed(hook_manifest)
+        manifest_loaded = True
+    except CleanMergedError as exc:
+        manifest_hooks = {}
+        manifest_shadowed = {}
+        manifest_loaded = False
+        problems.append(str(exc))
+        problems.append(
+            f"repair or remove hook manifest {_hook_manifest_path(common)} "
+            "and run `just setup`"
+        )
+
+    unsupported_hooks_path = False
+    try:
+        _source_scope, active_hooks_dir_raw = _configured_hooks_path(
+            invoke_root=invoke_root,
+            source_root=repo_root,
+        )
+    except CleanMergedError as exc:
+        unsupported_hooks_path = True
+        active_hooks_dir_raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
+        problems.append(str(exc))
+        problems.append("remove or convert unsupported core.hooksPath config, then run `just setup`")
+
+    if active_hooks_dir_raw:
+        active_hooks_dir = _resolve_hooks_path(
+            invoke_root,
+            active_hooks_dir_raw,
+            home_dir=home_dir,
+        )
+        print(f"  core.hooksPath           = {active_hooks_dir}")
+        if not unsupported_hooks_path:
+            if not _same_path(active_hooks_dir, expected_hooks_dir):
+                problems.append(
+                    "core.hooksPath is not git-common hooks directory (run `just setup`)"
+                )
+            for h in CLEAN_MERGED_HOOKS:
+                hook_file = active_hooks_dir / h
+                present = hook_file.exists() or hook_file.is_symlink()
+                regular_file = hook_file.is_file() and not hook_file.is_symlink()
+                executable = regular_file and _is_executable(hook_file)
+                source_snapshot = committed_source_snapshots.get(h)
+                source_match = (
+                    regular_file
+                    and source_snapshot is not None
+                    and hook_file.read_bytes() == source_snapshot.content
+                )
+                entry = manifest_hooks.get(h)
+                manifest_match = (
+                    regular_file
+                    and isinstance(entry, dict)
+                    and entry.get("runtime_sha256") == _file_sha256(hook_file)
+                )
+                print(
+                    f"  hook {h:14s} exists={present} source_match={source_match} "
+                    f"manifest_match={manifest_match} executable={executable}"
+                )
+                if not present:
+                    problems.append(f"hook {h} missing (run `just setup`)")
+                elif not regular_file:
+                    problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
+                elif (
+                    manifest_loaded
+                    and _same_path(active_hooks_dir, expected_hooks_dir)
+                    and not manifest_match
+                ):
+                    problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
+                elif _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
+                    problems.append(
+                        f"hook {h} runtime does not match tracked source (run `just setup`)"
+                    )
+                if _same_path(active_hooks_dir, expected_hooks_dir) and regular_file and not executable:
+                    problems.append(f"hook {h} is not executable (run `just setup`)")
+    else:
+        print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
+        problems.append("core.hooksPath unset; clean-merged hooks not active")
+
+    dirty_sources = _dirty_tracked_hook_sources(repo_root)
+    if dirty_sources:
+        problems.append(
+            "tracked hook source(s) have local changes: "
+            + ", ".join(dirty_sources)
+        )
+
+    for hook_name, entry in sorted(manifest_hooks.items()):
+        if not isinstance(entry, dict):
+            problems.append(f"hook {hook_name} manifest entry is invalid")
+            continue
+        hook_file = expected_hooks_dir / hook_name
+        runtime_present = hook_file.exists() or hook_file.is_symlink()
+        runtime_regular_file = hook_file.is_file() and not hook_file.is_symlink()
+        runtime_match = (
+            runtime_regular_file
+            and entry.get("runtime_sha256") == _file_sha256(hook_file)
+        )
+        source_file = _manifest_source_file(
+            repo_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=expected_hooks_dir,
+            home_dir=home_dir,
+        )
+        source_problem: str | None = None
+        if (
+            source_file is not None
+            and entry.get("source_kind") == "active-hook"
+            and entry.get("source_scope") == "default"
+            and _is_shadowed_hook_backup_path(common, source_file)
+        ):
+            try:
+                _validate_default_shadowed_hook_backup(
+                    hook_name=hook_name,
+                    entry=entry,
+                    source_file=source_file,
+                )
+            except CleanMergedError as exc:
+                source_problem = str(exc)
+        if entry.get("source_kind") == "repo-source":
+            source_snapshot = committed_source_snapshots.get(hook_name)
+            source_match = (
+                source_problem is None
+                and source_snapshot is not None
+                and entry.get("source_sha256") == source_snapshot.sha256
+            )
+        else:
+            source_match = (
+                source_problem is None
+                and source_file is not None
+                and source_file.is_file()
+                and not source_file.is_symlink()
+                and entry.get("source_sha256") == _file_sha256(source_file)
+            )
+        print(
+            f"  manifest hook {hook_name:14s} runtime_match={runtime_match} "
+            f"source_match={source_match}"
+        )
+        if hook_name not in CLEAN_MERGED_HOOKS and not runtime_match:
+            if runtime_present:
+                problems.append(_hook_runtime_outside_allowed_problem(hook_name, hook_file))
+            else:
+                problems.append(f"hook {hook_name} missing (run `just setup`)")
+        if (
+            entry.get("source_kind") == "repo-source"
+            and hook_name not in CLEAN_MERGED_HOOKS
+            and runtime_regular_file
+            and not _is_executable(hook_file)
+        ):
+            problems.append(f"hook {hook_name} is not executable (run `just setup`)")
+        if source_problem is not None:
+            problems.append(source_problem)
+        elif not source_match:
+            problems.append(f"hook {hook_name} source changed since install")
+
+    for hook_name, entries in sorted(manifest_shadowed.items()):
+        if not isinstance(entries, list):
+            problems.append(f"shadowed hook {hook_name} manifest entry is invalid")
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                problems.append(f"shadowed hook {hook_name} manifest entry is invalid")
+                continue
+            source_file = _manifest_source_file(
+                repo_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=expected_hooks_dir,
+                home_dir=home_dir,
+            )
+            source_problem: str | None = None
+            if (
+                source_file is not None
+                and entry.get("source_scope") == "default"
+                and _is_shadowed_hook_backup_path(common, source_file)
+            ):
+                try:
+                    _validate_default_shadowed_hook_backup(
+                        hook_name=hook_name,
+                        entry=entry,
+                        source_file=source_file,
+                    )
+                except CleanMergedError as exc:
+                    source_problem = str(exc)
+            source_match = (
+                source_problem is None
+                and source_file is not None
+                and source_file.is_file()
+                and not source_file.is_symlink()
+                and entry.get("source_sha256") == _file_sha256(source_file)
+            )
+            print(
+                f"  shadowed hook {hook_name:14s} source_match={source_match}"
+            )
+            if source_problem is not None:
+                problems.append(source_problem)
+            elif not source_match:
+                problems.append(f"shadowed hook {hook_name} source changed since install")
+
+
+def cmd_doctor_on_error(
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    exc: Exception,
+) -> int:
     """Doctor path that runs even when config parse failed.
 
     main() catches ConfigError before the doctor dispatch and returned 0 — so
@@ -2431,19 +4562,11 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     print(f"[{SCRIPT_NAME}] doctor")
     print(f"  CONFIG ERROR             = {exc}")
     print(f"  python                   = {_python_runtime_status()}")
+    problems: list[str] = []
     try:
         common = git_common_dir(repo_root)
         print(f"  git-common-dir           = {common}")
-        active = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
-        if active.returncode == 0 and active.stdout.strip():
-            hooks_dir = pathlib.Path(active.stdout.strip())
-            if not hooks_dir.is_absolute():
-                hooks_dir = repo_root / hooks_dir
-            print(f"  core.hooksPath           = {hooks_dir}")
-            for h in ("post-merge", "post-checkout", "post-rewrite"):
-                f = hooks_dir / h
-                managed = f.is_file() and HOOK_MARKER in f.read_text(encoding="utf-8", errors="replace")
-                print(f"  hook {h:14s} managed={managed}")
+        _diagnose_hook_install_state(repo_root, invoke_root, common, problems)
         # heartbeat freshness even on config error
         import datetime as _dt
         hb_paths = [
@@ -2462,12 +4585,17 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     except Exception as inner:  # noqa: BLE001
         print(f"  (additional error during doctor: {inner})")
     print()
+    if problems:
+        print(f"[{SCRIPT_NAME}] {len(problems)} hook/config problem(s):")
+        for problem in problems:
+            print(f"  - {problem}")
+        print()
     print(f"[{SCRIPT_NAME}] config parse failed; lanes are silently halted. "
           "Fix the config to resume automatic cleanup.")
     return 1
 
 
-def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
+def cmd_doctor(repo_root: pathlib.Path, invoke_root: pathlib.Path, config: Config) -> int:
     problems: list[str] = []
     print(f"[{SCRIPT_NAME}] doctor")
 
@@ -2489,24 +4617,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     # git-common-dir
     common = git_common_dir(repo_root)
     print(f"  git-common-dir           = {common}")
-
-    # hooks install
-    active_hooks_dir_raw = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
-    if active_hooks_dir_raw.returncode == 0 and active_hooks_dir_raw.stdout.strip():
-        active_hooks_dir = pathlib.Path(active_hooks_dir_raw.stdout.strip())
-        if not active_hooks_dir.is_absolute():
-            active_hooks_dir = repo_root / active_hooks_dir
-        print(f"  core.hooksPath           = {active_hooks_dir}")
-        for h in ("post-merge", "post-checkout", "post-rewrite"):
-            hook_file = active_hooks_dir / h
-            exists = hook_file.is_file()
-            managed = exists and HOOK_MARKER in hook_file.read_text(encoding="utf-8", errors="replace")
-            print(f"  hook {h:14s} exists={exists} managed={managed}")
-            if not managed:
-                problems.append(f"hook {h} not marked managed")
-    else:
-        print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
-        problems.append("core.hooksPath unset; clean-merged hooks not active")
+    _diagnose_hook_install_state(repo_root, invoke_root, common, problems)
 
     # remote.<remote>.prune must follow the configured remote name.
     prune_key = f"remote.{config.remote_name}.prune"
@@ -2678,6 +4789,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prune-backups", nargs="?", const=-1, type=int, default=None,
                    metavar="DAYS", help="prune backup refs older than DAYS")
     p.add_argument("--doctor", action="store_true", help="run diagnostic")
+    p.add_argument("--install-hooks", action="store_true",
+                   help="install generated runtime hooks for just setup")
     p.add_argument("--only-if-current-trunk", action="store_true",
                    help=argparse.SUPPRESS)
     p.add_argument("--redirect-output-to-lane-r-log", action="store_true",
@@ -2767,9 +4880,20 @@ def main(argv: list[str] | None = None) -> int:
     #
     # _resolve_repo_root and load_config can raise CleanMergedError; catch the
     # parent type so non-git dirs and bad common-dir resolution fail open.
+    repo_root = pathlib.Path.cwd()
+    invoke_root = repo_root
     try:
         invoke_root = _resolve_repo_root(pathlib.Path.cwd())
         repo_root = _main_worktree_root(invoke_root)
+        if args.install_hooks:
+            hooks_dir = install_hooks(
+                invoke_root,
+                source_root=repo_root,
+                home_dir=_resolve_home_dir(),
+            )
+            if not args.quiet:
+                print(f"[{SCRIPT_NAME}] installed hooks in {hooks_dir}")
+            return 0
         config = load_config(repo_root)
     except CleanMergedError as exc:
         # Don't crash the hook chain on config or git-resolution errors.
@@ -2777,10 +4901,12 @@ def main(argv: list[str] | None = None) -> int:
         # problem and exit non-zero.
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] error: {exc}", file=sys.stderr)
+        if args.install_hooks:
+            return 1
         if args.print_remote_name:
             return 1
         if args.doctor:
-            return cmd_doctor_on_error(repo_root=pathlib.Path.cwd(), exc=exc)
+            return cmd_doctor_on_error(repo_root=repo_root, invoke_root=invoke_root, exc=exc)
         return 0
 
     if args.print_remote_name:
@@ -2810,7 +4936,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Single-shot subcommands
     if args.doctor:
-        return cmd_doctor(repo_root, config)
+        return cmd_doctor(repo_root, invoke_root, config)
     if args.purge_quarantine is not None:
         grace = None if args.purge_quarantine == -1 else args.purge_quarantine
         cmd_purge_quarantine(repo_root, config, grace_days=grace, quiet=args.quiet)

@@ -273,6 +273,43 @@ def workflow_job_text(workflow_text: str, job_id: str) -> str:
     return ""
 
 
+def unquote_simple_yaml_scalar(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"'):
+        return stripped[1:-1]
+    return stripped
+
+
+def workflow_job_names(workflow_text: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for line in top_level_block(workflow_text, "jobs"):
+        match = re.match(r"^    name:\s*(.+?)\s*$", line)
+        if match is None:
+            continue
+        raw_name = match.group(1).strip()
+        if not raw_name or "${{" in raw_name:
+            continue
+        name = unquote_simple_yaml_scalar(raw_name)
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def workflow_activity_names_by_context(
+    *,
+    checks: tuple[ci_provenance.RequiredCheckConfig, ...],
+    workflow_dir: pathlib.Path,
+) -> dict[str, tuple[str, ...]]:
+    activity_names: dict[str, tuple[str, ...]] = {}
+    for check in checks:
+        names = [check.context]
+        for name in workflow_job_names(workflow_text_for_check(check, workflow_dir)):
+            if name not in names:
+                names.append(name)
+        activity_names[check.context] = tuple(names)
+    return activity_names
+
+
 def job_excludes_tag_refs(job_text: str) -> bool:
     return (
         "!startsWith(github.ref, 'refs/tags/" in job_text
@@ -422,10 +459,14 @@ def has_newer_incomplete_expected_app_run(
     check_runs: list[dict[str, object]],
     check: ci_provenance.RequiredCheckConfig,
     latest_context_run: dict[str, object],
+    activity_names: tuple[str, ...],
 ) -> bool:
     latest_context_key = check_run_attempt_sort_key(latest_context_run)
+    activity_name_set = set(activity_names)
     for run in check_runs:
         if app_id_for_run(run) != check.integration_id:
+            continue
+        if run.get("name") not in activity_name_set:
             continue
         if run.get("status") == "completed":
             continue
@@ -438,6 +479,7 @@ def pending_contexts(
     *,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
     check_runs: list[dict[str, object]],
+    activity_names_by_context: dict[str, tuple[str, ...]],
 ) -> tuple[str, ...]:
     pending: list[str] = []
     for check in checks:
@@ -451,6 +493,9 @@ def pending_contexts(
                 check_runs=check_runs,
                 check=check,
                 latest_context_run=latest,
+                activity_names=activity_names_by_context.get(
+                    check.context, (check.context,)
+                ),
             )
         ):
             pending.append(check.context)
@@ -497,6 +542,7 @@ def poll_required_check_runs(
     head_sha: str,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
     config: ci_provenance.ProvenanceConfig,
+    workflow_dir: pathlib.Path,
     settings: merge_readiness.MergeReadinessSettings,
     api_json=merge_readiness.github_api_json,
     monotonic: Callable[[], float] = time.monotonic,
@@ -519,7 +565,15 @@ def poll_required_check_runs(
             config=config,
             check_runs=latest_runs,
         )
-        latest_pending = pending_contexts(checks=latest_checks, check_runs=latest_runs)
+        activity_names = workflow_activity_names_by_context(
+            checks=latest_checks,
+            workflow_dir=workflow_dir,
+        )
+        latest_pending = pending_contexts(
+            checks=latest_checks,
+            check_runs=latest_runs,
+            activity_names_by_context=activity_names,
+        )
         if not latest_pending:
             return latest_runs, (), latest_checks
         if monotonic() >= deadline:
@@ -624,6 +678,7 @@ def enforce_coverage(
         head_sha=head_sha,
         checks=required_checks,
         config=ci_config,
+        workflow_dir=workflow_dir,
         settings=settings,
         api_json=api_json,
         monotonic=monotonic,

@@ -33,8 +33,6 @@ __pycache__/
 .sc/
 .mcp.json
 .review/
-/.slate/
-/slate.json
 # Generated SpecKit agent adapters are NOT committed; .specify/ templates are
 # the source of truth. Regenerate locally: `specify integration install
 # <agent>` (--force if the tool asks), then `git restore AGENTS.md CLAUDE.md

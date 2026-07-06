@@ -570,7 +570,22 @@ def assert_fast_path_config_validation_fails_closed() -> None:
         "[merge_queue_preflight.source_fence_fences_only_rewrites]\n"
         '"just source-fence-static" = "just source-fence-static-fences-only"\n\n'
     )
+    required_checks_block = (
+        "[merge_queue_preflight.required_check_workflows]\n"
+        '"gate" = "CI"\n'
+        '"backtester-gate" = "Backtester CI"\n'
+        '"actionlint" = "actionlint"\n'
+        '"host-health" = "CI"\n\n'
+    )
     cases = [
+        (
+            "empty required check workflow table",
+            lambda text: text.replace(
+                required_checks_block,
+                "[merge_queue_preflight.required_check_workflows]\n\n",
+            ),
+            "config.merge_queue_preflight.required_check_workflows must be a non-empty table",
+        ),
         (
             "empty source-fence full-profile pathspecs",
             lambda text: text.replace(

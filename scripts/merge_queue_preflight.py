@@ -2009,7 +2009,9 @@ def require_string_map(
     allow_empty: bool = False,
 ) -> dict[str, str]:
     value = parent.get(key)
-    if not isinstance(value, dict) or (not value and not allow_empty):
+    if not isinstance(value, dict):
+        raise PreflightError(f"{prefix}.{key} must be a table")
+    if not value and not allow_empty:
         raise PreflightError(f"{prefix}.{key} must be a non-empty table")
     result: dict[str, str] = {}
     for raw_key, raw_value in value.items():

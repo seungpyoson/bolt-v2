@@ -44,6 +44,7 @@ on:
 
 jobs:
   ci-policy:
+    name: ci-policy
     outputs:
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
@@ -56,6 +57,11 @@ jobs:
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - run: python3 scripts/test_host_health.py
+
+  clippy:
+    name: clippy
+    steps:
+      - run: just clippy
 
   gate:
     name: ${{ needs.ci-policy.outputs.gate_name }}
@@ -85,6 +91,7 @@ on:
 
 jobs:
   ci-policy:
+    name: bvs-ci-policy
     outputs:
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
     steps:
@@ -92,6 +99,7 @@ jobs:
           python3 "$policy_script" ci-policy --ref "${{ github.ref }}"
 
   clippy:
+    name: bvs-clippy
     if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
     steps:
       - run: just bte-clippy
@@ -578,6 +586,205 @@ def assert_stale_cancelled_gate_waits_for_current_workflow_activity() -> None:
         raise AssertionError(fake.requests)
 
 
+def assert_stale_cancelled_gate_ignores_other_workflow_activity() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run(
+                    "gate",
+                    run_id=1,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run("backtester-gate", run_id=2),
+                check_run("host-health", run_id=3),
+                check_run("actionlint", run_id=4),
+                check_run(
+                    "bvs-clippy",
+                    run_id=5,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+            ],
+        ],
+        event=merge_group_event(),
+        clock=FakeClock([0.0, 2.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if "gate latest terminal check-run" not in result.summary or "cancelled" not in result.summary:
+        raise AssertionError(result.summary)
+    get_requests = [
+        request for request in fake.requests if request[0] == "GET" and request[1].endswith("/check-runs")
+    ]
+    if len(get_requests) != 1:
+        raise AssertionError(fake.requests)
+
+
+def assert_stale_cancelled_backtester_gate_ignores_ci_workflow_activity() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate", run_id=1),
+                check_run(
+                    "backtester-gate",
+                    run_id=2,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run("host-health", run_id=3),
+                check_run("actionlint", run_id=4),
+                check_run(
+                    "clippy",
+                    run_id=5,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+            ],
+        ],
+        event=merge_group_event(),
+        clock=FakeClock([0.0, 2.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if (
+        "backtester-gate latest terminal check-run" not in result.summary
+        or "cancelled" not in result.summary
+    ):
+        raise AssertionError(result.summary)
+    get_requests = [
+        request for request in fake.requests if request[0] == "GET" and request[1].endswith("/check-runs")
+    ]
+    if len(get_requests) != 1:
+        raise AssertionError(fake.requests)
+
+
+def assert_stale_cancelled_gate_ignores_wrong_app_activity() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run(
+                    "gate",
+                    run_id=1,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run("backtester-gate", run_id=2),
+                check_run("host-health", run_id=3),
+                check_run("actionlint", run_id=4),
+                check_run(
+                    "clippy",
+                    run_id=5,
+                    app_id=999,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+            ],
+        ],
+        event=merge_group_event(),
+        clock=FakeClock([0.0, 2.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if "gate latest terminal check-run" not in result.summary or "cancelled" not in result.summary:
+        raise AssertionError(result.summary)
+    get_requests = [
+        request for request in fake.requests if request[0] == "GET" and request[1].endswith("/check-runs")
+    ]
+    if len(get_requests) != 1:
+        raise AssertionError(fake.requests)
+
+
+def assert_stale_cancelled_gate_fails_when_current_workflow_finishes_without_success() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run(
+                    "gate",
+                    run_id=1,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run("backtester-gate", run_id=2),
+                check_run("host-health", run_id=3),
+                check_run("actionlint", run_id=4),
+                check_run(
+                    "clippy",
+                    run_id=5,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+            ],
+            [
+                check_run(
+                    "gate",
+                    run_id=1,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run("backtester-gate", run_id=2),
+                check_run("host-health", run_id=3),
+                check_run("actionlint", run_id=4),
+                check_run(
+                    "clippy",
+                    run_id=5,
+                    conclusion="failure",
+                    started_at="2026-06-27T00:03:00Z",
+                    completed_at="2026-06-27T00:04:00Z",
+                ),
+            ],
+        ],
+        event=merge_group_event(),
+        clock=FakeClock([0.0, 0.0, 0.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if "gate latest terminal check-run" not in result.summary or "cancelled" not in result.summary:
+        raise AssertionError(result.summary)
+    get_requests = [
+        request for request in fake.requests if request[0] == "GET" and request[1].endswith("/check-runs")
+    ]
+    if len(get_requests) != 2:
+        raise AssertionError(fake.requests)
+
+
+def assert_successful_gate_ignores_unrelated_in_progress_activity() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate", run_id=1),
+                check_run("backtester-gate", run_id=2),
+                check_run("host-health", run_id=3),
+                check_run("actionlint", run_id=4),
+                check_run(
+                    "bvs-clippy",
+                    run_id=5,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+            ],
+        ],
+        event=merge_group_event(),
+    )
+    if result.conclusion != "success" or result.findings:
+        raise AssertionError(result)
+    get_requests = [
+        request for request in fake.requests if request[0] == "GET" and request[1].endswith("/check-runs")
+    ]
+    if len(get_requests) != 1:
+        raise AssertionError(fake.requests)
+
+
 def assert_r2_derivation_mismatch_fails() -> None:
     bad_config = CONFIG_TOML.replace(
         "[ci_provenance.required_checks.actionlint]\n"
@@ -883,6 +1090,11 @@ def main() -> int:
     assert_latest_expected_app_success_after_failure_succeeds()
     assert_newer_in_progress_expected_app_keeps_context_pending()
     assert_stale_cancelled_gate_waits_for_current_workflow_activity()
+    assert_stale_cancelled_gate_ignores_other_workflow_activity()
+    assert_stale_cancelled_backtester_gate_ignores_ci_workflow_activity()
+    assert_stale_cancelled_gate_ignores_wrong_app_activity()
+    assert_stale_cancelled_gate_fails_when_current_workflow_finishes_without_success()
+    assert_successful_gate_ignores_unrelated_in_progress_activity()
     assert_r2_derivation_mismatch_fails()
     assert_r2_derives_generic_tag_triggers()
     assert_fork_pr_uses_native_job_without_publishing()

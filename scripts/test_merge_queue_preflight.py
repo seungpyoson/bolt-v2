@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 
+import git_remote_utils
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
@@ -1245,6 +1247,40 @@ def assert_remote_url_normalization_uses_shared_helper() -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
     if "REMOTE_URL_SCHEME_RE =" in source or "\ndef fetchable_remote_url(" in source:
         raise AssertionError("remote URL normalization must live in one shared helper")
+
+
+def assert_shared_remote_url_normalization_matrix() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        source_repo = pathlib.Path(tmp) / "repo"
+        source_repo.mkdir()
+        absolute = str((source_repo.parent / "origin.git").resolve())
+        cases = {
+            "https://example.invalid/org/repo.git": "https://example.invalid/org/repo.git",
+            "ssh://example.invalid/org/repo.git": "ssh://example.invalid/org/repo.git",
+            "git@example.invalid:org/repo.git": "git@example.invalid:org/repo.git",
+            "file:///tmp/origin.git": "file:///tmp/origin.git",
+            absolute: absolute,
+            "~/origin.git": "~/origin.git",
+            "../origin.git": str((source_repo / "../origin.git").resolve(strict=False)),
+            "./origin.git": str((source_repo / "./origin.git").resolve(strict=False)),
+            "origin.git": str((source_repo / "origin.git").resolve(strict=False)),
+        }
+        for value, expected in cases.items():
+            assert_equal(
+                git_remote_utils.fetchable_remote_url(value, source_repo),
+                expected,
+                f"fetchable remote URL for {value}",
+            )
+        assert_equal(
+            git_remote_utils.fetchable_origin_argument("origin", source_repo),
+            "origin",
+            "bare remote name must stay a remote name",
+        )
+        assert_equal(
+            git_remote_utils.fetchable_origin_argument("../origin.git", source_repo),
+            str((source_repo / "../origin.git").resolve(strict=False)),
+            "raw relative origin path must resolve from checkout",
+        )
 
 
 def assert_verifier_worktrees_do_not_write_checkout_git_metadata() -> None:
@@ -3181,6 +3217,7 @@ def main() -> int:
     assert_private_fetch_resolves_raw_relative_origin_path()
     assert_private_fetches_do_not_freshen_checkout_objects()
     assert_remote_url_normalization_uses_shared_helper()
+    assert_shared_remote_url_normalization_matrix()
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_verifier_worktrees_can_read_checkout_object_database()
     assert_unsupported_mergify_queue_condition_does_not_match()

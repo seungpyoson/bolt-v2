@@ -1984,26 +1984,56 @@ def validate_source_check_aliases(
             )
 
 
-def validate_source_fence_fences_only_rewrites(rewrites: Mapping[str, str]) -> None:
+def cheap_local_gate_labels(root: Mapping[str, object]) -> frozenset[str]:
+    lane_policy = require_table(root, "local_lane_policy", "config")
+    labels = lane_policy.get("cheap_lane_labels")
+    if not isinstance(labels, list) or not labels:
+        raise PreflightError("config.local_lane_policy.cheap_lane_labels must be a non-empty string array")
+    result: set[str] = set()
+    for index, label in enumerate(labels):
+        if not isinstance(label, str) or not label:
+            raise PreflightError(f"config.local_lane_policy.cheap_lane_labels[{index}] must be a non-empty string")
+        if label.startswith("local-gate:"):
+            result.add(label)
+    if not result:
+        raise PreflightError("config.local_lane_policy.cheap_lane_labels must declare at least one local-gate label")
+    return frozenset(result)
+
+
+def just_recipe_from_rewrite_command(command: str, *, field: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError as exc:
+        raise PreflightError(
+            "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+            f"{field} contains an invalid shell command: {exc}"
+        ) from exc
+    if len(parts) != 2 or parts[0] != "just" or not parts[1]:
+        raise PreflightError(
+            "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+            f"{field} must be exactly 'just <public-recipe>'"
+        )
+    return parts[1]
+
+
+def validate_source_fence_fences_only_rewrites(
+    rewrites: Mapping[str, str],
+    cheap_gate_labels: frozenset[str],
+) -> None:
     for source, target in rewrites.items():
-        try:
-            source_parts = shlex.split(source)
-            target_parts = shlex.split(target)
-        except ValueError as exc:
+        just_recipe_from_rewrite_command(source, field="source")
+        target_recipe = just_recipe_from_rewrite_command(target, field="target")
+        if f"local-gate:{target_recipe}" not in cheap_gate_labels:
             raise PreflightError(
                 "config.merge_queue_preflight.source_fence_fences_only_rewrites "
-                f"contains an invalid shell command: {exc}"
-            ) from exc
-        if not source_parts or not target_parts:
-            raise PreflightError(
-                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
-                "commands must not be empty"
+                f"target {target!r} must route through a configured public local-gate label"
             )
 
 
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
+    cheap_gate_labels = cheap_local_gate_labels(root)
     origin = require_string(settings, "origin", "config.merge_queue_preflight")
     base = require_string(settings, "base", "config.merge_queue_preflight")
     default_profile = require_string(
@@ -2022,7 +2052,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         "source_fence_fences_only_rewrites",
         "config.merge_queue_preflight",
     )
-    validate_source_fence_fences_only_rewrites(source_fence_fences_only_rewrites)
+    validate_source_fence_fences_only_rewrites(source_fence_fences_only_rewrites, cheap_gate_labels)
     timeout_settings = require_table(settings, "timeouts", "config.merge_queue_preflight")
     verifier_timeout_seconds = require_positive_int(
         timeout_settings,

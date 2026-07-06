@@ -442,7 +442,8 @@ If the default profile claims to catch cheap deterministic Mergify waste, it mus
 cover the full cheap deterministic gate set or narrow its name and description.
 The source-fence reduced-profile selector must read its full-profile pathspecs
 from config, including source-fence governance files whose changes require the
-full fixture test phase.
+full fixture test phase. Configured reduced-profile rewrites must target public
+`just` recipes with declared `local-gate:` labels.
 
 ## Residual-Risk Lane
 

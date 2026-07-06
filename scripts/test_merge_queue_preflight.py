@@ -550,6 +550,67 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
     )
 
 
+def assert_fast_path_config_validation_fails_closed() -> None:
+    module = load_preflight_module()
+    rewrite_block = (
+        "[merge_queue_preflight.source_fence_fences_only_rewrites]\n"
+        '"just source-fence-static" = "just source-fence-static-fences-only"\n\n'
+    )
+    cases = [
+        (
+            "empty source-fence full-profile pathspecs",
+            lambda text: text.replace(
+                'source_fence_full_profile_pathspecs = ["scripts", "justfile", '
+                '"ci/rust-verification.toml", "ci/fail-closed-contracts.toml", '
+                '"ci/fail-closed-exceptions.toml", '
+                '"crates/backtesting-vertical-slice/ci/rust-verification.toml"]',
+                "source_fence_full_profile_pathspecs = []",
+            ),
+            "config.merge_queue_preflight.source_fence_full_profile_pathspecs must be a non-empty string array",
+        ),
+        (
+            "empty source-fence rewrite table",
+            lambda text: text.replace(rewrite_block, "[merge_queue_preflight.source_fence_fences_only_rewrites]\n\n"),
+            "config.merge_queue_preflight.source_fence_fences_only_rewrites must be a non-empty table",
+        ),
+        (
+            "malformed source-fence rewrite target",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "\'"',
+            ),
+            "target contains an invalid shell command",
+        ),
+        (
+            "source-fence rewrite target is not just",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "true"',
+            ),
+            "target must be exactly 'just <public-recipe>'",
+        ),
+        (
+            "source-fence rewrite target is private inner recipe",
+            lambda text: text.replace(
+                '"just source-fence-static" = "just source-fence-static-fences-only"',
+                '"just source-fence-static" = "just source-fence-static-fences-only-inner"',
+            ),
+            "must route through a configured public local-gate label",
+        ),
+    ]
+    for label, mutate, expected in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_preflight_config(pathlib.Path(tmp), "none", [])
+            write(config, mutate(config.read_text(encoding="utf-8")))
+            try:
+                module.load_config(config)
+            except module.PreflightError as exc:
+                if expected not in str(exc):
+                    raise AssertionError((label, str(exc), expected))
+            else:
+                raise AssertionError(f"{label} did not fail config load")
+
+
 def assert_source_check_alias_targets_must_have_workflows() -> None:
     module = load_preflight_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -927,6 +988,8 @@ def write_preflight_config(
     path = root / "preflight.toml"
     write(
         path,
+        "[local_lane_policy]\n"
+        'cheap_lane_labels = ["local-gate:source-fence-static", "local-gate:source-fence-static-fences-only"]\n\n'
         "[merge_queue_preflight]\n"
         'origin = "origin"\n'
         'base = "main"\n'
@@ -3736,6 +3799,7 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
+    assert_fast_path_config_validation_fails_closed()
     assert_source_check_alias_targets_must_have_workflows()
     assert_source_check_evidence_fallback_is_precise()
     assert_git_and_gh_use_input_timeout()

@@ -1,0 +1,196 @@
+<task-notification>
+<task-id>bexe70sxd</task-id>
+<summary>Monitor event: "Live session watch v2: orders, fills, settlements, halts, errors only"</summary>
+<event>EVENT: {'kind': 'exit_decision'}
+EVENT: {'kind': 'exit_decision'}</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+so explain the situation in palin english - make this very concise
+
+---
+
+<task-notification>
+<task-id>bexe70sxd</task-id>
+<summary>Monitor event: "Live session watch v2: orders, fills, settlements, halts, errors only"</summary>
+<event>EVENT: {'kind': 'exit_decision'}
+EVENT: {'kind': 'exit_decision'}
+EVENT: {'kind': 'exit_decision'}</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+ok so that's fine-  but I'm not asking to do all the safety fixes. do we have a sustainable system with stability or not
+
+---
+
+stop it
+
+---
+
+so was our math wrong? why is it so hard to see profitable trades?
+
+---
+
+so do we have the math logic? what the math was at the time?
+
+---
+
+but you literally missed the point why we triggered sell for 680 times
+
+---
+
+because the order book was empty? something was wrong?
+
+---
+
+ok so 1) our math (and strategy) was bad so we bought and when we should have taken the other side
+2) and there's a bug  right?
+
+---
+
+yes let's pull it up.
+
+---
+
+ok so that's what record says - but I think we need to check the actual data as well if that's possible - we may be blurting out
+
+---
+
+ok generate an execution handd of prompt
+
+---
+
+what should we do with 1155?
+
+---
+
+One honest footnote: today proved the healthy path loudly; the missing-input refusal path is proven by the merged tests, not yet by a live occurrence. The probe PR wouldn't change that either way — it's the same code answering the same question. I didn't understand this
+
+---
+
+close 1155 with rationale comment
+
+---
+
+2. The consolidated follow-up issue — draft still parked awaiting your yes/no (now plus two additions from the live session: replay tooling for captured book data, and the evidence-volume note). -> what is this?
+
+---
+
+yes file it.
+
+---
+
+I think 1255 - 1258 are completed. 
+
+Can you check which of the worktrees and brnaches can be removed? do not remove without getting confirmation from me:
+
+• Read-only snapshot.
+
+  Worktrees
+
+  - /Users/spson/Projects/Claude/bolt-v2: codex/gitignore-slate-state, clean, behind origin by 2
+  - /private/tmp/bolt-v2-debug-fail-a: codex/ws6-debug-fail-a, clean, synced
+  - /private/tmp/bolt-v2-debug-fail-b: codex/ws6-debug-fail-b, clean, synced
+  - /private/tmp/bolt-v2-round5-red: scratch/1218-round5-mu-floor-red, clean, synced
+  - /private/tmp/pr1222-r6-red: codex/bvs-r6-red-proof, clean, no upstream
+  - /private/tmp/pr1222-r7-red: codex/bvs-r7-red-proof, clean, synced
+  - /Users/spson/Projects/Claude/bolt-v2-wt-money: fix/1179-money-loop, dirty, upstream gone
+  - .worktrees/codex-1179-settlement-ruling-green: clean, synced
+  - .worktrees/codex-1179-settlement-ruling-red: clean, synced
+  - .worktrees/debug-test: feature/debug-test, dirty, no upstream
+  - .worktrees/fix-1165-env-entry-parser: detached HEAD, dirty
+  - .worktrees/fix-1272-position-market-lifecycle: dirty, ahead 1, behind 1
+
+  Dirty Worktrees
+
+  - fix/1179-money-loop: 15 modified files, upstream branch deleted.
+  - feature/debug-test: 3 modified files plus untracked .github/workflows/debug-test.yml.
+  - detached .worktrees/fix-1165-env-entry-parser: 3 modified CI provenance/hygiene scripts.
+  - fix/1272-position-market-lifecycle: 13 modified files, diverged from remote by ahead 1, behind 1.
+
+  Branches Without Worktrees
+
+  - Synced with upstream: codex/1179-settlement-f1-red, codex/1179-settlement-k2-red, codex/ci-fast-
+    linker-measure, codex/linker-ci-proof, codex/linker-ci-proof-main, most scratch/1218-* branches.
+
+  - Diverged: 712-positional-sizing-engine is ahead 1, behind 1.
+  - No upstream: docs/930-deploy-lane, codex/linker-ci-proof-measure-after, entire/checkpoints/v1,
+    redproof/brief9-facility-compact-hash, scratch/1218-round4-parity-red.
+
+  - Old/diverged from origin/main: docs/deploy-readiness-postmortem is ahead 2, behind 333; refactor/1068-
+    systematic-tech-debt is ahead 23, behind 82.
+
+  main is synced with origin/main at 5499603a9.
+
+---
+
+let's investigate for B-E and check whether they have work to preserve or not
+
+---
+
+are you 100% confident about this
+
+---
+
+but saving is just deferring for later - I want to know what the actual answer is
+
+---
+
+ok go
+
+---
+
+remove the origin swept
+
+---
+
+One side observation from the sweep, yours to act on or ignore: every push to origin triggers the Entire checkpoint-sync hook, and it's failing every time — the checkpoint repo rejects a 132MB metadata file (over GitHub's 100MB hard limit), so checkpoints are saving locally but haven't been syncing, and each push carries ~25 seconds of hook noise. Didn't touch it — the branch cleanup itself was unaffected. -> what should we do about this?
+
+---
+
+diagnose
+
+---
+
+updated entire
+
+---
+
+so explain the situation in plain english
+
+---
+
+no explain the entire case - in very concise manner.
+
+---
+
+no I meant the entire cli case we just surfaced
+
+---
+
+if I am okay with committing and pushing something, is there something we can do
+
+---
+
+give me an execution handoff prompt - I'll ask codex to handle this
+
+---
+
+given that you had a very long conversation, I want you to generate a very detailed - perfect - handoff prompt for a new Fable 5 session to start from here - I want
+1) very stable infra so that we can run strategies with confidence and no reservations
+2) a series of strategies (not just 1), not hardcoded to some main code, venue (e.g. polymarket), etc.
+3) I have a lot to do - dashboard, better backtesting, better CI - so these all need to be resolved.
+
+---
+
+no doesn't sound right - seems a lot like laundry list -  Stability to the point of no reservations. Finish the sequence: #1272 merged → supervised multi-interval session (full loops: trade→resolve→book→next; kill/restart cycle; bot-cash==on-chain-cash) → #1179 closed with acceptance accounting → then enforcement layers come ON in a declared stepwise way (kill switch, flatten, capital admission — session-two-plus decisions) → adverse-run script (deliberate input cut at launch, kill-mid-flatten, kill-mid-settlement). Reliability IS the edge (campaign thesis). 
+
+I'm not asking for gates, or loss management - I need to know something can execute orders without having errors. For example, we are having error right now so we are fixing it -
+
+---
+
+SAFETY EQUIPMENTS ARE EVIL. I do not want that. no gates - no gates for no reason. we are literally using most of NT - I still don't understand why we ended up with over 1000 issues and PRs

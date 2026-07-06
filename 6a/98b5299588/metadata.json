@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6a98b5299588",
+  "strategy": "manual-commit",
+  "branch": "codex/gitignore-slate-state",
+  "checkpoints_count": 14,
+  "files_touched": [
+    "ci/rust-verification.toml",
+    "scripts/merge_queue_preflight.py",
+    "scripts/test_merge_queue_preflight.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6a/98b5299588/0/metadata.json",
+      "transcript": "/6a/98b5299588/0/full.jsonl",
+      "compact_transcript": "/6a/98b5299588/0/transcript.jsonl",
+      "content_hash": "/6a/98b5299588/0/content_hash.txt",
+      "prompt": "/6a/98b5299588/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 273326,
+    "cache_creation_tokens": 8269100,
+    "cache_read_tokens": 630961872,
+    "output_tokens": 1662842,
+    "api_call_count": 1342
+  }
+}

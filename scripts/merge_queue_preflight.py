@@ -2001,9 +2001,15 @@ def load_toml(path: pathlib.Path) -> dict[str, object]:
     return data
 
 
-def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict[str, str]:
+def require_string_map(
+    parent: dict[str, object],
+    key: str,
+    prefix: str,
+    *,
+    allow_empty: bool = False,
+) -> dict[str, str]:
     value = parent.get(key)
-    if not isinstance(value, dict) or not value:
+    if not isinstance(value, dict) or (not value and not allow_empty):
         raise PreflightError(f"{prefix}.{key} must be a non-empty table")
     result: dict[str, str] = {}
     for raw_key, raw_value in value.items():
@@ -2225,6 +2231,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         settings,
         "source_check_aliases",
         "config.merge_queue_preflight",
+        allow_empty=True,
     )
     validate_source_check_aliases(source_check_aliases, required_check_workflows)
     output_settings = require_table(settings, "output", "config.merge_queue_preflight")

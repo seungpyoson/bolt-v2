@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
     let mut errors = Vec::new();
     let mut pool_ids = HashSet::new();
+    let mut venue_accounts = HashSet::new();
     let mut enforced_pool_count = 0usize;
 
     for pool in pools {
@@ -22,6 +23,10 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
         {
             errors.push(format!(
                 "{label}.venue_id must be canonical uppercase when submit admission enforcement is enabled"
+            ));
+        } else if !venue_accounts.insert((pool.venue_id.clone(), pool.account_id.to_string())) {
+            errors.push(format!(
+                "{label}.venue_id/account_id pair must be unique across risk.capital_pools"
             ));
         }
         if pool.collateral_currency.trim().is_empty() {

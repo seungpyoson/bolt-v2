@@ -5,7 +5,8 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
     BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
     BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-    BoltV3RequoteThrottleEvidence, BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
+    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_loss_governor::{
@@ -1181,6 +1182,19 @@ impl BoltV3DecisionEvidenceWriter for RecordingLossHaltEvidenceWriter {
     fn record_requote_throttle(
         &self,
         _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
         self.increment_other_evidence_channel();
         Ok(())

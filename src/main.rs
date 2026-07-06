@@ -1251,16 +1251,8 @@ fn ops_status_operator_health_from_loaded(
         },
     };
     let capital_admission_configured =
-        loaded
-            .root
-            .risk
-            .capital_pools
-            .as_ref()
-            .is_some_and(|pools| {
-                pools.iter().any(|pool| {
-                    pool.enforce_submit_admission && pool.prediction_market_binary.is_some()
-                })
-            });
+        bolt_v2::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(&loaded.root)
+            .is_some();
     let reference_source_count = loaded
         .strategies
         .iter()

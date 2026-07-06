@@ -1831,6 +1831,32 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("unsupported command config scope", proc.stderr)
 
+    def test_doctor_reports_untrackable_command_scope_without_setup_loop(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        command_hooks = self.tmp / "command-hooks-doctor"
+        command_hooks.mkdir()
+        command_commit_msg = command_hooks / "commit-msg"
+        command_commit_msg.write_text("#!/bin/sh\nprintf command-hook\n", encoding="utf-8")
+        command_commit_msg.chmod(0o755)
+
+        proc = run_clean_proc(
+            self.work,
+            "--doctor",
+            env={
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": str(command_hooks),
+            },
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("unsupported command config scope", proc.stdout)
+        self.assertIn("remove or convert unsupported core.hooksPath config", proc.stdout)
+        self.assertNotIn(
+            "core.hooksPath is not git-common hooks directory (run `just setup`)",
+            proc.stdout,
+        )
+
     def test_install_hooks_removes_global_hook_when_global_path_unset(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-unset"
@@ -1955,6 +1981,44 @@ class CleanupContractTests(unittest.TestCase):
             proc.stdout,
         )
         self.assertNotIn("runtime is outside allowed state", proc.stdout)
+
+    def test_install_hooks_accepts_legacy_manifest_without_optional_containers(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest_path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertIsInstance(manifest["hooks"], dict)
+        self.assertIsInstance(manifest["shadowed_hooks"], dict)
+        self.assertIsInstance(manifest["source_dirs"], list)
+
+    def test_manifest_null_container_reports_recovery_without_traceback(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest_path.write_text(
+            json.dumps({"version": 1, "hooks": None}),
+            encoding="utf-8",
+        )
+
+        setup = run_clean_proc(self.work, "--install-hooks")
+        doctor = run_clean_proc(self.work, "--doctor")
+
+        self.assertEqual(setup.returncode, 1)
+        self.assertIn("hooks must be object", setup.stderr)
+        self.assertNotIn("Traceback", setup.stderr)
+        self.assertNotEqual(doctor.returncode, 0)
+        self.assertIn("hooks must be object", doctor.stdout)
+        self.assertIn(
+            f"repair or remove hook manifest {manifest_path} and run `just setup`",
+            doctor.stdout,
+        )
+        self.assertNotIn("Traceback", doctor.stderr)
 
     def test_install_hooks_refuses_invalid_manifest_hook_entry(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -2232,6 +2296,53 @@ class CleanupContractTests(unittest.TestCase):
             shadowed_path.read_text(encoding="utf-8"),
             "#!/bin/sh\nprintf default-local-post-merge\n",
         )
+
+    def test_install_hooks_repeated_default_runtime_adopted_hook_is_idempotent(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        local_hook = runtime_hooks / "commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf default-commit-msg\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+
+        first = run_clean_proc(self.work, "--install-hooks")
+        second = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertNotIn("SameFileError", second.stderr)
+        self.assertEqual(
+            local_hook.read_text(encoding="utf-8"),
+            "#!/bin/sh\nprintf default-commit-msg\n",
+        )
+
+    def test_install_hooks_repeated_default_runtime_collision_keeps_manifest_valid(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+
+        first = run_clean_proc(self.work, "--install-hooks")
+        second = run_clean_proc(self.work, "--install-hooks")
+        third = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(third.returncode, 0, third.stderr)
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertFalse(
+            any(entry["source_scope"] == "default" for entry in manifest["source_dirs"])
+        )
+        self.assertTrue(manifest["shadowed_hooks"]["post-merge"])
 
     def test_install_hooks_shadow_records_runtime_collision_with_nondefault_active_dir(
         self,

@@ -665,30 +665,27 @@ def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
         raise CleanMergedError(f"hook manifest unreadable at {manifest_path}: {exc}") from exc
     if not isinstance(manifest, dict):
         raise CleanMergedError(f"hook manifest invalid at {manifest_path}: root must be object")
-    hooks = manifest.get("hooks")
-    if hooks is None:
+    if "hooks" not in manifest:
         manifest["hooks"] = {}
-    elif not isinstance(hooks, dict):
+    elif not isinstance(manifest["hooks"], dict):
         raise CleanMergedError(f"hook manifest invalid at {manifest_path}: hooks must be object")
-    shadowed = manifest.get("shadowed_hooks")
-    if shadowed is None:
+    if "shadowed_hooks" not in manifest:
         manifest["shadowed_hooks"] = {}
-    elif not isinstance(shadowed, dict):
+    elif not isinstance(manifest["shadowed_hooks"], dict):
         raise CleanMergedError(
             f"hook manifest invalid at {manifest_path}: shadowed_hooks must be object"
         )
-    source_dirs = manifest.get("source_dirs")
-    if source_dirs is None:
+    if "source_dirs" not in manifest:
         manifest["source_dirs"] = []
-    elif not isinstance(source_dirs, list):
+    elif not isinstance(manifest["source_dirs"], list):
         raise CleanMergedError(
             f"hook manifest invalid at {manifest_path}: source_dirs must be array"
         )
-    for hook_name, entry in hooks.items():
+    for hook_name, entry in manifest["hooks"].items():
         _validate_hook_manifest_hook_entry(manifest_path, hook_name, entry)
-    for hook_name, entries in shadowed.items():
+    for hook_name, entries in manifest["shadowed_hooks"].items():
         _validate_hook_manifest_shadowed_entry(manifest_path, hook_name, entries)
-    for index, entry in enumerate(source_dirs):
+    for index, entry in enumerate(manifest["source_dirs"]):
         _validate_hook_manifest_source_dir_entry(manifest_path, index, entry)
     return manifest
 
@@ -803,6 +800,25 @@ def _copy_hook_with_provenance(
         raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
     if destination.is_symlink():
         raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
+    if _same_path(source_file, destination):
+        if not source_file.is_file():
+            raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        if source_kind == "repo-source":
+            destination.chmod(
+                destination.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+        _record_hook_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind=source_kind,
+            source_scope=source_scope,
+            source_path=source_path,
+            manifest_hooks=manifest_hooks,
+        )
+        return
     source_sha = _file_sha256(source_file)
     if destination.exists():
         if not destination.is_file():
@@ -1028,6 +1044,9 @@ def _hook_manifest_entry_source_dir(
 ) -> ActiveHookDir | None:
     if not isinstance(entry, dict) or entry.get("source_kind") != "active-hook":
         return None
+    source_scope = str(entry.get("source_scope") or "manifest")
+    if source_scope not in HOOK_MANIFEST_SOURCE_DIR_SCOPES:
+        return None
     source_file = _manifest_source_file(
         repo_root,
         entry,
@@ -1038,7 +1057,7 @@ def _hook_manifest_entry_source_dir(
     )
     if source_file is None:
         return None
-    return ActiveHookDir(source_file.parent, str(entry.get("source_scope") or "manifest"))
+    return ActiveHookDir(source_file.parent, source_scope)
 
 
 def _hook_manifest_source_dir_entry(
@@ -1132,6 +1151,8 @@ def _record_source_dir(
     *,
     runtime_hooks_dir: pathlib.Path,
 ) -> None:
+    if hook_dir.source_scope not in HOOK_MANIFEST_SOURCE_DIR_SCOPES:
+        return
     if _same_path(hook_dir.path, runtime_hooks_dir):
         return
     entry = {
@@ -1421,6 +1442,7 @@ def install_hooks(
                     repo_source_file=source_hooks_dir / hook_name,
                     source_scope=source_scope,
                     shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_name,
                 )
                 continue
             destination = runtime_hooks_dir / hook_name
@@ -1469,6 +1491,7 @@ def install_hooks(
                 repo_source_file=source_hooks_dir / hook_name,
                 source_scope=str(entry.get("source_scope") or "manifest"),
                 shadowed_hooks=shadowed_hooks,
+                hook_name=hook_name,
             )
             continue
         destination = runtime_hooks_dir / hook_name
@@ -3550,52 +3573,68 @@ def _diagnose_hook_install_state(
             "and run `just setup`"
         )
 
-    active_hooks_dir_raw = _git(invoke_root, ["config", "--get", "core.hooksPath"], check=False)
-    if active_hooks_dir_raw.returncode == 0 and active_hooks_dir_raw.stdout.strip():
+    unsupported_hooks_path = False
+    try:
+        _source_scope, active_hooks_dir_raw = _configured_hooks_path(
+            invoke_root=invoke_root,
+            source_root=repo_root,
+        )
+    except CleanMergedError as exc:
+        unsupported_hooks_path = True
+        active_hooks_dir_raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
+        problems.append(str(exc))
+        problems.append("remove or convert unsupported core.hooksPath config, then run `just setup`")
+
+    if active_hooks_dir_raw:
         active_hooks_dir = _resolve_hooks_path(
             invoke_root,
-            active_hooks_dir_raw.stdout.strip(),
+            active_hooks_dir_raw,
             home_dir=home_dir,
         )
         print(f"  core.hooksPath           = {active_hooks_dir}")
-        if not _same_path(active_hooks_dir, expected_hooks_dir):
-            problems.append("core.hooksPath is not git-common hooks directory (run `just setup`)")
-        for h in CLEAN_MERGED_HOOKS:
-            hook_file = active_hooks_dir / h
-            present = hook_file.exists() or hook_file.is_symlink()
-            regular_file = hook_file.is_file() and not hook_file.is_symlink()
-            executable = regular_file and _is_executable(hook_file)
-            source_file = source_hooks_dir / h
-            source_match = (
-                regular_file
-                and source_file.is_file()
-                and not source_file.is_symlink()
-                and hook_file.read_bytes() == source_file.read_bytes()
-            )
-            entry = manifest_hooks.get(h)
-            manifest_match = (
-                regular_file
-                and isinstance(entry, dict)
-                and entry.get("runtime_sha256") == _file_sha256(hook_file)
-            )
-            print(
-                f"  hook {h:14s} exists={present} source_match={source_match} "
-                f"manifest_match={manifest_match} executable={executable}"
-            )
-            if not present:
-                problems.append(f"hook {h} missing (run `just setup`)")
-            elif not regular_file:
-                problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
-            elif (
-                manifest_loaded
-                and _same_path(active_hooks_dir, expected_hooks_dir)
-                and not manifest_match
-            ):
-                problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
-            elif _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
-                problems.append(f"hook {h} runtime does not match tracked source (run `just setup`)")
-            if _same_path(active_hooks_dir, expected_hooks_dir) and regular_file and not executable:
-                problems.append(f"hook {h} is not executable (run `just setup`)")
+        if not unsupported_hooks_path:
+            if not _same_path(active_hooks_dir, expected_hooks_dir):
+                problems.append(
+                    "core.hooksPath is not git-common hooks directory (run `just setup`)"
+                )
+            for h in CLEAN_MERGED_HOOKS:
+                hook_file = active_hooks_dir / h
+                present = hook_file.exists() or hook_file.is_symlink()
+                regular_file = hook_file.is_file() and not hook_file.is_symlink()
+                executable = regular_file and _is_executable(hook_file)
+                source_file = source_hooks_dir / h
+                source_match = (
+                    regular_file
+                    and source_file.is_file()
+                    and not source_file.is_symlink()
+                    and hook_file.read_bytes() == source_file.read_bytes()
+                )
+                entry = manifest_hooks.get(h)
+                manifest_match = (
+                    regular_file
+                    and isinstance(entry, dict)
+                    and entry.get("runtime_sha256") == _file_sha256(hook_file)
+                )
+                print(
+                    f"  hook {h:14s} exists={present} source_match={source_match} "
+                    f"manifest_match={manifest_match} executable={executable}"
+                )
+                if not present:
+                    problems.append(f"hook {h} missing (run `just setup`)")
+                elif not regular_file:
+                    problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
+                elif (
+                    manifest_loaded
+                    and _same_path(active_hooks_dir, expected_hooks_dir)
+                    and not manifest_match
+                ):
+                    problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
+                elif _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
+                    problems.append(
+                        f"hook {h} runtime does not match tracked source (run `just setup`)"
+                    )
+                if _same_path(active_hooks_dir, expected_hooks_dir) and regular_file and not executable:
+                    problems.append(f"hook {h} is not executable (run `just setup`)")
     else:
         print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
         problems.append("core.hooksPath unset; clean-merged hooks not active")

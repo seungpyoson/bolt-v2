@@ -2938,7 +2938,7 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
 }
 
 #[test]
-fn unknown_recovered_position_side_holds_instead_of_liquidating_by_default() {
+fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
@@ -2965,12 +2965,15 @@ fn unknown_recovered_position_side_holds_instead_of_liquidating_by_default() {
 
     let decision = strategy.exit_submission_decision_at(2_000);
 
-    assert_eq!(decision.evaluation.exit_decision, Some(ExitDecision::Hold));
+    assert_eq!(decision.evaluation.exit_decision, None);
     assert_eq!(decision.instrument_id, None);
     assert_eq!(decision.order_side, None);
     assert_eq!(decision.price, None);
     assert_eq!(decision.quantity, None);
-    assert_eq!(decision.blocked_reason, Some(EXIT_BLOCK_REASON_EXIT_HOLD));
+    assert_eq!(
+        decision.blocked_reason,
+        Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN)
+    );
 }
 
 #[test]

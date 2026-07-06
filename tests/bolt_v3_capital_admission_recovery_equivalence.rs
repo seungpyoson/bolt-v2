@@ -29,10 +29,10 @@ fn migrated_v13_evidence_recovers_capital_admission_reservations_equivalently() 
     assert_migrated_records_preserve_reservation_payloads(&original_values, &migrated_values);
 
     let recovery = read_submit_reservation_recovery_evidence(&migrated_path, 100_000)
-        .expect("migrated v14 reservation evidence should recover");
+        .expect("migrated current-schema reservation evidence should recover");
     let actual = recovered_snapshot_json(&recovery);
     let expected: Value = serde_json::from_str(
-        &fs::read_to_string(fixture_dir.join("recovered_v14_golden.json"))
+        &fs::read_to_string(fixture_dir.join("recovered_v15_golden.json"))
             .expect("golden recovery snapshot should be readable"),
     )
     .expect("golden recovery snapshot should parse");
@@ -96,7 +96,7 @@ fn assert_migrated_records_preserve_reservation_payloads(original: &[Value], mig
         "migration must not add or drop evidence records"
     );
     for (before, after) in original.iter().zip(migrated) {
-        assert_eq!(after["schema_version"], json!(14));
+        assert_eq!(after["schema_version"], json!(15));
         match before["kind"]
             .as_str()
             .expect("fixture record should have kind")

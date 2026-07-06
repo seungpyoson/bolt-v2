@@ -123,6 +123,23 @@ def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
         raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
 
 
+def test_validate_docs_checks_decision_evidence_migrator_schema_version_source() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        decision_evidence_source="pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;",
+        decision_evidence_migration_source="SUPPORTED_CURRENT_SCHEMA_VERSION = 14",
+    )
+
+    if (
+        "decision-evidence migrator current schema 14 does not match source 15"
+        not in findings
+    ):
+        raise AssertionError(
+            f"expected decision-evidence migrator schema drift finding, got {findings!r}"
+        )
+
+
 def test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status() -> None:
     stale_schema = CURRENT_SCHEMA + """
 - current allowed value:
@@ -426,6 +443,8 @@ def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
         test_validate_docs_accepts_current_terms,
+        test_validate_docs_checks_decision_evidence_schema_version_source,
+        test_validate_docs_checks_decision_evidence_migrator_schema_version_source,
         test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status,
         test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
         test_validate_docs_rejects_trailing_stop_market_required_default_field_claims,

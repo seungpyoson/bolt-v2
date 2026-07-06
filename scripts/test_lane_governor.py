@@ -121,7 +121,7 @@ _LOADER_CALLS = frozenset(
         "run_module",
     }
 )
-RUN_FENCES_SOURCE_SHA256 = "f2822613f4fe7c46afe158c6dc7ead78f88cbb6c5a9cf64ea12e2687488fe05c"
+RUN_FENCES_SOURCE_SHA256 = "a2402baa8808f01f60c75ac7354e7b37956dfb377f841ce2c297fe8de8edfaff"
 _RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES = _LOADER_CALLS | frozenset(
     {"__import__", "eval", "exec", "import_module_from_path"}
 )
@@ -877,25 +877,32 @@ def _validate_just_dump_shape(dump: object) -> None:
     assert isinstance(dump["assignments"], dict), "just dump assignments must be an object"
 
 
-def _eval_assignment(expr: object, dump: dict, stack: tuple[str, ...] = ()) -> str:
+def _eval_assignment(
+    expr: object,
+    dump: dict,
+    stack: tuple[str, ...] = (),
+    local_variables: frozenset[str] = frozenset(),
+) -> str:
     if isinstance(expr, dict) and "value" in expr:
-        return _eval_assignment(expr["value"], dump, stack)
+        return _eval_assignment(expr["value"], dump, stack, local_variables)
     if isinstance(expr, str):
         return expr
     if not isinstance(expr, list) or not expr:
         raise AssertionError(f"unrecognized just expression: {expr!r}")
     op = expr[0]
     if op == "concatenate":
-        return "".join(_eval_assignment(part, dump, stack) for part in expr[1:])
+        return "".join(_eval_assignment(part, dump, stack, local_variables) for part in expr[1:])
     if op == "variable" and len(expr) == 2 and isinstance(expr[1], str):
         name = expr[1]
+        if name in local_variables:
+            return ""
         if name in stack:
             raise AssertionError(f"recursive just assignment: {' -> '.join(stack + (name,))}")
         assignments = dump.get("assignments", {})
         assert isinstance(assignments, dict)
         if name not in assignments:
             raise AssertionError(f"unresolved just variable: {name}")
-        return _eval_assignment(assignments[name], dump, stack + (name,))
+        return _eval_assignment(assignments[name], dump, stack + (name,), local_variables)
     if op == "call" and len(expr) >= 2 and expr[1] == "justfile_directory":
         return str(REPO_ROOT)
     if op == "call" and len(expr) == 3 and expr[1] == "env_var" and isinstance(expr[2], str):
@@ -904,7 +911,7 @@ def _eval_assignment(expr: object, dump: dict, stack: tuple[str, ...] = ()) -> s
             raise AssertionError(f"just env_var({name}) is unset")
         return os.environ[name]
     if op == "join" and len(expr) >= 2:
-        parts = [_eval_assignment(part, dump, stack) for part in expr[1:]]
+        parts = [_eval_assignment(part, dump, stack, local_variables) for part in expr[1:]]
         if not parts:
             return ""
         path = Path(parts[0])
@@ -914,18 +921,27 @@ def _eval_assignment(expr: object, dump: dict, stack: tuple[str, ...] = ()) -> s
     raise AssertionError(f"unrecognized just expression: {expr!r}")
 
 
-def _flatten_just_fragments(fragment: object, dump: dict, *, strict: bool = True) -> str:
+def _flatten_just_fragments(
+    fragment: object,
+    dump: dict,
+    *,
+    strict: bool = True,
+    local_variables: frozenset[str] = frozenset(),
+) -> str:
     if isinstance(fragment, str):
         return fragment
     if isinstance(fragment, list):
         if _is_just_expression(fragment):
             try:
-                return _eval_assignment(fragment, dump)
+                return _eval_assignment(fragment, dump, local_variables=local_variables)
             except AssertionError:
                 if strict:
                     raise
                 return "{{" + repr(fragment) + "}}"
-        return "".join(_flatten_just_fragments(part, dump, strict=strict) for part in fragment)
+        return "".join(
+            _flatten_just_fragments(part, dump, strict=strict, local_variables=local_variables)
+            for part in fragment
+        )
     raise AssertionError(f"unrecognized just body fragment: {fragment!r}")
 
 
@@ -936,14 +952,27 @@ def _is_just_expression(fragment: list[object]) -> bool:
 def _recipe_command_lines(recipe: dict, dump: dict, *, strict: bool = True) -> list[str]:
     body = recipe.get("body")
     assert isinstance(body, list), f"recipe {recipe.get('name', '<unknown>')} body must be a list"
+    local_variables = _recipe_parameter_names(recipe)
     lines: list[str] = []
     for raw_line in body:
-        line = _flatten_just_fragments(raw_line, dump, strict=strict).strip()
+        line = _flatten_just_fragments(raw_line, dump, strict=strict, local_variables=local_variables).strip()
         if not line:
             continue
         lines.append(line)
         lines.extend(_shell_subcommands(line))
     return lines
+
+
+def _recipe_parameter_names(recipe: dict) -> frozenset[str]:
+    parameters = recipe.get("parameters", [])
+    if not isinstance(parameters, list):
+        raise AssertionError(f"recipe {recipe.get('name', '<unknown>')} parameters must be a list")
+    names: set[str] = set()
+    for parameter in parameters:
+        if not isinstance(parameter, dict) or not isinstance(parameter.get("name"), str):
+            raise AssertionError(f"unrecognized recipe parameter in {recipe.get('name', '<unknown>')}: {parameter!r}")
+        names.add(parameter["name"])
+    return frozenset(names)
 
 
 def _shell_subcommands(line: str) -> list[str]:
@@ -3932,6 +3961,18 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
     assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
 
 
+def test_source_fence_fences_only_inner_extends_static_inner_only_by_flag() -> None:
+    dump = _just_dump()
+    recipes = dump["recipes"]
+    static_inner = _recipe_command_lines(recipes["source-fence-static-inner"], dump)
+    fences_only_inner = _recipe_command_lines(recipes["source-fence-static-fences-only-inner"], dump)
+    assert len(static_inner) == 1, f"source-fence-static-inner must stay single-command: {static_inner}"
+    assert fences_only_inner == [f"{static_inner[0]} --fences-only"], (
+        "source-fence-static-fences-only-inner must differ from "
+        "source-fence-static-inner only by --fences-only"
+    )
+
+
 def test_shell_expanded_python_commands_fail_closed() -> None:
     fixtures = [
         ['tool="$(${PYTHON} scripts/test_nextest_fingerprint.py)"'],
@@ -4673,6 +4714,7 @@ def _registered_self_tests():
         test_omitted_wrapper_arg_with_resolvable_default_is_l1,
         test_unresolved_direct_and_wrapper_targets_have_l2_parity,
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
+        test_source_fence_fences_only_inner_extends_static_inner_only_by_flag,
         test_shell_expanded_python_commands_fail_closed,
         test_shell_wrappers_and_pipelines_discover_python_commands,
         test_shell_comments_are_ignored_before_tokenization,

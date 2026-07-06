@@ -145,8 +145,8 @@ Lane status reduction is:
 
 The top-level verdict must be one of:
 
-- `queue_as_one_wave`: all PRs and the requested wave are ready under the
-  configured preflight contract.
+- `queue_as_one_wave`: all PRs have ready prequeue metadata and the requested
+  wave's emitted batches are ready under the configured preflight contract.
 - `split_advised`: each included PR is individually ready, but the requested wave
   should be split into smaller batches.
 - `blocked`: one or more PRs or the wave has a deterministic blocker.
@@ -427,6 +427,12 @@ Each verifier command must have:
 - classified timeout failure.
 - deterministic input scope bound to the synthetic candidate being checked.
 
+Verifier proof is batch-scoped for emitted batches. A passing optimistic batch
+does not imply that each constituent PR's standalone base+PR synthetic commit
+was verifier-clean; standalone verifier failures are localized only after a
+batch verifier failure triggers fallback. The residual-risk lane must disclose
+this boundary.
+
 Successful verifier output is suppressed. Failed verifier output is bounded and
 passes through the repository diagnostic redaction policy before display.
 Verifier command names may be emitted as audit metadata.
@@ -434,6 +440,15 @@ Verifier command names may be emitted as audit metadata.
 Verifier profiles must not be maintained as a second copy of the cheap gate set.
 If the default profile claims to catch cheap deterministic Mergify waste, it must
 cover the full cheap deterministic gate set or narrow its name and description.
+The source-fence reduced-profile selector must read its full-profile pathspecs
+from config, including source-fence governance files whose changes require the
+full fixture test phase. Configured reduced-profile rewrite sources and targets
+must be public `just` recipes with declared `local-gate:` labels. Verifier
+profiles and ad hoc verifier extras must not invoke reduced-profile targets,
+their private inners, or direct `--fences-only` commands, including abbreviated
+flag aliases. Shell-wrapper syntax is rejected for verifier commands instead of
+recursively interpreted. Targets are reachable only through the configured
+rewrite map.
 
 ## Residual-Risk Lane
 
@@ -441,6 +456,10 @@ Every output, JSON and plain text, must include residual risks that preflight di
 not prove. At minimum:
 
 - full CI result.
+- verifier proof is batch-scoped, not standalone per-PR proof for passing
+  optimistic batches.
+- source-fence reduced-profile runs may skip fixture test suites for eligible
+  diffs.
 - Mergify proof PR behavior.
 - remote runner availability and environment.
 - flaky checks and external services.

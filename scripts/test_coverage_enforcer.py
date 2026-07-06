@@ -516,6 +516,62 @@ def assert_newer_in_progress_expected_app_keeps_context_pending() -> None:
     if result.conclusion != "success" or result.findings:
         raise AssertionError(result)
     get_requests = [
+        request
+        for request in fake.requests
+        if request[0] == "GET" and request[1].endswith("/check-runs")
+    ]
+    if len(get_requests) != 2:
+        raise AssertionError(fake.requests)
+
+
+def assert_stale_cancelled_gate_waits_for_current_workflow_activity() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run(
+                    "gate",
+                    run_id=1,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run(
+                    "backtester-gate",
+                    run_id=2,
+                    conclusion="cancelled",
+                    started_at="2026-06-27T00:00:00Z",
+                    completed_at="2026-06-27T00:01:00Z",
+                ),
+                check_run("host-health", run_id=3, started_at="2026-06-27T00:02:00Z"),
+                check_run("actionlint", run_id=4, started_at="2026-06-27T00:02:00Z"),
+                check_run(
+                    "clippy",
+                    run_id=5,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+                check_run(
+                    "bvs-clippy",
+                    run_id=6,
+                    status="in_progress",
+                    conclusion=None,
+                    started_at="2026-06-27T00:03:00Z",
+                ),
+            ],
+            [
+                check_run("gate", run_id=7, started_at="2026-06-27T00:04:00Z"),
+                check_run("backtester-gate", run_id=8, started_at="2026-06-27T00:04:00Z"),
+                check_run("host-health", run_id=3, started_at="2026-06-27T00:02:00Z"),
+                check_run("actionlint", run_id=4, started_at="2026-06-27T00:02:00Z"),
+            ],
+        ],
+        event=merge_group_event(),
+        clock=FakeClock([0.0, 0.0, 0.0]),
+    )
+    if result.conclusion != "success" or result.findings:
+        raise AssertionError(result)
+    get_requests = [
         request for request in fake.requests if request[0] == "GET" and request[1].endswith("/check-runs")
     ]
     if len(get_requests) != 2:
@@ -826,6 +882,7 @@ def main() -> int:
     assert_latest_expected_app_failure_after_success_is_drift()
     assert_latest_expected_app_success_after_failure_succeeds()
     assert_newer_in_progress_expected_app_keeps_context_pending()
+    assert_stale_cancelled_gate_waits_for_current_workflow_activity()
     assert_r2_derivation_mismatch_fails()
     assert_r2_derives_generic_tag_triggers()
     assert_fork_pr_uses_native_job_without_publishing()

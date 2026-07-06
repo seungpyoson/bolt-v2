@@ -417,6 +417,23 @@ def latest_check_run(runs: list[dict[str, object]]) -> dict[str, object] | None:
     return max(runs, key=check_run_attempt_sort_key)
 
 
+def has_newer_incomplete_expected_app_run(
+    *,
+    check_runs: list[dict[str, object]],
+    check: ci_provenance.RequiredCheckConfig,
+    latest_context_run: dict[str, object],
+) -> bool:
+    latest_context_key = check_run_attempt_sort_key(latest_context_run)
+    for run in check_runs:
+        if app_id_for_run(run) != check.integration_id:
+            continue
+        if run.get("status") == "completed":
+            continue
+        if check_run_attempt_sort_key(run) > latest_context_key:
+            return True
+    return False
+
+
 def pending_contexts(
     *,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
@@ -426,6 +443,16 @@ def pending_contexts(
     for check in checks:
         latest = latest_check_run(expected_app_runs(check_runs, check))
         if latest is None or latest.get("status") != "completed":
+            pending.append(check.context)
+            continue
+        if (
+            latest.get("conclusion") != SUCCESS_CONCLUSION
+            and has_newer_incomplete_expected_app_run(
+                check_runs=check_runs,
+                check=check,
+                latest_context_run=latest,
+            )
+        ):
             pending.append(check.context)
     return tuple(pending)
 

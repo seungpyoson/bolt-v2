@@ -17,7 +17,7 @@ STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
 DECISION_EVIDENCE_MIGRATOR = (
-    REPO_ROOT / "scripts/migrate_bolt_v3_decision_evidence_v13_to_v14.py"
+    REPO_ROOT / "scripts/migrate_bolt_v3_decision_evidence_to_v15.py"
 )
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"

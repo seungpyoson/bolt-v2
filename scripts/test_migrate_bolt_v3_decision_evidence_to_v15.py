@@ -12,8 +12,8 @@ import tempfile
 from pathlib import Path
 
 
-SCRIPT_PATH = Path(__file__).with_name("migrate_bolt_v3_decision_evidence_v13_to_v14.py")
-SPEC = importlib.util.spec_from_file_location("migrate_bolt_v3_decision_evidence_v13_to_v14", SCRIPT_PATH)
+SCRIPT_PATH = Path(__file__).with_name("migrate_bolt_v3_decision_evidence_to_v15.py")
+SPEC = importlib.util.spec_from_file_location("migrate_bolt_v3_decision_evidence_to_v15", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"failed to load {SCRIPT_PATH}")
 MIGRATOR = importlib.util.module_from_spec(SPEC)

@@ -48,7 +48,7 @@ fn repo_root() -> PathBuf {
 
 fn run_evidence_migrator(repo: &Path, directory: &Path) {
     let output = Command::new("python3")
-        .arg(repo.join("scripts/migrate_bolt_v3_decision_evidence_v13_to_v14.py"))
+        .arg(repo.join("scripts/migrate_bolt_v3_decision_evidence_to_v15.py"))
         .arg(directory)
         .output()
         .expect("python3 migrator process should start");

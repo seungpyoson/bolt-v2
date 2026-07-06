@@ -35,7 +35,7 @@ NON_STATIC_VERIFY_PREFIXES = (
 # suites are discovered automatically from their verifier filenames.
 STANDALONE_TEST_FILENAMES = (
     "test_migrate_bolt_v3_capital_admission_config.py",
-    "test_migrate_bolt_v3_decision_evidence_v13_to_v14.py",
+    "test_migrate_bolt_v3_decision_evidence_to_v15.py",
     "test_verify_runtime_capture_yaml.py",
     "test_local_verification_gate.py",
     "test_lane_governor.py",

@@ -1108,7 +1108,8 @@ mod tests {
             BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
             BoltV3OrderIntentClampNotEvaluatedReason, BoltV3OrderIntentClampOutcome,
             BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-            BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
+            BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_kill_switch::KillSwitchState,
@@ -1442,6 +1443,19 @@ mod tests {
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
             anyhow::bail!("recording order-execution writer received requote-throttle evidence")
+        }
+
+        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+            anyhow::bail!("recording order-execution writer received settlement evidence")
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
+            anyhow::bail!(
+                "recording order-execution writer received settlement booking-error evidence"
+            )
         }
 
         fn drain_shutdown(&self) -> Result<()> {

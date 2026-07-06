@@ -39,7 +39,8 @@ use toml::{Value, map::Map};
 
 use nautilus_model::{
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{InstrumentId, StrategyId},
+    identifiers::{InstrumentId, StrategyId, Venue},
+    types::Currency,
 };
 
 use crate::{
@@ -433,6 +434,11 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
+    let settlement_account_id =
+        execution_account_id(&context.loaded.root, execution_client_id).map(str::to_string);
+    let settlement_currency = settlement_account_id.as_deref().and_then(|account_id| {
+        settlement_currency_for_execution_account(&context.loaded.root, execution_venue, account_id)
+    });
     let build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
@@ -440,7 +446,11 @@ pub fn register_runtime_strategy(
         context.order_execution_policy,
         execution_venue,
     )
-    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone())
+    .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
+    .with_settlement_recovery(context.settlement_recovery.clone())
+    .with_settlement_account_id(settlement_account_id)
+    .with_settlement_currency(settlement_currency);
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -451,6 +461,90 @@ pub fn register_runtime_strategy(
             node.kernel().trader(),
         )
         .map_err(|error| binding_message(&context, error.to_string()))
+}
+
+fn execution_account_id<'a>(
+    root: &'a BoltV3RootConfig,
+    execution_client_id: &str,
+) -> Option<&'a str> {
+    root.clients
+        .get(execution_client_id)?
+        .execution
+        .as_ref()?
+        .as_table()?
+        .get(stringify!(account_id))?
+        .as_str()
+}
+
+fn settlement_currency_for_execution_account(
+    root: &BoltV3RootConfig,
+    execution_venue: Venue,
+    account_id: &str,
+) -> Option<Currency> {
+    root.risk
+        .capital_pools
+        .as_ref()?
+        .iter()
+        .find(|pool| {
+            pool.venue_id == execution_venue.as_str() && pool.account_id.to_string() == account_id
+        })
+        .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
+}
+
+pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Currency {
+    let pusd = Currency::pUSD();
+    if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
+        pusd
+    } else {
+        Currency::from(configured)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_oracle_archetype_maps_settlement_identity_from_capital_pool() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("bolt-v3 fixture root should load");
+        let strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| strategy.config.strategy_archetype.as_str() == KEY)
+            .expect("fixture should include a binary oracle strategy");
+        let execution_client_id = strategy.config.execution_client_id.as_str();
+        let execution_venue = loaded
+            .root
+            .clients
+            .get(execution_client_id)
+            .expect("fixture strategy execution client should exist")
+            .venue;
+        let account_id = execution_account_id(&loaded.root, execution_client_id)
+            .expect("fixture execution client should bind an account id");
+        let pool = loaded
+            .root
+            .risk
+            .capital_pools
+            .as_ref()
+            .and_then(|pools| {
+                pools.iter().find(|pool| {
+                    pool.venue_id == execution_venue.as_str()
+                        && pool.account_id.to_string() == account_id
+                })
+            })
+            .expect("fixture capital pool should bind the strategy execution account");
+
+        assert_eq!(pool.account_id.to_string(), account_id);
+        assert_eq!(
+            settlement_currency_for_execution_account(&loaded.root, execution_venue, account_id),
+            Some(settlement_currency_from_config_code(
+                pool.collateral_currency.as_str()
+            ))
+        );
+    }
 }
 
 pub fn raw_taker_config(

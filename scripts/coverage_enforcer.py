@@ -317,8 +317,11 @@ def check_supports_policy_carry_forward(
             and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in workflow_text
         )
     if check.context == "backtester-gate":
+        # A backtester noop gate recomputes/proves the BVS lane state directly;
+        # only an explicit carry-forward resolver makes the context carry-forward capable.
         return (
-            "check-backtester-gate" in workflow_text
+            "resolve-gate-carry-forward" in workflow_text
+            and "check-backtester-gate" in workflow_text
             and "needs.ci-policy.outputs.ci_policy_path == 'noop'" in workflow_text
             and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in workflow_text
         )

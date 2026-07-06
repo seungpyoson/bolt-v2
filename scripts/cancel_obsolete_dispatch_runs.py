@@ -60,7 +60,6 @@ class DispatchCancelConfig:
     workflow_name: str
     workflow_path: str
     workflow_event: str
-    run_name_full: str
     run_name_iteration: str
     active_statuses: frozenset[str]
     workflow_runs_per_page: int
@@ -151,10 +150,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> DispatchCancelConfig:
     workflow_path = require_string(ci_provenance, "workflow_path", "ci_provenance")
     workflow_event = require_string(dispatch_cancel, "workflow_event", "dispatch_cancel")
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
-    run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
     run_name_iteration = require_string(dispatch, "run_name_iteration", "ci_provenance.dispatch")
-    if run_name_full == run_name_iteration:
-        raise DispatchCancelError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
     active_statuses_raw = dispatch_cancel.get("active_statuses")
     if (
         not isinstance(active_statuses_raw, list)
@@ -166,7 +162,6 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> DispatchCancelConfig:
         workflow_name=workflow_name,
         workflow_path=workflow_path,
         workflow_event=workflow_event,
-        run_name_full=run_name_full,
         run_name_iteration=run_name_iteration,
         active_statuses=frozenset(active_statuses_raw),
         workflow_runs_per_page=require_positive_int(
@@ -202,8 +197,6 @@ def run_display_title(run: dict[str, object]) -> str:
 
 def dispatch_run_class(run: dict[str, object], config: DispatchCancelConfig) -> str | None:
     title = run_display_title(run)
-    if title == config.run_name_full:
-        return "full"
     if title == config.run_name_iteration:
         return "iteration"
     return None

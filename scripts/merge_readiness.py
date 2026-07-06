@@ -47,7 +47,6 @@ FAILING_CHECK_CONCLUSIONS = {
 GATE_CONTEXT_VARIANT_KEYS = (
     ("gate_required", "backtester_required"),
     ("gate_iteration", "backtester_iteration"),
-    ("gate_dispatch_full", "backtester_dispatch_full"),
 )
 ACTIONS_BOT_LOGIN = "github-actions[bot]"
 ACTIONS_BOT_TYPE = "Bot"

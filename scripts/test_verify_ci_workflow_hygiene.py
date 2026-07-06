@@ -14133,7 +14133,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
             echo "::group::bvs-test partition ${shard}/${BVS_NEXTEST_SHARDS}"
             partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"
             set +e
-            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke 2>&1 | tee "$partition_log"
             rc="${PIPESTATUS[0]}"
             set -e
             if [[ "$rc" -ne 0 ]]; then
@@ -14370,9 +14370,9 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     missing_bvs_partition_set_e_disable = replace_once(
         good,
         """            set +e
-            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke 2>&1 | tee "$partition_log"
 """,
-        '            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"\n',
+        '            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke 2>&1 | tee "$partition_log"\n',
     )
     missing_bvs_partition_set_e_disable_errors = bvs_cache_errors(missing_bvs_partition_set_e_disable)
     assert any(

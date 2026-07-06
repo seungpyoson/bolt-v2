@@ -636,6 +636,15 @@ def assert_fast_path_config_validation_fails_closed() -> None:
             ),
             "source 'just source-fence-static-inner' must route through a configured public local-gate label",
         ),
+        (
+            "verifier profile command is source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just source-fence-static-fences-only"]',
+            ),
+            "config.merge_queue_preflight.verifier_profiles.none.commands "
+            "must not use reduced-profile rewrite target 'just source-fence-static-fences-only'",
+        ),
     ]
     for label, mutate, expected in cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -648,6 +657,14 @@ def assert_fast_path_config_validation_fails_closed() -> None:
                     raise AssertionError((label, str(exc), expected))
             else:
                 raise AssertionError(f"{label} did not fail config load")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(pathlib.Path(tmp), "static", ["just source-fence-static"])
+        loaded = module.load_config(config)
+    assert_equal(
+        loaded.verifier_profiles["static"],
+        ("just source-fence-static",),
+        "rewrite source profile command remains valid",
+    )
 
 
 def assert_source_check_alias_targets_must_have_workflows() -> None:
@@ -2420,6 +2437,15 @@ def stop_process(process: subprocess.Popen[str]) -> None:
         process.communicate()
 
 
+def open_fifo_gate(path: pathlib.Path) -> int:
+    os.mkfifo(path)
+    return os.open(path, os.O_RDWR)
+
+
+def release_fifo_gate(fd: int) -> None:
+    os.write(fd, b"x")
+
+
 def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pathspecs() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -2534,10 +2560,17 @@ def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
         verifier = root / "slow_success.py"
+        gate = root / "success-gate.fifo"
+        gate_fd = open_fifo_gate(gate)
         write(
             verifier,
-            "import time\n"
-            "time.sleep(5)\n",
+            "import os\n"
+            f"gate = {str(gate)!r}\n"
+            "fd = os.open(gate, os.O_RDONLY)\n"
+            "try:\n"
+            "    os.read(fd, 1)\n"
+            "finally:\n"
+            "    os.close(fd)\n",
         )
         command = [
             sys.executable,
@@ -2572,9 +2605,11 @@ def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
             stdout_line = read_line_with_timeout(process.stdout, 0.1)
             if stdout_line not in (None, ""):
                 raise AssertionError(stdout_line)
+            release_fifo_gate(gate_fd)
             stdout, _stderr = process.communicate(timeout=20)
         finally:
             stop_process(process)
+            os.close(gate_fd)
         assert_equal(process.returncode, 3, "streaming breadcrumb rc")
         payload = parse_json(stdout)
         assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "streaming breadcrumb batches")
@@ -2587,16 +2622,23 @@ def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes
         first_head = fixture.make_pr(1, {"shared.txt": "first\n", "fail.txt": "fail\n"})
         second_head = fixture.make_pr(2, {"shared.txt": "second\n", "slow.txt": "slow\n"})
         verifier = root / "fail_then_slow.py"
+        gate = root / "failure-gate.fifo"
+        gate_fd = open_fifo_gate(gate)
         write(
             verifier,
             "from pathlib import Path\n"
+            "import os\n"
             "import sys\n"
-            "import time\n"
+            f"gate = {str(gate)!r}\n"
             "if Path('fail.txt').exists():\n"
             "    print('fail marker rejected')\n"
             "    sys.exit(7)\n"
             "if Path('slow.txt').exists():\n"
-            "    time.sleep(10)\n",
+            "    fd = os.open(gate, os.O_RDONLY)\n"
+            "    try:\n"
+            "        os.read(fd, 1)\n"
+            "    finally:\n"
+            "        os.close(fd)\n",
         )
         command = [
             sys.executable,
@@ -2633,9 +2675,11 @@ def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes
                 raise AssertionError(lines)
             if "exit 7" not in line:
                 raise AssertionError(line)
+            release_fifo_gate(gate_fd)
             stdout, _stderr = process.communicate(timeout=30)
         finally:
             stop_process(process)
+            os.close(gate_fd)
         assert_equal(process.returncode, 2, "first failure breadcrumb rc")
         payload = parse_json(stdout)
         blocked = payload["blocked_prs"]

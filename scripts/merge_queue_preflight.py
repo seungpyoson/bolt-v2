@@ -2034,6 +2034,32 @@ def validate_source_fence_fences_only_rewrites(
             )
 
 
+def parsed_shell_command(command: str) -> tuple[str, ...] | None:
+    try:
+        return tuple(shlex.split(command))
+    except ValueError:
+        return None
+
+
+def validate_verifier_profile_commands(
+    profile_name: str,
+    commands: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+) -> None:
+    rewrite_targets = {
+        parsed
+        for target in source_fence_fences_only_rewrites.values()
+        if (parsed := parsed_shell_command(target)) is not None
+    }
+    for command in commands:
+        parsed = parsed_shell_command(command)
+        if parsed is not None and parsed in rewrite_targets:
+            raise PreflightError(
+                f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands "
+                f"must not use reduced-profile rewrite target {command!r}; use the configured rewrite source"
+            )
+
+
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
@@ -2105,6 +2131,11 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
             raise PreflightError(
                 f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands must be a string array"
             )
+        validate_verifier_profile_commands(
+            profile_name,
+            raw_commands,
+            source_fence_fences_only_rewrites,
+        )
         profiles[profile_name] = tuple(raw_commands)
     if default_profile not in profiles:
         raise PreflightError(

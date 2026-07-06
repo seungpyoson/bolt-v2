@@ -270,6 +270,7 @@ CHECK_STATE_ISSUE_MESSAGES = {
 }
 VERIFIER_STREAMS = ("stdout", "stderr")
 FENCES_ONLY_FLAG = "--fences-only"
+SHELL_COMMAND_EXECUTABLES = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -2045,8 +2046,6 @@ def invokes_reduced_source_fence_command(
     parsed: tuple[str, ...],
     rewrite_targets: frozenset[tuple[str, ...]],
     rewrite_target_recipes: frozenset[str],
-    *,
-    depth: int = 0,
 ) -> bool:
     if FENCES_ONLY_FLAG in parsed or parsed in rewrite_targets:
         return True
@@ -2055,19 +2054,21 @@ def invokes_reduced_source_fence_command(
             token in rewrite_target_recipes for token in parsed[index + 1 :]
         ):
             return True
-    if depth >= 3:
-        return False
+    return False
+
+
+def uses_shell_wrapper_syntax(parsed: tuple[str, ...]) -> bool:
     for part in parsed:
-        if " " not in part and "\t" not in part:
-            continue
-        nested = parsed_shell_command(part)
-        if nested is not None and nested != (part,) and invokes_reduced_source_fence_command(
-            nested,
-            rewrite_targets,
-            rewrite_target_recipes,
-            depth=depth + 1,
-        ):
+        if any(marker in part for marker in (" ", "\t", "'", '"')):
             return True
+    for index, part in enumerate(parsed):
+        if pathlib.PurePath(part).name not in SHELL_COMMAND_EXECUTABLES:
+            continue
+        for token in parsed[index + 1 :]:
+            if token == "--":
+                break
+            if token.startswith("-") and "c" in token[1:]:
+                return True
     return False
 
 
@@ -2089,7 +2090,14 @@ def validate_verifier_commands(
     )
     for command in commands:
         parsed = parsed_shell_command(command)
-        if parsed is not None and invokes_reduced_source_fence_command(
+        if parsed is None:
+            raise PreflightError(f"{field} contains an invalid shell command {command!r}")
+        if uses_shell_wrapper_syntax(parsed):
+            raise PreflightError(
+                f"{field} must not use shell wrapper syntax {command!r}; "
+                "use direct verifier commands"
+            )
+        if invokes_reduced_source_fence_command(
             parsed,
             rewrite_targets,
             rewrite_target_recipes,

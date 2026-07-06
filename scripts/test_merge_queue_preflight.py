@@ -693,7 +693,23 @@ def assert_fast_path_config_validation_fails_closed() -> None:
                 "commands = []",
                 'commands = ["bash -c \'just source-fence-static-fences-only\'"]',
             ),
-            "must not use reduced-profile rewrite target",
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is shell-positional source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["bash -c \'just \\"$@\\"\' _ source-fence-static-fences-only"]',
+            ),
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is quoted source-fence rewrite target",
+            lambda text, command="bash -c \"just \\'source-fence-static-fences-only\\'\"": text.replace(
+                "commands = []",
+                f"commands = [{json.dumps(command)}]",
+            ),
+            "must not use shell wrapper syntax",
         ),
         (
             "verifier profile command is shell-wrapped direct source-fence reduced script",
@@ -701,7 +717,15 @@ def assert_fast_path_config_validation_fails_closed() -> None:
                 "commands = []",
                 'commands = ["sh -c \'python3 scripts/run_fences.py --fences-only\'"]',
             ),
-            "must not use reduced-profile rewrite target",
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "verifier profile command is deeply shell-wrapped source-fence rewrite target",
+            lambda text, command='sh -c "sh -c \'just source-fence-static-fences-only\'"': text.replace(
+                "commands = []",
+                f"commands = [{json.dumps(command)}]",
+            ),
+            "must not use shell wrapper syntax",
         ),
         (
             "verifier profile command is source-fence rewrite target with just options",
@@ -737,20 +761,42 @@ def assert_fast_path_config_validation_fails_closed() -> None:
 def assert_run_verifier_reduced_profile_commands_fail_closed() -> None:
     module = load_preflight_module()
     cases = [
-        "just source-fence-static-fences-only",
-        "just source-fence-static-fences-only-inner",
-        "python3 scripts/run_fences.py --fences-only",
-        "env just source-fence-static-fences-only",
-        "bash -c 'just source-fence-static-fences-only'",
+        (
+            "just source-fence-static-fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "just source-fence-static-fences-only-inner",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "python3 scripts/run_fences.py --fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "env just source-fence-static-fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "bash -c 'just source-fence-static-fences-only'",
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "bash -c 'just \"$@\"' _ source-fence-static-fences-only",
+            "must not use shell wrapper syntax",
+        ),
+        (
+            "sh -c 'python3 scripts/run_fences.py --fences-only'",
+            "must not use shell wrapper syntax",
+        ),
     ]
     with tempfile.TemporaryDirectory() as tmp:
         config = write_preflight_config(pathlib.Path(tmp), "none", [])
         loaded = module.load_config(config)
-    for command in cases:
+    for command, expected in cases:
         try:
             module.verifier_commands(loaded, None, [command])
         except module.PreflightError as exc:
-            expected = f"--run-verifier must not use reduced-profile rewrite target {command!r}"
             if expected not in str(exc):
                 raise AssertionError((command, str(exc), expected))
         else:
@@ -759,6 +805,11 @@ def assert_run_verifier_reduced_profile_commands_fail_closed() -> None:
         module.verifier_commands(loaded, None, ["just source-fence-static"]),
         ("just source-fence-static",),
         "--run-verifier rewrite source remains valid",
+    )
+    assert_equal(
+        module.verifier_commands(loaded, None, ["python3 scripts/verify_thing.py"]),
+        ("python3 scripts/verify_thing.py",),
+        "--run-verifier ordinary command remains valid",
     )
 
 

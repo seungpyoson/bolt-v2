@@ -2318,6 +2318,27 @@ class CleanupContractTests(unittest.TestCase):
             "#!/bin/sh\nprintf default-commit-msg\n",
         )
 
+    def test_install_hooks_refuses_modified_default_runtime_hook_after_path_moves(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        local_hook = runtime_hooks / "commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf default-commit-msg\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        local_hook.write_text("#!/bin/sh\nprintf modified-runtime\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        alternate_hooks = self.work / ".alternate-hooks"
+        alternate_hooks.mkdir()
+        _run(["git", "config", "core.hooksPath", ".alternate-hooks"], cwd=self.work)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to adopt modified runtime hook commit-msg", proc.stderr)
+
     def test_install_hooks_repeated_default_runtime_collision_keeps_manifest_valid(
         self,
     ) -> None:
@@ -2343,6 +2364,46 @@ class CleanupContractTests(unittest.TestCase):
             any(entry["source_scope"] == "default" for entry in manifest["source_dirs"])
         )
         self.assertTrue(manifest["shadowed_hooks"]["post-merge"])
+
+    def test_install_hooks_refuses_modified_default_shadow_backup(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        shadowed_path = pathlib.Path(manifest["shadowed_hooks"]["post-merge"][0]["source_path"])
+        shadowed_path.write_text("#!/bin/sh\nprintf modified-shadow\n", encoding="utf-8")
+        shadowed_path.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("shadowed hook post-merge backup changed since install", proc.stderr)
+
+    def test_install_hooks_refuses_missing_default_shadow_backup(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        pathlib.Path(manifest["shadowed_hooks"]["post-merge"][0]["source_path"]).unlink()
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("shadowed hook post-merge backup missing", proc.stderr)
 
     def test_install_hooks_shadow_records_runtime_collision_with_nondefault_active_dir(
         self,

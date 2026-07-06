@@ -803,6 +803,13 @@ def _copy_hook_with_provenance(
     if _same_path(source_file, destination):
         if not source_file.is_file():
             raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        current_sha = _file_sha256(source_file)
+        entry = manifest_hooks.get(destination.name)
+        if isinstance(entry, dict) and entry.get("runtime_sha256") != current_sha:
+            raise CleanMergedError(
+                f"refusing to adopt modified runtime hook {destination.name} "
+                f"without installer provenance at {destination}"
+            )
         if source_kind == "repo-source":
             destination.chmod(
                 destination.stat().st_mode
@@ -967,6 +974,24 @@ def _record_shadowed_hook(
             break
     else:
         entries.append(replacement)
+
+
+def _validate_default_shadowed_hook_backup(
+    *,
+    hook_name: str,
+    entry: dict[str, Any],
+    source_file: pathlib.Path,
+) -> None:
+    if source_file.is_symlink() or not source_file.is_file():
+        raise CleanMergedError(
+            f"shadowed hook {hook_name} backup missing at {source_file}; "
+            "repair or remove hook manifest before running setup"
+        )
+    if entry.get("source_sha256") != _file_sha256(source_file):
+        raise CleanMergedError(
+            f"shadowed hook {hook_name} backup changed since install at {source_file}; "
+            "repair or remove hook manifest before running setup"
+        )
 
 
 def _configured_hooks_path(
@@ -1432,18 +1457,31 @@ def install_hooks(
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} has invalid source_path"
                 )
+            source_scope = str(entry.get("source_scope") or "manifest")
+            if source_scope == "default":
+                _validate_default_shadowed_hook_backup(
+                    hook_name=hook_name,
+                    entry=entry,
+                    source_file=source_file,
+                )
             if not source_file.is_file():
                 continue
             adopted_source_paths.add(str(source_file))
-            source_scope = str(entry.get("source_scope") or "manifest")
             if hook_name in source_hook_names:
-                _record_shadowed_hook(
-                    hook_file=source_file,
-                    repo_source_file=source_hooks_dir / hook_name,
-                    source_scope=source_scope,
-                    shadowed_hooks=shadowed_hooks,
-                    hook_name=hook_name,
-                )
+                if source_scope == "default":
+                    entries = shadowed_hooks.setdefault(hook_name, [])
+                    if not isinstance(entries, list):
+                        entries = []
+                        shadowed_hooks[hook_name] = entries
+                    entries.append(dict(entry))
+                else:
+                    _record_shadowed_hook(
+                        hook_file=source_file,
+                        repo_source_file=source_hooks_dir / hook_name,
+                        source_scope=source_scope,
+                        shadowed_hooks=shadowed_hooks,
+                        hook_name=hook_name,
+                    )
                 continue
             destination = runtime_hooks_dir / hook_name
             _copy_hook_with_provenance(

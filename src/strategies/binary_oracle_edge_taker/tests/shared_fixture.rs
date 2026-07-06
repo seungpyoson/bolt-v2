@@ -1453,12 +1453,46 @@ pub(super) fn configured_position_probe(
         },
         0,
     );
+    seed_managed_position_lifecycle_from_active_fixture(strategy, instrument_id);
     let position = managed_position_ref(strategy)
         .cloned()
         .expect("configured instrument should materialize through production position path");
     strategy.exposure = original_exposure;
     strategy.refresh_book_subscriptions_for_current_state();
     position
+}
+
+fn active_fixture_lifecycle_for_instrument(
+    strategy: &BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> BoltV3PositionMarketLifecycle {
+    let outcome_side = if strategy.active.books.up.instrument_id == Some(instrument_id) {
+        Some(OutcomeSide::Up)
+    } else if strategy.active.books.down.instrument_id == Some(instrument_id) {
+        Some(OutcomeSide::Down)
+    } else {
+        None
+    };
+    BoltV3PositionMarketLifecycle::from_entry_context(
+        strategy.active.market_id.clone(),
+        outcome_side,
+        strategy.active.price_to_beat,
+        strategy.active.interval_open,
+        strategy.active.interval_end_ms,
+        strategy.active.selection_published_at_ms,
+        strategy.active.seconds_to_expiry_at_selection,
+    )
+}
+
+fn seed_managed_position_lifecycle_from_active_fixture(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) {
+    let lifecycle = active_fixture_lifecycle_for_instrument(strategy, instrument_id);
+    if let Some(managed) = strategy.exposure.managed_position_mut() {
+        managed.position.lifecycle = lifecycle;
+    }
+    strategy.sync_exposure_context_from_active();
 }
 
 pub(super) fn configured_book_for_instrument(
@@ -1594,6 +1628,7 @@ pub(super) fn materialize_configured_position(
         },
         0,
     );
+    seed_managed_position_lifecycle_from_active_fixture(strategy, instrument_id);
     let mut position = managed_position_ref(strategy)
         .cloned()
         .expect("configured position should materialize as managed exposure");

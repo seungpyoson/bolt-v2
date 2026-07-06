@@ -631,6 +631,80 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
 }
 
 #[test]
+fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecycle_from_mismatched_interval()
+ {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SAME-INSTRUMENT-PARTIAL-LIFECYCLE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let captured_lifecycle = managed_position_ref(&strategy)
+        .expect("position should be managed after materialization")
+        .lifecycle
+        .clone();
+    let position_interval_end_ms = captured_lifecycle
+        .interval_end_ms()
+        .expect("fixture should configure position interval end");
+    let partial_lifecycle = BoltV3PositionMarketLifecycle::from_entry_context(
+        captured_lifecycle.market_id_owned(),
+        captured_lifecycle.outcome_side(),
+        None,
+        None,
+        Some(position_interval_end_ms),
+        None,
+        None,
+    );
+    strategy
+        .exposure
+        .managed_position_mut()
+        .expect("position should remain managed")
+        .position
+        .lifecycle = partial_lifecycle;
+
+    strategy.active.price_to_beat = Some(3_200.0);
+    strategy.active.interval_open = Some(3_200.0);
+    strategy.active.interval_end_ms = Some(position_interval_end_ms.saturating_add(60_000));
+    strategy.active.selection_published_at_ms = captured_lifecycle
+        .selection_published_at_ms()
+        .map(|published_at_ms| published_at_ms.saturating_add(1));
+    strategy.active.seconds_to_expiry_at_selection = captured_lifecycle
+        .seconds_to_expiry_at_selection()
+        .map(|seconds_to_expiry| seconds_to_expiry.saturating_add(60));
+    strategy.sync_exposure_context_from_active();
+
+    let managed = managed_position_ref(&strategy).expect("position should remain managed");
+    assert_eq!(
+        managed.lifecycle.settlement_strike(),
+        None,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument sync must not repair missing strike from a mismatched interval"
+    );
+    assert_eq!(
+        managed.lifecycle.selection_published_at_ms(),
+        None,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument sync must not repair selection timing from a mismatched interval"
+    );
+    assert_eq!(
+        managed.lifecycle.seconds_to_expiry_at_selection(),
+        None,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument sync must not repair expiry timing from a mismatched interval"
+    );
+}
+
+#[test]
 fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll() {
     assert_reality_fixtures();
 

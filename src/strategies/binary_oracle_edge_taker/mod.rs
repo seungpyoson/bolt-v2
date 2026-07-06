@@ -4220,6 +4220,10 @@ impl BinaryOracleEdgeTaker {
         let active_down_instrument_id = self.active.books.down.instrument_id;
         let active_up_book = self.active.books.up.clone();
         let active_down_book = self.active.books.down.clone();
+        let allow_missing_interval_lifecycle_repair = self
+            .exposure
+            .managed_position()
+            .is_some_and(|managed| managed.origin == ManagedPositionOrigin::StrategyEntry);
         let Some(open_position) = self.tracked_observed_position_mut() else {
             return;
         };
@@ -4240,7 +4244,14 @@ impl BinaryOracleEdgeTaker {
                 active_selection_published_at_ms,
                 active_seconds_to_expiry_at_selection,
             );
-            open_position.lifecycle.fill_missing_from(&active_lifecycle);
+            let lifecycle_repair_allowed = open_position
+                .lifecycle
+                .interval_end_matches(&active_lifecycle)
+                || (allow_missing_interval_lifecycle_repair
+                    && open_position.lifecycle.interval_end_ms().is_none());
+            if lifecycle_repair_allowed {
+                open_position.lifecycle.fill_missing_from(&active_lifecycle);
+            }
             if open_position
                 .lifecycle
                 .interval_end_matches(&active_lifecycle)
@@ -4266,7 +4277,14 @@ impl BinaryOracleEdgeTaker {
                 active_selection_published_at_ms,
                 active_seconds_to_expiry_at_selection,
             );
-            open_position.lifecycle.fill_missing_from(&active_lifecycle);
+            let lifecycle_repair_allowed = open_position
+                .lifecycle
+                .interval_end_matches(&active_lifecycle)
+                || (allow_missing_interval_lifecycle_repair
+                    && open_position.lifecycle.interval_end_ms().is_none());
+            if lifecycle_repair_allowed {
+                open_position.lifecycle.fill_missing_from(&active_lifecycle);
+            }
             if open_position
                 .lifecycle
                 .interval_end_matches(&active_lifecycle)

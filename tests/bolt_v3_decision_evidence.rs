@@ -1,6 +1,9 @@
 use crate::support;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use bolt_v2::{
@@ -11,8 +14,10 @@ use bolt_v2::{
         BOLT_V3_EXIT_EVALUATION_RECORD_KIND, BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
         BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND, BOLT_V3_ORDER_INTENT_GATE_ID,
         BOLT_V3_ORDER_REJECT_GATE_ID, BOLT_V3_ORDER_REJECT_RECORD_KIND,
-        BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+        BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND,
+        BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
         BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
         BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipEvidence,
@@ -23,12 +28,16 @@ use bolt_v2::{
         BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
         BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
-        BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3StaleLossReason,
+        BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3SettlementBookingErrorEvidence,
+        BoltV3SettlementBookingErrorReason, BoltV3SettlementEvidence, BoltV3StaleLossReason,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path, read_exit_evaluation_evidence,
         read_latest_entry_decision_evidence_chain, read_loss_governor_halt_evidence,
-        read_order_reject_evidence, read_submit_reservation_recovery_evidence,
+        read_order_reject_evidence, read_settlement_booking_error_evidence,
+        read_settlement_booking_error_keys_for_recovery_scope, read_settlement_evidence,
+        read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
+        read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -1493,6 +1502,44 @@ fn sample_order_reject_evidence(populated: bool) -> BoltV3OrderRejectEvidence {
     }
 }
 
+fn sample_settlement_evidence(settlement_key: &str) -> BoltV3SettlementEvidence {
+    BoltV3SettlementEvidence {
+        strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
+        settlement_key: settlement_key.to_string(),
+        market_id: "MKT-1".to_string(),
+        position_id: "P-1".to_string(),
+        instrument_id: "condition-MKT-1-UP.POLYMARKET".to_string(),
+        product_id: "condition-MKT-1-UP".to_string(),
+        outcome_side: BoltV3OutcomeSide::Up,
+        entry_order_side: "Buy".to_string(),
+        quantity: "10.00".to_string(),
+        entry_price: "0.45".to_string(),
+        family_key: "updown".to_string(),
+        strike_price: "3100.0".to_string(),
+        resolution_instrument_id: "RESOLUTION.SOURCE".to_string(),
+        resolution_ts_event_ns: 1_300_000_000,
+        reference_close_price: "3101.0".to_string(),
+        payout_per_share: "1".to_string(),
+        terminal_value: "10".to_string(),
+        realized_pnl: "5.5".to_string(),
+        settlement_currency: "USDC".to_string(),
+    }
+}
+
+fn sample_settlement_booking_error(settlement_key: &str) -> BoltV3SettlementBookingErrorEvidence {
+    BoltV3SettlementBookingErrorEvidence {
+        strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
+        settlement_key: settlement_key.to_string(),
+        market_id: Some("MKT-1".to_string()),
+        position_id: Some("P-1".to_string()),
+        instrument_id: Some("condition-MKT-1-UP.POLYMARKET".to_string()),
+        resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
+        reason: BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+        detail: "resolution feed missing at market end; settlement not booked".to_string(),
+        observed_at_ns: 1_300_000_000,
+    }
+}
+
 fn exit_evaluation_evidence_line(evidence: &BoltV3ExitEvaluationEvidence) -> serde_json::Value {
     serde_json::json!({
         "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
@@ -1525,6 +1572,30 @@ fn order_reject_evidence_line(evidence: &BoltV3OrderRejectEvidence) -> serde_jso
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
         "kind": BOLT_V3_ORDER_REJECT_RECORD_KIND,
         "evidence": evidence,
+    })
+}
+
+fn settlement_evidence_line(evidence: &BoltV3SettlementEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 13_i64,
+        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": BOLT_V3_SETTLEMENT_RECORD_KIND,
+        "settlement": evidence,
+    })
+}
+
+fn settlement_booking_error_evidence_line(
+    evidence: &BoltV3SettlementBookingErrorEvidence,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 14_i64,
+        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+        "booking_error": evidence,
     })
 }
 
@@ -1603,6 +1674,163 @@ fn order_reject_evidence_round_trips_populated_and_sparse_records() {
         .expect("order-reject evidence should read back");
 
     assert_eq!(read_back, records);
+}
+
+#[test]
+fn settlement_and_booking_error_evidence_round_trip_from_jsonl_writer() {
+    let (_temp, evidence_path, writer) = temp_decision_evidence_writer("settlement-evidence");
+    let settlement = sample_settlement_evidence("MKT-1:P-1");
+    let booking_error = sample_settlement_booking_error("MKT-1:P-2");
+
+    writer
+        .record_settlement(&settlement)
+        .expect("settlement evidence should write");
+    writer
+        .record_settlement_booking_error(&booking_error)
+        .expect("settlement booking-error evidence should write");
+
+    let lines = read_decision_evidence_json_lines(&evidence_path);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["kind"], BOLT_V3_SETTLEMENT_RECORD_KIND);
+    assert_eq!(lines[0]["gate_id"], BOLT_V3_SETTLEMENT_GATE_ID);
+    assert_eq!(
+        lines[1]["kind"],
+        BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND
+    );
+    assert_eq!(lines[1]["gate_id"], BOLT_V3_SETTLEMENT_GATE_ID);
+
+    let settlements = read_settlement_evidence(&evidence_path, 100_000)
+        .expect("settlement evidence should read back");
+    let errors = read_settlement_booking_error_evidence(&evidence_path, 100_000)
+        .expect("settlement booking-error evidence should read back");
+    assert_eq!(settlements, vec![settlement]);
+    assert_eq!(errors, vec![booking_error]);
+}
+
+#[test]
+fn settlement_recovery_reader_filters_by_structural_recovery_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let in_scope = sample_settlement_evidence("MKT-1:P-RECOVERED");
+    let out_of_scope = sample_settlement_evidence("MKT-2:P-OLD");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_evidence_line(&out_of_scope),
+            settlement_booking_error_evidence_line(&sample_settlement_booking_error(
+                "MKT-1:P-RECOVERED",
+            )),
+            settlement_evidence_line(&in_scope),
+        ],
+    );
+
+    let recovered = read_settlement_keys_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-RECOVERED".to_string(), "MKT-1:P-OPEN".to_string()]),
+    )
+    .expect("settlement keys should be read with a structural position scope");
+
+    assert_eq!(recovered, BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]));
+}
+
+#[test]
+fn settlement_booking_error_recovery_reader_filters_by_same_structural_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let in_scope = sample_settlement_booking_error("MKT-1:P-RECOVERED");
+    let out_of_scope = sample_settlement_booking_error("MKT-2:P-OLD");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_booking_error_evidence_line(&out_of_scope),
+            settlement_booking_error_evidence_line(&in_scope),
+        ],
+    );
+
+    let recovered = read_settlement_booking_error_keys_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]),
+    )
+    .expect("booking-error keys should be read with the same structural scope");
+
+    assert_eq!(recovered, BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]));
+}
+
+#[test]
+fn settlement_evidence_recovery_reader_returns_in_scope_records_for_replay() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let in_scope = sample_settlement_evidence("MKT-1:P-RECOVERED");
+    let out_of_scope = sample_settlement_evidence("MKT-2:P-OLD");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_evidence_line(&out_of_scope),
+            settlement_evidence_line(&in_scope),
+        ],
+    );
+
+    let recovered = read_settlement_evidence_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]),
+    )
+    .expect("settlement evidence should be replayable within the same structural scope");
+
+    assert_eq!(recovered, vec![in_scope]);
+}
+
+#[test]
+fn settlement_recovery_reader_ignores_duplicate_out_of_scope_keys() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let in_scope = sample_settlement_evidence("MKT-1:P-RECOVERED");
+    let stale_duplicate = sample_settlement_evidence("MKT-2:P-OLD");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_evidence_line(&stale_duplicate),
+            settlement_evidence_line(&in_scope),
+            settlement_evidence_line(&stale_duplicate),
+        ],
+    );
+
+    let recovered = read_settlement_keys_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]),
+    )
+    .expect("out-of-scope duplicates must not bound startup settlement recovery");
+
+    assert_eq!(recovered, BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]));
+}
+
+#[test]
+fn settlement_recovery_reader_fails_closed_on_duplicate_in_scope_key() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let first = sample_settlement_evidence("MKT-1:P-DUP");
+    let second = sample_settlement_evidence("MKT-1:P-DUP");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_evidence_line(&first),
+            settlement_evidence_line(&second),
+        ],
+    );
+
+    let error = read_settlement_keys_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-DUP".to_string()]),
+    )
+    .expect_err("duplicate settlement keys must fail closed");
+    assert!(
+        format!("{error:#}").contains("duplicate settlement key"),
+        "duplicate settlement key error should be explicit: {error:#}"
+    );
 }
 
 #[test]
@@ -1733,6 +1961,17 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
 
     fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
         anyhow::bail!("decision evidence path noop writer received requote-throttle evidence")
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
     }
 
     fn drain_shutdown(&self) -> Result<()> {

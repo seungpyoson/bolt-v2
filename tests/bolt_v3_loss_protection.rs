@@ -14,8 +14,8 @@ use bolt_v2::{
     },
     bolt_v3_loss_protection::{
         KillSwitchLossAction, KillSwitchLossActionKind, KillSwitchLossActionSink,
-        KillSwitchLossProtection, KillSwitchLossProtectionConfig, RealizedPnlObservation,
-        seed_admission_from_kill_switch_store,
+        KillSwitchLossProtection, KillSwitchLossProtectionConfig, PositionRealizedPnlObservation,
+        RealizedPnlObservation, seed_admission_from_kill_switch_store,
     },
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
@@ -1256,6 +1256,58 @@ fn duplicate_adjusted_position_replay_counts_delta_once() {
 }
 
 #[test]
+fn settlement_position_pnl_dedupes_by_settlement_key_before_daily_accumulation() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-settlement-key-dedupe");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(10, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_realized_pnl(settlement_pnl_observation(
+            "MKT-1:P-SETTLED",
+            "P-SETTLED",
+            Decimal::new(-6, 0),
+            1_717_200_000_000_000_000,
+        ))
+        .expect("first settlement should record below limit");
+    protection
+        .record_position_realized_pnl(settlement_pnl_observation(
+            "MKT-1:P-SETTLED",
+            "P-SETTLED",
+            Decimal::new(-6, 0),
+            1_717_200_000_000_000_100,
+        ))
+        .expect("duplicate settlement key should not double count");
+    assert!(admission.admit(&entry_request()).is_ok());
+    assert!(actions.actions().is_empty());
+
+    let latched = protection
+        .record_position_realized_pnl(settlement_pnl_observation(
+            "MKT-1:P-SETTLED-2",
+            "P-SETTLED-2",
+            Decimal::new(-5, 0),
+            1_717_200_000_000_000_200,
+        ))
+        .expect("distinct settlement key should be counted")
+        .expect("unique settlement losses should breach the daily limit");
+
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
+    assert_eq!(actions.actions().len(), 1);
+}
+
+#[test]
 fn mixed_settlement_currency_adjusted_pnl_fails_closed() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-mixed-adjusted-currency");
     let store = KillSwitchStore::new(
@@ -1485,6 +1537,28 @@ fn entry_request() -> BoltV3SubmitAdmissionRequest {
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,
+    }
+}
+
+fn settlement_pnl_observation(
+    settlement_key: &str,
+    position_id: &str,
+    realized_pnl: Decimal,
+    observed_at_unix_nanos: u64,
+) -> PositionRealizedPnlObservation {
+    PositionRealizedPnlObservation {
+        account_id: "POLYMARKET-001".to_string(),
+        instrument_id: "BTC-USD.BINANCE".to_string(),
+        position_id: position_id.to_string(),
+        event_id: Some(settlement_key.to_string()),
+        observed: RealizedPnlObservation {
+            source: "settlement",
+            observed_at_unix_nanos,
+            realized_pnl,
+            settlement_currency: Currency::USDC(),
+        },
+        cumulative_realized_pnl: false,
+        closes_position: true,
     }
 }
 

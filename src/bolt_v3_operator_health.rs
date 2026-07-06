@@ -382,32 +382,25 @@ pub fn node_scoped_runtime_source_announcements(
     loaded: &LoadedBoltV3Config,
     venue_truth_runtime_available: bool,
 ) -> BoltV3NodeScopedRuntimeSourceAnnouncements {
-    let venue_truth_rest_capture = loaded
-        .root
-        .risk
-        .capital_pools
-        .as_ref()
-        .and_then(|pools| {
-            pools.iter().find(|pool| {
-                pool.enforce_submit_admission && pool.prediction_market_binary.is_some()
-            })
-        })
-        .map(|pool| {
-            let status = if venue_truth_runtime_available {
-                BoltV3RuntimeFeedAnnouncementStatus::Active
-            } else {
-                BoltV3RuntimeFeedAnnouncementStatus::Unsupported
-            };
-            BoltV3VenueTruthRestCaptureAnnouncement {
-                source_id: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
-                venue_id: pool.venue_id.clone(),
-                account_id: pool.account_id.to_string(),
-                collateral_currency: pool.collateral_currency.clone(),
-                enabled: venue_truth_runtime_available,
-                runtime_available: venue_truth_runtime_available,
-                status,
-            }
-        });
+    let venue_truth_rest_capture =
+        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(&loaded.root).map(
+            |pool| {
+                let status = if venue_truth_runtime_available {
+                    BoltV3RuntimeFeedAnnouncementStatus::Active
+                } else {
+                    BoltV3RuntimeFeedAnnouncementStatus::Unsupported
+                };
+                BoltV3VenueTruthRestCaptureAnnouncement {
+                    source_id: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+                    venue_id: pool.venue_id.clone(),
+                    account_id: pool.account_id.to_string(),
+                    collateral_currency: pool.collateral_currency.clone(),
+                    enabled: venue_truth_runtime_available,
+                    runtime_available: venue_truth_runtime_available,
+                    status,
+                }
+            },
+        );
     let iv_runtime_sources = match loaded.root.iv.as_ref() {
         Some(iv) => iv
             .profiles

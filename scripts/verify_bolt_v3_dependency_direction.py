@@ -75,8 +75,10 @@ a strategy type through a third module under a new name.
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -820,12 +822,40 @@ def is_allowed(finding: Finding) -> bool:
 # merge; after that, every PR is checked.
 # --------------------------------------------------------------------------- #
 
-# The baseline is the protected mainline and ONLY the mainline. `FETCH_HEAD` or a
-# local `main` are deliberately NOT accepted: in a feature worktree `FETCH_HEAD`
-# can point at the branch itself, which would silently compare the allowlist to
-# itself and pass. CI refreshes `origin/main` via `git fetch` before this runs.
+# The baseline is the protected mainline and ONLY the mainline. `FETCH_HEAD`, a
+# local `main`, or a stale checkout `origin/main` are deliberately NOT accepted:
+# those can point at the branch itself or lag the protected branch. The verifier
+# fetches the baseline into an isolated temporary Git database before reading it.
 BASELINE_REL = "scripts/verify_bolt_v3_dependency_direction.py"
-BASELINE_REF = "origin/main"
+BASELINE_REMOTE = "origin"
+BASELINE_BRANCH = "main"
+BASELINE_REF = f"{BASELINE_REMOTE}/{BASELINE_BRANCH}"
+BASELINE_TEMP_REF = f"refs/dependency-direction-baseline/{BASELINE_BRANCH}"
+REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
+
+
+def _git(args: list[str], *, cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if check and result.returncode != 0:
+        raise PolicyError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result
+
+
+def fetchable_remote_url(remote_url: str, source_repo: Path) -> str:
+    if (
+        Path(remote_url).is_absolute()
+        or remote_url.startswith("~")
+        or REMOTE_URL_SCHEME_RE.match(remote_url)
+        or REMOTE_URL_SCP_RE.match(remote_url)
+    ):
+        return remote_url
+    return str((source_repo / remote_url).resolve(strict=False))
 
 
 def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
@@ -887,21 +917,48 @@ def _read_baseline_source() -> str | None:
     present there (the introducing PR). Raises PolicyError if `origin/main` cannot
     be resolved (fail closed rather than silently skip enforcement)."""
 
-    rev = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{BASELINE_REF}^{{commit}}"],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if rev.returncode != 0:
+    remote = _git(["remote", "get-url", BASELINE_REMOTE], cwd=REPO_ROOT)
+    remote_url = remote.stdout.strip()
+    if remote.returncode != 0 or not remote_url:
         raise PolicyError(
-            f"cannot resolve baseline ref {BASELINE_REF} (fetch it in CI) "
+            f"cannot resolve baseline remote {BASELINE_REMOTE} "
             "to enforce allowlist shrink-only"
         )
-    show = subprocess.run(
-        ["git", "show", f"{BASELINE_REF}:{BASELINE_REL}"],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if show.returncode == 0:
-        return show.stdout
+    remote_url = fetchable_remote_url(remote_url, REPO_ROOT)
+    with tempfile.TemporaryDirectory(prefix="dependency-direction-baseline-") as tmp:
+        git_dir = Path(tmp) / "repo.git"
+        _git(["init", "--bare", str(git_dir)], cwd=Path(tmp), check=True)
+        if not git_dir.is_dir():
+            raise PolicyError(f"Git directory {git_dir} does not exist")
+        fetch = _git(
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--refmap=",
+                remote_url,
+                f"refs/heads/{BASELINE_BRANCH}:{BASELINE_TEMP_REF}",
+            ],
+            cwd=git_dir,
+        )
+        if fetch.returncode != 0:
+            raise PolicyError(
+                f"cannot resolve baseline ref {BASELINE_REF} "
+                "to enforce allowlist shrink-only"
+            )
+        rev = _git(
+            ["rev-parse", "--verify", "--quiet", f"{BASELINE_TEMP_REF}^{{commit}}"],
+            cwd=git_dir,
+        )
+        if rev.returncode != 0:
+            raise PolicyError(
+                f"cannot resolve baseline ref {BASELINE_REF} "
+                "to enforce allowlist shrink-only"
+            )
+        show = _git(["show", f"{BASELINE_TEMP_REF}:{BASELINE_REL}"], cwd=git_dir)
+        if show.returncode == 0:
+            return show.stdout
     return None  # ref resolves but the fence is not on it yet (introducing PR)
 
 

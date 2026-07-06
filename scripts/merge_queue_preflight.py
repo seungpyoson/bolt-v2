@@ -42,6 +42,8 @@ CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 PREFLIGHT_REF_PREFIX = "refs/preflight/merge_queue_preflight"
 PROFILE_NONE = "none"
+REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
 GH_PR_CHECKS_JSON_RETURNCODES = (0, 1, 2, 8)
 STATUS_READY = "ready"
 STATUS_BLOCKED = "blocked"
@@ -1576,34 +1578,75 @@ class CommandResult:
 
 @dataclasses.dataclass
 class PrivateFetchRefs:
-    repo: pathlib.Path
+    source_repo: pathlib.Path
+    git_repo: pathlib.Path
     input_timeout_seconds: int
     namespace: str
+    temp_dir: tempfile.TemporaryDirectory
     refs: list[str] = dataclasses.field(default_factory=list)
+    remotes: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def create(cls, repo: pathlib.Path, input_timeout_seconds: int) -> "PrivateFetchRefs":
+        temp_dir = tempfile.TemporaryDirectory(prefix="merge-queue-preflight-git-")
+        git_repo = pathlib.Path(temp_dir.name) / "repo.git"
+        try:
+            run_command(
+                ["git", "init", "--bare", str(git_repo)],
+                cwd=pathlib.Path(temp_dir.name),
+                check=True,
+                timeout_seconds=input_timeout_seconds,
+            )
+        except Exception:
+            temp_dir.cleanup()
+            raise
         return cls(
-            repo=repo,
+            source_repo=repo,
+            git_repo=git_repo,
             input_timeout_seconds=input_timeout_seconds,
             namespace=f"{PREFLIGHT_REF_PREFIX}/{uuid.uuid4().hex}",
+            temp_dir=temp_dir,
         )
 
+    def fetch_origin(self, origin: str) -> str:
+        cached = self.remotes.get(origin)
+        if cached is not None:
+            return cached
+        if not self.source_repo.is_dir():
+            raise PreflightError(f"source repository directory {self.source_repo} does not exist")
+        result = git(
+            self.source_repo,
+            "remote",
+            "get-url",
+            origin,
+            check=False,
+            timeout_seconds=self.input_timeout_seconds,
+        )
+        remote_url = result.stdout.strip()
+        if result.returncode != 0 or not remote_url:
+            self.remotes[origin] = origin
+            return origin
+        remote_url = fetchable_remote_url(remote_url, self.source_repo)
+        self.remotes[origin] = remote_url
+        return remote_url
+
     def fetch_sha(self, origin: str, source: str, name: str) -> str:
+        if not self.git_repo.is_dir():
+            raise PreflightError(f"private Git repository directory {self.git_repo} does not exist")
         ref = f"{self.namespace}/{name}"
         git(
-            self.repo,
+            self.git_repo,
             "fetch",
             "--quiet",
             "--no-write-fetch-head",
             "--no-tags",
-            origin,
+            self.fetch_origin(origin),
             f"{source}:{ref}",
             timeout_seconds=self.input_timeout_seconds,
         )
         self.refs.append(ref)
         return git(
-            self.repo,
+            self.git_repo,
             "rev-parse",
             ref,
             timeout_seconds=self.input_timeout_seconds,
@@ -1612,13 +1655,25 @@ class PrivateFetchRefs:
     def cleanup(self) -> None:
         for ref in reversed(self.refs):
             git(
-                self.repo,
+                self.git_repo,
                 "update-ref",
                 "-d",
                 ref,
                 check=False,
                 timeout_seconds=self.input_timeout_seconds,
             )
+        self.temp_dir.cleanup()
+
+
+def fetchable_remote_url(remote_url: str, source_repo: pathlib.Path) -> str:
+    if (
+        pathlib.Path(remote_url).is_absolute()
+        or remote_url.startswith("~")
+        or REMOTE_URL_SCHEME_RE.match(remote_url)
+        or REMOTE_URL_SCP_RE.match(remote_url)
+    ):
+        return remote_url
+    return str((source_repo / remote_url).resolve(strict=False))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2719,7 +2774,6 @@ def preflight(
     fetch_refs = PrivateFetchRefs.create(repo, input_timeout_seconds)
     try:
         return preflight_with_fetch_refs(
-            repo=repo,
             origin=origin,
             base=base,
             expected_base_sha=expected_base_sha,
@@ -2740,7 +2794,6 @@ def preflight(
 
 def preflight_with_fetch_refs(
     *,
-    repo: pathlib.Path,
     origin: str,
     base: str,
     expected_base_sha: str,
@@ -2757,6 +2810,7 @@ def preflight_with_fetch_refs(
 ) -> tuple[dict[str, object], int]:
     requested = unique_preserving_order(pr_numbers)
     expected_heads = expected_head_map(expected_head_inputs, requested)
+    git_repo = fetch_refs.git_repo
     try:
         actual_base_sha = fetch_base(fetch_refs, origin, base)
     except PreflightError as exc:
@@ -2800,7 +2854,7 @@ def preflight_with_fetch_refs(
     ]
     blocked_numbers = {int(block["pr"]) for block in blocked_prs}
     mergify_findings = mergify_config_findings(
-        repo=repo,
+        repo=git_repo,
         base_sha=base_sha,
         readiness=readiness,
         required_check_workflows=required_check_workflows,
@@ -2814,7 +2868,7 @@ def preflight_with_fetch_refs(
         if pr in blocked_numbers:
             continue
         head = heads[pr]
-        synthetic = synthesize_merge(repo, base_sha, head.sha, [pr], input_timeout_seconds)
+        synthetic = synthesize_merge(git_repo, base_sha, head.sha, [pr], input_timeout_seconds)
         if isinstance(synthetic, MergeResult):
             blocked_prs.append(
                 {
@@ -2827,7 +2881,7 @@ def preflight_with_fetch_refs(
             blocked_numbers.add(pr)
             continue
         verifier_results = run_verifier_commands(
-            repo,
+            git_repo,
             synthetic.commit,
             verifier_commands,
             verifier_timeout_seconds,
@@ -2869,7 +2923,7 @@ def preflight_with_fetch_refs(
             current_verifiers = base_verifiers[pr]
             continue
         synthetic = synthesize_merge(
-            repo,
+            git_repo,
             current.commit,
             pr_head.sha,
             candidate_prs,
@@ -2897,7 +2951,7 @@ def preflight_with_fetch_refs(
             current_verifiers = base_verifiers[pr]
             continue
         candidate_verifiers = run_verifier_commands(
-            repo,
+            git_repo,
             synthetic.commit,
             verifier_commands,
             verifier_timeout_seconds,

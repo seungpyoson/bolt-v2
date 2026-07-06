@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -26,6 +27,17 @@ def write_file(root: Path, rel: str, content: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
 
 
 def run_with(root: Path, allowances: tuple | None = None) -> tuple[int, str, str]:
@@ -765,12 +777,88 @@ def test_shrink_only_unresolved_baseline_fails_closed() -> None:
         raise AssertionError(f"expected fail-closed on missing baseline, got {code}: {err!r}")
 
 
-def test_justfile_dependency_baseline_fetch_fails_closed() -> None:
+def test_git_check_error_includes_stderr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            VERIFIER._git(["rev-parse", "--verify", "missing"], cwd=Path(tmp), check=True)
+        except VERIFIER.PolicyError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected checked git failure")
+        if "fatal:" not in message:
+            raise AssertionError(f"expected git stderr in PolicyError, got: {message!r}")
+
+
+def test_shrink_only_fetches_baseline_without_checkout_tracking_ref() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        remote = root / "origin.git"
+        seed = root / "seed"
+        work = root / "work"
+        git(root, "init", "--bare", str(remote))
+        git(root, "init", str(seed))
+        git(seed, "config", "user.email", "dependency-direction@example.invalid")
+        git(seed, "config", "user.name", "Dependency Direction Test")
+        write_file(
+            seed,
+            "scripts/verify_bolt_v3_dependency_direction.py",
+            baseline_source({("src/bolt_v3_a.rs", "strategies::x::A")}),
+        )
+        git(seed, "add", ".")
+        git(seed, "commit", "-m", "baseline")
+        git(seed, "branch", "-M", "main")
+        git(seed, "remote", "add", "origin", str(remote))
+        git(seed, "push", "-u", "origin", "main")
+        git(root, "clone", "-b", "main", str(remote), str(work))
+        git(work, "update-ref", "-d", "refs/remotes/origin/main")
+        git(work, "remote", "set-url", "origin", "../origin.git")
+
+        original_root = VERIFIER.REPO_ROOT
+        original_allow = VERIFIER.FINDING_ALLOWANCES
+        original_git = VERIFIER._git
+        git_commands: list[tuple[str, ...]] = []
+
+        def recording_git(
+            args: list[str],
+            *,
+            cwd: Path,
+            check: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            git_commands.append(tuple(args))
+            return original_git(args, cwd=cwd, check=check)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = work
+            VERIFIER.FINDING_ALLOWANCES = (
+                allowance("src/bolt_v3_a.rs", "strategies::x::A"),
+            )
+            VERIFIER._git = recording_git
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main(["--check-shrink-only-vs-main"])
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.FINDING_ALLOWANCES = original_allow
+            VERIFIER._git = original_git
+        if code != 0 or "subset of the mainline baseline" not in stdout.getvalue():
+            raise AssertionError(
+                f"expected isolated baseline fetch to pass, got {code}: "
+                f"stdout={stdout.getvalue()!r} stderr={stderr.getvalue()!r}"
+            )
+        if any(command[:2] == ("remote", "add") for command in git_commands):
+            raise AssertionError(f"baseline fetch must not configure temp remotes: {git_commands!r}")
+        fetch_commands = [command for command in git_commands if command[:1] == ("fetch",)]
+        if not any(str(remote.resolve()) in command for command in fetch_commands):
+            raise AssertionError(f"baseline fetch did not use resolved absolute remote URL: {fetch_commands!r}")
+
+
+def test_justfile_dependency_baseline_fetch_is_not_checkout_mutation() -> None:
     justfile = SCRIPT_PATH.parent.parent / "justfile"
     text = justfile.read_text(encoding="utf-8")
-    bad = "git fetch -q origin main 2>/dev/null || true"
-    if bad in text:
-        raise AssertionError("dependency-direction baseline fetch must not suppress failure")
+    bad_fetch = "git fetch -q origin main"
+    if bad_fetch in text:
+        raise AssertionError("dependency-direction baseline fetch must not mutate checkout .git")
 
 
 def test_real_repo_is_green_with_committed_allowlist() -> None:
@@ -858,7 +946,9 @@ def main() -> int:
         test_shrink_only_addition_fails,
         test_shrink_only_introducing_pr_passes,
         test_shrink_only_unresolved_baseline_fails_closed,
-        test_justfile_dependency_baseline_fetch_fails_closed,
+        test_git_check_error_includes_stderr,
+        test_shrink_only_fetches_baseline_without_checkout_tracking_ref,
+        test_justfile_dependency_baseline_fetch_is_not_checkout_mutation,
         test_real_repo_is_green_with_committed_allowlist,
         test_file_size_limit_exceeded_fails_cleanly,
     ]

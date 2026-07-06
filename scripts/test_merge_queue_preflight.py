@@ -1086,6 +1086,143 @@ def assert_fetches_use_private_refs_without_fetch_head() -> None:
         assert_equal(leaked_refs, "", "private fetch refs must be cleaned up")
 
 
+def assert_private_fetches_do_not_write_checkout_refs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        checkout_preflight_refs = fixture.repo / ".git" / "refs" / "preflight"
+        checkout_preflight_refs.mkdir(parents=True, exist_ok=True)
+        original_mode = checkout_preflight_refs.stat().st_mode
+        checkout_preflight_refs.chmod(0o500)
+        try:
+            rc, stdout, _ = run_preflight(
+                fixture.repo,
+                fixture.remote,
+                "1",
+                expect_success=False,
+            )
+        finally:
+            checkout_preflight_refs.chmod(original_mode)
+        payload = parse_json(stdout)
+        assert_equal(rc, 3, "checkout-ref-blocked no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetches must not need checkout refs")
+        leaked_refs = git(fixture.repo, "for-each-ref", "--format=%(refname)", "refs/preflight")
+        assert_equal(leaked_refs, "", "checkout preflight refs must stay empty")
+
+
+def assert_private_fetches_resolve_checkout_remote_names() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
+        checkout_preflight_refs = fixture.repo / ".git" / "refs" / "preflight"
+        checkout_preflight_refs.mkdir(parents=True, exist_ok=True)
+        original_mode = checkout_preflight_refs.stat().st_mode
+        checkout_preflight_refs.chmod(0o500)
+        try:
+            command = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--origin",
+                "origin",
+                "--base",
+                "main",
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--verifier-profile",
+                "none",
+                "--json",
+                "1",
+            ]
+            result = subprocess.run(
+                command,
+                cwd=fixture.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            checkout_preflight_refs.chmod(original_mode)
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "remote-name private fetch no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetches must resolve checkout remote names")
+
+
+def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
+        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+        try:
+            resolved = private_fetch.fetch_origin("origin")
+            assert_equal(resolved, str(fixture.remote.resolve()), "private fetch origin URL")
+            configured_remotes = git(private_fetch.git_repo, "remote")
+            assert_equal(configured_remotes, "", "private fetch must not configure temp remotes")
+        finally:
+            private_fetch.cleanup()
+
+
+def assert_verifier_worktrees_do_not_write_checkout_git_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"fail.txt": "fail\n"})
+        verifier = root / "reject_fail_file.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('fail.txt').exists():\n"
+            "    print('isolated verifier rejected fail.txt')\n"
+            "    sys.exit(7)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier}"])
+        checkout_worktrees = fixture.repo / ".git" / "worktrees"
+        checkout_worktrees.mkdir(parents=True, exist_ok=True)
+        original_mode = checkout_worktrees.stat().st_mode
+        checkout_worktrees.chmod(0o500)
+        try:
+            command = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--origin",
+                str(fixture.remote),
+                "--base",
+                "main",
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--config",
+                str(config),
+                "--json",
+                "1",
+            ]
+            result = subprocess.run(
+                command,
+                cwd=fixture.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            checkout_worktrees.chmod(original_mode)
+        assert_equal(result.returncode, 2, "checkout-worktrees-blocked verifier failure rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        if "isolated verifier rejected fail.txt" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+
+
 def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
     module = load_preflight_module()
     assert_equal(
@@ -2905,6 +3042,10 @@ def main() -> int:
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
     assert_fetches_use_private_refs_without_fetch_head()
+    assert_private_fetches_do_not_write_checkout_refs()
+    assert_private_fetches_resolve_checkout_remote_names()
+    assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
+    assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()

@@ -645,6 +645,24 @@ def assert_fast_path_config_validation_fails_closed() -> None:
             "config.merge_queue_preflight.verifier_profiles.none.commands "
             "must not use reduced-profile rewrite target 'just source-fence-static-fences-only'",
         ),
+        (
+            "verifier profile command is path-qualified source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["/usr/bin/just source-fence-static-fences-only"]',
+            ),
+            "config.merge_queue_preflight.verifier_profiles.none.commands "
+            "must not use reduced-profile rewrite target '/usr/bin/just source-fence-static-fences-only'",
+        ),
+        (
+            "verifier profile command is source-fence rewrite target with args",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just source-fence-static-fences-only --extra"]',
+            ),
+            "config.merge_queue_preflight.verifier_profiles.none.commands "
+            "must not use reduced-profile rewrite target 'just source-fence-static-fences-only --extra'",
+        ),
     ]
     for label, mutate, expected in cases:
         with tempfile.TemporaryDirectory() as tmp:

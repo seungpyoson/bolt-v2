@@ -2051,9 +2051,20 @@ def validate_verifier_profile_commands(
         for target in source_fence_fences_only_rewrites.values()
         if (parsed := parsed_shell_command(target)) is not None
     }
+    rewrite_target_recipes = frozenset(
+        target[1]
+        for target in rewrite_targets
+        if len(target) == 2 and pathlib.PurePath(target[0]).name == "just"
+    )
     for command in commands:
         parsed = parsed_shell_command(command)
-        if parsed is not None and parsed in rewrite_targets:
+        uses_target_recipe = (
+            parsed is not None
+            and len(parsed) >= 2
+            and pathlib.PurePath(parsed[0]).name == "just"
+            and parsed[1] in rewrite_target_recipes
+        )
+        if parsed is not None and (parsed in rewrite_targets or uses_target_recipe):
             raise PreflightError(
                 f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands "
                 f"must not use reduced-profile rewrite target {command!r}; use the configured rewrite source"

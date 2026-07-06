@@ -3961,6 +3961,18 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
     assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
 
 
+def test_source_fence_fences_only_inner_extends_static_inner_only_by_flag() -> None:
+    dump = _just_dump()
+    recipes = dump["recipes"]
+    static_inner = _recipe_command_lines(recipes["source-fence-static-inner"], dump)
+    fences_only_inner = _recipe_command_lines(recipes["source-fence-static-fences-only-inner"], dump)
+    assert len(static_inner) == 1, f"source-fence-static-inner must stay single-command: {static_inner}"
+    assert fences_only_inner == [f"{static_inner[0]} --fences-only"], (
+        "source-fence-static-fences-only-inner must differ from "
+        "source-fence-static-inner only by --fences-only"
+    )
+
+
 def test_shell_expanded_python_commands_fail_closed() -> None:
     fixtures = [
         ['tool="$(${PYTHON} scripts/test_nextest_fingerprint.py)"'],
@@ -4702,6 +4714,7 @@ def _registered_self_tests():
         test_omitted_wrapper_arg_with_resolvable_default_is_l1,
         test_unresolved_direct_and_wrapper_targets_have_l2_parity,
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
+        test_source_fence_fences_only_inner_extends_static_inner_only_by_flag,
         test_shell_expanded_python_commands_fail_closed,
         test_shell_wrappers_and_pipelines_discover_python_commands,
         test_shell_comments_are_ignored_before_tokenization,

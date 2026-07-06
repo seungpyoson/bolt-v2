@@ -2003,6 +2003,92 @@ def assert_fallback_replaces_suffix_optimistic_conflicts() -> None:
         assert_equal(conflicts, expected, "suffix conflict replacement conflicts")
 
 
+def assert_fallback_retains_prefix_suffix_seam_conflict() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        heads = {
+            1: fixture.make_pr(1, {"shared.txt": "first\n", "one.txt": "one\n"}),
+            2: fixture.make_pr(2, {"shared.txt": "second\n", "two.txt": "two\n"}),
+            3: fixture.make_pr(3, {"three.txt": "three\n"}),
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={pr: approved_pr_view(head) for pr, head in heads.items()},
+            checks=passing_source_pr_checks(*heads),
+        )
+        verifier = root / "reject_two_three.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('two.txt').exists() and Path('three.txt').exists():\n"
+            "    print('two.txt and three.txt cannot batch together')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            *[
+                item
+                for pr, head in heads.items()
+                for item in ("--expected-head-sha", f"{pr}={head}")
+            ],
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            *(str(pr) for pr in heads),
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 1, "prefix suffix seam conflict rc")
+        payload = parse_json(result.stdout)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1], [2], [3]],
+            "prefix suffix seam conflict batches",
+        )
+        conflicts = payload["conflicts"]
+        expected = [
+            {
+                "pr": 2,
+                "against_batch": [1],
+                "files": ["shared.txt"],
+                "type": "batch_conflict",
+            },
+            {
+                "pr": 3,
+                "against_batch": [2],
+                "type": "batch_verifier_failed",
+                "classification": "verifier_failed",
+                "command": f"{sys.executable} {verifier}",
+                "returncode": 7,
+                "stdout_preview": "two.txt and three.txt cannot batch together",
+                "stdout_truncated": False,
+                "stderr_preview": "",
+                "stderr_truncated": False,
+            },
+        ]
+        assert_equal(conflicts, expected, "prefix suffix seam conflict artifacts")
+
+
 def install_synthetic_run_fences(fixture: GitFixture, log: pathlib.Path, body: str = "") -> None:
     git(fixture.repo, "checkout", "main")
     script = fixture.repo / "scripts" / "run_fences.py"
@@ -3526,6 +3612,7 @@ def main() -> int:
     assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
     assert_fallback_recombines_survivors_after_batch_max_split()
     assert_fallback_replaces_suffix_optimistic_conflicts()
+    assert_fallback_retains_prefix_suffix_seam_conflict()
     assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff()
     assert_scripts_pr_fence_regression_uses_full_profile()
     assert_verifier_progress_breadcrumb_precedes_final_output()

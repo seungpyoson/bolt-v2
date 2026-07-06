@@ -2463,9 +2463,7 @@ def remaining_batch_prs(candidate_batches: Sequence[Batch], start_index: int) ->
     return tuple(pr for batch in candidate_batches[start_index:] for pr in batch.prs)
 
 
-def conflict_intersects_prs(conflict: Mapping[str, object], prs: set[int]) -> bool:
-    if int(conflict.get("pr", -1)) in prs:
-        return True
+def conflict_against_batch_intersects_prs(conflict: Mapping[str, object], prs: set[int]) -> bool:
     against_batch = conflict.get("against_batch", ())
     if not isinstance(against_batch, Sequence) or isinstance(against_batch, str):
         return False
@@ -3232,7 +3230,7 @@ def preflight_with_fetch_refs(
     conflicts = [
         conflict
         for conflict in conflicts
-        if not conflict_intersects_prs(conflict, fallback_suffix_prs)
+        if not conflict_against_batch_intersects_prs(conflict, fallback_suffix_prs)
     ]
     blocked_prs.extend(fallback_blocked_prs)
     conflicts.extend(fallback_conflicts)

@@ -1,0 +1,97 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "cd83194b5780",
+  "session_id": "8c04b2cd-e8a4-4dab-8de9-293e5ec1ca10",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-06T19:05:35.886434Z",
+  "branch": "codex/gitignore-slate-state",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    ".gitignore",
+    "scripts/coverage_enforcer.py",
+    "scripts/merge_queue_preflight.py",
+    "scripts/test_coverage_enforcer.py",
+    "scripts/test_merge_queue_preflight.py"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8[1m]",
+  "turn_id": "9d46e16412f3",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 15721,
+    "cache_creation_tokens": 42904,
+    "cache_read_tokens": 122997,
+    "output_tokens": 5871,
+    "api_call_count": 3
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_014rwJsmbzDTfUPMPJo5QrwC",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "read-web"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "9d46e16412f3",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 27,
+        "end": 28,
+        "entry_ids": [
+          "5abe4529-3ae2-458d-9b61-8bd570eb01d1"
+        ],
+        "tool_use_id": "toolu_014rwJsmbzDTfUPMPJo5QrwC"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_014rwJsmbzDTfUPMPJo5QrwC"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: read-web",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-06T19:05:35.878998Z",
+    "agent_lines": 37,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 4,
+    "total_committed": 37,
+    "total_lines_changed": 41,
+    "agent_percentage": 90.2439024390244,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 245,
+      "user_lines_removed": 4,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "scripts/coverage_enforcer.py": 56,
+        "scripts/merge_queue_preflight.py": 3,
+        "scripts/test_coverage_enforcer.py": 171,
+        "scripts/test_merge_queue_preflight.py": 15
+      },
+      "user_removed_per_file": {
+        ".gitignore": 2,
+        "scripts/coverage_enforcer.py": 1,
+        "scripts/merge_queue_preflight.py": 1
+      }
+    }
+  ]
+}

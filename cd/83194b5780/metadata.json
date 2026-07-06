@@ -3,7 +3,7 @@
   "checkpoint_id": "cd83194b5780",
   "strategy": "manual-commit",
   "branch": "codex/gitignore-slate-state",
-  "checkpoints_count": 14,
+  "checkpoints_count": 15,
   "files_touched": [
     ".gitignore",
     "scripts/coverage_enforcer.py",
@@ -18,13 +18,20 @@
       "compact_transcript": "/cd/83194b5780/0/transcript.jsonl",
       "content_hash": "/cd/83194b5780/0/content_hash.txt",
       "prompt": "/cd/83194b5780/0/prompt.txt"
+    },
+    {
+      "metadata": "/cd/83194b5780/1/metadata.json",
+      "transcript": "/cd/83194b5780/1/full.jsonl",
+      "compact_transcript": "/cd/83194b5780/1/transcript.jsonl",
+      "content_hash": "/cd/83194b5780/1/content_hash.txt",
+      "prompt": "/cd/83194b5780/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1840,
-    "cache_creation_tokens": 52635,
-    "cache_read_tokens": 35112457,
-    "output_tokens": 45464,
-    "api_call_count": 44
+    "input_tokens": 17561,
+    "cache_creation_tokens": 95539,
+    "cache_read_tokens": 35235454,
+    "output_tokens": 51335,
+    "api_call_count": 47
   }
 }

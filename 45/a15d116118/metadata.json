@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "45a15d116118",
+  "strategy": "manual-commit",
+  "branch": "codex/sandbox-friendly-preflight-checks",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "scripts/test_merge_queue_preflight.py",
+    "scripts/test_verify_bolt_v3_dependency_direction.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/45/a15d116118/0/metadata.json",
+      "transcript": "/45/a15d116118/0/full.jsonl",
+      "compact_transcript": "/45/a15d116118/0/transcript.jsonl",
+      "content_hash": "/45/a15d116118/0/content_hash.txt",
+      "prompt": "/45/a15d116118/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 145,
+    "cache_creation_tokens": 465758,
+    "cache_read_tokens": 3342915,
+    "output_tokens": 13926,
+    "api_call_count": 8
+  }
+}

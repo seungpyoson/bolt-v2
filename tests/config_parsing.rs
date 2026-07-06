@@ -7275,6 +7275,65 @@ fn configured_settlement_sink_rejects_missing_recovery_evidence_max_bytes() {
 }
 
 #[test]
+fn kill_switch_only_settlement_sink_rejects_missing_recovery_evidence_max_bytes() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let temp = tempfile::tempdir().expect("config-load tempdir should create");
+    let strategies_dir = temp.path().join("strategies");
+    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
+    fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategies_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+    let loss_governor_block = r#"[risk.loss_governor]
+enabled = true
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
+on_loss_breach_trading_state = "reducing"
+on_untrusted_snapshot_trading_state = "reducing"
+recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
+max_per_trade_loss = "2.50"
+max_daily_loss = "7.50"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
+"#;
+    let source = fixture_root_without_decision_evidence_recovery_bound()
+        .replace(
+            "enabled = false\nstate_path = \"state/kill-switch.json\"",
+            "enabled = true\nstate_path = \"state/kill-switch.json\"",
+        )
+        .replace(
+            "account_ids = [\"POLYMARKET-001\"]\ninstrument_ids = []",
+            "account_ids = [\"POLYMARKET-001\"]\ninstrument_ids = [\"condition-fixture-yes.POLYMARKET\"]",
+        )
+        .replace(loss_governor_block, "");
+    assert!(
+        source.contains("[risk.kill_switch]\nenabled = true"),
+        "fixture must configure kill switch as the only settlement sink backend"
+    );
+    assert!(
+        !source.contains("[risk.loss_governor]"),
+        "fixture must not rely on loss-governor sink detection"
+    );
+    let root_path = temp.path().join("root.toml");
+    fs::write(&root_path, source).expect("mutated root fixture should write");
+    let error = load_bolt_v3_config(&root_path)
+        .expect_err("kill-switch-only settlement sink without recovery bound should fail at load");
+    let rendered = error.to_string();
+
+    assert!(
+        rendered.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+            && rendered.contains("settlement runtime sink"),
+        "kill-switch-only settlement sink should require bounded recovery evidence reads at load: {rendered}"
+    );
+}
+
+#[test]
 fn rejects_zero_decision_evidence_recovery_evidence_max_bytes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

@@ -2277,7 +2277,7 @@ def stop_process(process: subprocess.Popen[str]) -> None:
         process.communicate()
 
 
-def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() -> None:
+def assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pathspecs() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
@@ -2299,9 +2299,33 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() 
         if "--fences-only" in second_run:
             raise AssertionError(second_run)
 
+        justfile_head = fixture.make_pr(3, {"justfile": "source-fence-static:\n    python3 scripts/run_fences.py\n"})
+        result = run_preflight_with_config(fixture, config, {3: justfile_head})
+        assert_equal(result.returncode, 3, "justfile source fence profile rc")
+        justfile_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in justfile_run:
+            raise AssertionError(justfile_run)
+
+        root_config_head = fixture.make_pr(4, {"ci/rust-verification.toml": "[local_lane_policy]\n"})
+        result = run_preflight_with_config(fixture, config, {4: root_config_head})
+        assert_equal(result.returncode, 3, "root lane config source fence profile rc")
+        root_config_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in root_config_run:
+            raise AssertionError(root_config_run)
+
+        bte_config_head = fixture.make_pr(
+            5,
+            {"crates/backtesting-vertical-slice/ci/rust-verification.toml": "[local_lane_policy]\n"},
+        )
+        result = run_preflight_with_config(fixture, config, {5: bte_config_head})
+        assert_equal(result.returncode, 3, "BTE lane config source fence profile rc")
+        bte_config_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in bte_config_run:
+            raise AssertionError(bte_config_run)
+
         direct_config = write_preflight_config(root, "static", ["./scripts/run_fences.py"])
-        direct_head = fixture.make_pr(3, {"direct.txt": "direct\n"})
-        result = run_preflight_with_config(fixture, direct_config, {3: direct_head})
+        direct_head = fixture.make_pr(6, {"direct.txt": "direct\n"})
+        result = run_preflight_with_config(fixture, direct_config, {6: direct_head})
         assert_equal(result.returncode, 3, "direct source fence profile rc")
         direct_run = log.read_text(encoding="utf-8").splitlines()[-1]
         if "--fences-only" not in direct_run:
@@ -2310,8 +2334,8 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() 
         gate_log = root / "source-fence-gate.log"
         install_synthetic_source_fence_static(fixture, log, gate_log)
         just_config = write_preflight_config(root, "static", ["just source-fence-static"])
-        just_head = fixture.make_pr(4, {"just.txt": "just\n"})
-        result = run_preflight_with_config(fixture, just_config, {4: just_head})
+        just_head = fixture.make_pr(7, {"just.txt": "just\n"})
+        result = run_preflight_with_config(fixture, just_config, {7: just_head})
         assert_equal(result.returncode, 3, "just source fence profile rc")
         just_run = log.read_text(encoding="utf-8").splitlines()[-1]
         if "--fences-only" not in just_run:
@@ -3685,7 +3709,7 @@ def main() -> int:
     assert_fallback_recombines_survivors_after_batch_max_split()
     assert_fallback_replaces_suffix_optimistic_conflicts()
     assert_fallback_retains_prefix_suffix_seam_conflict()
-    assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff()
+    assert_preflight_source_fence_profile_selects_fences_only_by_full_profile_pathspecs()
     assert_scripts_pr_fence_regression_uses_full_profile()
     assert_verifier_progress_breadcrumb_precedes_final_output()
     assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes()

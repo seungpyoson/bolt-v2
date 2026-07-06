@@ -268,7 +268,12 @@ FENCES_ONLY_FLAG = "--fences-only"
 RUN_FENCES_SCRIPT = "scripts/run_fences.py"
 SOURCE_FENCE_STATIC_COMMAND = ("just", "source-fence-static")
 SOURCE_FENCE_STATIC_FENCES_ONLY_COMMAND = ("just", "source-fence-static-fences-only")
-SCRIPTS_PATHSPEC = "scripts"
+SOURCE_FENCE_FULL_PROFILE_PATHSPECS = (
+    "scripts",
+    "justfile",
+    "ci/rust-verification.toml",
+    "crates/backtesting-vertical-slice/ci/rust-verification.toml",
+)
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -2339,13 +2344,13 @@ def source_fence_fences_only_command(command: str) -> str:
     return command
 
 
-def commit_touches_scripts(
+def commit_touches_source_fence_full_profile_path(
     repo: pathlib.Path,
     base_sha: str,
     commit: str,
     input_timeout_seconds: int,
 ) -> bool:
-    """Return True when the commit changes scripts/, failing closed to the full profile."""
+    """Return True when the commit changes source-fence governance, failing closed."""
     completed = git(
         repo,
         "diff",
@@ -2353,7 +2358,7 @@ def commit_touches_scripts(
         base_sha,
         commit,
         "--",
-        SCRIPTS_PATHSPEC,
+        *SOURCE_FENCE_FULL_PROFILE_PATHSPECS,
         check=False,
         timeout_seconds=input_timeout_seconds,
     )
@@ -2373,7 +2378,7 @@ def verifier_commands_for_commit(
     """Select full or fences-only verifier commands for a synthetic commit."""
     if not commands:
         return ()
-    if commit_touches_scripts(repo, base_sha, commit, input_timeout_seconds):
+    if commit_touches_source_fence_full_profile_path(repo, base_sha, commit, input_timeout_seconds):
         return tuple(commands)
     return tuple(source_fence_fences_only_command(command) for command in commands)
 

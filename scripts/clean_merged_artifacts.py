@@ -885,6 +885,10 @@ def _shadowed_hook_copy(
     return destination
 
 
+def _is_shadowed_hook_backup_path(common_dir: pathlib.Path, path: pathlib.Path) -> bool:
+    return _same_path(path.parent, common_dir / "clean-merged.shadowed-hooks")
+
+
 def _remove_hook_with_provenance(
     *,
     runtime_hooks_dir: pathlib.Path,
@@ -1504,6 +1508,7 @@ def install_hooks(
             runtime_hooks_dir=runtime_hooks_dir,
             home_dir=home_dir,
         )
+        source_scope = str(entry.get("source_scope") or "manifest")
         if source_file is None:
             if entry.get("source_scope") in {"global", "local", "worktree", "system"}:
                 _remove_hook_with_provenance(
@@ -1514,6 +1519,12 @@ def install_hooks(
                 manifest_hooks.pop(hook_name, None)
                 continue
             raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if source_scope == "default" and _is_shadowed_hook_backup_path(common_dir, source_file):
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
         if not source_file.is_file():
             _remove_hook_with_provenance(
                 runtime_hooks_dir=runtime_hooks_dir,
@@ -1527,7 +1538,7 @@ def install_hooks(
             _record_shadowed_hook(
                 hook_file=source_file,
                 repo_source_file=source_hooks_dir / hook_name,
-                source_scope=str(entry.get("source_scope") or "manifest"),
+                source_scope=source_scope,
                 shadowed_hooks=shadowed_hooks,
                 hook_name=hook_name,
             )
@@ -1537,7 +1548,7 @@ def install_hooks(
             source_file=source_file,
             destination=destination,
             source_kind="active-hook",
-            source_scope=str(entry.get("source_scope") or "manifest"),
+            source_scope=source_scope,
             source_path=str(source_file),
             manifest_hooks=manifest_hooks,
         )
@@ -3703,8 +3714,24 @@ def _diagnose_hook_install_state(
             runtime_hooks_dir=expected_hooks_dir,
             home_dir=home_dir,
         )
-        source_match = (
+        source_problem: str | None = None
+        if (
             source_file is not None
+            and entry.get("source_kind") == "active-hook"
+            and entry.get("source_scope") == "default"
+            and _is_shadowed_hook_backup_path(common, source_file)
+        ):
+            try:
+                _validate_default_shadowed_hook_backup(
+                    hook_name=hook_name,
+                    entry=entry,
+                    source_file=source_file,
+                )
+            except CleanMergedError as exc:
+                source_problem = str(exc)
+        source_match = (
+            source_problem is None
+            and source_file is not None
             and source_file.is_file()
             and not source_file.is_symlink()
             and entry.get("source_sha256") == _file_sha256(source_file)
@@ -3725,7 +3752,9 @@ def _diagnose_hook_install_state(
             and not _is_executable(hook_file)
         ):
             problems.append(f"hook {hook_name} is not executable (run `just setup`)")
-        if not source_match:
+        if source_problem is not None:
+            problems.append(source_problem)
+        elif not source_match:
             problems.append(f"hook {hook_name} source changed since install")
 
     for hook_name, entries in sorted(manifest_shadowed.items()):
@@ -3744,8 +3773,23 @@ def _diagnose_hook_install_state(
                 runtime_hooks_dir=expected_hooks_dir,
                 home_dir=home_dir,
             )
-            source_match = (
+            source_problem: str | None = None
+            if (
                 source_file is not None
+                and entry.get("source_scope") == "default"
+                and _is_shadowed_hook_backup_path(common, source_file)
+            ):
+                try:
+                    _validate_default_shadowed_hook_backup(
+                        hook_name=hook_name,
+                        entry=entry,
+                        source_file=source_file,
+                    )
+                except CleanMergedError as exc:
+                    source_problem = str(exc)
+            source_match = (
+                source_problem is None
+                and source_file is not None
                 and source_file.is_file()
                 and not source_file.is_symlink()
                 and entry.get("source_sha256") == _file_sha256(source_file)
@@ -3753,7 +3797,9 @@ def _diagnose_hook_install_state(
             print(
                 f"  shadowed hook {hook_name:14s} source_match={source_match}"
             )
-            if not source_match:
+            if source_problem is not None:
+                problems.append(source_problem)
+            elif not source_match:
                 problems.append(f"shadowed hook {hook_name} source changed since install")
 
 

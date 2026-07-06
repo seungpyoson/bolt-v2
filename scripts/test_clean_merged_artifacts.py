@@ -2405,6 +2405,87 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("shadowed hook post-merge backup missing", proc.stderr)
 
+    def test_doctor_reports_default_shadow_backup_drift_with_recovery(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        shadowed_path = pathlib.Path(manifest["shadowed_hooks"]["post-merge"][0]["source_path"])
+        shadowed_path.write_text("#!/bin/sh\nprintf modified-shadow\n", encoding="utf-8")
+        shadowed_path.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("shadowed hook post-merge backup changed since install", proc.stdout)
+        self.assertIn("repair or remove hook manifest before running setup", proc.stdout)
+        self.assertNotIn("shadowed hook post-merge source changed since install", proc.stdout)
+
+    def test_install_hooks_refuses_modified_promoted_default_shadow_backup(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        repo_hook = source_hooks / "pre-push"
+        repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
+        repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        default_hook = runtime_hooks / "pre-push"
+        default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
+        default_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        backup_path = pathlib.Path(manifest["hooks"]["pre-push"]["source_path"])
+        backup_path.write_text("#!/bin/sh\nprintf modified-backup\n", encoding="utf-8")
+        backup_path.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("shadowed hook pre-push backup changed since install", proc.stderr)
+        self.assertTrue((runtime_hooks / "pre-push").exists())
+
+    def test_install_hooks_refuses_missing_promoted_default_shadow_backup(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        repo_hook = source_hooks / "pre-push"
+        repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
+        repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        default_hook = runtime_hooks / "pre-push"
+        default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
+        default_hook.chmod(0o755)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        pathlib.Path(manifest["hooks"]["pre-push"]["source_path"]).unlink()
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("shadowed hook pre-push backup missing", proc.stderr)
+        self.assertTrue((runtime_hooks / "pre-push").exists())
+
     def test_install_hooks_shadow_records_runtime_collision_with_nondefault_active_dir(
         self,
     ) -> None:

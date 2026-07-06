@@ -86,13 +86,11 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
             workflow_path = ".github/workflows/ci.yml"
 
             [ci_provenance.dispatch]
-            workflow_input = "full_ci"
-            run_name_full = "CI [dispatch:full]"
             run_name_iteration = "CI [dispatch:iteration]"
             proof_gate_job = "gate"
 
             [ci_provenance.gate_names]
-            gate_dispatch_full = "gate-dispatch"
+            gate_required = "gate"
             """
         ),
         encoding="utf-8",
@@ -116,15 +114,15 @@ def assert_verify_remote_dispatch_config_rejects_unsafe_gate_names() -> None:
         runners = repo / "ci" / "github-actions-runners.toml"
         runners.write_text(
             runners.read_text(encoding="utf-8").replace(
-                'gate_dispatch_full = "gate-dispatch"',
-                'gate_dispatch_full = "gate-dispatch "',
+                'gate_required = "gate"',
+                'gate_required = "gate "',
             ),
             encoding="utf-8",
         )
         config, error = owner.ci_provenance_dispatch_config(repo)
     if config is not None:
         raise AssertionError(config)
-    expected = "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name"
+    expected = "ci_provenance.gate_names.gate_required must be a GitHub Actions output-safe check name"
     if error != expected:
         raise AssertionError(error)
 
@@ -610,8 +608,6 @@ def assert_verify_remote_rejects_unknown_success_event() -> None:
                 },
                 dispatch_config={
                     "proof_gate_job": "gate",
-                    "dispatch_full_gate_job": "gate-dispatch",
-                    "run_name_full": "CI [dispatch:full]",
                 },
                 head="abc",
                 pr_url="https://example.invalid/pr/1",
@@ -621,7 +617,7 @@ def assert_verify_remote_rejects_unknown_success_event() -> None:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_draft_dispatches_full_ci_and_waits_for_dispatch_gate() -> None:
+def assert_verify_remote_draft_pr_rejects_manual_full_ci() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -629,155 +625,19 @@ def assert_verify_remote_draft_dispatches_full_ci_and_waits_for_dispatch_gate() 
         write_policy(repo)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_fork = owner.draft_pr_is_fork
-        original_run_list = owner.workflow_run_list
-        original_dispatch = owner.dispatch_full_ci
-        original_jobs = owner.workflow_run_jobs
-        original_sleep = owner.time.sleep
-        dispatches: list[str] = []
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             owner.pr_for_current_branch = lambda _repo, _branch: (
                 {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": True},
                 None,
             )
-            owner.draft_pr_is_fork = lambda _repo, _pr: (False, None)
-            run_lists = iter(
-                [
-                    ([], None),
-                    (
-                        [
-                            {
-                                "databaseId": 901,
-                                "attempt": 1,
-                                "event": "workflow_dispatch",
-                                "headSha": "abc",
-                                "status": "completed",
-                                "conclusion": "success",
-                                "createdAt": "2026-06-13T00:00:00Z",
-                                "displayTitle": "CI [dispatch:full]",
-                                "url": "https://example.invalid/dispatch",
-                            }
-                        ],
-                        None,
-                    ),
-                ]
-            )
-            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: next(run_lists)
-
-            def fake_dispatch(_repo: pathlib.Path, dispatch_config: dict[str, object], branch: str) -> tuple[None, None]:
-                dispatches.append(f"{dispatch_config['workflow_input']}={branch}")
-                return None, None
-
-            owner.dispatch_full_ci = fake_dispatch
-            owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
-                [{"name": "gate-dispatch", "status": "completed", "conclusion": "success"}],
-                None,
-            )
-            owner.time.sleep = lambda _seconds: None
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.draft_pr_is_fork = original_fork
-            owner.workflow_run_list = original_run_list
-            owner.dispatch_full_ci = original_dispatch
-            owner.workflow_run_jobs = original_jobs
-            owner.time.sleep = original_sleep
-    if result != 0 or dispatches != ["full_ci=feature"] or "Dispatched full CI" not in output:
-        raise AssertionError((result, dispatches, output))
-
-
-def assert_verify_remote_draft_rejects_dispatch_without_dispatch_gate() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo)
-        original_preconditions = owner.ensure_verify_remote_preconditions
-        original_pr = owner.pr_for_current_branch
-        original_fork = owner.draft_pr_is_fork
-        original_run_list = owner.workflow_run_list
-        original_dispatch = owner.dispatch_full_ci
-        original_jobs = owner.workflow_run_jobs
-        original_sleep = owner.time.sleep
-        try:
-            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
-            owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": True},
-                None,
-            )
-            owner.draft_pr_is_fork = lambda _repo, _pr: (False, None)
-            run_lists = iter(
-                [
-                    ([], None),
-                    (
-                        [
-                            {
-                                "databaseId": 902,
-                                "attempt": 1,
-                                "event": "workflow_dispatch",
-                                "headSha": "abc",
-                                "status": "completed",
-                                "conclusion": "success",
-                                "createdAt": "2026-06-13T00:00:00Z",
-                                "displayTitle": "CI [dispatch:full]",
-                                "url": "https://example.invalid/dispatch",
-                            }
-                        ],
-                        None,
-                    ),
-                ]
-            )
-            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: next(run_lists)
-            owner.dispatch_full_ci = lambda _repo, _dispatch_config, _branch: (None, None)
-            owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
-                [{"name": "gate", "status": "completed", "conclusion": "success"}],
-                None,
-            )
-            owner.time.sleep = lambda _seconds: None
-            result, output = run_cmd_verify_remote(owner, repo)
-        finally:
-            owner.ensure_verify_remote_preconditions = original_preconditions
-            owner.pr_for_current_branch = original_pr
-            owner.draft_pr_is_fork = original_fork
-            owner.workflow_run_list = original_run_list
-            owner.dispatch_full_ci = original_dispatch
-            owner.workflow_run_jobs = original_jobs
-            owner.time.sleep = original_sleep
-    if result != 1 or "workflow_dispatch run lacks successful dispatch full gate job" not in output:
+    if result != 2 or "draft PRs cannot run full CI through workflow_dispatch" not in output:
         raise AssertionError((result, output))
-
-
-def assert_verify_remote_draft_fork_fails_closed_before_dispatch() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo)
-        original_preconditions = owner.ensure_verify_remote_preconditions
-        original_pr = owner.pr_for_current_branch
-        original_fork = owner.draft_pr_is_fork
-        original_dispatch = owner.dispatch_full_ci
-        try:
-            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
-            owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": True},
-                None,
-            )
-            owner.draft_pr_is_fork = lambda _repo, _pr: (True, None)
-
-            def unexpected_dispatch(_repo: pathlib.Path, _dispatch_config: dict[str, object], _branch: str) -> tuple[None, None]:
-                raise AssertionError("draft fork PR must fail before dispatch")
-
-            owner.dispatch_full_ci = unexpected_dispatch
-            result, output = run_cmd_verify_remote(owner, repo)
-        finally:
-            owner.ensure_verify_remote_preconditions = original_preconditions
-            owner.pr_for_current_branch = original_pr
-            owner.draft_pr_is_fork = original_fork
-            owner.dispatch_full_ci = original_dispatch
-    if result != 2 or "draft fork PRs cannot dispatch upstream full CI" not in output:
+    if "just rust-probe" not in output:
         raise AssertionError((result, output))
 
 
@@ -1550,9 +1410,7 @@ def main() -> int:
     assert_verify_remote_uses_latest_full_run_over_stale_deferred_run()
     assert_verify_remote_ready_pr_requires_required_gate_job()
     assert_verify_remote_rejects_unknown_success_event()
-    assert_verify_remote_draft_dispatches_full_ci_and_waits_for_dispatch_gate()
-    assert_verify_remote_draft_rejects_dispatch_without_dispatch_gate()
-    assert_verify_remote_draft_fork_fails_closed_before_dispatch()
+    assert_verify_remote_draft_pr_rejects_manual_full_ci()
     assert_verify_remote_rejects_branch_advance_during_watch()
     assert_verify_remote_reports_failing_full_ci_run()
     assert_verify_remote_rechecks_head_before_reporting_failed_run()

@@ -444,8 +444,9 @@ The source-fence reduced-profile selector must read its full-profile pathspecs
 from config, including source-fence governance files whose changes require the
 full fixture test phase. Configured reduced-profile rewrite sources and targets
 must be public `just` recipes with declared `local-gate:` labels. Verifier
-profiles must list rewrite sources, not reduced-profile targets; targets are
-reachable only through the configured rewrite map.
+profiles and ad hoc verifier extras must not invoke reduced-profile targets,
+their private inners, or direct `--fences-only` commands; targets are reachable
+only through the configured rewrite map.
 
 ## Residual-Risk Lane
 

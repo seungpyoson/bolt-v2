@@ -663,6 +663,55 @@ def assert_fast_path_config_validation_fails_closed() -> None:
             "config.merge_queue_preflight.verifier_profiles.none.commands "
             "must not use reduced-profile rewrite target 'just source-fence-static-fences-only --extra'",
         ),
+        (
+            "verifier profile command is source-fence rewrite target inner recipe",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just source-fence-static-fences-only-inner"]',
+            ),
+            "must not use reduced-profile rewrite target 'just source-fence-static-fences-only-inner'",
+        ),
+        (
+            "verifier profile command is direct source-fence reduced script",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["python3 scripts/run_fences.py --fences-only"]',
+            ),
+            "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences-only'",
+        ),
+        (
+            "verifier profile command is env-wrapped source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["env just source-fence-static-fences-only"]',
+            ),
+            "must not use reduced-profile rewrite target 'env just source-fence-static-fences-only'",
+        ),
+        (
+            "verifier profile command is shell-wrapped source-fence rewrite target",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["bash -c \'just source-fence-static-fences-only\'"]',
+            ),
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "verifier profile command is shell-wrapped direct source-fence reduced script",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["sh -c \'python3 scripts/run_fences.py --fences-only\'"]',
+            ),
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "verifier profile command is source-fence rewrite target with just options",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["just -f /other/justfile source-fence-static-fences-only"]',
+            ),
+            "must not use reduced-profile rewrite target "
+            "'just -f /other/justfile source-fence-static-fences-only'",
+        ),
     ]
     for label, mutate, expected in cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -682,6 +731,34 @@ def assert_fast_path_config_validation_fails_closed() -> None:
         loaded.verifier_profiles["static"],
         ("just source-fence-static",),
         "rewrite source profile command remains valid",
+    )
+
+
+def assert_run_verifier_reduced_profile_commands_fail_closed() -> None:
+    module = load_preflight_module()
+    cases = [
+        "just source-fence-static-fences-only",
+        "just source-fence-static-fences-only-inner",
+        "python3 scripts/run_fences.py --fences-only",
+        "env just source-fence-static-fences-only",
+        "bash -c 'just source-fence-static-fences-only'",
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(pathlib.Path(tmp), "none", [])
+        loaded = module.load_config(config)
+    for command in cases:
+        try:
+            module.verifier_commands(loaded, None, [command])
+        except module.PreflightError as exc:
+            expected = f"--run-verifier must not use reduced-profile rewrite target {command!r}"
+            if expected not in str(exc):
+                raise AssertionError((command, str(exc), expected))
+        else:
+            raise AssertionError(f"--run-verifier accepted reduced-profile command {command!r}")
+    assert_equal(
+        module.verifier_commands(loaded, None, ["just source-fence-static"]),
+        ("just source-fence-static",),
+        "--run-verifier rewrite source remains valid",
     )
 
 
@@ -3894,6 +3971,7 @@ def main() -> int:
     assert_preflight_input_timeout_is_config_driven()
     assert_real_preflight_config_loads()
     assert_fast_path_config_validation_fails_closed()
+    assert_run_verifier_reduced_profile_commands_fail_closed()
     assert_source_check_alias_targets_must_have_workflows()
     assert_source_check_evidence_fallback_is_precise()
     assert_git_and_gh_use_input_timeout()

@@ -2041,34 +2041,75 @@ def parsed_shell_command(command: str) -> tuple[str, ...] | None:
         return None
 
 
+def invokes_reduced_source_fence_command(
+    parsed: tuple[str, ...],
+    rewrite_targets: frozenset[tuple[str, ...]],
+    rewrite_target_recipes: frozenset[str],
+    *,
+    depth: int = 0,
+) -> bool:
+    if FENCES_ONLY_FLAG in parsed or parsed in rewrite_targets:
+        return True
+    for index, part in enumerate(parsed):
+        if pathlib.PurePath(part).name == "just" and any(
+            token in rewrite_target_recipes for token in parsed[index + 1 :]
+        ):
+            return True
+    if depth >= 3:
+        return False
+    for part in parsed:
+        if " " not in part and "\t" not in part:
+            continue
+        nested = parsed_shell_command(part)
+        if nested is not None and nested != (part,) and invokes_reduced_source_fence_command(
+            nested,
+            rewrite_targets,
+            rewrite_target_recipes,
+            depth=depth + 1,
+        ):
+            return True
+    return False
+
+
+def validate_verifier_commands(
+    field: str,
+    commands: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+) -> None:
+    rewrite_targets = frozenset(
+        parsed
+        for target in source_fence_fences_only_rewrites.values()
+        if (parsed := parsed_shell_command(target)) is not None
+    )
+    rewrite_target_recipes = frozenset(
+        recipe
+        for target in rewrite_targets
+        if len(target) == 2 and pathlib.PurePath(target[0]).name == "just"
+        for recipe in (target[1], f"{target[1]}-inner")
+    )
+    for command in commands:
+        parsed = parsed_shell_command(command)
+        if parsed is not None and invokes_reduced_source_fence_command(
+            parsed,
+            rewrite_targets,
+            rewrite_target_recipes,
+        ):
+            raise PreflightError(
+                f"{field} must not use reduced-profile rewrite target {command!r}; "
+                "use the configured rewrite source"
+            )
+
+
 def validate_verifier_profile_commands(
     profile_name: str,
     commands: Sequence[str],
     source_fence_fences_only_rewrites: Mapping[str, str],
 ) -> None:
-    rewrite_targets = {
-        parsed
-        for target in source_fence_fences_only_rewrites.values()
-        if (parsed := parsed_shell_command(target)) is not None
-    }
-    rewrite_target_recipes = frozenset(
-        target[1]
-        for target in rewrite_targets
-        if len(target) == 2 and pathlib.PurePath(target[0]).name == "just"
+    validate_verifier_commands(
+        f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands",
+        commands,
+        source_fence_fences_only_rewrites,
     )
-    for command in commands:
-        parsed = parsed_shell_command(command)
-        uses_target_recipe = (
-            parsed is not None
-            and len(parsed) >= 2
-            and pathlib.PurePath(parsed[0]).name == "just"
-            and parsed[1] in rewrite_target_recipes
-        )
-        if parsed is not None and (parsed in rewrite_targets or uses_target_recipe):
-            raise PreflightError(
-                f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands "
-                f"must not use reduced-profile rewrite target {command!r}; use the configured rewrite source"
-            )
 
 
 def load_config(path: pathlib.Path) -> PreflightConfig:
@@ -3570,6 +3611,11 @@ def verifier_commands(config: PreflightConfig, profile: str | None, extra: Seque
     selected = profile or config.default_verifier_profile
     if selected not in config.verifier_profiles:
         raise PreflightError(f"unknown verifier profile {selected!r}")
+    validate_verifier_commands(
+        "--run-verifier",
+        extra,
+        config.source_fence_fences_only_rewrites,
+    )
     return (*config.verifier_profiles[selected], *extra)
 
 

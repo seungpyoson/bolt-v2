@@ -1504,6 +1504,96 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(backup.read_text(encoding="utf-8"), foreign_content)
         self.assertEqual(shadow_entries[0]["source_sha256"], file_sha256(backup))
 
+    def test_install_hooks_records_nonruntime_shadow_from_snapshot_not_live_hook(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks"
+        global_hooks.mkdir()
+        global_hook = global_hooks / "post-merge"
+        foreign_content = "#!/bin/sh\nprintf global-foreign\n"
+        global_hook.write_text(foreign_content, encoding="utf-8")
+        global_hook.chmod(0o755)
+        global_config = self.tmp / "global-nonruntime-shadow.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {**GIT_ENV, "GIT_CONFIG_GLOBAL": str(global_config)}
+        repo_content = (self.work / ".githooks" / "post-merge").read_text(encoding="utf-8")
+        original_record = cm._record_planned_shadowed_hook
+
+        def mutate_only_during_record(**kwargs: Any) -> None:
+            hook_file = kwargs["hook_file"]
+            hook_file.write_text(repo_content, encoding="utf-8")
+            hook_file.chmod(0o755)
+            try:
+                original_record(**kwargs)
+            finally:
+                hook_file.write_text(foreign_content, encoding="utf-8")
+                hook_file.chmod(0o755)
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.object(
+                cm,
+                "_record_planned_shadowed_hook",
+                mutate_only_during_record,
+            ):
+                cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
+
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        shadow_entries = manifest["shadowed_hooks"]["post-merge"]
+        self.assertEqual(len(shadow_entries), 1)
+        self.assertEqual(shadow_entries[0]["source_scope"], "global")
+        self.assertEqual(shadow_entries[0]["source_path"], str(global_hook))
+        self.assertEqual(shadow_entries[0]["source_sha256"], file_sha256(global_hook))
+        backup = (
+            git_common_dir_compat(self.work)
+            / "clean-merged.shadowed-hooks"
+            / f"post-merge.{file_sha256(global_hook)}"
+        )
+        self.assertEqual(backup.read_text(encoding="utf-8"), foreign_content)
+
+    def test_install_hooks_refuses_nonruntime_same_name_symlink(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks"
+        global_hooks.mkdir()
+        (global_hooks / "target").write_text("#!/bin/sh\nprintf target\n", encoding="utf-8")
+        (global_hooks / "post-merge").symlink_to(global_hooks / "target")
+        global_config = self.tmp / "global-symlink.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {**GIT_ENV, "GIT_CONFIG_GLOBAL": str(global_config)}
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            with self.assertRaisesRegex(cm.CleanMergedError, "refusing to shadow symlink hook"):
+                cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
+
+        config = _run(["git", "config", "--local", "--get", "core.hooksPath"],
+                      cwd=self.work, check=False,
+                      env={"GIT_CONFIG_GLOBAL": str(global_config)})
+        self.assertNotEqual(config.returncode, 0)
+
+    def test_doctor_compares_runtime_to_committed_hook_source(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        with mock.patch.dict(os.environ, GIT_ENV, clear=False):
+            cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
+        hook_source = self.work / ".githooks" / "post-merge"
+        hook_source.write_text("#!/bin/sh\nprintf dirty-doctor\n", encoding="utf-8")
+        hook_source.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("tracked hook source(s) have local changes", proc.stdout)
+        self.assertNotIn(
+            "hook post-merge runtime does not match tracked source (run `just setup`)",
+            proc.stdout,
+        )
+
     def test_git_common_dir_does_not_require_path_format_flag(self) -> None:
         source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
             encoding="utf-8")
@@ -3292,7 +3382,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("core.hooksPath is not git-common hooks directory", proc.stdout)
 
-    def test_doctor_reports_stale_runtime_hooks(self) -> None:
+    def test_doctor_reports_dirty_tracked_hook_source_without_stale_runtime(self) -> None:
         source_hooks = self._write_clean_merged_hook_sources(self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         (source_hooks / "post-merge").write_text(
@@ -3303,7 +3393,11 @@ class CleanupContractTests(unittest.TestCase):
         proc = run_clean_proc(self.work, "--doctor")
 
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("hook post-merge runtime does not match tracked source", proc.stdout)
+        self.assertIn(
+            "tracked hook source(s) have local changes: .githooks/post-merge",
+            proc.stdout,
+        )
+        self.assertNotIn("hook post-merge runtime does not match tracked source", proc.stdout)
 
     def test_setup_remote_prune_snippet_sets_configured_remote(self) -> None:
         cfg = self.work / "config" / "clean-merged.toml"

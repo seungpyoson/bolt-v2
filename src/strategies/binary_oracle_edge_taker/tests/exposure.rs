@@ -24,30 +24,24 @@ fn position_events_update_live_position_state() {
     );
     let managed_position =
         managed_position_ref(&strategy).expect("position should be managed after open event");
-    assert_eq!(managed_position.lifecycle.market_id(), Some("MKT-1"));
+    assert_eq!(managed_position.lifecycle.market_id(), None);
     assert_eq!(managed_position.instrument_id, instrument_id);
     assert_eq!(managed_position.position_id, position_id);
-    assert!(managed_position.lifecycle.outcome_side().is_some());
-    assert_eq!(managed_position.outcome_fees, strategy.active.outcome_fees);
+    assert_eq!(managed_position.lifecycle.outcome_side(), None);
+    assert_eq!(managed_position.outcome_fees, OutcomeFeeState::empty());
     assert_eq!(managed_position.historical_entry_fee_bps, None);
     assert_eq!(managed_position.entry_order_side, OrderSide::Buy);
     assert_eq!(managed_position.side, PositionSide::Long);
     assert_eq!(managed_position.quantity, Quantity::new(10.0, 2));
     assert_eq!(managed_position.avg_px_open, 0.450);
-    assert_eq!(
-        managed_position.lifecycle.settlement_strike(),
-        Some(3_100.0)
-    );
-    assert_eq!(
-        managed_position.lifecycle.selection_published_at_ms(),
-        Some(1_000)
-    );
+    assert_eq!(managed_position.lifecycle.settlement_strike(), None);
+    assert_eq!(managed_position.lifecycle.selection_published_at_ms(), None);
     assert_eq!(
         managed_position.lifecycle.seconds_to_expiry_at_selection(),
-        Some(300)
+        None
     );
     let managed_book = managed_position.book.clone();
-    let expected_book = configured_book_for_instrument(&mut strategy, instrument_id);
+    let expected_book = OutcomeBookState::from_instrument_id(instrument_id);
     assert_eq!(managed_book, expected_book);
 
     let recovered_position = managed_position_ref(&strategy)

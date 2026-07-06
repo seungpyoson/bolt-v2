@@ -10,8 +10,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::atomic_artifact_write::atomic_write;
-use crate::hashing::sha256_hex;
 use crate::path_resolution::resolve_output_dir;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -137,29 +135,18 @@ pub fn write_source_archive_discovery_seed(
         )
     })?;
     let path = output_dir.join(SOURCE_ARCHIVE_DISCOVERY_SEED_FILE);
-    let bytes =
-        serde_json::to_vec_pretty(&seed).context("serialize source archive discovery seed")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source archive discovery seed {}",
-                path.display()
-            )
-        })?;
-        ensure!(
-            existing == bytes,
-            "dirty source archive discovery seed {}: existing file content differs",
-            path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes)
-            .with_context(|| format!("write source archive discovery seed {}", path.display()))?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_ARCHIVE_DISCOVERY_SEED_FILE,
+        &seed,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+    )
+    .with_context(|| format!("write source archive discovery seed {}", path.display()))?;
 
     Ok(SourceArchiveDiscoverySeedArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         source_binding_count: seed.source_binding_count,
         representative_object_count: seed.representative_object_count,
     })

@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    atomic_artifact_write::atomic_write,
     backfill_conversion_batch::{
         BackfillConversionBatchPlan, BackfillConversionBatchRecord, BackfillConversionBatchStatus,
     },
@@ -511,35 +510,30 @@ pub fn write_backfill_conversion_completion_ledger(
             error: error.to_string(),
         }
     })?;
-    let bytes = serde_json::to_vec_pretty(ledger)
-        .map_err(|error| BackfillConversionCompletionLedgerError::Serialize(error.to_string()))?;
     let path = output_dir.join(BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE);
-    if path.exists() {
-        let existing = fs::read(&path).map_err(|error| {
-            BackfillConversionCompletionLedgerError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
-        if existing != bytes {
-            return Err(
-                BackfillConversionCompletionLedgerError::ExistingArtifactMismatch {
-                    path: path.display().to_string(),
-                },
-            );
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| {
-            BackfillConversionCompletionLedgerError::Write {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE,
+        ledger,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillConversionCompletionLedgerError::Serialize,
+            read_existing_error: |path, error| {
+                BackfillConversionCompletionLedgerError::ReadExisting { path, error }
+            },
+            mismatch_error: |path| {
+                BackfillConversionCompletionLedgerError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| BackfillConversionCompletionLedgerError::Write {
+                path,
+                error,
+            },
+        },
+    )?;
     Ok(BackfillConversionCompletionLedgerArtifact {
         path,
-        content_hash: format!("{:x}", Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         record_count: ledger.record_count,
     })
 }

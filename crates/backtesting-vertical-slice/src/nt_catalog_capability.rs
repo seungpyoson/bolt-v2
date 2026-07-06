@@ -1073,7 +1073,7 @@ impl NtCatalogCapabilityRunSpec {
             evidence: evidence.clone(),
         };
         proof_document.validate(&artifact_root)?;
-        let proof_bytes = serde_json::to_vec_pretty(&proof_document)?;
+        let proof_bytes = crate::reference_artifact::canonical_json_bytes(&proof_document)?;
         let proof_artifact_sha256 = sha256_bytes(&proof_bytes);
         let proof_artifact_path = artifact_root.object_path_for_uri(&proof_artifact_uri)?;
         let (_version, proof_artifact_create_only_write) = writer

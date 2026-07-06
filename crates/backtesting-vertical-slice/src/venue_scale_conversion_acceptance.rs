@@ -9,9 +9,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::reference_artifact::ReferenceArtifactPin;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -65,14 +65,6 @@ pub enum VenueScaleConversionAcceptanceStatus {
     PartiallyConverted,
     SourceOnly,
     Blocked,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VenueScaleConversionAcceptanceArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +124,7 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub selected_rows: Option<u64>,
     pub selected_asset_count: Option<u64>,
     pub category_summaries: Vec<VenueScaleConversionAcceptanceCategorySummary>,
-    pub artifact_refs: Vec<VenueScaleConversionAcceptanceArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub blocking_issues: Vec<String>,
 }
 
@@ -330,33 +322,23 @@ pub fn write_venue_scale_conversion_acceptance_ledger(
         )
     })?;
     let path = output_dir.join(VENUE_SCALE_CONVERSION_ACCEPTANCE_LEDGER_FILE);
-    let bytes = serde_json::to_vec_pretty(&ledger)
-        .context("serialize venue-scale conversion acceptance ledger")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing venue-scale conversion acceptance ledger {}",
-                path.display()
-            )
-        })?;
-        ensure!(
-            existing == bytes,
-            "dirty venue-scale conversion acceptance ledger {}: existing file content differs",
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        VENUE_SCALE_CONVERSION_ACCEPTANCE_LEDGER_FILE,
+        &ledger,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+    )
+    .with_context(|| {
+        format!(
+            "write venue-scale conversion acceptance ledger {}",
             path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write venue-scale conversion acceptance ledger {}",
-                path.display()
-            )
-        })?;
-    }
+        )
+    })?;
 
     Ok(VenueScaleConversionAcceptanceLedgerArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         venue_count: ledger.venue_count,
         universe_count: ledger.universe_count,
     })
@@ -1059,8 +1041,8 @@ fn count_status(
         .count() as u64
 }
 
-fn artifact_ref(role: &str, path: &Path) -> Result<VenueScaleConversionAcceptanceArtifactRef> {
-    Ok(VenueScaleConversionAcceptanceArtifactRef {
+fn artifact_ref(role: &str, path: &Path) -> Result<ReferenceArtifactPin> {
+    Ok(ReferenceArtifactPin {
         role: role.to_string(),
         path: portable_artifact_path(path),
         sha256: sha256_file(path)?,

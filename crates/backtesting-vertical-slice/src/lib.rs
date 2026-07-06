@@ -59,6 +59,7 @@ pub mod path_resolution;
 pub mod pmxt_one_off_backfill_projection;
 pub mod polymarket_metadata_gate;
 pub mod polymarket_nt_surface_proof;
+pub mod reference_artifact;
 pub mod reference_fixture_index;
 pub mod research_analytics;
 pub mod research_reader;

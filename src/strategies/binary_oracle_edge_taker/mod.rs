@@ -249,6 +249,13 @@ struct PendingEntryTerminalEventInput {
     terminal_proves_zero_fill: bool,
 }
 
+#[derive(Debug, Clone)]
+struct FlatTerminalEntryOverride {
+    client_order_id: ClientOrderId,
+    market_id: Option<String>,
+    instrument_id: InstrumentId,
+}
+
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
 /// view. Single place that maps those fields onto [`SignedTradeFlowConfig`]
 /// (mirrors [`realized_vol_config`]).
@@ -640,6 +647,7 @@ pub struct BinaryOracleEdgeTaker {
     book_subscriptions: OutcomeBookSubscriptions,
     market_lifecycle: BTreeMap<String, MarketLifecycleLedger>,
     exposure: ExposureState,
+    last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     last_recorded_entry_skip: Option<EntrySkipDedupeKey>,
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
@@ -731,6 +739,7 @@ impl BinaryOracleEdgeTaker {
             book_subscriptions: OutcomeBookSubscriptions::empty(),
             market_lifecycle: BTreeMap::new(),
             exposure: ExposureState::Flat,
+            last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
             last_recorded_entry_skip: None,
             last_recorded_exit_decision: None,
@@ -1573,6 +1582,31 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
+    fn remember_flat_terminal_entry_override(&mut self, pending: &PendingEntryState) {
+        self.last_flat_terminal_entry_override = Some(FlatTerminalEntryOverride {
+            client_order_id: pending.client_order_id,
+            market_id: pending.market_id.clone(),
+            instrument_id: pending.instrument_id,
+        });
+    }
+
+    fn take_position_truth_rematerialization_override(
+        &mut self,
+        instrument_id: InstrumentId,
+        origin: ManagedPositionOrigin,
+    ) -> Option<FlatTerminalEntryOverride> {
+        if !matches!(self.exposure, ExposureState::Flat) {
+            return None;
+        }
+        if origin != ManagedPositionOrigin::RecoveryBootstrap {
+            self.last_flat_terminal_entry_override = None;
+            return None;
+        }
+        self.last_flat_terminal_entry_override
+            .take()
+            .filter(|terminal_override| terminal_override.instrument_id == instrument_id)
+    }
+
     fn record_pending_entry_terminal_evidence(&self, input: PendingEntryTerminalEvidenceInput) {
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: input.transition,
@@ -1615,6 +1649,7 @@ impl BinaryOracleEdgeTaker {
             // Zero-fill terminal feedback closes this accepted-entry loop. If later
             // venue-truth position events contradict it, materialization re-manages
             // from that position truth instead of trusting the old pending order.
+            self.remember_flat_terminal_entry_override(&pending);
             self.exposure = ExposureState::Flat;
             self.prune_market_lifecycle_at_current_time();
             self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
@@ -1633,6 +1668,9 @@ impl BinaryOracleEdgeTaker {
             self.matching_pending_entry_snapshot(input.client_order_id, input.event_instrument_id);
         self.clear_pending_entry_for_client_order(input.client_order_id, input.event_instrument_id);
         if let Some(pending_entry) = pending_entry {
+            if matches!(self.exposure, ExposureState::Flat) {
+                self.remember_flat_terminal_entry_override(&pending_entry);
+            }
             self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
                 pending: pending_entry,
                 transition: input.transition,
@@ -3542,6 +3580,8 @@ impl BinaryOracleEdgeTaker {
             None if pending_matches => ManagedPositionOrigin::StrategyEntry,
             None => ManagedPositionOrigin::RecoveryBootstrap,
         };
+        let position_truth_rematerialization_override =
+            self.take_position_truth_rematerialization_override(instrument_id, origin);
         let materialized_position = self.build_open_position_state(
             preserved.as_ref(),
             pending_context.as_ref(),
@@ -3555,6 +3595,8 @@ impl BinaryOracleEdgeTaker {
             },
             pending_matches,
         );
+        let rematerialized_market_id = materialized_position.market_id.clone();
+        let rematerialized_quantity = materialized_position.quantity;
         let pending_entry = pending_context
             .clone()
             .filter(|pending| self.entry_order_may_remain_working(&pending.client_order_id));
@@ -3587,6 +3629,23 @@ impl BinaryOracleEdgeTaker {
                 pending_entry,
             }),
         };
+        if let Some(terminal_override) = position_truth_rematerialization_override {
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: BoltV3OrderLifecycleTransition::PositionTruthRematerialized,
+                outcome: BoltV3OrderLifecycleOutcome::Managed,
+                source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                market_id: terminal_override.market_id.or(rematerialized_market_id),
+                instrument_id: Some(instrument_id),
+                position_id: Some(position_id),
+                client_order_id: Some(terminal_override.client_order_id),
+                prior_client_order_id: None,
+                raw_reason_text: None,
+                order_side: Some(entry_order_side),
+                filled_quantity: None,
+                residual_quantity: Some(rematerialized_quantity),
+                ts_event_ns: Some(ts_event_ns),
+            });
+        }
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
     }
@@ -5590,6 +5649,7 @@ impl BinaryOracleEdgeTaker {
         )?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
+        self.last_flat_terminal_entry_override = None;
         self.exposure = ExposureState::PendingEntry(PendingEntryState {
             client_order_id,
             market_id: self.current_market_id().map(str::to_string),
@@ -6248,6 +6308,7 @@ impl DataActor for BinaryOracleEdgeTaker {
                 if self.quarantine_foreign_venue_event(event.instrument_id) {
                     return Ok(());
                 }
+                self.last_flat_terminal_entry_override = None;
                 self.exposure = ExposureState::Managed(ManagedPositionState {
                     position: self.build_open_position_state(
                         None,

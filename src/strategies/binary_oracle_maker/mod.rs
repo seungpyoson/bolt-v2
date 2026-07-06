@@ -1159,6 +1159,11 @@ mod tests {
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
             anyhow::bail!("maker noop writer received requote-throttle evidence")
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            // Deliberate no-op: this test fixture never owns durable evidence.
+            Ok(())
+        }
     }
 
     fn test_context() -> StrategyBuildContext {

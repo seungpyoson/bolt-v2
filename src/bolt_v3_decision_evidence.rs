@@ -1816,6 +1816,7 @@ pub enum BoltV3OrderLifecycleTransition {
     ResidualRemanaged,
     RestartOpenOrderAdopted,
     RestartOpenOrderRecoveryBlocked,
+    SettlementEvidenceRecoveryBlocked,
     OrderDenied,
     OrderRejected,
     OrderCanceled,

@@ -7555,6 +7555,53 @@ max_slippage_liability = "0.20"
 }
 
 #[test]
+fn rejects_capital_pools_sharing_venue_account() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = format!(
+        "{}\n{}",
+        std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture root should read"),
+        r#"
+[[risk.capital_pools]]
+pool_id = "secondary-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "USDC"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = false
+max_pool_liability = "10.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-secondary-yes.POLYMARKET"
+no_instrument_id = "condition-secondary-no.POLYMARKET"
+collateral_coupled_group_id = "condition-secondary"
+
+[risk.capital_pools.capital_admission_policy]
+min_remaining_pool_balance = "1.00"
+
+[risk.capital_pools.capital_admission_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+"#
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("duplicate venue/account pool fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.capital_pools[secondary-prediction-live]")
+                && message.contains("venue_id/account_id")
+                && message.contains("unique")
+        }),
+        "capital pools sharing venue/account must fail validation: {messages:#?}"
+    );
+}
+
+#[test]
 fn enforced_submit_admission_rejects_invalid_venue_spendability_source_sha256() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

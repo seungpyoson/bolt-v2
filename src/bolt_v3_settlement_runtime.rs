@@ -3,7 +3,8 @@ use std::{path::PathBuf, rc::Rc};
 use anyhow::Result;
 
 use crate::{
-    bolt_v3_config::BoltV3RootConfig, bolt_v3_loss_protection::PositionRealizedPnlObservation,
+    bolt_v3_config::{BoltV3RootConfig, CapitalPoolBlock},
+    bolt_v3_loss_protection::PositionRealizedPnlObservation,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
 };
 
@@ -26,12 +27,7 @@ impl BoltV3SettlementRuntimeSinkBackends {
             .kill_switch
             .as_ref()
             .is_some_and(|kill_switch| kill_switch.enabled);
-        let capital_admission_runtime_feed =
-            root.risk.capital_pools.as_ref().is_some_and(|pools| {
-                pools.iter().any(|pool| {
-                    pool.enforce_submit_admission && pool.prediction_market_binary.is_some()
-                })
-            });
+        let capital_admission_runtime_feed = capital_admission_runtime_feed_pool(root).is_some();
         Self {
             loss_protection,
             capital_admission_runtime_feed,
@@ -49,6 +45,16 @@ impl BoltV3SettlementRuntimeSinkBackends {
     pub(crate) fn capital_admission_runtime_feed(self) -> bool {
         self.capital_admission_runtime_feed
     }
+}
+
+pub(crate) fn capital_admission_runtime_feed_pool(
+    root: &BoltV3RootConfig,
+) -> Option<&CapitalPoolBlock> {
+    root.risk
+        .capital_pools
+        .as_ref()?
+        .iter()
+        .find(|pool| pool.enforce_submit_admission && pool.prediction_market_binary.is_some())
 }
 
 pub trait BoltV3SettlementRuntimeSink: std::fmt::Debug {

@@ -723,9 +723,12 @@ pub(super) fn capital_admission_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
     startup_observed_at_ns: u64,
 ) -> Option<CapitalAdmissionRuntimeFeedConfig> {
-    let pools = loaded.root.risk.capital_pools.as_ref()?;
-    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
-    let product = pool.prediction_market_binary.as_ref()?;
+    let pool =
+        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(&loaded.root)?;
+    let product = pool
+        .prediction_market_binary
+        .as_ref()
+        .expect("capital-admission runtime feed pool selector requires prediction_market_binary");
     Some(CapitalAdmissionRuntimeFeedConfig {
         venue_id: pool.venue_id.clone(),
         account_id: pool.account_id,

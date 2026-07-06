@@ -2525,6 +2525,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         decision_evidence.clone(),
         submit_admission.clone(),
     )?;
+    debug_assert!(
+        !settlement_runtime_sink_backends.loss_protection() || loss_protection.is_some(),
+        "kill-switch settlement sink backend must match loss-protection construction"
+    );
     if let Some(protection) = loss_protection.as_ref() {
         *settlement_loss_protection_slot.borrow_mut() = Some(protection.clone());
         let seeded_state = protection.borrow().state().clone();

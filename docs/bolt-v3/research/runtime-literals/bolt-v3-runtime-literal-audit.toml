@@ -19997,6 +19997,14 @@ reason = "Stable source label for lifecycle evidence emitted from the strategy o
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"settlement_evidence_recovery"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when settlement evidence recovery fails closed; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"preserved fail-closed: fill observed, awaiting position truth"'''
 context = '''"preserved fail-closed: fill observed, awaiting position truth";'''
 classification = "order_lifecycle_recovery_reason_label"
@@ -20009,6 +20017,14 @@ literal = '''"cache_probe_failed"'''
 context = '''raw_reason_text: Some("cache_probe_failed".to_string()),'''
 classification = "order_lifecycle_recovery_reason_label"
 reason = "Stable recovery evidence reason for restart cache probe failure; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"settlement_evidence_recovery_failed"'''
+context = '''raw_reason_text: Some("settlement_evidence_recovery_failed".to_string()),'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for settlement evidence recovery failure; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"

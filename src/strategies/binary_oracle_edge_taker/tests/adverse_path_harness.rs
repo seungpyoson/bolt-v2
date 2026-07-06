@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     bolt_v3_decision_evidence::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OutcomeSide,
-        BoltV3SettlementEvidence,
+        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OrderLifecycleOutcome,
+        BoltV3OrderLifecycleTransition, BoltV3OutcomeSide, BoltV3SettlementEvidence,
     },
     bolt_v3_maker_runtime_settlement::{
         MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
@@ -611,6 +611,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive settlement key");
+    let position_id = position.position_id.to_string();
 
     try_emit_resolution_update(&mut strategy, 3_101.0)
         .expect("post-evidence venue-truth sink failure should fail closed without bubbling");
@@ -619,6 +620,19 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
     assert_eq!(settlement_evidence_count(&events), 1);
     assert_eq!(settlement_booking_error_count(&events), 0);
     assert!(strategy.settled_position_keys.contains(&settlement_key));
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
+                    if evidence.transition
+                        == BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked
+                        && evidence.outcome == BoltV3OrderLifecycleOutcome::BlindRecovery
+                        && evidence.position_id.as_deref() == Some(position_id.as_str())
+            )
+        }),
+        "post-settled-key venue-truth failure must write durable blind-recovery lifecycle evidence: {events:?}"
+    );
     assert_eq!(sink.loss_observation_count(), 1);
     assert!(
         matches!(

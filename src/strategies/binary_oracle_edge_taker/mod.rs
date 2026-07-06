@@ -220,6 +220,7 @@ const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";
 const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";
 const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";
 const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";
+const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";
 const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
     "preserved fail-closed: fill observed, awaiting position truth";
 
@@ -2187,8 +2188,27 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn enter_blind_settlement_recovery(&mut self, error: anyhow::Error) {
+        let position = self.settlement_position_candidate();
         self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
             reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
+        });
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
+            outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+            source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY,
+            market_id: position
+                .as_ref()
+                .and_then(|position| position.market_id.clone())
+                .or_else(|| self.active.market_id.clone()),
+            instrument_id: position.as_ref().map(|position| position.instrument_id),
+            position_id: position.as_ref().map(|position| position.position_id),
+            client_order_id: None,
+            prior_client_order_id: None,
+            raw_reason_text: Some("settlement_evidence_recovery_failed".to_string()),
+            order_side: position.as_ref().map(|position| position.entry_order_side),
+            filled_quantity: None,
+            residual_quantity: position.as_ref().map(|position| position.quantity),
+            ts_event_ns: None,
         });
         log::error!(
             "binary_oracle_edge_taker settlement recovery failed closed: strategy_id={} error={error:#}",

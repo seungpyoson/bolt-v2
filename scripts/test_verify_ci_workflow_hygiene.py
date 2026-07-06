@@ -105,7 +105,6 @@ BASE_WORKFLOW = """
 name: CI
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch'
-      || github.event_name == 'workflow_dispatch'
       && 'CI [dispatch:iteration]'
       || 'CI' }}
 
@@ -117,7 +116,6 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
   merge_group:
     types: [checks_requested]
 

@@ -65,11 +65,8 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
 
 pub(super) fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    let enforced_submit_admission = root
-        .risk
-        .capital_pools
-        .as_ref()
-        .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    let enforced_submit_admission =
+        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(root).is_some();
     if enforced_submit_admission
         && root
             .persistence

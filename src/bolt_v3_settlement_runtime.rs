@@ -47,9 +47,7 @@ impl BoltV3SettlementRuntimeSinkBackends {
     }
 }
 
-pub(crate) fn capital_admission_runtime_feed_pool(
-    root: &BoltV3RootConfig,
-) -> Option<&CapitalPoolBlock> {
+pub fn capital_admission_runtime_feed_pool(root: &BoltV3RootConfig) -> Option<&CapitalPoolBlock> {
     root.risk
         .capital_pools
         .as_ref()?

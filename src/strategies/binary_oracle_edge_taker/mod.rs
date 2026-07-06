@@ -707,6 +707,13 @@ struct SettlementEvidenceComputation {
 }
 
 #[derive(Clone, Debug)]
+struct SettlementEvidenceIds {
+    settlement_key: String,
+    market_id: String,
+    product_id: String,
+}
+
+#[derive(Clone, Debug)]
 struct SelectedReferenceQuoteEvidence {
     quote: ReferenceQuote,
     failed_over: bool,
@@ -1001,9 +1008,11 @@ impl BinaryOracleEdgeTaker {
         let product_id = settlement_product_id(position.instrument_id)?;
         let evidence = self.settlement_evidence(
             &position,
-            settlement_key.clone(),
-            market_id,
-            product_id,
+            SettlementEvidenceIds {
+                settlement_key: settlement_key.clone(),
+                market_id,
+                product_id,
+            },
             update,
             settlement_currency,
             SettlementEvidenceComputation {
@@ -1084,20 +1093,18 @@ impl BinaryOracleEdgeTaker {
     fn settlement_evidence(
         &self,
         position: &OpenPositionState,
-        settlement_key: String,
-        market_id: String,
-        product_id: String,
+        ids: SettlementEvidenceIds,
         update: &IndexPriceUpdate,
         settlement_currency: Currency,
         computation: SettlementEvidenceComputation,
     ) -> BoltV3SettlementEvidence {
         BoltV3SettlementEvidence {
             strategy_id: self.config.strategy_id.clone(),
-            settlement_key,
-            market_id,
+            settlement_key: ids.settlement_key,
+            market_id: ids.market_id,
             position_id: position.position_id.to_string(),
             instrument_id: position.instrument_id.to_string(),
-            product_id,
+            product_id: ids.product_id,
             outcome_side: outcome_side_to_evidence(computation.outcome_side),
             entry_order_side: position.entry_order_side.to_string(),
             quantity: position.quantity.to_string(),

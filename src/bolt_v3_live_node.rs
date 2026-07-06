@@ -478,12 +478,12 @@ impl BoltV3SettlementRuntimeSink for BoltV3LiveSettlementRuntimeSink {
         &self,
         observation: PositionRealizedPnlObservation,
     ) -> Result<()> {
-        if let Some(loss_protection) = self.loss_protection.as_ref() {
-            if let Some(loss_protection) = loss_protection.borrow().as_ref() {
-                loss_protection
-                    .borrow_mut()
-                    .record_position_realized_pnl(observation)?;
-            }
+        if let Some(loss_protection) = self.loss_protection.as_ref()
+            && let Some(loss_protection) = loss_protection.borrow().as_ref()
+        {
+            loss_protection
+                .borrow_mut()
+                .record_position_realized_pnl(observation)?;
         }
         Ok(())
     }

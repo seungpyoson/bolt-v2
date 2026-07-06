@@ -352,9 +352,18 @@ ci-storage-tripwire *args: check-workspace
 source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
 
+# Keep this governed fast lane in lock-step with source-fence-static; only the
+# inner run_fences.py invocation may differ by skipping the fixture test phase.
+source-fence-static-fences-only: check-workspace require-rust-verification-owner
+    python3 scripts/local_verification_gate.py source-fence-static-fences-only -- just source-fence-static-fences-only-inner
+
 [private]
 source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
     python3 scripts/run_fences.py
+
+[private]
+source-fence-static-fences-only-inner: require-local-verification-gate check-workspace require-rust-verification-owner
+    python3 scripts/run_fences.py --fences-only
 
 source-fence: source-fence-static
     git fetch -q origin main 2>/dev/null

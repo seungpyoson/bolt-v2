@@ -2324,7 +2324,7 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
 
 
 def source_fence_fences_only_command(command: str) -> str:
-    """Append the fast source-fence flag while preserving the configured verifier entrypoint."""
+    """Append the fast source-fence flag for the supported source-fence command shapes."""
     try:
         parts = shlex.split(command)
     except ValueError:
@@ -2463,13 +2463,13 @@ def remaining_batch_prs(candidate_batches: Sequence[Batch], start_index: int) ->
     return tuple(pr for batch in candidate_batches[start_index:] for pr in batch.prs)
 
 
-def conflict_mentions_blocked_pr(conflict: Mapping[str, object], blocked_numbers: set[int]) -> bool:
-    if int(conflict.get("pr", -1)) in blocked_numbers:
+def conflict_intersects_prs(conflict: Mapping[str, object], prs: set[int]) -> bool:
+    if int(conflict.get("pr", -1)) in prs:
         return True
     against_batch = conflict.get("against_batch", ())
     if not isinstance(against_batch, Sequence) or isinstance(against_batch, str):
         return False
-    return any(int(pr) in blocked_numbers for pr in against_batch)
+    return any(int(pr) in prs for pr in against_batch)
 
 
 def verified_fallback_batches(
@@ -2632,11 +2632,12 @@ def verify_final_batches_with_fallback(
     verifier_timeout_seconds: int,
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch], set[int]]:
     """Verify optimistic batches, falling back over the remaining suffix after the first failure."""
     blocked_prs: list[dict[str, object]] = []
     conflicts: list[dict[str, object]] = []
     batches: list[Batch] = []
+    fallback_suffix_prs: set[int] = set()
     batch_index = 1
     for candidate_index, batch in enumerate(candidate_batches):
         verifier_results = run_verifier_commands(
@@ -2664,10 +2665,12 @@ def verify_final_batches_with_fallback(
             )
             batch_index += 1
             continue
+        suffix_prs = remaining_batch_prs(candidate_batches, candidate_index)
+        fallback_suffix_prs = set(suffix_prs)
         fallback = verified_fallback_batches(
             repo=repo,
             base_sha=base_sha,
-            prs=remaining_batch_prs(candidate_batches, candidate_index),
+            prs=suffix_prs,
             heads=heads,
             base_commits=base_commits,
             batch_max_limits=batch_max_limits,
@@ -2682,7 +2685,7 @@ def verify_final_batches_with_fallback(
         batches.extend(fallback.batches)
         batch_index += len(fallback.batches)
         break
-    return blocked_prs, conflicts, batches
+    return blocked_prs, conflicts, batches, fallback_suffix_prs
 
 
 def gh_json(
@@ -3214,7 +3217,7 @@ def preflight_with_fetch_refs(
         batch_max_limits=batch_max_limits,
         input_timeout_seconds=input_timeout_seconds,
     )
-    fallback_blocked_prs, fallback_conflicts, batches = verify_final_batches_with_fallback(
+    fallback_blocked_prs, fallback_conflicts, batches, fallback_suffix_prs = verify_final_batches_with_fallback(
         repo=repo,
         base_sha=base_sha,
         candidate_batches=candidate_batches,
@@ -3226,11 +3229,10 @@ def preflight_with_fetch_refs(
         input_timeout_seconds=input_timeout_seconds,
         output_policy=output_policy,
     )
-    fallback_blocked_numbers = {int(block["pr"]) for block in fallback_blocked_prs}
     conflicts = [
         conflict
         for conflict in conflicts
-        if not conflict_mentions_blocked_pr(conflict, fallback_blocked_numbers)
+        if not conflict_intersects_prs(conflict, fallback_suffix_prs)
     ]
     blocked_prs.extend(fallback_blocked_prs)
     conflicts.extend(fallback_conflicts)

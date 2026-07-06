@@ -20005,6 +20005,14 @@ reason = "Stable source label for lifecycle evidence emitted when settlement evi
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"position_interval_ended"'''
+context = '''const EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED: &str = "position_interval_ended";'''
+classification = "exit_submission_block_reason_label"
+reason = "Stable exit-decision evidence label for the structural no-submit guard after the held position's own interval has ended; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"preserved fail-closed: fill observed, awaiting position truth"'''
 context = '''"preserved fail-closed: fill observed, awaiting position truth";'''
 classification = "order_lifecycle_recovery_reason_label"

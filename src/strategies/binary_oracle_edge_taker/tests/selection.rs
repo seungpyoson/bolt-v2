@@ -736,6 +736,8 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
+        strike_price: Some(3_100.0),
+        interval_end_ms: Some(301_000),
         interval_open: Some(3_100.0),
         selection_published_at_ms: Some(1_000),
         seconds_to_expiry_at_selection: Some(300),

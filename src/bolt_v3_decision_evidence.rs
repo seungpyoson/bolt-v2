@@ -874,6 +874,7 @@ pub enum BoltV3ExitBlockedReason {
     EntryOrderStillWorking,
     ExitDecisionUnavailable,
     ExitHold,
+    PositionIntervalEnded,
     OpenPositionMissing,
     ExitOrderConfigInvalid,
     ExitQuoteQuantityUnsupported,

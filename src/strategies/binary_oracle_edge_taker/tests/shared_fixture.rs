@@ -1541,6 +1541,8 @@ pub(super) fn pending_entry_state(
             .fee_bps(instrument_id)
             .and_then(|value| value.to_f64())
             .or(Some(0.0)),
+        strike_price: Some(3_100.0),
+        interval_end_ms: Some(301_000),
         interval_open: Some(3_100.0),
         selection_published_at_ms: Some(1_000),
         seconds_to_expiry_at_selection: Some(300),
@@ -1680,6 +1682,8 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
             .fee_provider()
             .fee_bps(instrument_id)
             .and_then(|value| value.to_f64()),
+        strike_price: Some(3_100.0),
+        interval_end_ms: Some(301_000),
         interval_open: Some(3_100.0),
         selection_published_at_ms: Some(1_000),
         seconds_to_expiry_at_selection: Some(300),

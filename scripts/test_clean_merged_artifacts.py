@@ -1548,12 +1548,8 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(shadow_entries[0]["source_scope"], "global")
         self.assertEqual(shadow_entries[0]["source_path"], str(global_hook))
         self.assertEqual(shadow_entries[0]["source_sha256"], file_sha256(global_hook))
-        backup = (
-            git_common_dir_compat(self.work)
-            / "clean-merged.shadowed-hooks"
-            / f"post-merge.{file_sha256(global_hook)}"
-        )
-        self.assertEqual(backup.read_text(encoding="utf-8"), foreign_content)
+        shadow_dir = git_common_dir_compat(self.work) / "clean-merged.shadowed-hooks"
+        self.assertFalse(shadow_dir.exists())
 
     def test_install_hooks_refuses_nonruntime_same_name_symlink(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -1576,6 +1572,32 @@ class CleanupContractTests(unittest.TestCase):
                       cwd=self.work, check=False,
                       env={"GIT_CONFIG_GLOBAL": str(global_config)})
         self.assertNotEqual(config.returncode, 0)
+
+    def test_install_hooks_refuses_recorded_source_dir_same_name_symlink(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-recorded"
+        global_hooks.mkdir()
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text("#!/bin/sh\nprintf global\n", encoding="utf-8")
+        global_commit_msg.chmod(0o755)
+        global_config = self.tmp / "global-recorded-symlink.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        (global_hooks / "post-merge").symlink_to(global_hooks / "missing-target")
+
+        proc = run_clean_proc(self.work, "--install-hooks", env=env)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to shadow symlink hook", proc.stderr)
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertNotIn("post-merge", manifest["shadowed_hooks"])
 
     def test_doctor_compares_runtime_to_committed_hook_source(self) -> None:
         self._write_clean_merged_hook_sources(self.work)

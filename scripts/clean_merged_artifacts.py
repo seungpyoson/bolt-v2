@@ -1374,13 +1374,34 @@ def _record_planned_shadowed_hook(
     hook_name: str | None = None,
     source_path: str | None = None,
 ) -> None:
-    if shadow_copy.snapshot.content == repo_source_snapshot.content:
+    _record_shadowed_hook_snapshot(
+        hook_file=hook_file,
+        source_snapshot=shadow_copy.snapshot,
+        repo_source_snapshot=repo_source_snapshot,
+        source_scope=source_scope,
+        shadowed_hooks=shadowed_hooks,
+        hook_name=hook_name,
+        source_path=source_path,
+    )
+
+
+def _record_shadowed_hook_snapshot(
+    *,
+    hook_file: pathlib.Path,
+    source_snapshot: HookSnapshot,
+    repo_source_snapshot: HookSnapshot,
+    source_scope: str,
+    shadowed_hooks: dict[str, Any],
+    hook_name: str | None = None,
+    source_path: str | None = None,
+) -> None:
+    if source_snapshot.content == repo_source_snapshot.content:
         return
     manifest_hook_name = hook_name or hook_file.name
     _record_shadowed_hook_entry(
         manifest_hook_name=manifest_hook_name,
         source_path=source_path or str(hook_file),
-        source_sha=shadow_copy.snapshot.sha256,
+        source_sha=source_snapshot.sha256,
         repo_source_file=repo_source_snapshot.source_file,
         shadowed_hooks=shadowed_hooks,
         source_scope=source_scope,
@@ -1623,11 +1644,12 @@ def _preflight_fresh_shadow_collisions(
             if (
                 not _is_git_hook_name(hook_file.name)
                 or hook_file.name not in source_hook_names
-                or hook_file.name in manifest_hooks
             ):
                 continue
             if hook_file.is_symlink() or not hook_file.is_file():
                 _validate_shadowed_hook_copy(common_dir, hook_file)
+                continue
+            if hook_file.name in manifest_hooks:
                 continue
             snapshot = _read_hook_snapshot(hook_file)
             if snapshot.content == source_hook_snapshots_by_name[hook_file.name].content:
@@ -2156,14 +2178,9 @@ def install_hooks(
                     source_snapshot = _read_hook_snapshot(source_file)
                     if source_snapshot.content == repo_source_snapshot.content:
                         continue
-                    shadow_copy = plan.stage_shadow_copy(
-                        common_dir=common_dir,
+                    _record_shadowed_hook_snapshot(
                         hook_file=source_file,
                         source_snapshot=source_snapshot,
-                    )
-                    _record_planned_shadowed_hook(
-                        hook_file=source_file,
-                        shadow_copy=shadow_copy,
                         repo_source_snapshot=repo_source_snapshot,
                         source_scope=source_scope,
                         shadowed_hooks=shadowed_hooks,
@@ -2222,25 +2239,30 @@ def install_hooks(
             source_snapshot = _read_hook_snapshot(source_file)
             if source_snapshot.content == repo_source_snapshot.content:
                 continue
-            shadow_copy = plan.stage_shadow_copy(
-                common_dir=common_dir,
-                hook_file=source_file,
-                source_snapshot=source_snapshot,
-            )
-            _record_planned_shadowed_hook(
-                hook_file=source_file,
-                shadow_copy=shadow_copy,
-                repo_source_snapshot=repo_source_snapshot,
-                source_scope=source_scope,
-                shadowed_hooks=shadowed_hooks,
-                hook_name=hook_name,
-                source_path=(
-                    str(shadow_copy.destination)
-                    if source_scope == "default"
-                    or _same_path(source_file.parent, runtime_hooks_dir)
-                    else None
-                ),
-            )
+            if source_scope == "default" or _same_path(source_file.parent, runtime_hooks_dir):
+                shadow_copy = plan.stage_shadow_copy(
+                    common_dir=common_dir,
+                    hook_file=source_file,
+                    source_snapshot=source_snapshot,
+                )
+                _record_planned_shadowed_hook(
+                    hook_file=source_file,
+                    shadow_copy=shadow_copy,
+                    repo_source_snapshot=repo_source_snapshot,
+                    source_scope=source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_name,
+                    source_path=str(shadow_copy.destination),
+                )
+            else:
+                _record_shadowed_hook_snapshot(
+                    hook_file=source_file,
+                    source_snapshot=source_snapshot,
+                    repo_source_snapshot=repo_source_snapshot,
+                    source_scope=source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_name,
+                )
             continue
         destination = runtime_hooks_dir / hook_name
         plan.stage_copy_hook(
@@ -2258,28 +2280,27 @@ def install_hooks(
             continue
         for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
             if (
-                not hook_file.is_file()
-                or not _is_git_hook_name(hook_file.name)
+                not _is_git_hook_name(hook_file.name)
                 or str(hook_file) in adopted_source_paths
             ):
                 continue
             if hook_file.name in source_hook_names:
+                if hook_file.is_symlink() or not hook_file.is_file():
+                    _validate_shadowed_hook_copy(common_dir, hook_file)
+                    continue
                 repo_source_snapshot = source_hook_snapshots_by_name[hook_file.name]
                 source_snapshot = _read_hook_snapshot(hook_file)
                 if source_snapshot.content == repo_source_snapshot.content:
                     continue
-                shadow_copy = plan.stage_shadow_copy(
-                    common_dir=common_dir,
+                _record_shadowed_hook_snapshot(
                     hook_file=hook_file,
                     source_snapshot=source_snapshot,
-                )
-                _record_planned_shadowed_hook(
-                    hook_file=hook_file,
-                    shadow_copy=shadow_copy,
                     repo_source_snapshot=repo_source_snapshot,
                     source_scope=active_hooks.source_scope,
                     shadowed_hooks=shadowed_hooks,
                 )
+                continue
+            if not hook_file.is_file():
                 continue
             destination = runtime_hooks_dir / hook_file.name
             plan.stage_copy_hook(

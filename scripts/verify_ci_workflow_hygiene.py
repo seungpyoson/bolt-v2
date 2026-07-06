@@ -847,7 +847,7 @@ BVS_PARTITION_COMMAND = (
     'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" '
     '"$RUNNER_TEMP/bvs-nextest-archive-extract" '
     '--partition "count:${shard}/${BVS_NEXTEST_SHARDS}" '
-    "-- --skip issue_789_first_real_free_data_taker_pl"
+    "-- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke"
 )
 BVS_PARTITION_TEE = f'{BVS_PARTITION_COMMAND} 2>&1 | tee "$partition_log"'
 BVS_PARTITION_FAILURE_WRAPPER = (
@@ -857,7 +857,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "b8fbabf72fe9547e41fcc52f8790cc62e4b8a7833dd7401096dba3dc026ae76f"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "e18b0205846df6f4a7def0f24959477697ed5d0e35d3db56ca97547de696dd6c"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"

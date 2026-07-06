@@ -1657,6 +1657,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "hmac 0.12.1",
  "nautilus-analysis",
  "nautilus-backtest",
  "nautilus-common",

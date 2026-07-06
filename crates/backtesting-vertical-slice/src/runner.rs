@@ -372,6 +372,11 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        // Deliberate no-op: the BVS run guard writer keeps in-memory counters only.
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -2186,8 +2191,9 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestSelectorProvenance, assert_read_back_matches, ensure_settlement_currency_funded,
-        expected_iterations, iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
+        BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
+        assert_read_back_matches, ensure_settlement_currency_funded, expected_iterations,
+        iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
     use crate::canonical_market_data::{
@@ -2279,6 +2285,12 @@ mod tests {
             UnixNanos::from(ts),
             UnixNanos::from(ts),
         )
+    }
+
+    #[test]
+    fn backtest_decision_evidence_writer_drain_shutdown_is_noop() -> Result<()> {
+        let writer = BacktestDecisionEvidenceWriter::default();
+        writer.drain_shutdown()
     }
 
     #[test]

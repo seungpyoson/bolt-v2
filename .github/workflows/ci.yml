@@ -4,9 +4,6 @@ run-name: >-
       && github.event.inputs.capture_reference_boundary_fixture == 'true'
       && 'CI [dispatch:capture-reference-boundary-fixture]'
       || github.event_name == 'workflow_dispatch'
-      && github.event.inputs.full_ci == 'true'
-      && 'CI [dispatch:full]'
-      || github.event_name == 'workflow_dispatch'
       && 'CI [dispatch:iteration]'
       || 'CI' }}
 
@@ -32,15 +29,9 @@ on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
   # whose diff exceeds its internal size limit (observed at ~28k files on #610),
   # so oversized PRs need a manually dispatched run against the branch ref.
-  # full_ci is a required structural slot enforced by ci/github-actions-runners.toml.
-  # Default manual dispatches are cheap iteration runs; full_ci=true runs full feedback lanes
-  # without publishing the required merge-proof gate.
+  # Manual dispatches are cheap iteration runs and never publish the required merge-proof gate.
   workflow_dispatch:
     inputs:
-      full_ci:
-        description: "Run full CI for the selected ref"
-        required: false
-        default: "false"
       capture_reference_boundary_fixture:
         description: "Run the CREDENTIAL-SSM-gated provider/runtime boundary fixture capture"
         required: false
@@ -87,9 +78,6 @@ concurrency:
         && format('pr-{0}-noop', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
-        || github.event_name == 'workflow_dispatch'
-        && github.event.inputs.full_ci == 'true'
-        && format('{0}-dispatch-full', github.ref_name)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-dispatch-iteration', github.ref_name)
         || github.event_name == 'merge_group'
@@ -249,7 +237,6 @@ jobs:
             --pull-request-head-ref "$PR_HEAD_REF" \
             "${author_args[@]}" \
             --pull-request-base-changed "${{ github.event.changes.base.ref.from && true || false }}" \
-            --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
             --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"

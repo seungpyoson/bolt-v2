@@ -55,7 +55,6 @@ def config(module, **overrides):
         "workflow_name": "CI",
         "workflow_path": ".github/workflows/ci.yml",
         "workflow_event": "workflow_dispatch",
-        "run_name_full": "CI [dispatch:full]",
         "run_name_iteration": "CI [dispatch:iteration]",
         "active_statuses": frozenset({"queued", "requested", "waiting", "pending", "in_progress"}),
         "workflow_runs_per_page": 100,
@@ -68,8 +67,8 @@ def config(module, **overrides):
 def run_payload(run_id, **overrides):
     payload = {
         "id": run_id,
-        "name": "CI [dispatch:full]",
-        "display_title": "CI [dispatch:full]",
+        "name": "CI [dispatch:iteration]",
+        "display_title": "CI [dispatch:iteration]",
         "path": ".github/workflows/ci.yml",
         "event": "workflow_dispatch",
         "head_branch": "feature/cost",
@@ -127,9 +126,9 @@ def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
         runs_by_id={200: current},
     )
     summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
-    assert summary["obsolete_run_ids"] == [100], summary
-    assert summary["cancelled_run_ids"] == [100], summary
-    assert fake.cancelled == [100], fake.cancelled
+    assert summary["obsolete_run_ids"] == [100, 107], summary
+    assert summary["cancelled_run_ids"] == [100, 107], summary
+    assert fake.cancelled == [100, 107], fake.cancelled
     assert fake.calls[0] == ("actions/runs/200", {})
     assert fake.calls[1] == (
         "actions/runs",
@@ -200,10 +199,10 @@ def assert_run_display_title_prefers_camel_case() -> None:
         run_payload(
             200,
             display_title="CI [dispatch:iteration]",
-            displayTitle="CI [dispatch:full]",
+            displayTitle="CI [dispatch:iteration]",
         )
     )
-    assert title == "CI [dispatch:full]", title
+    assert title == "CI [dispatch:iteration]", title
 
 
 def assert_current_rehydrate_failure_skips_cancellation() -> None:
@@ -315,7 +314,6 @@ workflow_name = "CI"
 workflow_path = ".github/workflows/ci.yml"
 
 [ci_provenance.dispatch]
-run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 
 [dispatch_cancel]
@@ -330,7 +328,6 @@ max_pages = 4
     assert loaded.workflow_name == "CI", loaded
     assert loaded.workflow_path == ".github/workflows/ci.yml", loaded
     assert loaded.workflow_event == "workflow_dispatch", loaded
-    assert loaded.run_name_full == "CI [dispatch:full]", loaded
     assert loaded.run_name_iteration == "CI [dispatch:iteration]", loaded
     assert loaded.active_statuses == frozenset({"queued", "in_progress"}), loaded
     assert loaded.workflow_runs_per_page == 37, loaded

@@ -28,7 +28,8 @@ use bolt_v2::{
         BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
         BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
         BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
+        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
@@ -849,6 +850,17 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         _throttle: &BoltV3RequoteThrottleEvidence,
     ) -> anyhow::Result<()> {
         anyhow::bail!("basket admission writer received requote-throttle evidence")
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
+        anyhow::bail!("basket admission writer received settlement evidence")
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket admission writer received settlement booking-error evidence")
     }
 
     fn drain_shutdown(&self) -> anyhow::Result<()> {

@@ -2,10 +2,8 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
+    str::FromStr,
 };
-
-#[cfg(test)]
-use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
@@ -18,7 +16,7 @@ use nautilus_model::{
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
-    types::{Price, Quantity},
+    types::{Currency, Price, Quantity},
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
@@ -38,15 +36,18 @@ use crate::{
     },
     bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
-        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
-        BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderLifecycleEvidence,
-        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition, BoltV3OutcomeSide,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
-        BoltV3StrategyInputEvidenceSnapshot, number_evidence as evidence_number,
-        option_number_evidence as option_evidence_number,
+        BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
+        BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
+        BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource, BoltV3ExposureOccupancy,
+        BoltV3ForcedFlatReason, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderLifecycleEvidence, BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition,
+        BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
+        BoltV3SettlementBookingErrorEvidence, BoltV3SettlementBookingErrorReason,
+        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        number_evidence as evidence_number, option_number_evidence as option_evidence_number,
         option_probability_evidence as option_evidence_probability, probability_evidence,
+        read_settlement_booking_error_keys_for_recovery_scope,
+        read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
         realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
@@ -55,6 +56,11 @@ use crate::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
         price_exact_size_vwap,
     },
+    bolt_v3_loss_protection::{PositionRealizedPnlObservation, RealizedPnlObservation},
+    bolt_v3_maker_runtime_settlement::{
+        MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
+    },
+    bolt_v3_maker_settlement::BinarySettlementLot,
     bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
@@ -64,11 +70,17 @@ use crate::{
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
-    bolt_v3_position_contract::is_observed_open_side,
+    bolt_v3_position_contract::{
+        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
+        is_observed_open_side,
+    },
+    bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_providers::{
         market_quote_buy_min_notional_for_execution_venue,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quoting::QuoteSide,
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
         ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
@@ -90,6 +102,7 @@ use crate::{
     },
     bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
+    bolt_v3_venue_truth::VenueTruthSettlementExplanation,
     strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
 };
 
@@ -207,6 +220,7 @@ const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";
 const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";
 const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";
 const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";
+const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";
 const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
     "preserved fail-closed: fill observed, awaiting position truth";
 
@@ -662,6 +676,8 @@ pub struct BinaryOracleEdgeTaker {
     resolution_strike_custom_subscription: Option<DataType>,
     resolution_strike_fetch_sequence: u64,
     entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
+    settled_position_keys: BTreeSet<String>,
+    settlement_booking_error_keys: BTreeSet<String>,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -679,6 +695,22 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
     #[cfg(test)]
     live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SettlementEvidenceComputation {
+    outcome_side: OutcomeSide,
+    strike_price: f64,
+    payout_per_share: f64,
+    terminal_value: f64,
+    realized_pnl: f64,
+}
+
+#[derive(Clone, Debug)]
+struct SettlementEvidenceIds {
+    settlement_key: String,
+    market_id: String,
+    product_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -754,6 +786,8 @@ impl BinaryOracleEdgeTaker {
             resolution_strike_custom_subscription: None,
             resolution_strike_fetch_sequence: INITIAL_COUNTER_U64,
             entry_reject_state: BTreeMap::new(),
+            settled_position_keys: BTreeSet::new(),
+            settlement_booking_error_keys: BTreeSet::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
             book_subscription_events: Vec::new(),
@@ -845,6 +879,285 @@ impl BinaryOracleEdgeTaker {
                 now_ms,
                 error,
             );
+        }
+    }
+
+    pub(super) fn check_resolution_feed_outage_at_market_end(&mut self, now_ms: u64) -> Result<()> {
+        let Some(interval_end_ms) = self.active.interval_end_ms else {
+            return Ok(());
+        };
+        if now_ms < interval_end_ms {
+            return Ok(());
+        }
+        let Some(position) = self.settlement_position_candidate() else {
+            return Ok(());
+        };
+        let settlement_key = settlement_key_for_position(&position)?;
+        if self.settled_position_keys.contains(&settlement_key)
+            || self.settlement_booking_error_keys.contains(&settlement_key)
+        {
+            return Ok(());
+        }
+        // Feed outage at resolution is accepted fail-closed behavior: do not
+        // book settlement, preserve exposure, and emit loud evidence so later
+        // venue deltas remain unexplained and halt at the venue-truth fence.
+        let evidence = self.settlement_booking_error_evidence(
+            &position,
+            settlement_key.clone(),
+            BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+            "resolution feed missing at market end; settlement not booked".to_string(),
+            now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+        );
+        self.context
+            .decision_evidence()
+            .record_settlement_booking_error(&evidence)?;
+        self.settlement_booking_error_keys.insert(settlement_key);
+        Ok(())
+    }
+
+    fn try_book_resolution_settlement(&mut self, update: &IndexPriceUpdate) -> Result<()> {
+        let Some(interval_end_ms) = self.active.interval_end_ms else {
+            return Ok(());
+        };
+        let resolution_ts_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if resolution_ts_ms != interval_end_ms {
+            return Ok(());
+        }
+        let Some(position) = self.settlement_position_candidate() else {
+            return Ok(());
+        };
+        let settlement_key = settlement_key_for_position(&position)?;
+        if self.settled_position_keys.contains(&settlement_key)
+            || self.settlement_booking_error_keys.contains(&settlement_key)
+        {
+            return Ok(());
+        }
+        let Some(outcome_side) = position.outcome_side else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                "settlement input missing outcome side".to_string(),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let Some(strike_price) = self.active.price_to_beat.or(position.interval_open) else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                "settlement input missing strike price".to_string(),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let lot = BinarySettlementLot {
+            leg: settlement_leg_for_outcome(outcome_side),
+            side: QuoteSide::Buy,
+            quantity: position.quantity.as_f64(),
+            entry_price: position.avg_px_open,
+        };
+        let decision = settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
+            family_key: self.config.rotating_market_family.as_str(),
+            reference_close_price: update.value.as_f64(),
+            strike_price,
+            lots: &[lot],
+        });
+        let Some(result) = decision.result else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementBlocked,
+                format!("settlement blocked by {:?}", decision.blocked_by),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let Some(payout) = decision.payout else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementBlocked,
+                "settlement output missing payout".to_string(),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let payout_per_share = payout.leg_payout(lot.leg);
+        let Some(settlement_currency) = self.context.settlement_currency() else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                "settlement input missing configured settlement currency".to_string(),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let Some(market_id) = settlement_market_id(&position, &self.active) else {
+            self.record_settlement_booking_error(
+                &position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                "settlement input missing market id".to_string(),
+                update.ts_event.as_u64(),
+            )?;
+            return Ok(());
+        };
+        let product_id = settlement_product_id(position.instrument_id)?;
+        let evidence = self.settlement_evidence(
+            &position,
+            SettlementEvidenceIds {
+                settlement_key: settlement_key.clone(),
+                market_id,
+                product_id,
+            },
+            update,
+            settlement_currency,
+            SettlementEvidenceComputation {
+                outcome_side,
+                strike_price,
+                payout_per_share,
+                terminal_value: result.terminal_value,
+                realized_pnl: result.realized_pnl,
+            },
+        );
+        if let Some(sink) = self.context.settlement_runtime_sink() {
+            let Some(account_id) = self.context.settlement_account_id() else {
+                self.record_settlement_booking_error(
+                    &position,
+                    settlement_key,
+                    BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                    "settlement input missing configured settlement account id".to_string(),
+                    update.ts_event.as_u64(),
+                )?;
+                return Ok(());
+            };
+            sink.record_loss_governor_position_realized_pnl(
+                settlement_position_realized_pnl_observation(
+                    account_id,
+                    &evidence,
+                    settlement_currency,
+                )?,
+            )?;
+        }
+        self.context
+            .decision_evidence()
+            .record_settlement(&evidence)?;
+        self.settled_position_keys.insert(settlement_key);
+        if let Some(sink) = self.context.settlement_runtime_sink() {
+            let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence) {
+                Ok(explanation) => explanation,
+                Err(error) => {
+                    self.enter_blind_settlement_recovery(error);
+                    return Ok(());
+                }
+            };
+            if let Err(error) = sink.record_venue_truth_settlement(explanation) {
+                self.enter_blind_settlement_recovery(error);
+                return Ok(());
+            }
+        }
+        self.exposure = ExposureState::Flat;
+        self.sync_exposure_context_from_active();
+        self.refresh_book_subscriptions_for_current_state();
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &mut self,
+        position: &OpenPositionState,
+        settlement_key: String,
+        reason: BoltV3SettlementBookingErrorReason,
+        detail: String,
+        observed_at_ns: u64,
+    ) -> Result<()> {
+        if self.settlement_booking_error_keys.contains(&settlement_key) {
+            return Ok(());
+        }
+        let evidence = self.settlement_booking_error_evidence(
+            position,
+            settlement_key.clone(),
+            reason,
+            detail,
+            observed_at_ns,
+        );
+        self.context
+            .decision_evidence()
+            .record_settlement_booking_error(&evidence)?;
+        self.settlement_booking_error_keys.insert(settlement_key);
+        Ok(())
+    }
+
+    fn settlement_evidence(
+        &self,
+        position: &OpenPositionState,
+        ids: SettlementEvidenceIds,
+        update: &IndexPriceUpdate,
+        settlement_currency: Currency,
+        computation: SettlementEvidenceComputation,
+    ) -> BoltV3SettlementEvidence {
+        BoltV3SettlementEvidence {
+            strategy_id: self.config.strategy_id.clone(),
+            settlement_key: ids.settlement_key,
+            market_id: ids.market_id,
+            position_id: position.position_id.to_string(),
+            instrument_id: position.instrument_id.to_string(),
+            product_id: ids.product_id,
+            outcome_side: outcome_side_to_evidence(computation.outcome_side),
+            entry_order_side: position.entry_order_side.to_string(),
+            quantity: position.quantity.to_string(),
+            entry_price: evidence_number(position.avg_px_open),
+            family_key: self.config.rotating_market_family.clone(),
+            strike_price: evidence_number(computation.strike_price),
+            resolution_instrument_id: update.instrument_id.to_string(),
+            resolution_ts_event_ns: update.ts_event.as_u64(),
+            reference_close_price: evidence_number(update.value.as_f64()),
+            payout_per_share: evidence_number(computation.payout_per_share),
+            terminal_value: evidence_number(computation.terminal_value),
+            realized_pnl: evidence_number(computation.realized_pnl),
+            settlement_currency: settlement_currency.code.as_str().to_string(),
+        }
+    }
+
+    fn settlement_booking_error_evidence(
+        &self,
+        position: &OpenPositionState,
+        settlement_key: String,
+        reason: BoltV3SettlementBookingErrorReason,
+        detail: String,
+        observed_at_ns: u64,
+    ) -> BoltV3SettlementBookingErrorEvidence {
+        BoltV3SettlementBookingErrorEvidence {
+            strategy_id: self.config.strategy_id.clone(),
+            settlement_key,
+            market_id: position
+                .market_id
+                .clone()
+                .or_else(|| self.active.market_id.clone()),
+            position_id: Some(position.position_id.to_string()),
+            instrument_id: Some(position.instrument_id.to_string()),
+            resolution_instrument_id: self
+                .resolution_instrument_id()
+                .map(|instrument_id| instrument_id.to_string()),
+            reason,
+            detail,
+            observed_at_ns,
+        }
+    }
+
+    fn settlement_position_candidate(&self) -> Option<OpenPositionState> {
+        match &self.exposure {
+            ExposureState::Managed(managed) => Some(managed.position.clone()),
+            ExposureState::ExitPending(exit) => {
+                exit.residual_position_after_terminal().or_else(|| {
+                    exit.position
+                        .as_ref()
+                        .map(|managed| managed.position.clone())
+                })
+            }
+            _ => None,
         }
     }
 
@@ -1708,9 +2021,9 @@ impl BinaryOracleEdgeTaker {
         // recovery structurally impossible and fails closed (P5-5 / Codex P5).
         let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
         let execution_venue = self.context.execution_venue();
-        let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cached_recovery = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let cache = self.cache();
-            cache
+            let cached_positions = cache
                 .positions_open(Some(&execution_venue), None, Some(&strategy_id), None, None)
                 .into_iter()
                 .map(|position| OpenPositionState {
@@ -1729,11 +2042,34 @@ impl BinaryOracleEdgeTaker {
                     seconds_to_expiry_at_selection: None,
                     book: OutcomeBookState::from_instrument_id(position.instrument_id),
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let mut settlement_scope_positions = cached_positions.clone();
+            settlement_scope_positions.extend(
+                cache
+                    .positions_closed(Some(&execution_venue), None, Some(&strategy_id), None, None)
+                    .into_iter()
+                    .map(|position| OpenPositionState {
+                        market_id: None,
+                        instrument_id: position.instrument_id,
+                        position_id: position.id,
+                        outcome_side: None,
+                        outcome_fees: OutcomeFeeState::empty(),
+                        historical_entry_fee_bps: None,
+                        entry_order_side: position.entry,
+                        side: position.side,
+                        quantity: position.quantity,
+                        avg_px_open: position.avg_px_open,
+                        interval_open: None,
+                        selection_published_at_ms: None,
+                        seconds_to_expiry_at_selection: None,
+                        book: OutcomeBookState::from_instrument_id(position.instrument_id),
+                    }),
+            );
+            (cached_positions, settlement_scope_positions)
         }));
 
-        let cached_positions = match cached_positions {
-            Ok(cached_positions) => cached_positions,
+        let (cached_positions, settlement_scope_positions) = match cached_recovery {
+            Ok(cached_recovery) => cached_recovery,
             Err(_) => {
                 self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
                     reason: BlindRecoveryReason::CacheProbeFailed,
@@ -1745,6 +2081,10 @@ impl BinaryOracleEdgeTaker {
                 return;
             }
         };
+
+        if !self.recover_settlement_bootstrap_from_scope(&settlement_scope_positions) {
+            return;
+        }
 
         if cached_positions.is_empty() {
             self.exposure = ExposureState::Flat;
@@ -1772,6 +2112,115 @@ impl BinaryOracleEdgeTaker {
         let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
         self.exposure = exposure;
         self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
+    }
+
+    fn recover_settlement_bootstrap_from_scope(
+        &mut self,
+        settlement_scope_positions: &[OpenPositionState],
+    ) -> bool {
+        let Some(recovery) = self.context.settlement_recovery().cloned() else {
+            return true;
+        };
+        let recovery_scope_settlement_keys = settlement_scope_positions
+            .iter()
+            .map(settlement_key_for_position)
+            .collect::<Result<BTreeSet<_>>>();
+        let recovery_scope_settlement_keys = match recovery_scope_settlement_keys {
+            Ok(keys) => keys,
+            Err(error) => {
+                self.enter_blind_settlement_recovery(error);
+                return false;
+            }
+        };
+        if recovery_scope_settlement_keys.is_empty() {
+            return true;
+        }
+
+        let recovered_settled_keys = match read_settlement_keys_for_recovery_scope(
+            &recovery.path,
+            recovery.max_bytes,
+            &recovery_scope_settlement_keys,
+        ) {
+            Ok(keys) => keys,
+            Err(error) => {
+                self.enter_blind_settlement_recovery(error);
+                return false;
+            }
+        };
+        let recovered_booking_error_keys =
+            match read_settlement_booking_error_keys_for_recovery_scope(
+                &recovery.path,
+                recovery.max_bytes,
+                &recovery_scope_settlement_keys,
+            ) {
+                Ok(keys) => keys,
+                Err(error) => {
+                    self.enter_blind_settlement_recovery(error);
+                    return false;
+                }
+            };
+        let recovered_settlement_evidence = match read_settlement_evidence_for_recovery_scope(
+            &recovery.path,
+            recovery.max_bytes,
+            &recovery_scope_settlement_keys,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                self.enter_blind_settlement_recovery(error);
+                return false;
+            }
+        };
+
+        if let Some(sink) = self.context.settlement_runtime_sink() {
+            for evidence in recovered_settlement_evidence {
+                let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence)
+                {
+                    Ok(explanation) => explanation,
+                    Err(error) => {
+                        self.enter_blind_settlement_recovery(error);
+                        return false;
+                    }
+                };
+                if let Err(error) = sink.record_venue_truth_settlement(explanation) {
+                    self.enter_blind_settlement_recovery(error);
+                    return false;
+                }
+            }
+        }
+
+        self.settled_position_keys.extend(recovered_settled_keys);
+        self.settlement_booking_error_keys
+            .extend(recovered_booking_error_keys);
+        true
+    }
+
+    fn enter_blind_settlement_recovery(&mut self, error: anyhow::Error) {
+        let position = self.settlement_position_candidate();
+        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
+        });
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
+            outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+            source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY,
+            market_id: position
+                .as_ref()
+                .and_then(|position| position.market_id.clone())
+                .or_else(|| self.active.market_id.clone()),
+            instrument_id: position.as_ref().map(|position| position.instrument_id),
+            position_id: position.as_ref().map(|position| position.position_id),
+            client_order_id: None,
+            prior_client_order_id: None,
+            raw_reason_text: Some("settlement_evidence_recovery_failed".to_string()),
+            order_side: position.as_ref().map(|position| position.entry_order_side),
+            filled_quantity: None,
+            residual_quantity: position.as_ref().map(|position| position.quantity),
+            ts_event_ns: None,
+        });
+        log::error!(
+            "binary_oracle_edge_taker settlement recovery failed closed: strategy_id={} error={error:#}",
+            self.config.strategy_id,
+        );
     }
 
     fn adopt_restart_open_exit_order_from_cache(
@@ -6121,11 +6570,12 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_time_event(&mut self, event: &TimeEvent) -> Result<()> {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         if event.name.as_str() == self.selection_retry_timer_name() {
-            let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
             self.refresh_selection_from_cache(now_ms);
             self.retry_missing_live_input_subscriptions_at(now_ms);
         }
+        self.check_resolution_feed_outage_at_market_end(now_ms)?;
         Ok(())
     }
 
@@ -6155,6 +6605,7 @@ impl DataActor for BinaryOracleEdgeTaker {
             .resolution_instrument_id()
             .is_some_and(|instrument_id| update.instrument_id == instrument_id)
         {
+            self.try_book_resolution_settlement(update)?;
             let window_open_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
             let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
             self.active
@@ -6922,6 +7373,120 @@ fn outcome_side_to_evidence(side: OutcomeSide) -> BoltV3OutcomeSide {
         OutcomeSide::Up => BoltV3OutcomeSide::Up,
         OutcomeSide::Down => BoltV3OutcomeSide::Down,
     }
+}
+
+fn settlement_leg_for_outcome(side: OutcomeSide) -> Leg {
+    match side {
+        OutcomeSide::Up => Leg::Yes,
+        OutcomeSide::Down => Leg::No,
+    }
+}
+
+fn settlement_position_realized_pnl_observation(
+    account_id: &str,
+    evidence: &BoltV3SettlementEvidence,
+    settlement_currency: Currency,
+) -> Result<PositionRealizedPnlObservation> {
+    Ok(PositionRealizedPnlObservation {
+        account_id: account_id.to_string(),
+        instrument_id: evidence.instrument_id.clone(),
+        position_id: evidence.position_id.clone(),
+        event_id: Some(evidence.settlement_key.clone()),
+        observed: RealizedPnlObservation {
+            source: BOLT_V3_SETTLEMENT_RECORD_KIND,
+            observed_at_unix_nanos: evidence.resolution_ts_event_ns,
+            realized_pnl: Decimal::from_str(&evidence.realized_pnl).with_context(|| {
+                format!(
+                    "settlement evidence realized_pnl parse failed for key `{}`",
+                    evidence.settlement_key
+                )
+            })?,
+            settlement_currency,
+        },
+        cumulative_realized_pnl: false,
+        closes_position: true,
+    })
+}
+
+fn venue_truth_settlement_explanation_from_evidence(
+    evidence: &BoltV3SettlementEvidence,
+) -> Result<VenueTruthSettlementExplanation> {
+    let entry_order_side = settlement_order_side_from_evidence(&evidence.entry_order_side)
+        .with_context(|| {
+            format!(
+                "settlement evidence entry_order_side parse failed for key `{}`",
+                evidence.settlement_key
+            )
+        })?;
+    let position_side =
+        expected_position_side_for_entry_order(entry_order_side).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid settlement evidence entry_order_side `{}` has no position side for key `{}`",
+                evidence.entry_order_side,
+                evidence.settlement_key
+            )
+        })?;
+    let side = expected_exit_order_side_for_position(position_side).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid settlement evidence position side `{:?}` has no settlement burn side for key `{}`",
+            position_side,
+            evidence.settlement_key
+        )
+    })?;
+    let settled_quantity = Decimal::from_str(&evidence.quantity).with_context(|| {
+        format!(
+            "settlement evidence quantity parse failed for key `{}`",
+            evidence.settlement_key
+        )
+    })?;
+    let payout_per_share = Decimal::from_str(&evidence.payout_per_share).with_context(|| {
+        format!(
+            "settlement evidence payout_per_share parse failed for key `{}`",
+            evidence.settlement_key
+        )
+    })?;
+    Ok(VenueTruthSettlementExplanation {
+        settlement_key: evidence.settlement_key.clone(),
+        market_id: evidence.market_id.clone(),
+        product_id: evidence.product_id.clone(),
+        side,
+        settled_quantity,
+        payout_per_share,
+        collateral_payout: settled_quantity * payout_per_share,
+    })
+}
+
+fn settlement_order_side_from_evidence(value: &str) -> Result<OrderSide> {
+    match OrderSide::from_str(value.trim())? {
+        side @ (OrderSide::Buy | OrderSide::Sell) => Ok(side),
+        _ => anyhow::bail!("unsupported settlement entry_order_side `{value}`"),
+    }
+}
+
+fn settlement_key_for_position(position: &OpenPositionState) -> Result<String> {
+    let mut key = settlement_product_id(position.instrument_id)?;
+    key.push(':');
+    key.push_str(position.position_id.as_ref());
+    Ok(key)
+}
+
+fn settlement_market_id(
+    position: &OpenPositionState,
+    active: &ActiveMarketState,
+) -> Option<String> {
+    position
+        .market_id
+        .clone()
+        .or_else(|| active.market_id.clone())
+}
+
+fn settlement_product_id(instrument_id: InstrumentId) -> Result<String> {
+    prediction_market_product_id_from_instrument_id(&instrument_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "settlement product id is unbound for instrument `{}`",
+            instrument_id
+        )
+    })
 }
 
 fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> BoltV3ForcedFlatReason {

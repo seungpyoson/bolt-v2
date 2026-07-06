@@ -1064,6 +1064,20 @@ impl BoltV3DecisionEvidenceWriter for FailingRequoteThrottleDecisionEvidenceWrit
         Ok(())
     }
 
+    fn record_settlement(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }

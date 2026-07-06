@@ -31,6 +31,7 @@ use bolt_v2::{
         BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
         BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
         BoltV3OrderRejectEvidence, BoltV3RequoteThrottleEvidence,
+        BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
         BoltV3SubmitReservationMetadataEvidence,
     },
@@ -370,6 +371,17 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
     }
 
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 

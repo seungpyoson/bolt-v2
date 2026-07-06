@@ -65,11 +65,8 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
 
 pub(super) fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    let enforced_submit_admission = root
-        .risk
-        .capital_pools
-        .as_ref()
-        .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    let enforced_submit_admission =
+        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(root).is_some();
     if enforced_submit_admission
         && root
             .persistence
@@ -79,6 +76,26 @@ pub(super) fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConf
     {
         errors.push(
             "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    errors
+}
+
+pub(super) fn validate_settlement_sink_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let settlement_sink_configured =
+        crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkBackends::from_root(root)
+            .will_configure_runtime_sink();
+    if settlement_sink_configured
+        && root
+            .persistence
+            .decision_evidence
+            .recovery_evidence_max_bytes
+            .is_none()
+    {
+        errors.push(
+            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when a settlement runtime sink is configured"
                 .to_string(),
         );
     }

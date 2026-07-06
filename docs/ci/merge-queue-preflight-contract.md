@@ -145,8 +145,8 @@ Lane status reduction is:
 
 The top-level verdict must be one of:
 
-- `queue_as_one_wave`: all PRs and the requested wave are ready under the
-  configured preflight contract.
+- `queue_as_one_wave`: all PRs have ready prequeue metadata and the requested
+  wave's emitted batches are ready under the configured preflight contract.
 - `split_advised`: each included PR is individually ready, but the requested wave
   should be split into smaller batches.
 - `blocked`: one or more PRs or the wave has a deterministic blocker.
@@ -427,6 +427,12 @@ Each verifier command must have:
 - classified timeout failure.
 - deterministic input scope bound to the synthetic candidate being checked.
 
+Verifier proof is batch-scoped for emitted batches. A passing optimistic batch
+does not imply that each constituent PR's standalone base+PR synthetic commit
+was verifier-clean; standalone verifier failures are localized only after a
+batch verifier failure triggers fallback. The residual-risk lane must disclose
+this boundary.
+
 Successful verifier output is suppressed. Failed verifier output is bounded and
 passes through the repository diagnostic redaction policy before display.
 Verifier command names may be emitted as audit metadata.
@@ -441,6 +447,8 @@ Every output, JSON and plain text, must include residual risks that preflight di
 not prove. At minimum:
 
 - full CI result.
+- verifier proof is batch-scoped, not standalone per-PR proof for passing
+  optimistic batches.
 - Mergify proof PR behavior.
 - remote runner availability and environment.
 - flaky checks and external services.

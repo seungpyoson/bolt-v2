@@ -22,6 +22,7 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
 MERGIFY_YML = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
 EXPECTED_RESIDUAL_RISKS = [
     "full_ci_result",
+    "batch_verifier_scope",
     "mergify_proof_pr_behavior",
     "remote_runner_availability",
     "flaky_checks_and_external_services",
@@ -1534,6 +1535,76 @@ def assert_clean_prs_verify_final_batch_once() -> None:
         payload = parse_json(result.stdout)
         assert_equal([batch["prs"] for batch in payload["batches"]], [[1, 2, 3]], "clean final batch")
         assert_equal(counter.read_text(encoding="utf-8"), "1", "clean batch verifier runs")
+
+
+def assert_batch_verifier_scope_residual_covers_standalone_masking() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"bad.txt": "bad\n"})
+        second_head = fixture.make_pr(2, {"mask.txt": "mask\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(first_head),
+                2: approved_pr_view(second_head),
+            },
+            checks=passing_source_pr_checks(1, 2),
+        )
+        verifier = root / "reject_unmasked_bad.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('bad.txt').exists() and not Path('mask.txt').exists():\n"
+            "    print('bad.txt requires mask.txt')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 0, "batch-scoped verifier rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["verdict"], "queue_as_one_wave", "batch-scoped verifier verdict")
+        assert_equal(payload["batches"][0]["prs"], [1, 2], "batch-scoped verifier batch")
+        assert_equal(payload["blocked_prs"], [], "batch-scoped verifier blocked_prs")
+        assert_equal(payload["conflicts"], [], "batch-scoped verifier conflicts")
+        assert "batch_verifier_scope" in payload["residual_risks"], payload["residual_risks"]
+        residual_reason_codes = {
+            finding["reason_code"]
+            for finding in payload["findings"]
+            if finding["lane"] == "residual_risk"
+        }
+        assert "batch_verifier_scope" in residual_reason_codes, payload["findings"]
 
 
 def assert_conflicting_pr_starts_later_batch() -> None:
@@ -3610,6 +3681,7 @@ def main() -> int:
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
     assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
+    assert_batch_verifier_scope_residual_covers_standalone_masking()
     assert_fallback_recombines_survivors_after_batch_max_split()
     assert_fallback_replaces_suffix_optimistic_conflicts()
     assert_fallback_retains_prefix_suffix_seam_conflict()

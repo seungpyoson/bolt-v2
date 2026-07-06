@@ -172,6 +172,7 @@ HEAD_IDENTITY_FINDING_STATES = {
 }
 RESIDUAL_RISK_REASON_CODES = (
     "full_ci_result",
+    "batch_verifier_scope",
     "mergify_proof_pr_behavior",
     "remote_runner_availability",
     "flaky_checks_and_external_services",

@@ -6857,6 +6857,25 @@ fn fixture_root_without_decision_evidence_recovery_bound() -> String {
         .join("\n")
 }
 
+fn fixture_root_loss_governor_block() -> &'static str {
+    r#"[risk.loss_governor]
+enabled = true
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
+on_loss_breach_trading_state = "reducing"
+on_untrusted_snapshot_trading_state = "reducing"
+recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
+max_per_trade_loss = "2.50"
+max_daily_loss = "7.50"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
+"#
+}
+
 fn fixture_polymarket_execution_block() -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
@@ -7260,7 +7279,25 @@ fn configured_settlement_sink_rejects_missing_recovery_evidence_max_bytes() {
         strategies_dir.join("binary_oracle.toml"),
     )
     .expect("strategy fixture should copy");
-    let source = fixture_root_without_decision_evidence_recovery_bound();
+    let source = fixture_root_without_decision_evidence_recovery_bound()
+        .replace(
+            "enforce_submit_admission = false",
+            "enforce_submit_admission = true",
+        )
+        .replace(fixture_root_loss_governor_block(), "");
+    assert!(
+        source.contains("[risk.kill_switch]\nenabled = false"),
+        "pools-only fixture must not rely on the kill-switch sink backend"
+    );
+    assert!(
+        !source.contains("[risk.loss_governor]"),
+        "pools-only fixture must not rely on loss-governor sink detection"
+    );
+    assert!(
+        source.contains("enforce_submit_admission = true")
+            && source.contains("[risk.capital_pools.prediction_market_binary]"),
+        "pools-only fixture must configure the capital-admission feed backend"
+    );
     let root_path = temp.path().join("root.toml");
     fs::write(&root_path, source).expect("mutated root fixture should write");
     let error = load_bolt_v3_config(&root_path)
@@ -7286,22 +7323,6 @@ fn kill_switch_only_settlement_sink_rejects_missing_recovery_evidence_max_bytes(
         strategies_dir.join("binary_oracle.toml"),
     )
     .expect("strategy fixture should copy");
-    let loss_governor_block = r#"[risk.loss_governor]
-enabled = true
-account_id = "POLYMARKET-001"
-max_snapshot_age_ns = 5000000000
-rolling_window_ns = 300000000000
-active_position_pnl_max_entries = 64
-on_loss_breach_trading_state = "reducing"
-on_untrusted_snapshot_trading_state = "reducing"
-recovery_mode = "manual"
-manual_recovery_evidence_max_path_bytes = 256
-max_per_trade_loss = "2.50"
-max_daily_loss = "7.50"
-max_rolling_loss = "10.00"
-max_drawdown = "15.00"
-
-"#;
     let source = fixture_root_without_decision_evidence_recovery_bound()
         .replace(
             "enabled = false\nstate_path = \"state/kill-switch.json\"",
@@ -7311,7 +7332,7 @@ max_drawdown = "15.00"
             "account_ids = [\"POLYMARKET-001\"]\ninstrument_ids = []",
             "account_ids = [\"POLYMARKET-001\"]\ninstrument_ids = [\"condition-fixture-yes.POLYMARKET\"]",
         )
-        .replace(loss_governor_block, "");
+        .replace(fixture_root_loss_governor_block(), "");
     assert!(
         source.contains("[risk.kill_switch]\nenabled = true"),
         "fixture must configure kill switch as the only settlement sink backend"

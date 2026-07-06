@@ -149,7 +149,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         Quantity::new(10.0, 2),
         0.450,
     );
-    open_position.market_id = None;
+    open_position.lifecycle = BoltV3PositionMarketLifecycle::missing();
     set_exit_pending(
         &mut strategy,
         open_position,
@@ -726,21 +726,23 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: tracked_instrument,
         position_id: PositionId::from("P-LIFECYCLE-001"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(

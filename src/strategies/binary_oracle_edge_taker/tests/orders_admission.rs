@@ -2806,7 +2806,7 @@ fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
         .normal_exit_order_execution_config()
         .expect("normal exit order config should parse");
     let outcome_side = managed_position_ref(&strategy)
-        .and_then(|position| position.outcome_side)
+        .and_then(|position| position.lifecycle.outcome_side())
         .expect("entry fill should preserve configured outcome side");
     let exit_ev_bps = strategy
         .current_exit_ev_bps_at(outcome_side, &order_config)
@@ -2863,21 +2863,15 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
     set_unsupported_observed(
         &mut strategy,
         OpenPositionState {
-            market_id: None,
+            lifecycle: BoltV3PositionMarketLifecycle::missing(),
             instrument_id,
             position_id: PositionId::from("P-LEGACY-SHORT-001"),
-            outcome_side: None,
             outcome_fees: OutcomeFeeState::empty(),
             historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
             avg_px_open: 0.480,
-            strike_price: None,
-            interval_end_ms: None,
-            interval_open: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
             book: tracked_book,
         },
         UnsupportedObservedReason::BootstrappedUnsupportedContract,
@@ -2902,21 +2896,23 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-001"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(
@@ -2942,21 +2938,23 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Down),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.down.instrument_id.unwrap(),
         position_id: PositionId::from("P-DOWN-001"),
-        outcome_side: Some(OutcomeSide::Down),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(12.0, 2),
         avg_px_open: 0.480,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.down.clone(),
     };
     set_managed_position(
@@ -2981,21 +2979,23 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
 fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-002"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(

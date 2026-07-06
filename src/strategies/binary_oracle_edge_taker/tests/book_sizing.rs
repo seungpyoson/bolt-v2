@@ -151,21 +151,23 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
     tracked_book.best_ask = Some(0.450);
     tracked_book.liquidity_available = Some(5.0);
     let open_position = OpenPositionState {
-        market_id: Some("MKT-A".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-A".to_string()),
+            Some(position_outcome_side),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: position_instrument,
         position_id: PositionId::from("P-THIN-001"),
-        outcome_side: Some(position_outcome_side),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),
         avg_px_open: 0.450,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: tracked_book,
     };
     set_managed_position(

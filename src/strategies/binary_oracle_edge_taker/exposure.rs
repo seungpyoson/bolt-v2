@@ -6,11 +6,10 @@ use nautilus_model::{
 
 use crate::{
     bolt_v3_book_sizing::OutcomeBookState,
-    bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::is_positive_finite,
     bolt_v3_position_contract::{
-        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
-        is_observed_open_side,
+        BoltV3PositionMarketLifecycle, expected_exit_order_side_for_position,
+        expected_position_side_for_entry_order, is_observed_open_side,
     },
 };
 
@@ -18,37 +17,25 @@ use super::OutcomeFeeState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OpenPositionState {
-    pub(super) market_id: Option<String>,
+    pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
     pub(super) position_id: PositionId,
-    pub(super) outcome_side: Option<OutcomeSide>,
     pub(super) outcome_fees: OutcomeFeeState,
     pub(super) historical_entry_fee_bps: Option<f64>,
     pub(super) entry_order_side: OrderSide,
     pub(super) side: PositionSide,
     pub(super) quantity: Quantity,
     pub(super) avg_px_open: f64,
-    pub(super) strike_price: Option<f64>,
-    pub(super) interval_end_ms: Option<u64>,
-    pub(super) interval_open: Option<f64>,
-    pub(super) selection_published_at_ms: Option<u64>,
-    pub(super) seconds_to_expiry_at_selection: Option<u64>,
     pub(super) book: OutcomeBookState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingEntryState {
     pub(super) client_order_id: ClientOrderId,
-    pub(super) market_id: Option<String>,
+    pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
-    pub(super) outcome_side: Option<OutcomeSide>,
     pub(super) outcome_fees: OutcomeFeeState,
     pub(super) historical_entry_fee_bps: Option<f64>,
-    pub(super) strike_price: Option<f64>,
-    pub(super) interval_end_ms: Option<u64>,
-    pub(super) interval_open: Option<f64>,
-    pub(super) selection_published_at_ms: Option<u64>,
-    pub(super) seconds_to_expiry_at_selection: Option<u64>,
     pub(super) book: OutcomeBookState,
 }
 
@@ -326,7 +313,7 @@ impl ExposureState {
 
     pub(super) fn current_position_market_id(&self) -> Option<String> {
         self.managed_position()
-            .and_then(|position| position.position.market_id.clone())
+            .and_then(|position| position.position.lifecycle.market_id_owned())
             .or_else(|| {
                 self.exit_pending()
                     .and_then(|exit| exit.pending_exit.market_id.clone())

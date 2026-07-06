@@ -24,19 +24,28 @@ fn position_events_update_live_position_state() {
     );
     let managed_position =
         managed_position_ref(&strategy).expect("position should be managed after open event");
-    assert_eq!(managed_position.market_id.as_deref(), Some("MKT-1"));
+    assert_eq!(managed_position.lifecycle.market_id(), Some("MKT-1"));
     assert_eq!(managed_position.instrument_id, instrument_id);
     assert_eq!(managed_position.position_id, position_id);
-    assert!(managed_position.outcome_side.is_some());
+    assert!(managed_position.lifecycle.outcome_side().is_some());
     assert_eq!(managed_position.outcome_fees, strategy.active.outcome_fees);
     assert_eq!(managed_position.historical_entry_fee_bps, None);
     assert_eq!(managed_position.entry_order_side, OrderSide::Buy);
     assert_eq!(managed_position.side, PositionSide::Long);
     assert_eq!(managed_position.quantity, Quantity::new(10.0, 2));
     assert_eq!(managed_position.avg_px_open, 0.450);
-    assert_eq!(managed_position.interval_open, Some(3_100.0));
-    assert_eq!(managed_position.selection_published_at_ms, Some(1_000));
-    assert_eq!(managed_position.seconds_to_expiry_at_selection, Some(300));
+    assert_eq!(
+        managed_position.lifecycle.settlement_strike(),
+        Some(3_100.0)
+    );
+    assert_eq!(
+        managed_position.lifecycle.selection_published_at_ms(),
+        Some(1_000)
+    );
+    assert_eq!(
+        managed_position.lifecycle.seconds_to_expiry_at_selection(),
+        Some(300)
+    );
     let managed_book = managed_position.book.clone();
     let expected_book = configured_book_for_instrument(&mut strategy, instrument_id);
     assert_eq!(managed_book, expected_book);
@@ -644,15 +653,15 @@ fn position_event_without_context_does_not_guess_side_from_suffix() {
     ));
 
     assert_eq!(
-        managed_position_ref(&strategy).and_then(|position| position.outcome_side),
+        managed_position_ref(&strategy).and_then(|position| position.lifecycle.outcome_side()),
         None
     );
     let position = managed_position_ref(&strategy).expect("position should be tracked");
-    assert_eq!(position.market_id, None);
+    assert_eq!(position.lifecycle.market_id(), None);
     assert_eq!(position.outcome_fees, OutcomeFeeState::empty());
-    assert_eq!(position.interval_open, None);
-    assert_eq!(position.selection_published_at_ms, None);
-    assert_eq!(position.seconds_to_expiry_at_selection, None);
+    assert_eq!(position.lifecycle.settlement_strike(), None);
+    assert_eq!(position.lifecycle.selection_published_at_ms(), None);
+    assert_eq!(position.lifecycle.seconds_to_expiry_at_selection(), None);
     assert_eq!(
         strategy.managed_position().map(|managed| managed.origin),
         Some(ManagedPositionOrigin::RecoveryBootstrap)
@@ -721,15 +730,15 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
         original_book.best_bid
     );
     assert_eq!(
-        managed_position_ref(&strategy).and_then(|p| p.interval_open),
+        managed_position_ref(&strategy).and_then(|p| p.lifecycle.settlement_strike()),
         Some(3_100.0)
     );
     assert_eq!(
-        managed_position_ref(&strategy).and_then(|p| p.selection_published_at_ms),
+        managed_position_ref(&strategy).and_then(|p| p.lifecycle.selection_published_at_ms()),
         Some(1_000)
     );
     assert_eq!(
-        managed_position_ref(&strategy).and_then(|p| p.seconds_to_expiry_at_selection),
+        managed_position_ref(&strategy).and_then(|p| p.lifecycle.seconds_to_expiry_at_selection()),
         Some(300)
     );
     assert_eq!(
@@ -1122,7 +1131,7 @@ fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives
         Some(PositionId::from("P-LATE"))
     );
     assert_eq!(
-        managed_position_ref(&strategy).and_then(|position| position.market_id.as_deref()),
+        managed_position_ref(&strategy).and_then(|position| position.lifecycle.market_id()),
         Some("MKT-1")
     );
     assert_eq!(
@@ -1950,21 +1959,23 @@ fn position_closed_quarantines_foreign_venue_unsupported_position_id_collision()
     set_unsupported_observed(
         &mut strategy,
         OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+            lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+                Some("MKT-1".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
             instrument_id,
             position_id,
-            outcome_side: None,
             outcome_fees: OutcomeFeeState::empty(),
             historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
             avg_px_open: 0.480,
-            strike_price: None,
-            interval_end_ms: None,
-            interval_open: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
             book,
         },
         UnsupportedObservedReason::BootstrappedUnsupportedContract,
@@ -1985,21 +1996,23 @@ fn position_closed_releases_unsupported_observed_for_same_position() {
     set_unsupported_observed(
         &mut strategy,
         OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+            lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+                Some("MKT-1".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
             instrument_id,
             position_id,
-            outcome_side: None,
             outcome_fees: OutcomeFeeState::empty(),
             historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
             avg_px_open: 0.480,
-            strike_price: None,
-            interval_end_ms: None,
-            interval_open: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
             book,
         },
         UnsupportedObservedReason::BootstrappedUnsupportedContract,
@@ -2388,10 +2401,16 @@ fn position_opened_after_rotation_preserves_existing_position_context() {
     let open_position = managed_position_ref(&strategy)
         .cloned()
         .expect("position should remain tracked");
-    assert_eq!(open_position.market_id.as_deref(), Some("MKT-1"));
-    assert_eq!(open_position.interval_open, Some(3_100.0));
-    assert_eq!(open_position.selection_published_at_ms, Some(1_000));
-    assert_eq!(open_position.seconds_to_expiry_at_selection, Some(300));
+    assert_eq!(open_position.lifecycle.market_id(), Some("MKT-1"));
+    assert_eq!(open_position.lifecycle.settlement_strike(), Some(3_100.0));
+    assert_eq!(
+        open_position.lifecycle.selection_published_at_ms(),
+        Some(1_000)
+    );
+    assert_eq!(
+        open_position.lifecycle.seconds_to_expiry_at_selection(),
+        Some(300)
+    );
     assert_eq!(
         open_position
             .outcome_fees
@@ -2590,16 +2609,18 @@ fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
     );
     let pending = PendingEntryState {
         client_order_id: ClientOrderId::from("ENTRY-001"),
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
-        strike_price: None,
-        interval_end_ms: None,
-        interval_open: None,
-        selection_published_at_ms: None,
-        seconds_to_expiry_at_selection: None,
         book: strategy.active.books.up.clone(),
     };
     set_entry_reconcile_pending(
@@ -2633,21 +2654,23 @@ fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
 fn task5_one_position_invariant_panics_in_debug_or_rejects_in_release() {
     let mut strategy = ready_to_trade_strategy();
     let invariant_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-INVARIANT-1"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),
         avg_px_open: 0.45,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_exit_pending(
@@ -2674,21 +2697,23 @@ fn task5_one_position_invariant_panics_in_debug_or_rejects_in_release() {
 fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
     let mut strategy = ready_to_trade_strategy();
     let invariant_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-INVARIANT-2"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),
         avg_px_open: 0.45,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_exit_pending(
@@ -2864,21 +2889,23 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
     strategy.active.last_reference_ts_ms = Some(2_000);
     strategy.refresh_fee_readiness();
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-LOG-001"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(1.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(
@@ -2928,21 +2955,15 @@ fn unknown_recovered_position_side_holds_instead_of_liquidating_by_default() {
     set_managed_position(
         &mut strategy,
         OpenPositionState {
-            market_id: None,
+            lifecycle: BoltV3PositionMarketLifecycle::missing(),
             instrument_id,
             position_id: PositionId::from("P-UNKNOWN-001"),
-            outcome_side: None,
             outcome_fees: OutcomeFeeState::empty(),
             historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
             avg_px_open: 0.480,
-            strike_price: None,
-            interval_end_ms: None,
-            interval_open: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
             book: tracked_book,
         },
         ManagedPositionOrigin::RecoveryBootstrap,
@@ -2964,16 +2985,18 @@ fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
     let pending = PendingEntryState {
         client_order_id: ClientOrderId::from("ENTRY-RECONCILE-001"),
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id,
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     let exposure = ExposureState::EntryReconcilePending {
@@ -2996,21 +3019,23 @@ fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
     let managed = ManagedPositionState {
         position: OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+            lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+                Some("MKT-1".to_string()),
+                Some(OutcomeSide::Up),
+                Some(3_100.0),
+                Some(3_100.0),
+                Some(301_000),
+                Some(1_000),
+                Some(300),
+            ),
             instrument_id,
             position_id: PositionId::from("P-EXIT-STATE-001"),
-            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
             avg_px_open: 0.450,
-            strike_price: Some(3_100.0),
-            interval_end_ms: Some(301_000),
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         },
         origin: ManagedPositionOrigin::StrategyEntry,
@@ -3050,21 +3075,23 @@ fn residual_position_after_terminal_preserves_fill_precision() {
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
     let managed = ManagedPositionState {
         position: OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+            lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+                Some("MKT-1".to_string()),
+                Some(OutcomeSide::Up),
+                Some(3_100.0),
+                Some(3_100.0),
+                Some(301_000),
+                Some(1_000),
+                Some(300),
+            ),
             instrument_id,
             position_id: PositionId::from("P-EXIT-PRECISION-001"),
-            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: OutcomeFeeState::empty(),
             historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
             avg_px_open: 0.450,
-            strike_price: Some(3_100.0),
-            interval_end_ms: Some(301_000),
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         },
         origin: ManagedPositionOrigin::StrategyEntry,
@@ -3111,7 +3138,7 @@ fn residual_position_after_terminal_uses_observed_position_after_fill() {
         }),
         pending_exit: PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-OBSERVED-RESIDUAL-001"),
-            market_id: open_position.market_id.clone(),
+            market_id: open_position.lifecycle.market_id_owned(),
             position_id: Some(open_position.position_id),
             fill_received: true,
             filled_quantity: Some(Quantity::new(4.0, 2)),
@@ -3148,7 +3175,7 @@ fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state(
         }),
         pending_exit: PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-RESIDUAL-001"),
-            market_id: open_position.market_id.clone(),
+            market_id: open_position.lifecycle.market_id_owned(),
             position_id: Some(open_position.position_id),
             fill_received: true,
             filled_quantity: Some(Quantity::new(4.0, 2)),
@@ -3173,21 +3200,23 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
     let managed = ExposureState::Managed(ManagedPositionState {
         position: OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+            lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+                Some("MKT-1".to_string()),
+                Some(OutcomeSide::Up),
+                Some(3_100.0),
+                Some(3_100.0),
+                Some(301_000),
+                Some(1_000),
+                Some(300),
+            ),
             instrument_id,
             position_id: PositionId::from("P-RECOVERY-001"),
-            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
             avg_px_open: 0.440,
-            strike_price: Some(3_100.0),
-            interval_end_ms: Some(301_000),
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         },
         origin: ManagedPositionOrigin::RecoveryBootstrap,
@@ -3218,21 +3247,25 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
     let entry_client_order_id = ClientOrderId::from("ENTRY-REMATERIALIZED-001");
     let pending = PendingEntryState {
         client_order_id: entry_client_order_id,
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id,
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: configured_book_for_instrument(&mut strategy, instrument_id),
     };
     set_pending_entry(&mut strategy, pending);
 
-    strategy.on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id));
+    strategy
+        .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
+        .expect("entry cancel should clear pending entry before rematerialization");
     assert!(matches!(strategy.exposure, ExposureState::Flat));
 
     strategy.on_position_opened(position_opened_event(
@@ -3451,16 +3484,18 @@ fn pending_entry_for_terminal_override(
     let book = configured_book_for_instrument(strategy, instrument_id);
     PendingEntryState {
         client_order_id,
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id,
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees,
         historical_entry_fee_bps: Some(0.0),
-        strike_price: Some(3_100.0),
-        interval_end_ms: Some(301_000),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book,
     }
 }

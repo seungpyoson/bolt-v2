@@ -561,12 +561,12 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
 
     let managed = managed_position_ref(&strategy).expect("position should remain managed");
     assert_eq!(
-        managed.strike_price,
+        managed.lifecycle.settlement_strike(),
         Some(3_100.0),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not erase captured strike"
     );
     assert_eq!(
-        managed.interval_end_ms,
+        managed.lifecycle.interval_end_ms(),
         Some(position_interval_end_ms),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not overwrite captured interval end"
     );
@@ -733,21 +733,15 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
             .expect("test cache should accept expired recovery position");
     }
     let scope_position = OpenPositionState {
-        market_id: None,
+        lifecycle: BoltV3PositionMarketLifecycle::missing(),
         instrument_id,
         position_id,
-        outcome_side: None,
         outcome_fees: OutcomeFeeState::empty(),
         historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.45,
-        strike_price: None,
-        interval_end_ms: None,
-        interval_open: None,
-        selection_published_at_ms: None,
-        seconds_to_expiry_at_selection: None,
         book: OutcomeBookState::from_instrument_id(instrument_id),
     };
     let settlement_key = settlement_key_for_position(&scope_position)
@@ -765,6 +759,79 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
                 .settlement_booking_error_keys
                 .contains(&settlement_key),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error instead of silent limbo; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_recovered_position_missing_instrument_records_terminal_booking_error()
+{
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let cache = register_test_strategy(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "expired-recovery-market-missing-instrument",
+        "MKT-1",
+        "Up",
+        1_000,
+        position_interval_end_ms,
+    );
+    let position_id = PositionId::from("P-RECOVERED-MISSING-INSTRUMENT");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("RECOVERED-MISSING-INSTRUMENT-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let cache_position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_position(&cache_position, NtOmsType::Netting)
+            .expect("test cache should accept position without instrument metadata");
+    }
+    let scope_position = OpenPositionState {
+        lifecycle: BoltV3PositionMarketLifecycle::missing(),
+        instrument_id,
+        position_id,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    let settlement_key = settlement_key_for_position(&scope_position)
+        .expect("fixture cache position should derive settlement key");
+
+    strategy.bootstrap_recovery_from_cache();
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && settlement_booking_error_reasons(&events)
+                == vec![BoltV3SettlementBookingErrorReason::SettlementInputInvalid]
+            && strategy
+                .settlement_booking_error_keys
+                .contains(&settlement_key),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered cache position with missing instrument metadata must record a terminal booking-error instead of silent limbo; exposure={:?} events={events:?}",
         strategy.exposure,
     );
 }
@@ -1249,21 +1316,15 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             .expect("test cache should accept recovery position");
     }
     let scope_position = OpenPositionState {
-        market_id: None,
+        lifecycle: BoltV3PositionMarketLifecycle::missing(),
         instrument_id,
         position_id,
-        outcome_side: None,
         outcome_fees: OutcomeFeeState::empty(),
         historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.45,
-        strike_price: None,
-        interval_end_ms: None,
-        interval_open: None,
-        selection_published_at_ms: None,
-        seconds_to_expiry_at_selection: None,
         book: OutcomeBookState::from_instrument_id(instrument_id),
     };
     let settlement_key = settlement_key_for_position(&scope_position)
@@ -1590,7 +1651,7 @@ fn set_exit_pending_with_filled_quantity(
     strategy.exposure = ExposureState::ExitPending(ExitPendingState {
         pending_exit: PendingExitState {
             client_order_id,
-            market_id: position.market_id.clone(),
+            market_id: position.lifecycle.market_id_owned(),
             position_id: Some(position.position_id),
             fill_received: true,
             filled_quantity: Some(filled_quantity),

@@ -61,9 +61,7 @@ use crate::{
         MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
     },
     bolt_v3_maker_settlement::BinarySettlementLot,
-    bolt_v3_market_families::{
-        self, FairProbabilityInputs, OutcomeSide, updown::updown_position_instrument_context,
-    },
+    bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
         SECONDS_PER_YEAR_F64, UNIT_F64, is_non_negative_finite, is_positive_finite,
@@ -73,8 +71,8 @@ use crate::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
     bolt_v3_position_contract::{
-        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
-        is_observed_open_side,
+        BoltV3PositionMarketLifecycle, expected_exit_order_side_for_position,
+        expected_position_side_for_entry_order, is_observed_open_side,
     },
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_providers::{
@@ -716,27 +714,6 @@ struct SettlementEvidenceIds {
 }
 
 #[derive(Clone, Debug)]
-struct RecoveredPositionLifecycleContext {
-    market_id: Option<String>,
-    outcome_side: Option<OutcomeSide>,
-    interval_end_ms: Option<u64>,
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-}
-
-impl RecoveredPositionLifecycleContext {
-    fn missing() -> Self {
-        Self {
-            market_id: None,
-            outcome_side: None,
-            interval_end_ms: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 struct SelectedReferenceQuoteEvidence {
     quote: ReferenceQuote,
     failed_over: bool,
@@ -909,7 +886,19 @@ impl BinaryOracleEdgeTaker {
         let Some(position) = self.settlement_position_candidate() else {
             return Ok(());
         };
-        let Some(interval_end_ms) = position_interval_end_ms(&position) else {
+        let Some(interval_end_ms) = position.lifecycle.interval_end_ms() else {
+            let settlement_key = settlement_key_for_position(&position)?;
+            if !self.settled_position_keys.contains(&settlement_key)
+                && !self.settlement_booking_error_keys.contains(&settlement_key)
+            {
+                self.record_settlement_booking_error(
+                    &position,
+                    settlement_key,
+                    BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                    "settlement input missing interval end".to_string(),
+                    now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+                )?;
+            }
             return Ok(());
         };
         if now_ms < interval_end_ms {
@@ -942,20 +931,34 @@ impl BinaryOracleEdgeTaker {
         let Some(position) = self.settlement_position_candidate() else {
             return Ok(());
         };
-        let Some(interval_end_ms) = position_interval_end_ms(&position) else {
+        let settlement_key = settlement_key_for_position(&position)?;
+        let resolution_ts_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if position.lifecycle.interval_end_ms().is_none() {
+            if !self.settled_position_keys.contains(&settlement_key)
+                && !self.settlement_booking_error_keys.contains(&settlement_key)
+            {
+                self.record_settlement_booking_error(
+                    &position,
+                    settlement_key,
+                    BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                    "settlement input missing interval end".to_string(),
+                    update.ts_event.as_u64(),
+                )?;
+            }
             return Ok(());
         };
-        let resolution_ts_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        if resolution_ts_ms != interval_end_ms {
+        if !position
+            .lifecycle
+            .matches_resolution_tick_ms(resolution_ts_ms)
+        {
             return Ok(());
         }
-        let settlement_key = settlement_key_for_position(&position)?;
         if self.settled_position_keys.contains(&settlement_key)
             || self.settlement_booking_error_keys.contains(&settlement_key)
         {
             return Ok(());
         }
-        let Some(outcome_side) = position.outcome_side else {
+        let Some(outcome_side) = position.lifecycle.outcome_side() else {
             self.record_settlement_booking_error(
                 &position,
                 settlement_key,
@@ -965,7 +968,7 @@ impl BinaryOracleEdgeTaker {
             )?;
             return Ok(());
         };
-        let Some(strike_price) = position_strike_price(&position) else {
+        let Some(strike_price) = position.lifecycle.settlement_strike() else {
             self.record_settlement_booking_error(
                 &position,
                 settlement_key,
@@ -1018,7 +1021,7 @@ impl BinaryOracleEdgeTaker {
             )?;
             return Ok(());
         };
-        let Some(market_id) = settlement_market_id(&position) else {
+        let Some(market_id) = position.lifecycle.market_id_owned() else {
             self.record_settlement_booking_error(
                 &position,
                 settlement_key,
@@ -1155,7 +1158,7 @@ impl BinaryOracleEdgeTaker {
         BoltV3SettlementBookingErrorEvidence {
             strategy_id: self.config.strategy_id.clone(),
             settlement_key,
-            market_id: position.market_id.clone(),
+            market_id: position.lifecycle.market_id_owned(),
             position_id: Some(position.position_id.to_string()),
             instrument_id: Some(position.instrument_id.to_string()),
             resolution_instrument_id: self
@@ -1918,7 +1921,7 @@ impl BinaryOracleEdgeTaker {
     fn remember_flat_terminal_entry_override(&mut self, pending: &PendingEntryState) {
         self.last_flat_terminal_entry_override = Some(FlatTerminalEntryOverride {
             client_order_id: pending.client_order_id,
-            market_id: pending.market_id.clone(),
+            market_id: pending.lifecycle.market_id_owned(),
             instrument_id: pending.instrument_id,
         });
     }
@@ -1945,7 +1948,7 @@ impl BinaryOracleEdgeTaker {
             transition: input.transition,
             outcome: input.outcome,
             source: input.source,
-            market_id: input.pending.market_id,
+            market_id: input.pending.lifecycle.market_id_owned(),
             instrument_id: Some(input.pending.instrument_id),
             position_id: None,
             client_order_id: Some(input.pending.client_order_id),
@@ -2047,25 +2050,19 @@ impl BinaryOracleEdgeTaker {
                 .positions_open(Some(&execution_venue), None, Some(&strategy_id), None, None)
                 .into_iter()
                 .map(|position| {
-                    let lifecycle = recovered_position_lifecycle_context(
+                    let lifecycle = BoltV3PositionMarketLifecycle::recover_from_instrument(
                         cache.instrument(&position.instrument_id),
                     );
                     OpenPositionState {
-                        market_id: lifecycle.market_id,
+                        lifecycle,
                         instrument_id: position.instrument_id,
                         position_id: position.id,
-                        outcome_side: lifecycle.outcome_side,
                         outcome_fees: OutcomeFeeState::empty(),
                         historical_entry_fee_bps: None,
                         entry_order_side: position.entry,
                         side: position.side,
                         quantity: position.quantity,
                         avg_px_open: position.avg_px_open,
-                        strike_price: None,
-                        interval_end_ms: lifecycle.interval_end_ms,
-                        interval_open: None,
-                        selection_published_at_ms: lifecycle.selection_published_at_ms,
-                        seconds_to_expiry_at_selection: lifecycle.seconds_to_expiry_at_selection,
                         book: OutcomeBookState::from_instrument_id(position.instrument_id),
                     }
                 })
@@ -2076,26 +2073,19 @@ impl BinaryOracleEdgeTaker {
                     .positions_closed(Some(&execution_venue), None, Some(&strategy_id), None, None)
                     .into_iter()
                     .map(|position| {
-                        let lifecycle = recovered_position_lifecycle_context(
+                        let lifecycle = BoltV3PositionMarketLifecycle::recover_from_instrument(
                             cache.instrument(&position.instrument_id),
                         );
                         OpenPositionState {
-                            market_id: lifecycle.market_id,
+                            lifecycle,
                             instrument_id: position.instrument_id,
                             position_id: position.id,
-                            outcome_side: lifecycle.outcome_side,
                             outcome_fees: OutcomeFeeState::empty(),
                             historical_entry_fee_bps: None,
                             entry_order_side: position.entry,
                             side: position.side,
                             quantity: position.quantity,
                             avg_px_open: position.avg_px_open,
-                            strike_price: None,
-                            interval_end_ms: lifecycle.interval_end_ms,
-                            interval_open: None,
-                            selection_published_at_ms: lifecycle.selection_published_at_ms,
-                            seconds_to_expiry_at_selection: lifecycle
-                                .seconds_to_expiry_at_selection,
                             book: OutcomeBookState::from_instrument_id(position.instrument_id),
                         }
                     }),
@@ -2240,7 +2230,7 @@ impl BinaryOracleEdgeTaker {
             source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY,
             market_id: position
                 .as_ref()
-                .and_then(|position| position.market_id.clone()),
+                .and_then(|position| position.lifecycle.market_id_owned()),
             instrument_id: position.as_ref().map(|position| position.instrument_id),
             position_id: position.as_ref().map(|position| position.position_id),
             client_order_id: None,
@@ -2302,7 +2292,7 @@ impl BinaryOracleEdgeTaker {
                     transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
                     outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
                     source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                    market_id: position.market_id,
+                    market_id: position.lifecycle.market_id_owned(),
                     instrument_id: Some(position.instrument_id),
                     position_id: Some(position.position_id),
                     client_order_id: None,
@@ -2336,7 +2326,7 @@ impl BinaryOracleEdgeTaker {
                 transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
                 outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
                 source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                market_id: position.market_id,
+                market_id: position.lifecycle.market_id_owned(),
                 instrument_id: Some(position.instrument_id),
                 position_id: Some(position.position_id),
                 client_order_id: None,
@@ -2363,7 +2353,7 @@ impl BinaryOracleEdgeTaker {
                 transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
                 outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
                 source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                market_id: position.market_id,
+                market_id: position.lifecycle.market_id_owned(),
                 instrument_id: Some(position.instrument_id),
                 position_id: Some(position.position_id),
                 client_order_id: None,
@@ -2384,7 +2374,7 @@ impl BinaryOracleEdgeTaker {
             position: Some(managed_position),
             pending_exit: PendingExitState {
                 client_order_id,
-                market_id: position.market_id.clone(),
+                market_id: position.lifecycle.market_id_owned(),
                 position_id: Some(position.position_id),
                 fill_received: false,
                 filled_quantity: None,
@@ -2397,7 +2387,7 @@ impl BinaryOracleEdgeTaker {
             transition: BoltV3OrderLifecycleTransition::RestartOpenOrderAdopted,
             outcome: BoltV3OrderLifecycleOutcome::ExitPending,
             source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-            market_id: position.market_id,
+            market_id: position.lifecycle.market_id_owned(),
             instrument_id: Some(position.instrument_id),
             position_id: Some(position.position_id),
             client_order_id: Some(client_order_id),
@@ -2582,7 +2572,7 @@ impl BinaryOracleEdgeTaker {
             transition: BoltV3OrderLifecycleTransition::BoundaryReclassification,
             outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
             source: ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY,
-            market_id: pending.market_id,
+            market_id: pending.lifecycle.market_id_owned(),
             instrument_id: Some(pending.instrument_id),
             position_id: None,
             client_order_id: Some(pending.client_order_id),
@@ -2676,13 +2666,13 @@ impl BinaryOracleEdgeTaker {
         }
         if let Some(market_id) = self
             .pending_entry()
-            .and_then(|pending| pending.market_id.clone())
+            .and_then(|pending| pending.lifecycle.market_id_owned())
         {
             retained.insert(market_id);
         }
         if let Some(market_id) = self
             .tracked_observed_position()
-            .and_then(|position| position.market_id.clone())
+            .and_then(|position| position.lifecycle.market_id_owned())
         {
             retained.insert(market_id);
         }
@@ -2974,7 +2964,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_position_fast_spot(&self) -> Option<&FastSpotObservation> {
         let open_position = &self.managed_position()?.position;
-        if open_position.market_id.as_deref() != self.active.market_id.as_deref() {
+        if open_position.lifecycle.market_id() != self.active.market_id.as_deref() {
             return None;
         }
         self.pricing.selected_pricing_spot()
@@ -3817,32 +3807,33 @@ impl BinaryOracleEdgeTaker {
         spec: PositionMaterializationSpec,
         trust_pending_outcome_side: bool,
     ) -> OpenPositionState {
-        OpenPositionState {
-            market_id: preserved
-                .and_then(|position| position.market_id.clone())
-                .or_else(|| pending_context.and_then(|pending| pending.market_id.clone())),
-            instrument_id: spec.instrument_id,
-            position_id: spec.position_id,
-            outcome_side: preserved
-                .and_then(|position| position.outcome_side)
-                .or_else(|| {
+        let position_contract_supported =
+            self.configured_position_contract()
+                .ok()
+                .is_some_and(|contract| {
+                    supports_strategy_managed_position(spec.entry_order_side, spec.side, contract)
+                });
+        let lifecycle = preserved
+            .map(|position| position.lifecycle.clone())
+            .or_else(|| {
+                pending_context.map(|pending| {
                     if trust_pending_outcome_side {
-                        pending_context.and_then(|pending| pending.outcome_side)
+                        pending.lifecycle.clone()
                     } else {
-                        None
+                        pending.lifecycle.clone().without_outcome_side()
                     }
                 })
-                .filter(|_| {
-                    self.configured_position_contract()
-                        .ok()
-                        .is_some_and(|contract| {
-                            supports_strategy_managed_position(
-                                spec.entry_order_side,
-                                spec.side,
-                                contract,
-                            )
-                        })
-                }),
+            })
+            .unwrap_or_else(BoltV3PositionMarketLifecycle::missing);
+        let lifecycle = if position_contract_supported {
+            lifecycle
+        } else {
+            lifecycle.without_outcome_side()
+        };
+        OpenPositionState {
+            lifecycle,
+            instrument_id: spec.instrument_id,
+            position_id: spec.position_id,
             outcome_fees: preserved
                 .map(|position| position.outcome_fees.clone())
                 .or_else(|| pending_context.map(|pending| pending.outcome_fees.clone()))
@@ -3854,23 +3845,6 @@ impl BinaryOracleEdgeTaker {
             side: spec.side,
             quantity: spec.quantity,
             avg_px_open: spec.avg_px_open,
-            strike_price: preserved
-                .and_then(|position| position.strike_price)
-                .or_else(|| pending_context.and_then(|pending| pending.strike_price)),
-            interval_end_ms: preserved
-                .and_then(|position| position.interval_end_ms)
-                .or_else(|| pending_context.and_then(|pending| pending.interval_end_ms)),
-            interval_open: preserved
-                .and_then(|position| position.interval_open)
-                .or_else(|| pending_context.and_then(|pending| pending.interval_open)),
-            selection_published_at_ms: preserved
-                .and_then(|position| position.selection_published_at_ms)
-                .or_else(|| pending_context.and_then(|pending| pending.selection_published_at_ms)),
-            seconds_to_expiry_at_selection: preserved
-                .and_then(|position| position.seconds_to_expiry_at_selection)
-                .or_else(|| {
-                    pending_context.and_then(|pending| pending.seconds_to_expiry_at_selection)
-                }),
             book: match (
                 preserved.map(|position| position.book.clone()),
                 pending_context.map(|pending| pending.book.clone()),
@@ -3985,7 +3959,7 @@ impl BinaryOracleEdgeTaker {
 
         if !observed_open_side {
             if let Some(pending) = pending_context.clone() {
-                let market_id = pending.market_id.clone();
+                let market_id = pending.lifecycle.market_id_owned();
                 let client_order_id = pending.client_order_id;
                 self.exposure = ExposureState::EntryReconcilePending {
                     pending,
@@ -4084,7 +4058,7 @@ impl BinaryOracleEdgeTaker {
             },
             pending_matches,
         );
-        let rematerialized_market_id = materialized_position.market_id.clone();
+        let rematerialized_market_id = materialized_position.lifecycle.market_id_owned();
         let rematerialized_quantity = materialized_position.quantity;
         let pending_entry = pending_context
             .clone()
@@ -4161,7 +4135,7 @@ impl BinaryOracleEdgeTaker {
             exit_pending
                 .position
                 .as_ref()
-                .and_then(|managed| managed.position.market_id.clone())
+                .and_then(|managed| managed.position.lifecycle.market_id_owned())
         });
         let terminal_position_id = exit_pending.pending_exit.position_id.or_else(|| {
             exit_pending
@@ -4191,7 +4165,7 @@ impl BinaryOracleEdgeTaker {
                 transition: BoltV3OrderLifecycleTransition::ResidualRemanaged,
                 outcome: BoltV3OrderLifecycleOutcome::Managed,
                 source: ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL,
-                market_id: residual_position.market_id.clone(),
+                market_id: residual_position.lifecycle.market_id_owned(),
                 instrument_id: Some(residual_position.instrument_id),
                 position_id: Some(residual_position.position_id),
                 client_order_id: Some(client_order_id),
@@ -4229,7 +4203,7 @@ impl BinaryOracleEdgeTaker {
     fn sync_exposure_context_from_active(&mut self) {
         let active_market_id = self.active.market_id.clone();
         let active_outcome_fees = self.active.outcome_fees.clone();
-        let active_strike_price = self.active.price_to_beat.or(self.active.interval_open);
+        let active_strike_price = self.active.price_to_beat;
         let active_interval_end_ms = self.active.interval_end_ms;
         let active_interval_open = self.active.interval_open;
         let active_selection_published_at_ms = self.active.selection_published_at_ms;
@@ -4243,38 +4217,46 @@ impl BinaryOracleEdgeTaker {
         };
 
         if active_up_instrument_id == Some(open_position.instrument_id) {
-            open_position.market_id = open_position.market_id.clone().or(active_market_id.clone());
-            open_position.outcome_side = open_position.outcome_side.or(Some(OutcomeSide::Up));
+            if !open_position
+                .lifecycle
+                .market_matches_or_missing(active_market_id.as_deref())
+            {
+                return;
+            }
+            let active_lifecycle = BoltV3PositionMarketLifecycle::from_entry_context(
+                active_market_id.clone(),
+                Some(OutcomeSide::Up),
+                active_strike_price,
+                active_interval_open,
+                active_interval_end_ms,
+                active_selection_published_at_ms,
+                active_seconds_to_expiry_at_selection,
+            );
+            open_position.lifecycle.fill_missing_from(&active_lifecycle);
             if open_position.outcome_fees.instrument_ids().is_empty() {
                 open_position.outcome_fees = active_outcome_fees.clone();
             }
-            open_position.strike_price = open_position.strike_price.or(active_strike_price);
-            open_position.interval_end_ms =
-                open_position.interval_end_ms.or(active_interval_end_ms);
-            open_position.interval_open = open_position.interval_open.or(active_interval_open);
-            open_position.selection_published_at_ms = open_position
-                .selection_published_at_ms
-                .or(active_selection_published_at_ms);
-            open_position.seconds_to_expiry_at_selection = open_position
-                .seconds_to_expiry_at_selection
-                .or(active_seconds_to_expiry_at_selection);
             open_position.book = active_up_book;
         } else if active_down_instrument_id == Some(open_position.instrument_id) {
-            open_position.market_id = open_position.market_id.clone().or(active_market_id);
-            open_position.outcome_side = open_position.outcome_side.or(Some(OutcomeSide::Down));
+            if !open_position
+                .lifecycle
+                .market_matches_or_missing(active_market_id.as_deref())
+            {
+                return;
+            }
+            let active_lifecycle = BoltV3PositionMarketLifecycle::from_entry_context(
+                active_market_id,
+                Some(OutcomeSide::Down),
+                active_strike_price,
+                active_interval_open,
+                active_interval_end_ms,
+                active_selection_published_at_ms,
+                active_seconds_to_expiry_at_selection,
+            );
+            open_position.lifecycle.fill_missing_from(&active_lifecycle);
             if open_position.outcome_fees.instrument_ids().is_empty() {
                 open_position.outcome_fees = active_outcome_fees;
             }
-            open_position.strike_price = open_position.strike_price.or(active_strike_price);
-            open_position.interval_end_ms =
-                open_position.interval_end_ms.or(active_interval_end_ms);
-            open_position.interval_open = open_position.interval_open.or(active_interval_open);
-            open_position.selection_published_at_ms = open_position
-                .selection_published_at_ms
-                .or(active_selection_published_at_ms);
-            open_position.seconds_to_expiry_at_selection = open_position
-                .seconds_to_expiry_at_selection
-                .or(active_seconds_to_expiry_at_selection);
             open_position.book = active_down_book;
         }
     }
@@ -4311,7 +4293,7 @@ impl BinaryOracleEdgeTaker {
 
     fn open_position_outcome_side(&self) -> Option<OutcomeSide> {
         self.managed_position()
-            .and_then(|position| position.position.outcome_side)
+            .and_then(|position| position.position.lifecycle.outcome_side())
     }
 
     fn configured_position_contract(&self) -> Result<ConfiguredPositionContract> {
@@ -4385,11 +4367,6 @@ impl BinaryOracleEdgeTaker {
         self.exposure.current_position_market_id()
     }
 
-    fn current_position_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
-        let open_position = &self.managed_position()?.position;
-        position_seconds_to_expiry_at(open_position, now_ms)
-    }
-
     fn current_position_fair_probability_up_for_gate_at(
         &self,
         now_ms: u64,
@@ -4397,8 +4374,8 @@ impl BinaryOracleEdgeTaker {
     ) -> Option<Probability> {
         let open_position = &self.managed_position()?.position;
         let spot_price = self.current_position_spot_price()?;
-        let strike_price = position_strike_price(open_position)?;
-        let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
+        let strike_price = open_position.lifecycle.settlement_strike()?;
+        let seconds_to_expiry = open_position.lifecycle.seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_for_gate_at(realized_vol_gate_event_ms)?;
         bolt_v3_market_families::fair_probability_up_for_family(
             &self.config.rotating_market_family,
@@ -4425,7 +4402,11 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         realized_vol_gate_event_ms: Option<VenueEventMs>,
     ) -> Option<Probability> {
-        let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
+        let seconds_to_expiry = self
+            .managed_position()?
+            .position
+            .lifecycle
+            .seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_for_gate_at(realized_vol_gate_event_ms)?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
@@ -4549,7 +4530,7 @@ impl BinaryOracleEdgeTaker {
 
         if self
             .managed_position()
-            .is_some_and(|managed| position_interval_has_ended_at(&managed.position, now_ms))
+            .is_some_and(|managed| managed.position.lifecycle.interval_ended_at(now_ms))
         {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED);
             return evaluation;
@@ -4804,8 +4785,10 @@ impl BinaryOracleEdgeTaker {
                 .map(|spot| spot.venue.clone()),
             fast_venue_available,
             reference_current_price: self.pricing.last_reference_current_price(),
-            interval_open: open_position.and_then(|position| position.interval_open),
-            seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
+            interval_open: open_position
+                .and_then(|position| position.lifecycle.settlement_strike()),
+            seconds_to_expiry: open_position
+                .and_then(|position| position.lifecycle.seconds_to_expiry_at(now_ms)),
             realized_vol: self.current_realized_vol_for_gate_at(realized_vol_gate_event_ms),
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
@@ -5742,7 +5725,7 @@ impl BinaryOracleEdgeTaker {
             position: Some(managed_position.clone()),
             pending_exit: PendingExitState {
                 client_order_id,
-                market_id: managed_position.position.market_id.clone(),
+                market_id: managed_position.position.lifecycle.market_id_owned(),
                 position_id: Some(managed_position.position.position_id),
                 fill_received: false,
                 filled_quantity: None,
@@ -6152,16 +6135,18 @@ impl BinaryOracleEdgeTaker {
         self.last_flat_terminal_entry_override = None;
         self.exposure = ExposureState::PendingEntry(PendingEntryState {
             client_order_id,
-            market_id: self.current_market_id().map(str::to_string),
+            lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+                self.current_market_id().map(str::to_string),
+                decision.evaluation.selected_side,
+                self.active.price_to_beat,
+                self.active.interval_open,
+                self.active.interval_end_ms,
+                self.active.selection_published_at_ms,
+                self.active.seconds_to_expiry_at_selection,
+            ),
             instrument_id,
-            outcome_side: decision.evaluation.selected_side,
             outcome_fees: self.active.outcome_fees.clone(),
             historical_entry_fee_bps: Some(historical_entry_fee_bps),
-            strike_price: self.active.price_to_beat.or(self.active.interval_open),
-            interval_end_ms: self.active.interval_end_ms,
-            interval_open: self.active.interval_open,
-            selection_published_at_ms: self.active.selection_published_at_ms,
-            seconds_to_expiry_at_selection: self.active.seconds_to_expiry_at_selection,
             book: match decision.evaluation.selected_side {
                 Some(OutcomeSide::Up)
                     if self.active.books.up.instrument_id == Some(instrument_id) =>
@@ -6839,7 +6824,7 @@ impl DataActor for BinaryOracleEdgeTaker {
                         source: ORDER_LIFECYCLE_SOURCE_ENTRY_FILL,
                         market_id: pending_context
                             .as_ref()
-                            .and_then(|pending| pending.market_id.clone()),
+                            .and_then(|pending| pending.lifecycle.market_id_owned()),
                         instrument_id: Some(event.instrument_id),
                         position_id: Some(position_id),
                         client_order_id: Some(event.client_order_id),
@@ -6874,7 +6859,7 @@ impl DataActor for BinaryOracleEdgeTaker {
                         transition: BoltV3OrderLifecycleTransition::EntryReconcilePending,
                         outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
                         source: ORDER_LIFECYCLE_SOURCE_ENTRY_FILL,
-                        market_id: pending.market_id,
+                        market_id: pending.lifecycle.market_id_owned(),
                         instrument_id: Some(event.instrument_id),
                         position_id: event.position_id,
                         client_order_id: Some(event.client_order_id),
@@ -6903,7 +6888,9 @@ impl DataActor for BinaryOracleEdgeTaker {
                     position_side.is_some(),
                 );
             }
-            if let Some(market_id) = pending_context.and_then(|pending| pending.market_id.clone()) {
+            if let Some(market_id) =
+                pending_context.and_then(|pending| pending.lifecycle.market_id_owned())
+            {
                 self.record_market_fill(&market_id, now_ms);
             }
         } else if exit_fill {
@@ -7149,7 +7136,7 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
                     transition: BoltV3OrderLifecycleTransition::PositionClosed,
                     outcome: BoltV3OrderLifecycleOutcome::Flat,
                     source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
-                    market_id: pending.market_id,
+                    market_id: pending.lifecycle.market_id_owned(),
                     instrument_id: Some(event.instrument_id),
                     position_id: Some(event.position_id),
                     client_order_id: Some(pending.client_order_id),
@@ -7522,89 +7509,6 @@ fn settlement_key_for_position(position: &OpenPositionState) -> Result<String> {
     key.push(':');
     key.push_str(position.position_id.as_ref());
     Ok(key)
-}
-
-fn settlement_market_id(position: &OpenPositionState) -> Option<String> {
-    position.market_id.clone()
-}
-
-fn position_strike_price(position: &OpenPositionState) -> Option<f64> {
-    position
-        .strike_price
-        .or(position.interval_open)
-        .filter(|value| is_positive_finite(*value))
-}
-
-fn position_interval_end_ms(position: &OpenPositionState) -> Option<u64> {
-    position.interval_end_ms.or_else(|| {
-        interval_end_ms_from_selection(
-            position.selection_published_at_ms,
-            position.seconds_to_expiry_at_selection,
-        )
-    })
-}
-
-fn position_seconds_to_expiry_at(position: &OpenPositionState, now_ms: u64) -> Option<u64> {
-    seconds_to_expiry_from_selection(
-        position.selection_published_at_ms,
-        position.seconds_to_expiry_at_selection,
-        now_ms,
-    )
-    .or_else(|| {
-        position_interval_end_ms(position)
-            .map(|interval_end_ms| interval_end_ms.saturating_sub(now_ms) / MILLIS_PER_SECOND_U64)
-    })
-}
-
-fn position_interval_has_ended_at(position: &OpenPositionState, now_ms: u64) -> bool {
-    position_interval_end_ms(position).is_some_and(|interval_end_ms| now_ms >= interval_end_ms)
-}
-
-fn seconds_to_expiry_from_selection(
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-    now_ms: u64,
-) -> Option<u64> {
-    let published_at_ms = selection_published_at_ms?;
-    let seconds_to_expiry_at_selection = seconds_to_expiry_at_selection?;
-    let elapsed_seconds = now_ms.saturating_sub(published_at_ms) / MILLIS_PER_SECOND_U64;
-    Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
-}
-
-fn interval_end_ms_from_selection(
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-) -> Option<u64> {
-    selection_published_at_ms?
-        .checked_add(seconds_to_expiry_at_selection?.checked_mul(MILLIS_PER_SECOND_U64)?)
-}
-
-fn recovered_position_lifecycle_context(
-    instrument: Option<&InstrumentAny>,
-) -> RecoveredPositionLifecycleContext {
-    let Some(instrument) = instrument else {
-        return RecoveredPositionLifecycleContext::missing();
-    };
-    let Some(context) = updown_position_instrument_context(instrument) else {
-        return RecoveredPositionLifecycleContext::missing();
-    };
-    let interval_end_ms = context.expiration_milliseconds;
-    let selection_published_at_ms = Some(context.activation_milliseconds);
-    let seconds_to_expiry_at_selection =
-        selection_published_at_ms
-            .zip(interval_end_ms)
-            .and_then(|(selection_ms, end_ms)| {
-                end_ms
-                    .checked_sub(selection_ms)
-                    .map(|duration_ms| duration_ms / MILLIS_PER_SECOND_U64)
-            });
-    RecoveredPositionLifecycleContext {
-        market_id: Some(context.market_id),
-        outcome_side: Some(context.side),
-        interval_end_ms,
-        selection_published_at_ms,
-        seconds_to_expiry_at_selection,
-    }
 }
 
 fn settlement_product_id(instrument_id: InstrumentId) -> Result<String> {

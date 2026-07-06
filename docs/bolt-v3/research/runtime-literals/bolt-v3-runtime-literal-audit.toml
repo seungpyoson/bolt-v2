@@ -15212,8 +15212,8 @@ reason = "Runtime config schema key or enum label for reference_current_price pa
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''14'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 14;'''
+literal = '''15'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;'''
 classification = "decision_evidence_schema_contract"
 reason = "Decision-evidence JSONL schema/control literal; it defines audit-record compatibility, not operator runtime configuration."
 
@@ -20009,6 +20009,14 @@ literal = '''"position_interval_ended"'''
 context = '''const EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED: &str = "position_interval_ended";'''
 classification = "exit_submission_block_reason_label"
 reason = "Stable exit-decision evidence label for the structural no-submit guard after the held position's own interval has ended; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"position_interval_unknown"'''
+context = '''const EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN: &str = "position_interval_unknown";'''
+classification = "exit_submission_block_reason_label"
+reason = "Stable exit-decision evidence label for the structural no-submit guard when a recovered held position is missing its interval end; it classifies evidence and does not configure strategy behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"

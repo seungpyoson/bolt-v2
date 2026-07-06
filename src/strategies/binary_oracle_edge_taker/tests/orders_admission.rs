@@ -2754,6 +2754,9 @@ fn expected_exit_submission_blocks_do_not_warn() {
     assert!(!should_warn_on_exit_submission_block(Some(
         EXIT_BLOCK_REASON_EXIT_HOLD
     )));
+    assert!(!should_warn_on_exit_submission_block(Some(
+        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN
+    )));
     assert!(should_warn_on_exit_submission_block(Some(
         EXIT_BLOCK_REASON_EXIT_PRICE_MISSING
     )));

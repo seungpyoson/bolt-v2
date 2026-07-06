@@ -24,7 +24,7 @@ use crate::bolt_v3_realized_volatility::{
 use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 14;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.capital_admission_rebuild";
@@ -875,6 +875,7 @@ pub enum BoltV3ExitBlockedReason {
     ExitDecisionUnavailable,
     ExitHold,
     PositionIntervalEnded,
+    PositionIntervalUnknown,
     OpenPositionMissing,
     ExitOrderConfigInvalid,
     ExitQuoteQuantityUnsupported,
@@ -4249,6 +4250,11 @@ mod tests {
         orders::StopMarketOrder,
         types::{Price, Quantity},
     };
+
+    #[test]
+    fn decision_evidence_schema_version_tracks_position_interval_wire_shape() {
+        assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 15);
+    }
 
     #[test]
     fn probability_evidence_uses_probability_value_bytes() {

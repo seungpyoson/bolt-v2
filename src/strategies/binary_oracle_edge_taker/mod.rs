@@ -4547,7 +4547,7 @@ impl BinaryOracleEdgeTaker {
             .managed_position()
             .is_some_and(|managed| managed.position.lifecycle.interval_end_ms().is_none())
         {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE);
+            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN);
             return evaluation;
         }
 
@@ -7337,6 +7337,7 @@ const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_wor
 const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";
 const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";
 const EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED: &str = "position_interval_ended";
+const EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN: &str = "position_interval_unknown";
 const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";
 const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";
 const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";
@@ -7578,6 +7579,7 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         || reason == EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED
+        || reason == EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN
         || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
 }
 

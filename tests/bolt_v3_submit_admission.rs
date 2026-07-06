@@ -1216,6 +1216,10 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("synthetic requote-throttle write failure"))
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1364,6 +1368,10 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
             "blocking admission writer received requote-throttle evidence"
         ))
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -1480,6 +1488,10 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
         &self,
         _throttle: &BoltV3RequoteThrottleEvidence,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -1603,6 +1615,10 @@ impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
         &self,
         _throttle: &BoltV3RequoteThrottleEvidence,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

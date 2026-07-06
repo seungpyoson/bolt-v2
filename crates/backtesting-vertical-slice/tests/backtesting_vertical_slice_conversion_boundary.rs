@@ -105,6 +105,41 @@ fn same_manifest_and_checkpoint_rerun_is_idempotent() {
 }
 
 #[test]
+fn completed_writer_finalizes_started_checkpoint_and_refreshes_metadata() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let fingerprint = fingerprint();
+    write_conversion_checkpoint(
+        dir.path(),
+        &ConversionCheckpoint::started(fingerprint.clone(), "2026-06-06T00:00:00Z"),
+    )
+    .unwrap();
+
+    let checkpoint = completed_checkpoint(&fingerprint);
+    let checkpoint_hash = checkpoint.content_hash().unwrap();
+    let manifest = completed_manifest(&fingerprint, checkpoint_hash.clone());
+    let manifest_hash = manifest.content_hash().unwrap();
+    let metadata =
+        ConversionCatalogMetadata::from_manifest(&manifest, manifest_hash.clone(), checkpoint_hash);
+    write_completed_conversion_artifacts(dir.path(), &manifest, &checkpoint, &metadata).unwrap();
+
+    let refreshed = metadata
+        .clone()
+        .with_execution_catalog_access("s3://durable-catalog", true);
+    write_completed_conversion_artifacts(dir.path(), &manifest, &checkpoint, &refreshed).unwrap();
+
+    let written_checkpoint: ConversionCheckpoint = serde_json::from_str(
+        &fs::read_to_string(dir.path().join(CONVERSION_CHECKPOINT_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(written_checkpoint, checkpoint);
+
+    let written_metadata: ConversionCatalogMetadata =
+        serde_json::from_str(&fs::read_to_string(dir.path().join(CATALOG_METADATA_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(written_metadata, refreshed);
+}
+
+#[test]
 fn legacy_single_family_manifest_without_catalog_row_map_remains_idempotent() {
     let dir = tempfile::TempDir::new().unwrap();
     let fingerprint = fingerprint();

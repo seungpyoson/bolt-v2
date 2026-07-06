@@ -503,6 +503,7 @@ jobs:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.clippy
       - uses: Swatinem/rust-cache@example
         with:
@@ -593,6 +594,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.source-fence
       - uses: Swatinem/rust-cache@example
         with:
@@ -709,6 +711,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.test-archive
       - name: Resolve root nextest cache keys
         id: root-nextest-cache-keys
@@ -1042,6 +1045,7 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -1483,6 +1487,10 @@ inputs:
     description: Whether to resolve the managed target dir.
     required: false
     default: "false"
+  install-rust-linker:
+    description: Whether to install the configured Rust fast linker.
+    required: false
+    default: "false"
   build-jobs-key:
     required: false
     default: ""
@@ -1559,6 +1567,30 @@ runs:
           echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
           echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
+    - name: Install Rust linker
+      if: ${{ inputs.install-rust-linker == 'true' }}
+      shell: bash
+      run: |
+        mapfile -t rust_linker_programs < <(python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
+        if [ "${#rust_linker_programs[@]}" -eq 0 ]; then
+          echo "::error::remote_fast_linker has no configured programs"
+          exit 1
+        fi
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if command -v "$rust_linker_program" >/dev/null; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
+        sudo apt-get update
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
+        echo "::error::failed to install any configured Rust linker"
+        exit 1
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -8562,6 +8594,7 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.clippy
 """,
         """      - name: Setup environment
@@ -8573,6 +8606,7 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.clippy
 """,
     )
@@ -14065,7 +14099,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
             echo "::group::bvs-test partition ${shard}/${BVS_NEXTEST_SHARDS}"
             partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"
             set +e
-            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke 2>&1 | tee "$partition_log"
             rc="${PIPESTATUS[0]}"
             set -e
             if [[ "$rc" -ne 0 ]]; then
@@ -14313,9 +14347,9 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     missing_bvs_partition_set_e_disable = replace_once(
         good,
         """            set +e
-            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke 2>&1 | tee "$partition_log"
 """,
-        '            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"\n',
+        '            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke 2>&1 | tee "$partition_log"\n',
     )
     missing_bvs_partition_set_e_disable_errors = bvs_cache_errors(missing_bvs_partition_set_e_disable)
     assert any(
@@ -16655,6 +16689,7 @@ def main() -> int:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.test-archive
       - name: Resolve root nextest cache keys""",
             """      - uses: ./.github/actions/setup-environment
@@ -16662,6 +16697,7 @@ def main() -> int:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          install-rust-linker: "true"
           build-jobs-key: ci.test-archive
       - name: Resolve root nextest cache keys""",
         ),
@@ -18437,6 +18473,38 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci.yml clippy must install configured Rust linker",
+        replace_once(
+            BASE_WORKFLOW,
+            '          install-rust-linker: "true"\n          build-jobs-key: ci.clippy',
+            '          build-jobs-key: ci.clippy',
+        ),
+    )
+    assert_error(
+        "ci.yml source-fence must install configured Rust linker",
+        replace_once(
+            BASE_WORKFLOW,
+            '          install-rust-linker: "true"\n          build-jobs-key: ci.source-fence',
+            '          build-jobs-key: ci.source-fence',
+        ),
+    )
+    assert_error(
+        "ci.yml test-archive must install configured Rust linker",
+        replace_once(
+            BASE_WORKFLOW,
+            '          install-rust-linker: "true"\n          build-jobs-key: ci.test-archive',
+            '          build-jobs-key: ci.test-archive',
+        ),
+    )
+    assert_error(
+        "ci.yml build must install configured Rust linker",
+        replace_once(
+            BASE_WORKFLOW,
+            '          include-managed-target-dir: "true"\n          install-rust-linker: "true"\n      - uses: Swatinem/rust-cache@example',
+            '          include-managed-target-dir: "true"\n      - uses: Swatinem/rust-cache@example',
+        ),
+    )
+    assert_error(
         "setup action missing exported output 'nextest_version'",
         action=BASE_ACTION.replace(
             """  nextest_version:
@@ -18523,6 +18591,53 @@ def main() -> int:
     default: "true"
 """,
         ),
+    )
+    assert_error(
+        "setup action missing install-rust-linker input",
+        action=BASE_ACTION.replace(
+            """  install-rust-linker:
+    description: Whether to install the configured Rust fast linker.
+    required: false
+    default: "false"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "setup action install-rust-linker default must be false",
+        action=replace_once(
+            BASE_ACTION,
+            """  install-rust-linker:
+    description: Whether to install the configured Rust fast linker.
+    required: false
+    default: "false"
+""",
+            """  install-rust-linker:
+    description: Whether to install the configured Rust fast linker.
+    required: false
+    default: "true"
+""",
+        ),
+    )
+    assert_error(
+        "setup action missing expected literal 'python3.12 \"${{ steps.shared.outputs.rust_verification_owner }}\" fast-linker-programs --repo \"$GITHUB_WORKSPACE\"'",
+        action=replace_once(
+            BASE_ACTION,
+            'python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+            'python3 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+        ),
+    )
+    assert_error(
+        "setup action missing expected literal 'command -v \"$rust_linker_program\" >/dev/null'",
+        action=replace_once(
+            BASE_ACTION,
+            'command -v "$rust_linker_program" >/dev/null',
+            'printf "%s\\n" "$rust_linker_program" >/dev/null',
+        ),
+    )
+    assert_error(
+        "setup action missing expected literal 'BOLT_RUST_FAST_LINKER=$rust_linker_program'",
+        action=BASE_ACTION.replace("BOLT_RUST_FAST_LINKER=$rust_linker_program", "BOLT_RUST_FAST_LINKER=hardcoded"),
     )
     assert_error(
         "setup action must export managed_target_dir from target_dir step",

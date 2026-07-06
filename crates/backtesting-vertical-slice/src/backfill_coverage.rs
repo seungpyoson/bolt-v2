@@ -13,9 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus};
 
 pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
@@ -630,11 +628,8 @@ impl BackfillCoverageLedger {
     }
 
     pub fn content_hash(&self) -> Result<String, BackfillCoverageLedgerError> {
-        let bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| BackfillCoverageLedgerError::Serialize(error.to_string()))?;
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        Ok(hex::encode(hasher.finalize()))
+        crate::reference_artifact::canonical_json_sha256(self)
+            .map_err(|error| BackfillCoverageLedgerError::Serialize(error.to_string()))
     }
 }
 
@@ -648,31 +643,25 @@ pub fn write_coverage_ledger_artifact(
     })?;
 
     let path = output_dir.join(BACKFILL_COVERAGE_LEDGER_FILE);
-    let bytes = serde_json::to_vec_pretty(ledger)
-        .map_err(|error| BackfillCoverageWriteError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing =
-            fs::read(&path).map_err(|error| BackfillCoverageWriteError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
-        if existing != bytes {
-            return Err(BackfillCoverageWriteError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| BackfillCoverageWriteError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
-
-    let content_hash = hex::encode(Sha256::digest(&bytes));
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        BACKFILL_COVERAGE_LEDGER_FILE,
+        ledger,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillCoverageWriteError::Serialize,
+            read_existing_error: |path, error| BackfillCoverageWriteError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillCoverageWriteError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillCoverageWriteError::Write { path, error },
+        },
+    )?;
     Ok(BackfillCoverageLedgerArtifact {
         path,
-        content_hash,
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         record_count: ledger.records.len() as u64,
     })
 }

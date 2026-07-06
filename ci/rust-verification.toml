@@ -30,6 +30,12 @@ ci_env = "GITHUB_ACTIONS"
 wrapper_env = "SCCACHE_PATH"
 wrapper_program = "sccache"
 
+[remote_fast_linker]
+enabled = true
+ci_env = "GITHUB_ACTIONS"
+linker_env = "BOLT_RUST_FAST_LINKER"
+programs = ["mold", "lld"]
+
 [local_lane_policy]
 enabled = true
 allowed_ci_env = "GITHUB_ACTIONS"

@@ -739,6 +739,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
+    "inputs.install-rust-linker",
     "inputs.build-jobs-key",
     "just ci-lint-workflow",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
@@ -750,6 +751,9 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate rust_verification_owner",
     "ci/github-actions-runners.toml",
     "cargo_build_jobs=$cargo_build_jobs",
+    'python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+    'command -v "$rust_linker_program" >/dev/null',
+    "BOLT_RUST_FAST_LINKER=$rust_linker_program",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
 )
@@ -768,9 +772,11 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
     "Read shared values",
+    "Install Rust linker",
     "Resolve managed target dir",
     "Setup Rust toolchain",
 )
+CI_RUST_FAST_LINKER_JOBS = {"build", "clippy", "source-fence", "test-archive"}
 TEST_PARTITION_COMMAND = (
     'just test-archive-run "$NEXTEST_ARCHIVE_PATH" '
     '"$RUNNER_TEMP/nextest-archive-extract" '
@@ -806,7 +812,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "6d0b1df8d8995dbc68cbdf072de322dc7b979783294102acf55a5577811c4439"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "26f12192ac235c6468c3c85d81969495569bab6dfa5ea02794918b2425acfd6f"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -840,7 +846,7 @@ BVS_PARTITION_COMMAND = (
     'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" '
     '"$RUNNER_TEMP/bvs-nextest-archive-extract" '
     '--partition "count:${shard}/${BVS_NEXTEST_SHARDS}" '
-    "-- --skip issue_789_first_real_free_data_taker_pl"
+    "-- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke"
 )
 BVS_PARTITION_TEE = f'{BVS_PARTITION_COMMAND} 2>&1 | tee "$partition_log"'
 BVS_PARTITION_FAILURE_WRAPPER = (
@@ -850,7 +856,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "b8fbabf72fe9547e41fcc52f8790cc62e4b8a7833dd7401096dba3dc026ae76f"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "e18b0205846df6f4a7def0f24959477697ed5d0e35d3db56ca97547de696dd6c"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -11395,6 +11401,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
             errors.append(f"{job_name} must run just {recipe}")
 
+    for job_name in sorted(CI_RUST_FAST_LINKER_JOBS):
+        if job_name in jobs and not job_has_setup_input(jobs[job_name], "install-rust-linker", "true"):
+            errors.append(f"ci.yml {job_name} must install configured Rust linker")
+
     if "deny" in jobs:
         deny_needs = extract_needs(jobs["deny"])
         if "detector" not in deny_needs:
@@ -12131,6 +12141,11 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action missing build-jobs-key input")
     elif not input_block_has_default_empty(cargo_build_jobs_input):
         errors.append("setup action build-jobs-key default must be empty")
+    rust_linker_input = extract_action_input_block(action_text, "install-rust-linker")
+    if not rust_linker_input:
+        errors.append("setup action missing install-rust-linker input")
+    elif not input_block_has_default_false(rust_linker_input):
+        errors.append("setup action install-rust-linker default must be false")
     if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
     if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
@@ -16077,6 +16092,9 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
                 errors.append(
                     f"{workflow_name} {job} has build-jobs-key but is missing from cargo_build_jobs.{workflow_key} in ci/github-actions-runners.toml"
                 )
+            if workflow_name == "ci.yml" and job in CI_RUST_FAST_LINKER_JOBS:
+                if not job_has_setup_input(jobs[job], "install-rust-linker", "true"):
+                    errors.append(f"{workflow_name} {job} must install configured Rust linker")
     return errors
 
 

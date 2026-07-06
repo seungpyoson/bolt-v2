@@ -850,6 +850,10 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
     ) -> anyhow::Result<()> {
         anyhow::bail!("basket admission writer received requote-throttle evidence")
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn admission_limits() -> BoltV3BasketAdmissionLimits {

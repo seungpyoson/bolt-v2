@@ -20,7 +20,6 @@ use arrow::{
 use parquet::arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::first_proof_selector::{
     FirstProofSelectorReport, FirstProofSelectorStatus, SelectedFirstProofAsset,
 };
@@ -274,10 +273,18 @@ pub fn write_selected_source_slice(
         selected_asset_ids_hash: selector.selected_asset_ids_hash,
         output_parquet_sha256,
     };
-    let report_bytes =
-        serde_json::to_vec_pretty(&report).context("serialize selected source report")?;
-    write_idempotent_artifact_bytes(&spec.report_path, &report_bytes, "selected source report")?;
-    let report_hash = sha256_hex(&report_bytes);
+    let report_artifact = crate::reference_artifact::write_reference_artifact_with_len(
+        &spec.report_path,
+        SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION,
+        &report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+    )
+    .with_context(|| {
+        format!(
+            "write selected source report {}",
+            spec.report_path.display()
+        )
+    })?;
 
     Ok(SelectedSourceSliceArtifact {
         output_parquet_path: spec.output_parquet_path.clone(),
@@ -285,8 +292,8 @@ pub fn write_selected_source_slice(
         source_parquet_sha256: report.source_parquet_sha256,
         selector_report_sha256: report.selector_report_sha256,
         output_parquet_sha256: report.output_parquet_sha256,
-        report_hash,
-        report_bytes: report_bytes.len() as u64,
+        report_hash: report_artifact.pin.sha256,
+        report_bytes: report_artifact.bytes,
         usage_scope: report.usage_scope,
         source_rows: report.source_rows,
         source_row_groups: report.source_row_groups,
@@ -418,18 +425,4 @@ fn commit_artifact_file(temp_path: &Path, final_path: &Path, label: &str) -> Res
             temp_path.display()
         )
     })
-}
-
-fn write_idempotent_artifact_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
-    if path.exists() {
-        let existing =
-            fs::read(path).with_context(|| format!("read existing {label} {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "dirty {label} {}: existing file content differs",
-            path.display()
-        );
-        return Ok(());
-    }
-    atomic_write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
 }

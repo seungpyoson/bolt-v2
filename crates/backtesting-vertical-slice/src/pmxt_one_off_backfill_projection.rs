@@ -1838,7 +1838,8 @@ fn write_result_contract_idempotent(
     path: &Path,
     contract: &BacktestResultContract,
 ) -> Result<BacktestResultContract> {
-    let bytes = serde_json::to_vec_pretty(contract).context("serialize PMXT result contract")?;
+    let bytes = crate::reference_artifact::canonical_json_bytes(contract)
+        .context("serialize PMXT result contract")?;
     if path.exists() {
         let existing = read_json_artifact::<BacktestResultContract>(path)?;
         let mut normalized = contract.clone();

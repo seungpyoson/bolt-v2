@@ -90,6 +90,38 @@ fn rejected_event_for_configured_account_records_venue_precision_reject_evidence
 }
 
 #[test]
+fn reject_observer_snapshot_renders_active_episode_state() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let mut feed =
+        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+
+    feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+        "client-order-1",
+        "instrument-yes.VENUE-A",
+        AccountId::from("ACCOUNT-001"),
+        "maker amount precision exceeds venue precision",
+        1_000,
+    )));
+    feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+        "client-order-2",
+        "instrument-yes.VENUE-A",
+        AccountId::from("ACCOUNT-001"),
+        "maker amount precision exceeds venue precision",
+        1_050,
+    )));
+
+    let snapshot = feed.health_snapshot();
+
+    assert_eq!(snapshot.active_episode_count, 1);
+    assert_eq!(snapshot.total_retry_count, 2);
+    assert_eq!(
+        snapshot.latest_client_order_id.as_deref(),
+        Some("client-order-2")
+    );
+    assert_eq!(snapshot.oldest_episode_first_ns, Some(1_000));
+}
+
+#[test]
 fn rejected_event_for_different_account_is_not_recorded() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
     let mut feed =

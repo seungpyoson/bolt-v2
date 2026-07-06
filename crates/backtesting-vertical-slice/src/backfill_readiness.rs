@@ -11,10 +11,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
-    atomic_artifact_write::atomic_write,
     backfill_binding_coverage::{BackfillBindingCoverageReport, BackfillBindingCoverageStatus},
     backfill_preflight::{
         BackfillPreflightReport, BackfillPreflightSelectedRecord, BackfillPreflightStatus,
@@ -331,28 +329,22 @@ pub fn write_backfill_readiness_report(
         error: error.to_string(),
     })?;
     let path = output_dir.join(BACKFILL_READINESS_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .map_err(|error| BackfillReadinessError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing = fs::read(&path).map_err(|error| BackfillReadinessError::ReadExisting {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-        if existing != bytes {
-            return Err(BackfillReadinessError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| BackfillReadinessError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        BACKFILL_READINESS_REPORT_FILE,
+        report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillReadinessError::Serialize,
+            read_existing_error: |path, error| BackfillReadinessError::ReadExisting { path, error },
+            mismatch_error: |path| BackfillReadinessError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillReadinessError::Write { path, error },
+        },
+    )?;
     Ok(BackfillReadinessArtifact {
         path,
-        content_hash: format!("{:x}", Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
     })
 }
 

@@ -529,6 +529,62 @@ fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_positi
 }
 
 #[test]
+fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SAME-INSTRUMENT-SYNC"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    strategy.active.price_to_beat = None;
+    strategy.active.interval_open = None;
+    strategy.active.interval_end_ms = Some(position_interval_end_ms.saturating_add(60_000));
+    strategy.sync_exposure_context_from_active();
+
+    let managed = managed_position_ref(&strategy).expect("position should remain managed");
+    assert_eq!(
+        managed.strike_price,
+        Some(3_100.0),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not erase captured strike"
+    );
+    assert_eq!(
+        managed.interval_end_ms,
+        Some(position_interval_end_ms),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not overwrite captured interval end"
+    );
+
+    emit_resolution_update_at(&mut strategy, 3_101.0, position_interval_end_ms);
+
+    let expected = expected_hold_to_resolution_settlement(Leg::Yes, 0.45, 3_101.0);
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 1
+            && settlement_booking_error_count(&events) == 0
+            && settlement_evidence_matches(&events, expected.realized_pnl),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: settlement must still use captured lifecycle after same-instrument active sync; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
 fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll() {
     assert_reality_fixtures();
 

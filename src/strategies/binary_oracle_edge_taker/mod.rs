@@ -4243,24 +4243,38 @@ impl BinaryOracleEdgeTaker {
         };
 
         if active_up_instrument_id == Some(open_position.instrument_id) {
-            open_position.market_id = active_market_id.clone();
-            open_position.outcome_side = Some(OutcomeSide::Up);
-            open_position.outcome_fees = active_outcome_fees.clone();
-            open_position.strike_price = active_strike_price;
-            open_position.interval_end_ms = active_interval_end_ms;
-            open_position.interval_open = active_interval_open;
-            open_position.selection_published_at_ms = active_selection_published_at_ms;
-            open_position.seconds_to_expiry_at_selection = active_seconds_to_expiry_at_selection;
+            open_position.market_id = open_position.market_id.clone().or(active_market_id.clone());
+            open_position.outcome_side = open_position.outcome_side.or(Some(OutcomeSide::Up));
+            if open_position.outcome_fees.instrument_ids().is_empty() {
+                open_position.outcome_fees = active_outcome_fees.clone();
+            }
+            open_position.strike_price = open_position.strike_price.or(active_strike_price);
+            open_position.interval_end_ms =
+                open_position.interval_end_ms.or(active_interval_end_ms);
+            open_position.interval_open = open_position.interval_open.or(active_interval_open);
+            open_position.selection_published_at_ms = open_position
+                .selection_published_at_ms
+                .or(active_selection_published_at_ms);
+            open_position.seconds_to_expiry_at_selection = open_position
+                .seconds_to_expiry_at_selection
+                .or(active_seconds_to_expiry_at_selection);
             open_position.book = active_up_book;
         } else if active_down_instrument_id == Some(open_position.instrument_id) {
-            open_position.market_id = active_market_id;
-            open_position.outcome_side = Some(OutcomeSide::Down);
-            open_position.outcome_fees = active_outcome_fees;
-            open_position.strike_price = active_strike_price;
-            open_position.interval_end_ms = active_interval_end_ms;
-            open_position.interval_open = active_interval_open;
-            open_position.selection_published_at_ms = active_selection_published_at_ms;
-            open_position.seconds_to_expiry_at_selection = active_seconds_to_expiry_at_selection;
+            open_position.market_id = open_position.market_id.clone().or(active_market_id);
+            open_position.outcome_side = open_position.outcome_side.or(Some(OutcomeSide::Down));
+            if open_position.outcome_fees.instrument_ids().is_empty() {
+                open_position.outcome_fees = active_outcome_fees;
+            }
+            open_position.strike_price = open_position.strike_price.or(active_strike_price);
+            open_position.interval_end_ms =
+                open_position.interval_end_ms.or(active_interval_end_ms);
+            open_position.interval_open = open_position.interval_open.or(active_interval_open);
+            open_position.selection_published_at_ms = open_position
+                .selection_published_at_ms
+                .or(active_selection_published_at_ms);
+            open_position.seconds_to_expiry_at_selection = open_position
+                .seconds_to_expiry_at_selection
+                .or(active_seconds_to_expiry_at_selection);
             open_position.book = active_down_book;
         }
     }

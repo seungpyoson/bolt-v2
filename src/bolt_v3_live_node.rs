@@ -202,7 +202,7 @@ use crate::{
     },
     bolt_v3_settlement_runtime::{
         BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSink,
-        BoltV3SettlementRuntimeSinkHandle,
+        BoltV3SettlementRuntimeSinkBackends, BoltV3SettlementRuntimeSinkHandle,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
@@ -2378,11 +2378,25 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     }
     let settlement_loss_protection_slot: BoltV3LiveSettlementLossProtectionSlot =
         Rc::new(RefCell::new(None));
+    let settlement_runtime_sink_backends =
+        BoltV3SettlementRuntimeSinkBackends::from_root(&loaded.root);
+    debug_assert!(
+        !settlement_runtime_sink_backends.capital_admission_runtime_feed()
+            || capital_admission_runtime_feed.is_some(),
+        "capital-admission settlement sink backend must match runtime feed construction"
+    );
     let settlement_runtime_sink = settlement_runtime_sink_handle(
-        loss_policy
-            .is_some()
+        settlement_runtime_sink_backends
+            .loss_protection()
             .then(|| settlement_loss_protection_slot.clone()),
-        capital_admission_runtime_feed.as_ref(),
+        settlement_runtime_sink_backends
+            .capital_admission_runtime_feed()
+            .then_some(capital_admission_runtime_feed.as_ref())
+            .flatten(),
+    );
+    debug_assert_eq!(
+        settlement_runtime_sink.is_some(),
+        settlement_runtime_sink_backends.will_configure_runtime_sink()
     );
     let settlement_recovery =
         settlement_recovery_config_from_loaded(loaded, settlement_runtime_sink.is_some())?;

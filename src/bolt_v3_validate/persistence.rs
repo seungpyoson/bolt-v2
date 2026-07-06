@@ -87,16 +87,9 @@ pub(super) fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConf
 
 pub(super) fn validate_settlement_sink_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    let settlement_sink_configured = root
-        .risk
-        .loss_governor
-        .as_ref()
-        .is_some_and(|loss_governor| loss_governor.enabled)
-        || root
-            .risk
-            .capital_pools
-            .as_ref()
-            .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    let settlement_sink_configured =
+        crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkBackends::from_root(root)
+            .will_configure_runtime_sink();
     if settlement_sink_configured
         && root
             .persistence

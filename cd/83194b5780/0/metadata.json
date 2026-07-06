@@ -1,0 +1,195 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "cd83194b5780",
+  "session_id": "1786daad-2813-4e03-8c4e-1ce8aa1d66ba",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-06T19:05:35.790185Z",
+  "branch": "codex/gitignore-slate-state",
+  "checkpoints_count": 14,
+  "save_step_count": 2,
+  "files_touched": [
+    ".gitignore",
+    "scripts/coverage_enforcer.py",
+    "scripts/merge_queue_preflight.py",
+    "scripts/test_coverage_enforcer.py",
+    "scripts/test_merge_queue_preflight.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "8c84525d8e08",
+  "checkpoint_transcript_start": 8142,
+  "transcript_lines_at_start": 8142,
+  "compact_transcript_start": 1870,
+  "token_usage": {
+    "input_tokens": 1840,
+    "cache_creation_tokens": 52635,
+    "cache_read_tokens": 35112457,
+    "output_tokens": 45464,
+    "api_call_count": 44
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_016NJde5ih554QUxizqSHfst",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "superpowers:systematic-debugging"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "8c84525d8e08",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 22,
+        "end": 23,
+        "entry_ids": [
+          "f482ca33-796b-4253-a23d-9fb2f1929525"
+        ],
+        "tool_use_id": "toolu_016NJde5ih554QUxizqSHfst"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_016NJde5ih554QUxizqSHfst"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: superpowers:systematic-debugging",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01KuSXET8FKUFWKbryC9pZ9K",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "read-web"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "8c84525d8e08",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 74,
+        "end": 75,
+        "entry_ids": [
+          "b1c394e4-616c-4373-b477-217233263220"
+        ],
+        "tool_use_id": "toolu_01KuSXET8FKUFWKbryC9pZ9K"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01KuSXET8FKUFWKbryC9pZ9K"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: read-web",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_0113xA2Mr7YP4KXrnA3brwtV",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "why"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "8c84525d8e08",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 478,
+        "end": 479,
+        "entry_ids": [
+          "a657874d-0640-428e-8783-ba1d1ca186a2"
+        ],
+        "tool_use_id": "toolu_0113xA2Mr7YP4KXrnA3brwtV"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_0113xA2Mr7YP4KXrnA3brwtV"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: why",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01Lh3GweqW5VLpFSF6gLBFUH",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "create-issue"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "8c84525d8e08",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 721,
+        "end": 722,
+        "entry_ids": [
+          "d4fae96f-417e-41e3-9c25-e789fb6fe71d"
+        ],
+        "tool_use_id": "toolu_01Lh3GweqW5VLpFSF6gLBFUH"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Lh3GweqW5VLpFSF6gLBFUH"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: create-issue",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 28
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-06T19:05:35.083824Z",
+    "agent_lines": 227,
+    "agent_removed": 1,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 3,
+    "total_committed": 227,
+    "total_lines_changed": 231,
+    "agent_percentage": 98.7012987012987,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 56,
+      "user_lines_removed": 3,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "scripts/coverage_enforcer.py": 56
+      },
+      "user_removed_per_file": {
+        ".gitignore": 2,
+        "scripts/coverage_enforcer.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 245,
+      "agent_lines_removed": 4
+    }
+  ]
+}

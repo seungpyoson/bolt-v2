@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "cd83194b5780",
+  "strategy": "manual-commit",
+  "branch": "codex/gitignore-slate-state",
+  "checkpoints_count": 14,
+  "files_touched": [
+    ".gitignore",
+    "scripts/coverage_enforcer.py",
+    "scripts/merge_queue_preflight.py",
+    "scripts/test_coverage_enforcer.py",
+    "scripts/test_merge_queue_preflight.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cd/83194b5780/0/metadata.json",
+      "transcript": "/cd/83194b5780/0/full.jsonl",
+      "compact_transcript": "/cd/83194b5780/0/transcript.jsonl",
+      "content_hash": "/cd/83194b5780/0/content_hash.txt",
+      "prompt": "/cd/83194b5780/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1840,
+    "cache_creation_tokens": 52635,
+    "cache_read_tokens": 35112457,
+    "output_tokens": 45464,
+    "api_call_count": 44
+  }
+}

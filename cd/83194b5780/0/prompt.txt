@@ -1,0 +1,57 @@
+what are the disks - is networking odds and ends EIP? we should not remove the ones we use
+
+---
+
+so for the pr 1276 - are we hardcoding something to binary_oracle_edge taker?>
+
+---
+
+yes we need to fix it - we already have some strategies built - so this is the wrong design
+
+---
+
+go - but we need to be 100% confident
+
+---
+
+but actual irony is that it's doing some monitoring and I didn't or you did not know about this
+
+---
+
+so I spent $220 for nothing
+
+---
+
+go
+
+---
+
+don' t need insurance. so I thought we removed Ireland instance - why do we still have it
+
+---
+
+so why do we expect $55-65 /month?
+
+---
+
+why do we need this? │            │                           │ The tick-history asset the conversion box built — it's   │
+│ ~$17       │ 695 GB market-data        │ the fuel for the better-backtesting work you want. Keep  │
+│            │ archive (bolt-parquet)    │ while backtesting matters; it's the single biggest       │
+│            │                           │ remaining line.                                          │
+├────────────┼───────────────────────────┼─────────────────── do we use this? don't know why we need  b
+
+---
+
+ARE THEY CONSUMED BY BACKTESTING ENGINE? because we have backtesting engine built
+
+---
+
+explain the situation in plain english
+
+---
+
+yes - le'ts remove the kalshi machines.
+
+---
+
+what's the appropriate size for the machine? is $1.75 / day really how it should be

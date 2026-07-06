@@ -14,11 +14,11 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
     backfill_conversion_completion::{
         BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
@@ -96,14 +96,6 @@ pub enum SourceUniverseExecutionAcceptanceUniverseStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceUniverseExecutionAcceptanceArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SourceUniverseExecutionAcceptanceRecord {
     pub universe_id: String,
     pub venue: String,
@@ -126,7 +118,7 @@ pub struct SourceUniverseExecutionAcceptanceRecord {
     pub completed_canonical_rows: u64,
     pub completed_nt_catalog_rows: u64,
     pub remaining_conversion_objects: u64,
-    pub artifact_refs: Vec<SourceUniverseExecutionAcceptanceArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub blocking_reasons: Vec<String>,
 }
 
@@ -195,33 +187,23 @@ pub fn write_source_universe_execution_acceptance_ledger(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_ACCEPTANCE_FILE);
-    let bytes = serde_json::to_vec_pretty(&ledger)
-        .context("serialize source-universe execution acceptance ledger")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source-universe execution acceptance ledger {}",
-                path.display()
-            )
-        })?;
-        ensure!(
-            existing == bytes,
-            "dirty source-universe execution acceptance ledger {}: existing file content differs",
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_UNIVERSE_EXECUTION_ACCEPTANCE_FILE,
+        &ledger,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+    )
+    .with_context(|| {
+        format!(
+            "write source-universe execution acceptance ledger {}",
             path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write source-universe execution acceptance ledger {}",
-                path.display()
-            )
-        })?;
-    }
+        )
+    })?;
 
     Ok(SourceUniverseExecutionAcceptanceLedgerArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         universe_count: ledger.universe_count,
     })
 }
@@ -839,7 +821,7 @@ fn read_optional_artifact<T>(
     base_dir: &Path,
     role: &str,
     path: Option<&PathBuf>,
-    artifact_refs: &mut Vec<SourceUniverseExecutionAcceptanceArtifactRef>,
+    artifact_refs: &mut Vec<ReferenceArtifactPin>,
 ) -> Result<Option<T>>
 where
     T: for<'de> Deserialize<'de>,
@@ -850,7 +832,7 @@ where
     let resolved = resolve_existing_path(base_dir, path);
     let bytes = fs::read(&resolved)
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
-    artifact_refs.push(SourceUniverseExecutionAcceptanceArtifactRef {
+    artifact_refs.push(ReferenceArtifactPin {
         role: role.to_string(),
         path: portable_artifact_path_for_spec(&resolved, path)?,
         sha256: sha256_hex(&bytes),
@@ -861,7 +843,7 @@ where
 }
 
 fn push_optional_ref(
-    artifact_refs: &mut Vec<SourceUniverseExecutionAcceptanceArtifactRef>,
+    artifact_refs: &mut Vec<ReferenceArtifactPin>,
     base_dir: &Path,
     role: &str,
     path: Option<&PathBuf>,
@@ -872,7 +854,7 @@ fn push_optional_ref(
     let resolved = resolve_existing_path(base_dir, path);
     let bytes = fs::read(&resolved)
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
-    artifact_refs.push(SourceUniverseExecutionAcceptanceArtifactRef {
+    artifact_refs.push(ReferenceArtifactPin {
         role: role.to_string(),
         path: portable_artifact_path_for_spec(&resolved, path)?,
         sha256: sha256_hex(&bytes),

@@ -13,7 +13,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::source_proof::{
     FixtureType, NtMappingStatus, SourceBindingRegistry, SourceProofFidelityClass,
@@ -377,29 +376,25 @@ pub fn write_source_selection_readiness_report(
         error: error.to_string(),
     })?;
     let path = output_dir.join(SOURCE_SELECTION_READINESS_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .map_err(|error| SourceSelectionReadinessError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing =
-            fs::read(&path).map_err(|error| SourceSelectionReadinessError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
-        if existing != bytes {
-            return Err(SourceSelectionReadinessError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| SourceSelectionReadinessError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_SELECTION_READINESS_REPORT_FILE,
+        report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceSelectionReadinessError::Serialize,
+            read_existing_error: |path, error| SourceSelectionReadinessError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| SourceSelectionReadinessError::ExistingArtifactMismatch { path },
+            write_error: |path, error| SourceSelectionReadinessError::Write { path, error },
+        },
+    )?;
 
     Ok(SourceSelectionReadinessArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
     })
 }

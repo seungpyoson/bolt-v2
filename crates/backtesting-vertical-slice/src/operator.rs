@@ -1507,10 +1507,11 @@ where
         .contract
         .validate()
         .map_err(|error| anyhow::anyhow!("durable result contract validation failed: {error}"))?;
-    atomic_write(
+    crate::reference_artifact::write_reference_artifact_with_len(
         &artifacts.contract_path,
-        &serde_json::to_vec_pretty(&artifacts.output.contract)
-            .context("serialize durable result contract")?,
+        crate::result_contract::RESULT_CONTRACT_VERSION,
+        &artifacts.output.contract,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
     persist_durable_contract_artifacts(&writer, &artifact_root, &artifacts).await?;

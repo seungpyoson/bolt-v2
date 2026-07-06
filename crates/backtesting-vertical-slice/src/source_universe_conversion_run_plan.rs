@@ -12,11 +12,11 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::source_universe_object_gates::{
     SourceUniverseObjectGateMaterialization, SourceUniverseObjectGateRecord,
     SourceUniverseObjectGateStatus,
@@ -43,14 +43,6 @@ pub struct SourceUniverseConversionRunPlanSpec {
 #[serde(rename_all = "snake_case")]
 pub enum SourceUniverseConversionRunPlanStatus {
     Ready,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceUniverseConversionRunPlanArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +99,7 @@ pub struct SourceUniverseConversionRunPlan {
     pub planned_source_bytes: u64,
     pub run_count: u64,
     pub category_summaries: Vec<SourceUniverseConversionRunCategorySummary>,
-    pub artifact_refs: Vec<SourceUniverseConversionRunPlanArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub runs: Vec<SourceUniverseConversionRun>,
 }
 
@@ -235,41 +227,38 @@ pub fn write_source_universe_conversion_run_plan(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_RUN_PLAN_FILE);
-    let bytes = serde_json::to_vec_pretty(&plan)
-        .context("serialize source-universe conversion run plan")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source-universe conversion run-plan {}",
-                path.display()
-            )
-        })?;
-        if existing != bytes {
-            ensure!(
-                spec.overwrite_existing_artifacts,
-                "dirty source-universe conversion run-plan {}: existing file content differs",
-                path.display()
-            );
-            atomic_write(&path, &bytes).with_context(|| {
-                format!(
-                    "write source-universe conversion run-plan {}",
-                    path.display()
-                )
-            })?;
-        }
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write source-universe conversion run-plan {}",
-                path.display()
-            )
-        })?;
-    }
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_UNIVERSE_CONVERSION_RUN_PLAN_FILE,
+        &plan,
+        rewrite,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: |error| {
+                anyhow::anyhow!("serialize source-universe conversion run-plan: {error}")
+            },
+            read_existing_error: |path, error| {
+                anyhow::anyhow!("read existing source-universe conversion run-plan {path}: {error}")
+            },
+            mismatch_error: |path| {
+                anyhow::anyhow!(
+                    "dirty source-universe conversion run-plan {path}: existing file content differs"
+                )
+            },
+            write_error: |path, error| {
+                anyhow::anyhow!("write source-universe conversion run-plan {path}: {error}")
+            },
+        },
+    )?;
 
     Ok(SourceUniverseConversionRunPlanArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         run_count: plan.run_count,
         object_count: plan.object_count,
     })
@@ -401,7 +390,7 @@ pub fn evaluate_source_universe_conversion_run_plan(
         planned_source_bytes,
         run_count: runs.len() as u64,
         category_summaries: category_summaries(&runs),
-        artifact_refs: vec![SourceUniverseConversionRunPlanArtifactRef {
+        artifact_refs: vec![ReferenceArtifactPin {
             role: "source_universe_object_gates".to_string(),
             path: portable_object_gates_path,
             sha256: object_gates_hash,

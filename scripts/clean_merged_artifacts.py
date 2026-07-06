@@ -1425,6 +1425,36 @@ def install_hooks(
             manifest_hooks=manifest_hooks,
         )
 
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if hook_name in source_hook_names:
+            continue
+        if not isinstance(entries, list):
+            raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} is invalid"
+                )
+            if entry.get("source_scope") != "default":
+                continue
+            source_file = _manifest_source_file(
+                source_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+            if source_file is None:
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} has invalid source_path"
+                )
+            _validate_default_shadowed_hook_backup(
+                hook_name=hook_name,
+                entry=entry,
+                source_file=source_file,
+            )
+
     for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
         if (
             not isinstance(entry, dict)

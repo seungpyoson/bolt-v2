@@ -307,7 +307,7 @@ def run_fences(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--root", type=pathlib.Path, default=REPO_ROOT)
     parser.add_argument("--scripts-dir", type=pathlib.Path, default=SCRIPTS_DIR)
     parser.add_argument("--fences-only", action="store_true", help="skip source-fence test suites")

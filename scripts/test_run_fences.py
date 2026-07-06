@@ -254,6 +254,22 @@ def assert_fences_only_cli_skips_test_phase() -> None:
         raise AssertionError(combined)
 
 
+def assert_fences_only_cli_rejects_abbreviations() -> None:
+    runner = load_runner()
+    for flag in ("--f", "--fences", "--fences-o"):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            try:
+                runner.parse_args([flag])
+            except SystemExit as exc:
+                if exc.code != 2:
+                    raise AssertionError((flag, exc.code, stderr.getvalue()))
+            else:
+                raise AssertionError(f"accepted abbreviated fences-only flag {flag}")
+        if "unrecognized arguments" not in stderr.getvalue():
+            raise AssertionError((flag, stderr.getvalue()))
+
+
 def assert_filesystem_cache_skips_paths_outside_root() -> None:
     runner = load_runner()
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
@@ -325,6 +341,7 @@ def main() -> int:
     assert_system_exit_none_is_success()
     assert_tests_run_without_filesystem_cache()
     assert_fences_only_cli_skips_test_phase()
+    assert_fences_only_cli_rejects_abbreviations()
     assert_filesystem_cache_skips_paths_outside_root()
     assert_mixed_unittest_and_bare_tests_fail_loud()
     print("OK: run_fences self-tests passed.")

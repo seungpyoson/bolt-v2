@@ -2047,7 +2047,13 @@ def invokes_reduced_source_fence_command(
     rewrite_targets: frozenset[tuple[str, ...]],
     rewrite_target_recipes: frozenset[str],
 ) -> bool:
-    if FENCES_ONLY_FLAG in parsed or parsed in rewrite_targets:
+    if (
+        any(
+            len(token) > 2 and token.startswith("--") and FENCES_ONLY_FLAG.startswith(token)
+            for token in parsed
+        )
+        or parsed in rewrite_targets
+    ):
         return True
     for index, part in enumerate(parsed):
         if pathlib.PurePath(part).name == "just" and any(

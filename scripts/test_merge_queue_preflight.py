@@ -680,6 +680,22 @@ def assert_fast_path_config_validation_fails_closed() -> None:
             "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences-only'",
         ),
         (
+            "verifier profile command is direct source-fence reduced script abbreviated",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["python3 scripts/run_fences.py --fences"]',
+            ),
+            "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences'",
+        ),
+        (
+            "verifier profile command is direct source-fence reduced script partial abbreviation",
+            lambda text: text.replace(
+                "commands = []",
+                'commands = ["python3 scripts/run_fences.py --fences-o"]',
+            ),
+            "must not use reduced-profile rewrite target 'python3 scripts/run_fences.py --fences-o'",
+        ),
+        (
             "verifier profile command is env-wrapped source-fence rewrite target",
             lambda text: text.replace(
                 "commands = []",
@@ -771,6 +787,14 @@ def assert_run_verifier_reduced_profile_commands_fail_closed() -> None:
         ),
         (
             "python3 scripts/run_fences.py --fences-only",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "python3 scripts/run_fences.py --fences",
+            "must not use reduced-profile rewrite target",
+        ),
+        (
+            "python3 scripts/run_fences.py --fences-o",
             "must not use reduced-profile rewrite target",
         ),
         (

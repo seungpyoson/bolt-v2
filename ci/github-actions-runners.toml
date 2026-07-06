@@ -257,9 +257,7 @@ require_source_branch = "main"
 require_gate_check = true
 
 [ci_provenance.dispatch]
-workflow_input = "full_ci"
 run_name_default = "CI"
-run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
 
@@ -271,10 +269,8 @@ max_watch_seconds = 14400
 [ci_provenance.gate_names]
 gate_required = "gate"
 gate_iteration = "gate-iteration"
-gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
 backtester_iteration = "backtester-gate-iteration"
-backtester_dispatch_full = "backtester-gate-dispatch"
 
 [ci_provenance.required_checks.gate]
 context = "gate"
@@ -287,8 +283,8 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "tag_reuse"]
-carry_forward = []
+fresh = ["docs", "full", "tag_reuse"]
+carry_forward = ["noop"]
 
 [ci_provenance.required_checks.backtester-gate]
 context = "backtester-gate"
@@ -297,11 +293,11 @@ integration_id = 15368
 required = true
 target = true
 runs_on_tags = true
-supports_carry_forward = true
+supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["full", "tag_reuse"]
+fresh = ["docs", "full", "noop", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.host-health]
@@ -315,7 +311,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 
 [ci_provenance.required_checks.actionlint]
@@ -329,7 +325,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 
 [ci_provenance.required_checks.coverage-enforcer]
@@ -343,7 +339,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 
 [ci_provenance.docs]
@@ -365,7 +361,7 @@ safe_paths = [
 forbidden_ignored_build_paths = [
   ".claude/rust-verification.toml",
 ]
-non_heavy_required_jobs = ["detector"]
+non_heavy_required_jobs = ["detector", "source-fence"]
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -619,24 +615,22 @@ name_prefixes = [
 expired_decision = "KEEP"
 keep_reason = "personal/non-CI artifact is not a cleanup candidate"
 
-# Queue-only rework (#981): the Mergify queue runs in TEMP-PR mode, so merge_group
-# never fires and the SOLE producer of a green REQUIRED gate is the actor-verified
-# mergify temp PR validated at the merge boundary. Every ordinary pull_request row is
-# pinned to "iteration" (defer heavy lanes, publish only the non-required
-# gate-iteration); only the genuine merge-boundary rows stay "full".
+# Draft PRs and manual workflow_dispatch are cheap iteration feedback. Ready PR
+# opened/synchronize/ready_for_review runs publish the automatic full signal;
+# ready metadata-only transitions carry required noop proof, and merge-boundary
+# paths remain full.
 [ci_provenance.policy]
 draft_pr_synchronize = "iteration"
 draft_pr_opened = "iteration"
 draft_pr_reopened = "iteration"
 draft_pr_edited = "iteration"
 converted_to_draft = "iteration"
-ready_pr = "iteration"
-ready_pr_edited_no_base = "iteration"
-ready_pr_reopened = "iteration"
-ready_for_review = "iteration"
+ready_pr = "full"
+ready_pr_edited_no_base = "noop"
+ready_pr_reopened = "noop"
+ready_for_review = "full"
 docs = "docs"
 workflow_dispatch = "iteration"
-workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
 mergify_temp_pr = "full"

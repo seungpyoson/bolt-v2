@@ -321,8 +321,8 @@ fn fixture_quote_inputs() -> FamilyQuoteInputs {
   literals are introduced (all numbers come from `bolt_v3_numeric` or are existing
   test consts), so this should pass without an allowlist row.
 - [ ] Push; run Rust Probe (`check-lib`) for fast compile/test feedback on the
-  slice; then dispatch full CI (`workflow_dispatch -f full_ci=true`) and confirm
-  fully green (no digest job — no gated file changed).
+  slice; then mark the PR ready for full pull-request CI or use the merge queue
+  gate for proof (no digest job — no gated file changed).
 - [ ] Slice-3 adversarial review (Codex + internal, multi-lens) per the program
   cadence; every finding FIXED or DISPROVEN before Slice 4.
 

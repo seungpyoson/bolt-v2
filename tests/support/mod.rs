@@ -281,6 +281,20 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_settlement(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_venue_truth_capture_failure(
         &self,
         evidence: &bolt_v2::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence,
@@ -419,6 +433,20 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     fn record_requote_throttle(
         &self,
         _throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }

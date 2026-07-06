@@ -723,9 +723,12 @@ pub(super) fn capital_admission_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
     startup_observed_at_ns: u64,
 ) -> Option<CapitalAdmissionRuntimeFeedConfig> {
-    let pools = loaded.root.risk.capital_pools.as_ref()?;
-    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
-    let product = pool.prediction_market_binary.as_ref()?;
+    let pool =
+        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(&loaded.root)?;
+    let product = pool
+        .prediction_market_binary
+        .as_ref()
+        .expect("capital-admission runtime feed pool selector requires prediction_market_binary");
     Some(CapitalAdmissionRuntimeFeedConfig {
         venue_id: pool.venue_id.clone(),
         account_id: pool.account_id,
@@ -810,6 +813,31 @@ pub(super) fn submit_reservation_recovery_config_from_loaded(
         return Ok(None);
     };
     Ok(Some(BoltV3SubmitReservationRecoveryConfig {
+        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        max_bytes,
+    }))
+}
+
+/// Resolve the startup settlement-recovery source from the owning decision
+/// evidence store when the settlement sink exists. The sink replays settled and
+/// booking-error keys from durable evidence, so it must not depend on capital
+/// admission submit-reservation recovery being enabled.
+pub(super) fn settlement_recovery_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+    settlement_sink_configured: bool,
+) -> Result<Option<BoltV3SettlementRecoveryConfig>, BoltV3LiveNodeError> {
+    if !settlement_sink_configured {
+        return Ok(None);
+    }
+    let Some(max_bytes) = loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes
+    else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SettlementRecoveryConfig {
         path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
         max_bytes,
     }))
@@ -2479,6 +2507,17 @@ mod tests {
             Ok(())
         }
 
+        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_venue_truth_divergence(
             &self,
             evidence: &VenueTruthDivergenceEvidence,
@@ -2804,6 +2843,17 @@ mod tests {
         }
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_settlement_booking_error(
+            &self,
+            _evidence: &BoltV3SettlementBookingErrorEvidence,
+        ) -> Result<()> {
             Ok(())
         }
 

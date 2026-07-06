@@ -274,6 +274,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_settlement(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
@@ -374,6 +388,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> Result<()> {
         anyhow::bail!("requote throttle write failed")
+    }
+
+    fn record_settlement(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("settlement write failed")
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("settlement booking-error write failed")
     }
 
     fn drain_shutdown(&self) -> Result<()> {
@@ -497,6 +525,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_settlement(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
@@ -520,11 +562,19 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     /// contract: production must record the realized_pnl produced by the shared
     /// settlement oracle, not a separately rounded recomputation.
     Settlement(RecordedSettlementEvidenceEvent),
+    SettlementBookingError(RecordedSettlementBookingErrorEvidenceEvent),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct RecordedSettlementEvidenceEvent {
     pub(super) realized_pnl: f64,
+    pub(super) product_id: String,
+    pub(super) market_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
+    pub(super) reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
 }
 
 #[derive(Debug, Default)]
@@ -540,13 +590,22 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .clone()
     }
 
-    #[allow(dead_code)]
-    pub(super) fn record_settlement(&self, realized_pnl: f64) {
+    pub(super) fn push_settlement(&self, settlement: RecordedSettlementEvidenceEvent) {
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::Settlement(
-                RecordedSettlementEvidenceEvent { realized_pnl },
+            .push(RecordedDecisionEvidenceEvent::Settlement(settlement));
+    }
+
+    pub(super) fn push_settlement_booking_error(
+        &self,
+        reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
+    ) {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
+                RecordedSettlementBookingErrorEvidenceEvent { reason },
             ));
     }
 }
@@ -698,9 +757,96 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_settlement(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        let realized_pnl = evidence
+            .realized_pnl
+            .parse::<f64>()
+            .map_err(|error| anyhow::anyhow!("settlement realized_pnl did not parse: {error}"))?;
+        self.push_settlement(RecordedSettlementEvidenceEvent {
+            realized_pnl,
+            product_id: evidence.product_id.clone(),
+            market_id: evidence.market_id.clone(),
+        });
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        self.push_settlement_booking_error(evidence.reason);
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct RecordingSettlementRuntimeSink {
+    loss_observations: Mutex<Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation>>,
+    venue_explanations: Mutex<Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation>>,
+}
+
+impl RecordingSettlementRuntimeSink {
+    pub(super) fn loss_observations(
+        &self,
+    ) -> Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation> {
+        self.loss_observations
+            .lock()
+            .expect("recording settlement sink loss mutex poisoned")
+            .clone()
+    }
+
+    pub(super) fn venue_explanations(
+        &self,
+    ) -> Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation> {
+        self.venue_explanations
+            .lock()
+            .expect("recording settlement sink venue mutex poisoned")
+            .clone()
+    }
+}
+
+impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
+    for RecordingSettlementRuntimeSink
+{
+    fn record_loss_governor_position_realized_pnl(
+        &self,
+        observation: crate::bolt_v3_loss_protection::PositionRealizedPnlObservation,
+    ) -> Result<()> {
+        self.loss_observations
+            .lock()
+            .expect("recording settlement sink loss mutex poisoned")
+            .push(observation);
+        Ok(())
+    }
+
+    fn record_venue_truth_settlement(
+        &self,
+        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    ) -> Result<()> {
+        self.venue_explanations
+            .lock()
+            .expect("recording settlement sink venue mutex poisoned")
+            .push(explanation);
+        Ok(())
+    }
+}
+
+pub(super) fn attach_settlement_runtime_sink(
+    strategy: &mut BinaryOracleEdgeTaker,
+    sink: std::rc::Rc<RecordingSettlementRuntimeSink>,
+) {
+    let sink: crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle = sink;
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_runtime_sink(Some(sink));
 }
 
 /// Execution venue of the binary-option market fixtures these tests trade against (their
@@ -712,6 +858,38 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
 /// that venue plus matching instrument fixtures.
 pub(super) fn fixture_execution_venue() -> Venue {
     Venue::from("POLYMARKET")
+}
+
+pub(super) fn fixture_settlement_account_id() -> String {
+    fixture_settlement_identity().0
+}
+
+pub(super) fn fixture_settlement_currency() -> Currency {
+    fixture_settlement_identity().1
+}
+
+fn fixture_settlement_identity() -> (String, Currency) {
+    let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+        "tests/fixtures/bolt_v3/root.toml",
+    ))
+    .expect("bolt-v3 fixture root should load for settlement identity");
+    let pool = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_ref()
+        .and_then(|pools| {
+            pools
+                .iter()
+                .find(|pool| pool.venue_id == fixture_execution_venue().as_str())
+        })
+        .expect("bolt-v3 fixture root should declare a capital pool for the fixture venue");
+    (
+        pool.account_id.to_string(),
+        crate::bolt_v3_archetypes::binary_oracle_edge_taker::settlement_currency_from_config_code(
+            pool.collateral_currency.as_str(),
+        ),
+    )
 }
 
 pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
@@ -956,7 +1134,9 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        ),
+        )
+        .with_settlement_account_id(Some(fixture_settlement_account_id()))
+        .with_settlement_currency(Some(fixture_settlement_currency())),
     )
 }
 
@@ -1234,7 +1414,9 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_settlement_account_id(Some(fixture_settlement_account_id()))
+    .with_settlement_currency(Some(fixture_settlement_currency()));
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy

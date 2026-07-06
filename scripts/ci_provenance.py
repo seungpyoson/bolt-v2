@@ -43,19 +43,16 @@ SUPPORTED_MODES = {
 }
 POLICY_VALUES = {"full", "docs", "defer", "iteration", "noop", "tag_reuse"}
 # The event classes for which gate_name_suffix_for() publishes the REQUIRED gate /
-# backtester-gate context (vs the feedback-only gate-iteration): "full" via
-# merge_group / push / actor-verified mergify_temp_pr, and "tag_reuse" via tag.
-# Every PR/dispatch feedback path (iteration, docs, defer, noop) routes to
-# gate-iteration. required_check_applicable_event_classes() intersects against this
-# so the dynamic gates' applicable set can never include a feedback class.
-REQUIRED_GATE_PROOF_EVENT_CLASSES = {"full", "tag_reuse"}
+# backtester-gate context. Draft pull_request and workflow_dispatch iteration paths
+# are feedback-only; ready pull_request, docs/noop carry-forward, merge-boundary,
+# push, tag, and actor-verified Mergify proof paths publish required contexts.
+REQUIRED_GATE_PROOF_EVENT_CLASSES = {"full", "docs", "noop", "tag_reuse"}
+LEGACY_DIGEST_ONLY_POLICY_ROWS = frozenset({"workflow_dispatch_full_ci"})
 GATE_NAME_KEYS = (
     "gate_required",
     "gate_iteration",
-    "gate_dispatch_full",
     "backtester_required",
     "backtester_iteration",
-    "backtester_dispatch_full",
 )
 POLICY_ROWS = (
     "draft_pr_synchronize",
@@ -69,42 +66,34 @@ POLICY_ROWS = (
     "ready_for_review",
     "docs",
     "workflow_dispatch",
-    "workflow_dispatch_full_ci",
     "main_push",
     "merge_group",
     "mergify_temp_pr",
     "tag",
     "unknown_event",
 )
-# Queue-only rework (#981): this repo runs the Mergify queue in TEMP-PR mode, so the
-# native merge_group never fires and the SOLE producer of a green REQUIRED gate is the
-# Mergify temp PR validated at the merge boundary. Every ordinary pull_request row is
-# therefore pinned to "iteration" (defer heavy lanes, publish only the non-required
-# gate-iteration); only the genuine merge-boundary rows stay "full". A non-iteration
-# value on a PR row, or a non-full value on a boundary row, is a required-gate hole and
-# fails the load-time contract closed.
+# Draft pull_request rows and workflow_dispatch are the cheap iteration loop. Ready
+# pull_request rows publish the one automatic full signal; no-code ready metadata
+# transitions carry required-context noop proof; merge-boundary rows stay full.
 POLICY_REQUIRED_VALUES = {
     "draft_pr_synchronize": "iteration",
     "draft_pr_opened": "iteration",
     "draft_pr_reopened": "iteration",
     "draft_pr_edited": "iteration",
     "converted_to_draft": "iteration",
-    "ready_pr": "iteration",
-    "ready_pr_edited_no_base": "iteration",
-    "ready_pr_reopened": "iteration",
-    "ready_for_review": "iteration",
+    "ready_pr": "full",
+    "ready_pr_edited_no_base": "noop",
+    "ready_pr_reopened": "noop",
+    "ready_for_review": "full",
     "docs": "docs",
     "workflow_dispatch": "iteration",
-    "workflow_dispatch_full_ci": "full",
     "main_push": "full",
     "merge_group": "full",
     "mergify_temp_pr": "full",
     "tag": "tag_reuse",
     "unknown_event": "full",
 }
-POLICY_REQUIRED_MESSAGES = {
-    "workflow_dispatch_full_ci": "ci_provenance.policy.workflow_dispatch_full_ci must remain full",
-}
+POLICY_REQUIRED_MESSAGES: dict[str, str] = {}
 POLICY_ALLOWED_VALUES: dict[str, set[str]] = {}
 REQUIRED_CHECK_INTEGRATION_ID = 15368
 REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
@@ -189,9 +178,7 @@ class ProvenanceConfig:
     deploy_source_event: str
     deploy_source_branch: str
     deploy_require_gate_check: bool
-    dispatch_workflow_input: str
     dispatch_run_name_default: str
-    dispatch_run_name_full: str
     dispatch_run_name_iteration: str
     dispatch_proof_gate_job: str
     workflow_runs_per_page: int
@@ -270,8 +257,6 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
         "backtester_required",
         "gate_iteration",
         "backtester_iteration",
-        "gate_dispatch_full",
-        "backtester_dispatch_full",
     )
     seen: dict[str, str] = {}
     for key in keys:
@@ -420,13 +405,12 @@ def required_check_applicable_event_classes(
     if check.context in {gate_names["gate_required"], gate_names["backtester_required"]}:
         # Single source of truth: gate_name_suffix_for() is the authority on which events
         # publish the REQUIRED gate/backtester-gate name vs the feedback-only gate-iteration.
-        # It returns the required suffix ONLY for merge_group / push / actor-verified
-        # mergify_temp_pr (event class "full") and tag (class "tag_reuse"); EVERY PR/dispatch
-        # path (iteration, docs, defer, noop) routes to gate-iteration. So keep ONLY the
-        # required-proof classes instead of denylisting each feedback class one by one — a
-        # denylist drifts (iteration was missed, then docs). This intersection fails safe: a
-        # new feedback class is auto-excluded, and a missing required class fails loud in
-        # required_check_registry_contract_errors rather than silently over-claiming.
+        # It returns the required suffix for ready/full, docs/noop carry-forward,
+        # merge-boundary, push, tag, and actor-verified Mergify proof paths. Keep
+        # only those classes instead of denylisting feedback classes one by one.
+        # This intersection fails safe: a new feedback class is auto-excluded, and a
+        # missing required class fails loud in required_check_registry_contract_errors
+        # rather than silently over-claiming.
         applicable &= REQUIRED_GATE_PROOF_EVENT_CLASSES
     return applicable
 
@@ -770,7 +754,8 @@ def load_config(
                 "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention"
             ) from exc
 
-    unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
+    allowed_legacy_policy_rows = LEGACY_DIGEST_ONLY_POLICY_ROWS if not require_workflows else frozenset()
+    unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"} - allowed_legacy_policy_rows)
     if unexpected_policy_keys:
         raise ProvenanceError(f"ci_provenance.policy has unexpected keys: {unexpected_policy_keys!r}")
 
@@ -788,11 +773,8 @@ def load_config(
             raise ProvenanceError("; ".join(contract_errors))
 
     dispatch_run_name_default = require_string(dispatch, "run_name_default", "ci_provenance.dispatch")
-    dispatch_run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
     dispatch_run_name_iteration = require_string(dispatch, "run_name_iteration", "ci_provenance.dispatch")
     dispatch_proof_gate_job = require_string(dispatch, "proof_gate_job", "ci_provenance.dispatch")
-    if dispatch_run_name_full == dispatch_run_name_iteration:
-        raise ProvenanceError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
 
     gate_names = {
         key: require_gate_name(gate_names_table, key, "ci_provenance.gate_names")
@@ -863,9 +845,7 @@ def load_config(
         deploy_source_event=require_string(deploy, "require_source_event", "ci_provenance.deploy"),
         deploy_source_branch=require_string(deploy, "require_source_branch", "ci_provenance.deploy"),
         deploy_require_gate_check=deploy.get("require_gate_check") is True,
-        dispatch_workflow_input=require_string(dispatch, "workflow_input", "ci_provenance.dispatch"),
         dispatch_run_name_default=dispatch_run_name_default,
-        dispatch_run_name_full=dispatch_run_name_full,
         dispatch_run_name_iteration=dispatch_run_name_iteration,
         dispatch_proof_gate_job=dispatch_proof_gate_job,
         workflow_runs_per_page=require_positive_int(
@@ -973,6 +953,22 @@ def require_jobs_skipped(job_results: dict[str, str], jobs: tuple[str, ...], lab
             raise ProvenanceError(f"{job} unexpectedly ran during {label}: {actual}")
 
 
+def require_docs_job_results(
+    job_results: dict[str, str],
+    docs_required_jobs: tuple[str, ...],
+) -> None:
+    if not docs_required_jobs:
+        raise ProvenanceError("docs required jobs must be configured")
+    missing = sorted(set(docs_required_jobs) - set(job_results))
+    if missing:
+        raise ProvenanceError(f"docs required jobs missing from results: {missing}")
+    docs_required = set(docs_required_jobs)
+    for job in docs_required_jobs:
+        require_job_result(job_results, job, "success", f"docs required job {job} did not succeed")
+    docs_skipped_jobs = tuple(job for job in CI_HEAVY_JOBS if job not in docs_required)
+    require_jobs_skipped(job_results, docs_skipped_jobs, "docs")
+
+
 CI_HEAVY_JOBS = (
     "deny",
     "clippy",
@@ -1001,6 +997,7 @@ def evaluate_ci_gate_verdict(
     carry_forward_verified: bool,
     job_results: dict[str, str],
     build_required: bool,
+    docs_required_jobs: tuple[str, ...] = (),
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "ci-policy did not succeed")
     require_job_result(job_results, "detector", "success", "detector did not succeed")
@@ -1061,7 +1058,7 @@ def evaluate_ci_gate_verdict(
     if policy_path == "docs":
         if expected_event_class != "docs":
             raise ProvenanceError(f"docs CI policy outside resolver-permitted event class {expected_event_class!r}")
-        require_jobs_skipped(job_results, CI_HEAVY_JOBS, "docs")
+        require_docs_job_results(job_results, docs_required_jobs)
         require_job_result(job_results, "ci-provenance-emit", "success", "ci-provenance-emit did not succeed for docs")
         return "docs CI proof passed"
 
@@ -1142,7 +1139,7 @@ def evaluate_backtester_gate_verdict(
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
-        allowed_no_crate_paths = frozenset({"full", "noop", "defer"})
+        allowed_no_crate_paths = frozenset({"full", "docs", "noop", "defer"})
         if policy_path not in allowed_no_crate_paths:
             raise ProvenanceError(f"backtester no-crate path does not support policy_path {policy_path!r}")
         if expected_event_class != policy_path:
@@ -1192,12 +1189,8 @@ def evaluate_backtester_gate_verdict(
 def expected_event_class_for(reason: str, path: str) -> str:
     if reason == "docs" or path == "docs":
         return "docs"
-    # Queue-only rework (#981): the iteration policy is now path-led. Every newly
-    # demoted pull_request row (ready_pr, ready_for_review, draft_pr_*,
-    # converted_to_draft, ready_pr_edited_no_base, ready_pr_reopened) resolves to
-    # ci_policy_path == "iteration", so its event class is "iteration" regardless of
-    # the originating reason. force_full_ci/merge_group keep path == "full" and fall
-    # through to the "full" class below.
+    # Iteration is path-led: draft PRs and workflow_dispatch are feedback-only,
+    # while ready PRs resolve through their configured full/noop paths below.
     if path == "iteration":
         return "iteration"
     if reason in {
@@ -1214,24 +1207,16 @@ def expected_event_class_for(reason: str, path: str) -> str:
         return "iteration"
     if reason == "tag":
         return "tag_reuse"
-    if reason in {"ready_pr", "ready_for_review"} and path == "iteration":
-        return "iteration"
     return "full"
 
 
 def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
-    if event_name == "workflow_dispatch" and reason == "workflow_dispatch_full_ci":
-        return "dispatch_full"
     if event_name == "workflow_dispatch":
         return "iteration"
-    # Queue-only rework (#981): the gate name is a pure function of (event_name,
-    # reason), NEVER the policy VALUE. A pull_request head run is never proof of the
-    # squash-merged commit, so every pull_request that is not the actor-verified
-    # mergify temp PR publishes only the non-required gate-iteration (even when its
-    # path is "full" under force_full_ci or an unknown draft action). The required
-    # suffix is reachable only by merge_group, push/main_push, tag, the
-    # actor-verified mergify_temp_pr, and unknown non-PR events.
-    if event_name == "pull_request" and reason != "mergify_temp_pr":
+    # Draft pull_request rows remain feedback-only; ready pull_request full/noop
+    # rows publish required contexts so a ready PR can receive the single automatic
+    # full signal without using manual dispatch-full.
+    if event_name == "pull_request" and path == "iteration":
         return "iteration"
     if path in POLICY_VALUES:
         return "required"
@@ -1314,7 +1299,6 @@ def evaluate_ci_policy(
     pull_request_draft: bool,
     pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
-    workflow_dispatch_full_ci: str = "",
     docs_only: bool = False,
     event_sender_id: int = -1,
     pull_request_author_id: int = -1,
@@ -1341,12 +1325,8 @@ def evaluate_ci_policy(
         path = config.policy["tag"]
         reason = "tag"
     elif event_name == "workflow_dispatch":
-        if workflow_dispatch_full_ci == "true":
-            path = config.policy["workflow_dispatch_full_ci"]
-            reason = "workflow_dispatch_full_ci"
-        else:
-            path = config.policy["workflow_dispatch"]
-            reason = "workflow_dispatch"
+        path = config.policy["workflow_dispatch"]
+        reason = "workflow_dispatch"
     elif event_name == "push" and ref == "refs/heads/main":
         path = config.policy["main_push"]
         reason = "main_push"
@@ -3090,7 +3070,6 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--pull-request-head-ref", default="")
         parser.add_argument("--pull-request-author-id", default="")
         parser.add_argument("--pull-request-base-changed", default="false")
-        parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--docs-only", default="false")
         parser.add_argument("--ref", required=True)
     if mode == "check-ci-gate":
@@ -3170,7 +3149,6 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_draft=parse_bool(args.pull_request_draft),
                 pull_request_head_ref=args.pull_request_head_ref,
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
-                workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
                 event_sender_id=parse_event_sender_id(os.environ.get("EVENT_SENDER_ID") or -1),
                 pull_request_author_id=parse_github_actor_id(
@@ -3197,6 +3175,7 @@ def main(argv: list[str] | None = None) -> int:
                     carry_forward_verified=parse_bool(args.carry_forward_verified),
                     job_results=parse_job_result_values(args.job),
                     build_required=parse_bool(args.build_required),
+                    docs_required_jobs=config.docs_non_heavy_required_jobs,
                 )
             )
         elif mode == "check-backtester-gate":

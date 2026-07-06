@@ -16,6 +16,9 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
+use crate::bolt_v3_settlement_runtime::{
+    BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
+};
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::{ClientId, StrategyId};
@@ -38,6 +41,8 @@ pub struct StrategyRuntimeBinding {
 pub struct BoltV3StrategyExecutionControls {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
+    pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
 }
 
 #[derive(Clone)]
@@ -51,6 +56,8 @@ pub struct StrategyRegistrationContext<'a> {
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+    pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -402,6 +409,8 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 iv_query_handles: iv_query_handles.clone(),
                 order_execution_policy: execution_controls.order_execution_policy,
                 realized_volatility_runtime: realized_volatility_runtime.clone(),
+                settlement_runtime_sink: execution_controls.settlement_runtime_sink.clone(),
+                settlement_recovery: execution_controls.settlement_recovery.clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

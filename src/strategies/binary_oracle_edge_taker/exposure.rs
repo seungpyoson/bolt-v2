@@ -164,6 +164,7 @@ pub(super) enum BlindRecoveryReason {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
     },
+    SettlementEvidenceRecoveryFailed,
     AmbiguousRestartOpenExitOrders {
         instrument_id: InstrumentId,
         count: usize,

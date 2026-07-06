@@ -173,6 +173,7 @@ data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"

@@ -173,6 +173,8 @@ HEAD_IDENTITY_FINDING_STATES = {
 }
 RESIDUAL_RISK_REASON_CODES = (
     "full_ci_result",
+    "batch_verifier_scope",
+    "source_fence_test_phase_skipped",
     "mergify_proof_pr_behavior",
     "remote_runner_availability",
     "flaky_checks_and_external_services",
@@ -183,6 +185,10 @@ RESIDUAL_RISK_REASON_CODES = (
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 )
+RESIDUAL_RISK_MESSAGES = {
+    "batch_verifier_scope": "verifier proof is batch-scoped for passing optimistic batches",
+    "source_fence_test_phase_skipped": "source-fence fast path may skip fixture test suites for eligible diffs",
+}
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -264,6 +270,8 @@ CHECK_STATE_ISSUE_MESSAGES = {
     "required_check_stale": "required check is stale: {name}",
 }
 VERIFIER_STREAMS = ("stdout", "stderr")
+FENCES_ONLY_FLAG = "--fences-only"
+SHELL_COMMAND_EXECUTABLES = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -563,7 +571,7 @@ def residual_risk_findings() -> tuple[dict[str, object], ...]:
             "scope": "run",
             "status": STATUS_RESIDUAL_RISK,
             "reason_code": reason_code,
-            "message": reason_code,
+            "message": RESIDUAL_RISK_MESSAGES.get(reason_code, reason_code),
             "evidence": {},
         }
         for reason_code in RESIDUAL_RISK_REASON_CODES
@@ -1827,6 +1835,8 @@ class PreflightConfig:
     base: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
+    source_fence_full_profile_pathspecs: tuple[str, ...]
+    source_fence_fences_only_rewrites: dict[str, str]
     required_check_workflows: dict[str, str]
     source_check_aliases: dict[str, str]
     input_timeout_seconds: int
@@ -2005,6 +2015,18 @@ def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict
     return result
 
 
+def require_string_tuple(parent: dict[str, object], key: str, prefix: str) -> tuple[str, ...]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not value:
+        raise PreflightError(f"{prefix}.{key} must be a non-empty string array")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise PreflightError(f"{prefix}.{key}[{index}] must be a non-empty string")
+        result.append(item)
+    return tuple(result)
+
+
 def validate_source_check_aliases(
     source_check_aliases: Mapping[str, str],
     required_check_workflows: Mapping[str, str],
@@ -2018,9 +2040,152 @@ def validate_source_check_aliases(
             )
 
 
+def cheap_local_gate_labels(root: Mapping[str, object]) -> frozenset[str]:
+    lane_policy = require_table(root, "local_lane_policy", "config")
+    labels = lane_policy.get("cheap_lane_labels")
+    if not isinstance(labels, list) or not labels:
+        raise PreflightError("config.local_lane_policy.cheap_lane_labels must be a non-empty string array")
+    result: set[str] = set()
+    for index, label in enumerate(labels):
+        if not isinstance(label, str) or not label:
+            raise PreflightError(f"config.local_lane_policy.cheap_lane_labels[{index}] must be a non-empty string")
+        if label.startswith("local-gate:"):
+            result.add(label)
+    if not result:
+        raise PreflightError("config.local_lane_policy.cheap_lane_labels must declare at least one local-gate label")
+    return frozenset(result)
+
+
+def just_recipe_from_rewrite_command(command: str, *, field: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError as exc:
+        raise PreflightError(
+            "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+            f"{field} contains an invalid shell command: {exc}"
+        ) from exc
+    if len(parts) != 2 or parts[0] != "just" or not parts[1]:
+        raise PreflightError(
+            "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+            f"{field} must be exactly 'just <public-recipe>'"
+        )
+    return parts[1]
+
+
+def validate_source_fence_fences_only_rewrites(
+    rewrites: Mapping[str, str],
+    cheap_gate_labels: frozenset[str],
+) -> None:
+    for source, target in rewrites.items():
+        source_recipe = just_recipe_from_rewrite_command(source, field="source")
+        if f"local-gate:{source_recipe}" not in cheap_gate_labels:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+                f"source {source!r} must route through a configured public local-gate label"
+            )
+        target_recipe = just_recipe_from_rewrite_command(target, field="target")
+        if f"local-gate:{target_recipe}" not in cheap_gate_labels:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
+                f"target {target!r} must route through a configured public local-gate label"
+            )
+
+
+def parsed_shell_command(command: str) -> tuple[str, ...] | None:
+    try:
+        return tuple(shlex.split(command))
+    except ValueError:
+        return None
+
+
+def invokes_reduced_source_fence_command(
+    parsed: tuple[str, ...],
+    rewrite_targets: frozenset[tuple[str, ...]],
+    rewrite_target_recipes: frozenset[str],
+) -> bool:
+    if (
+        any(
+            len(token) > 2 and token.startswith("--") and FENCES_ONLY_FLAG.startswith(token)
+            for token in parsed
+        )
+        or parsed in rewrite_targets
+    ):
+        return True
+    for index, part in enumerate(parsed):
+        if pathlib.PurePath(part).name == "just" and any(
+            token in rewrite_target_recipes for token in parsed[index + 1 :]
+        ):
+            return True
+    return False
+
+
+def uses_shell_wrapper_syntax(parsed: tuple[str, ...]) -> bool:
+    for part in parsed:
+        if any(marker in part for marker in (" ", "\t", "'", '"')):
+            return True
+    for index, part in enumerate(parsed):
+        if pathlib.PurePath(part).name not in SHELL_COMMAND_EXECUTABLES:
+            continue
+        for token in parsed[index + 1 :]:
+            if token == "--":
+                break
+            if token.startswith("-") and "c" in token[1:]:
+                return True
+    return False
+
+
+def validate_verifier_commands(
+    field: str,
+    commands: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+) -> None:
+    rewrite_targets = frozenset(
+        parsed
+        for target in source_fence_fences_only_rewrites.values()
+        if (parsed := parsed_shell_command(target)) is not None
+    )
+    rewrite_target_recipes = frozenset(
+        recipe
+        for target in rewrite_targets
+        if len(target) == 2 and pathlib.PurePath(target[0]).name == "just"
+        for recipe in (target[1], f"{target[1]}-inner")
+    )
+    for command in commands:
+        parsed = parsed_shell_command(command)
+        if parsed is None:
+            raise PreflightError(f"{field} contains an invalid shell command {command!r}")
+        if uses_shell_wrapper_syntax(parsed):
+            raise PreflightError(
+                f"{field} must not use shell wrapper syntax {command!r}; "
+                "use direct verifier commands"
+            )
+        if invokes_reduced_source_fence_command(
+            parsed,
+            rewrite_targets,
+            rewrite_target_recipes,
+        ):
+            raise PreflightError(
+                f"{field} must not use reduced-profile rewrite target {command!r}; "
+                "use the configured rewrite source"
+            )
+
+
+def validate_verifier_profile_commands(
+    profile_name: str,
+    commands: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+) -> None:
+    validate_verifier_commands(
+        f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands",
+        commands,
+        source_fence_fences_only_rewrites,
+    )
+
+
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
+    cheap_gate_labels = cheap_local_gate_labels(root)
     origin = require_string(settings, "origin", "config.merge_queue_preflight")
     base = require_string(settings, "base", "config.merge_queue_preflight")
     default_profile = require_string(
@@ -2029,6 +2194,17 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     profiles_root = require_table(
         settings, "verifier_profiles", "config.merge_queue_preflight"
     )
+    source_fence_full_profile_pathspecs = require_string_tuple(
+        settings,
+        "source_fence_full_profile_pathspecs",
+        "config.merge_queue_preflight",
+    )
+    source_fence_fences_only_rewrites = require_string_map(
+        settings,
+        "source_fence_fences_only_rewrites",
+        "config.merge_queue_preflight",
+    )
+    validate_source_fence_fences_only_rewrites(source_fence_fences_only_rewrites, cheap_gate_labels)
     timeout_settings = require_table(settings, "timeouts", "config.merge_queue_preflight")
     verifier_timeout_seconds = require_positive_int(
         timeout_settings,
@@ -2077,6 +2253,11 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
             raise PreflightError(
                 f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands must be a string array"
             )
+        validate_verifier_profile_commands(
+            profile_name,
+            raw_commands,
+            source_fence_fences_only_rewrites,
+        )
         profiles[profile_name] = tuple(raw_commands)
     if default_profile not in profiles:
         raise PreflightError(
@@ -2087,6 +2268,8 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         base=base,
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
+        source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+        source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
         required_check_workflows=required_check_workflows,
         source_check_aliases=source_check_aliases,
         input_timeout_seconds=input_timeout_seconds,
@@ -2310,6 +2493,11 @@ def run_verifier_commands(
                         if not existing_alternates
                         else f"{alternate_object_dir}{os.pathsep}{existing_alternates}"
                     )
+                print(
+                    f"merge_queue_preflight: verifier running: {command}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 completed = run_command(
                     parts,
                     cwd=worktree,
@@ -2326,6 +2514,13 @@ def run_verifier_commands(
                     classification=verifier_failure_classification(completed.failure_type),
                 )
                 results.append(verifier_result)
+                status = "passed" if verifier_result.returncode == 0 else "failed"
+                print(
+                    "merge_queue_preflight: verifier "
+                    f"{status}: {command} (exit {verifier_result.returncode})",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 if verifier_result.returncode != 0:
                     break
         finally:
@@ -2371,6 +2566,401 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
         "type": result.classification,
         **result.as_public_json(output_policy),
     }
+
+
+def source_fence_fences_only_command(
+    command: str,
+    source_fence_fences_only_rewrites: Mapping[str, str],
+) -> str:
+    """Rewrite configured source-fence commands to their governed reduced-profile recipes."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    if not parts or FENCES_ONLY_FLAG in parts:
+        return command
+    for source, target in source_fence_fences_only_rewrites.items():
+        if tuple(parts) == tuple(shlex.split(source)):
+            return target
+    return command
+
+
+def commit_touches_source_fence_full_profile_path(
+    repo: pathlib.Path,
+    base_sha: str,
+    commit: str,
+    pathspecs: Sequence[str],
+    input_timeout_seconds: int,
+) -> bool:
+    """Return True when the commit changes source-fence governance, failing closed."""
+    completed = git(
+        repo,
+        "diff",
+        "--name-only",
+        base_sha,
+        commit,
+        "--",
+        *pathspecs,
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
+    if completed.returncode != 0 or completed.failure_type == "timeout":
+        return True
+    return any(line.strip() for line in completed.stdout.splitlines())
+
+
+def verifier_commands_for_commit(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    commit: str,
+    commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+    input_timeout_seconds: int,
+) -> tuple[str, ...]:
+    """Select full or fences-only verifier commands for a synthetic commit."""
+    if not commands:
+        return ()
+    if commit_touches_source_fence_full_profile_path(
+        repo,
+        base_sha,
+        commit,
+        source_fence_full_profile_pathspecs,
+        input_timeout_seconds,
+    ):
+        return tuple(commands)
+    return tuple(
+        source_fence_fences_only_command(command, source_fence_fences_only_rewrites)
+        for command in commands
+    )
+
+
+def unverified_batches_for_ready_prs(
+    *,
+    repo: pathlib.Path,
+    requested: Sequence[int],
+    blocked_numbers: set[int],
+    heads: Mapping[int, ExpectedHead],
+    base_commits: Mapping[int, SyntheticCommit],
+    batch_max_limits: Mapping[str, int],
+    input_timeout_seconds: int,
+) -> tuple[list[dict[str, object]], list[Batch]]:
+    """Build optimistic merge batches before running expensive verifier commands."""
+    conflicts: list[dict[str, object]] = []
+    batches: list[Batch] = []
+    current: SyntheticCommit | None = None
+    batch_index = 1
+    for pr in requested:
+        if pr in blocked_numbers:
+            continue
+        pr_head = heads[pr]
+        if current is None:
+            current = base_commits[pr]
+            continue
+        candidate_prs = [*current.prs, pr]
+        if batch_would_exceed_max(candidate_prs, batch_max_limits):
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=(),
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            continue
+        synthetic = synthesize_merge(
+            repo,
+            current.commit,
+            pr_head.sha,
+            candidate_prs,
+            input_timeout_seconds,
+        )
+        if isinstance(synthetic, MergeResult):
+            conflicts.append(
+                {
+                    "pr": pr,
+                    "against_batch": list(current.prs),
+                    "files": list(synthetic.files),
+                    "type": "batch_conflict",
+                }
+            )
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=(),
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            continue
+        current = synthetic
+    if current is not None:
+        batches.append(
+            Batch(
+                index=batch_index,
+                commit=current.commit,
+                prs=current.prs,
+                verifiers=(),
+            )
+        )
+    return conflicts, batches
+
+
+@dataclasses.dataclass(frozen=True)
+class VerifiedBatchFallback:
+    blocked_prs: tuple[dict[str, object], ...]
+    conflicts: tuple[dict[str, object], ...]
+    batches: tuple[Batch, ...]
+
+
+def remaining_batch_prs(candidate_batches: Sequence[Batch], start_index: int) -> tuple[int, ...]:
+    return tuple(pr for batch in candidate_batches[start_index:] for pr in batch.prs)
+
+
+def conflict_against_batch_intersects_prs(conflict: Mapping[str, object], prs: set[int]) -> bool:
+    against_batch = conflict.get("against_batch", ())
+    if not isinstance(against_batch, Sequence) or isinstance(against_batch, str):
+        return False
+    return any(int(pr) in prs for pr in against_batch)
+
+
+def verified_fallback_batches(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    prs: Sequence[int],
+    heads: Mapping[int, ExpectedHead],
+    base_commits: Mapping[int, SyntheticCommit],
+    batch_max_limits: Mapping[str, int],
+    verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+    verifier_timeout_seconds: int,
+    input_timeout_seconds: int,
+    output_policy: OutputPolicy,
+    alternate_object_dir: str | None,
+    start_index: int,
+) -> VerifiedBatchFallback:
+    """Recover from a failed optimistic batch by verifying each PR, then rebuilding batches."""
+    blocked_prs: list[dict[str, object]] = []
+    blocked_numbers: set[int] = set()
+    base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
+    for pr in prs:
+        synthetic = base_commits[pr]
+        verifier_results = run_verifier_commands(
+            repo,
+            synthetic.commit,
+            verifier_commands_for_commit(
+                repo=repo,
+                base_sha=base_sha,
+                commit=synthetic.commit,
+                commands=verifier_commands,
+                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
+                input_timeout_seconds=input_timeout_seconds,
+            ),
+            verifier_timeout_seconds,
+            input_timeout_seconds,
+            alternate_object_dir,
+        )
+        failed = first_failed_verifier(verifier_results)
+        if failed is not None:
+            blocked_prs.append(verifier_block(pr, failed, output_policy))
+            blocked_numbers.add(pr)
+            continue
+        base_verifiers[pr] = verifier_results
+
+    conflicts: list[dict[str, object]] = []
+    batches: list[Batch] = []
+    current: SyntheticCommit | None = None
+    current_verifiers: tuple[VerifierResult, ...] = ()
+    batch_index = start_index
+    for pr in prs:
+        if pr in blocked_numbers:
+            continue
+        pr_head = heads[pr]
+        if current is None:
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        candidate_prs = [*current.prs, pr]
+        if batch_would_exceed_max(candidate_prs, batch_max_limits):
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        synthetic = synthesize_merge(
+            repo,
+            current.commit,
+            pr_head.sha,
+            candidate_prs,
+            input_timeout_seconds,
+        )
+        if isinstance(synthetic, MergeResult):
+            conflicts.append(
+                {
+                    "pr": pr,
+                    "against_batch": list(current.prs),
+                    "files": list(synthetic.files),
+                    "type": "batch_conflict",
+                }
+            )
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        candidate_verifiers = run_verifier_commands(
+            repo,
+            synthetic.commit,
+            verifier_commands_for_commit(
+                repo=repo,
+                base_sha=base_sha,
+                commit=synthetic.commit,
+                commands=verifier_commands,
+                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
+                input_timeout_seconds=input_timeout_seconds,
+            ),
+            verifier_timeout_seconds,
+            input_timeout_seconds,
+            alternate_object_dir,
+        )
+        failed = first_failed_verifier(candidate_verifiers)
+        if failed is not None:
+            conflicts.append(
+                {
+                    "pr": pr,
+                    "against_batch": list(current.prs),
+                    "type": batch_verifier_artifact_type(failed),
+                    **failed.as_public_json(output_policy),
+                }
+            )
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        current = synthetic
+        current_verifiers = candidate_verifiers
+    if current is not None:
+        batches.append(
+            Batch(
+                index=batch_index,
+                commit=current.commit,
+                prs=current.prs,
+                verifiers=current_verifiers,
+            )
+        )
+    return VerifiedBatchFallback(
+        blocked_prs=tuple(blocked_prs),
+        conflicts=tuple(conflicts),
+        batches=tuple(batches),
+    )
+
+
+def verify_final_batches_with_fallback(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    candidate_batches: Sequence[Batch],
+    heads: Mapping[int, ExpectedHead],
+    base_commits: Mapping[int, SyntheticCommit],
+    batch_max_limits: Mapping[str, int],
+    verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
+    verifier_timeout_seconds: int,
+    input_timeout_seconds: int,
+    output_policy: OutputPolicy,
+    alternate_object_dir: str | None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch], set[int]]:
+    """Verify optimistic batches, falling back over the remaining suffix after the first failure."""
+    blocked_prs: list[dict[str, object]] = []
+    conflicts: list[dict[str, object]] = []
+    batches: list[Batch] = []
+    fallback_suffix_prs: set[int] = set()
+    batch_index = 1
+    for candidate_index, batch in enumerate(candidate_batches):
+        verifier_results = run_verifier_commands(
+            repo,
+            batch.commit,
+            verifier_commands_for_commit(
+                repo=repo,
+                base_sha=base_sha,
+                commit=batch.commit,
+                commands=verifier_commands,
+                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
+                input_timeout_seconds=input_timeout_seconds,
+            ),
+            verifier_timeout_seconds,
+            input_timeout_seconds,
+            alternate_object_dir,
+        )
+        failed = first_failed_verifier(verifier_results)
+        if failed is None:
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=batch.commit,
+                    prs=batch.prs,
+                    verifiers=verifier_results,
+                )
+            )
+            batch_index += 1
+            continue
+        suffix_prs = remaining_batch_prs(candidate_batches, candidate_index)
+        fallback_suffix_prs = set(suffix_prs)
+        fallback = verified_fallback_batches(
+            repo=repo,
+            base_sha=base_sha,
+            prs=suffix_prs,
+            heads=heads,
+            base_commits=base_commits,
+            batch_max_limits=batch_max_limits,
+            verifier_commands=verifier_commands,
+            source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+            source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
+            verifier_timeout_seconds=verifier_timeout_seconds,
+            input_timeout_seconds=input_timeout_seconds,
+            output_policy=output_policy,
+            alternate_object_dir=alternate_object_dir,
+            start_index=batch_index,
+        )
+        blocked_prs.extend(fallback.blocked_prs)
+        conflicts.extend(fallback.conflicts)
+        batches.extend(fallback.batches)
+        batch_index += len(fallback.batches)
+        break
+    return blocked_prs, conflicts, batches, fallback_suffix_prs
 
 
 def gh_json(
@@ -2776,6 +3366,8 @@ def preflight(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
@@ -2792,6 +3384,8 @@ def preflight(
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
             verifier_commands=verifier_commands,
+            source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+            source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
             input_timeout_seconds=input_timeout_seconds,
             verifier_timeout_seconds=verifier_timeout_seconds,
             required_check_workflows=required_check_workflows,
@@ -2812,6 +3406,8 @@ def preflight_with_fetch_refs(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    source_fence_full_profile_pathspecs: Sequence[str],
+    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
@@ -2875,7 +3471,6 @@ def preflight_with_fetch_refs(
     )
     batch_max_limits = mergify_batch_limits(mergify_findings)
     base_commits: dict[int, SyntheticCommit] = {}
-    base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
     for pr in requested:
         if pr in blocked_numbers:
             continue
@@ -2892,118 +3487,38 @@ def preflight_with_fetch_refs(
             )
             blocked_numbers.add(pr)
             continue
-        verifier_results = run_verifier_commands(
-            git_repo,
-            synthetic.commit,
-            verifier_commands,
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-            fetch_refs.source_objects,
-        )
-        failed = first_failed_verifier(verifier_results)
-        if failed is not None:
-            blocked_prs.append(verifier_block(pr, failed, output_policy))
-            blocked_numbers.add(pr)
-            continue
         base_commits[pr] = synthetic
-        base_verifiers[pr] = verifier_results
-
-    conflicts: list[dict[str, object]] = []
-    batches: list[Batch] = []
-    current: SyntheticCommit | None = None
-    current_verifiers: tuple[VerifierResult, ...] = ()
-    batch_index = 1
-    for pr in requested:
-        if pr in blocked_numbers:
-            continue
-        pr_head = heads[pr]
-        if current is None:
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        candidate_prs = [*current.prs, pr]
-        if batch_would_exceed_max(candidate_prs, batch_max_limits):
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        synthetic = synthesize_merge(
-            git_repo,
-            current.commit,
-            pr_head.sha,
-            candidate_prs,
-            input_timeout_seconds,
-        )
-        if isinstance(synthetic, MergeResult):
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "files": list(synthetic.files),
-                    "type": "batch_conflict",
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        candidate_verifiers = run_verifier_commands(
-            git_repo,
-            synthetic.commit,
-            verifier_commands,
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-            fetch_refs.source_objects,
-        )
-        failed = first_failed_verifier(candidate_verifiers)
-        if failed is not None:
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "type": batch_verifier_artifact_type(failed),
-                    **failed.as_public_json(output_policy),
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        current = synthetic
-        current_verifiers = candidate_verifiers
-    if current is not None:
-        batches.append(
-            Batch(
-                index=batch_index,
-                commit=current.commit,
-                prs=current.prs,
-                verifiers=current_verifiers,
-            )
-        )
+    conflicts, candidate_batches = unverified_batches_for_ready_prs(
+        repo=git_repo,
+        requested=requested,
+        blocked_numbers=blocked_numbers,
+        heads=heads,
+        base_commits=base_commits,
+        batch_max_limits=batch_max_limits,
+        input_timeout_seconds=input_timeout_seconds,
+    )
+    fallback_blocked_prs, fallback_conflicts, batches, fallback_suffix_prs = verify_final_batches_with_fallback(
+        repo=git_repo,
+        base_sha=base_sha,
+        candidate_batches=candidate_batches,
+        heads=heads,
+        base_commits=base_commits,
+        batch_max_limits=batch_max_limits,
+        verifier_commands=verifier_commands,
+        source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
+        source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
+        verifier_timeout_seconds=verifier_timeout_seconds,
+        input_timeout_seconds=input_timeout_seconds,
+        output_policy=output_policy,
+        alternate_object_dir=fetch_refs.source_objects,
+    )
+    conflicts = [
+        conflict
+        for conflict in conflicts
+        if not conflict_against_batch_intersects_prs(conflict, fallback_suffix_prs)
+    ]
+    blocked_prs.extend(fallback_blocked_prs)
+    conflicts.extend(fallback_conflicts)
     contract_findings = (
         *base_identity_findings(
             expected_base_sha=expected_base_sha,
@@ -3183,6 +3698,11 @@ def verifier_commands(config: PreflightConfig, profile: str | None, extra: Seque
     selected = profile or config.default_verifier_profile
     if selected not in config.verifier_profiles:
         raise PreflightError(f"unknown verifier profile {selected!r}")
+    validate_verifier_commands(
+        "--run-verifier",
+        extra,
+        config.source_fence_fences_only_rewrites,
+    )
     return (*config.verifier_profiles[selected], *extra)
 
 
@@ -3198,6 +3718,8 @@ def main(argv: list[str] | None = None) -> int:
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
+            source_fence_full_profile_pathspecs=config.source_fence_full_profile_pathspecs,
+            source_fence_fences_only_rewrites=config.source_fence_fences_only_rewrites,
             input_timeout_seconds=config.input_timeout_seconds,
             verifier_timeout_seconds=config.verifier_timeout_seconds,
             required_check_workflows=config.required_check_workflows,

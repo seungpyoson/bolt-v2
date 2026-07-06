@@ -136,7 +136,8 @@ use crate::{
         BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
         BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
         BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
+        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
         read_submit_reservation_recovery_evidence,
@@ -174,7 +175,7 @@ use crate::{
     },
     bolt_v3_loss_protection::{
         KillSwitchLossAction, KillSwitchLossActionKind, KillSwitchLossActionSink,
-        KillSwitchLossProtection, KillSwitchLossProtectionConfig,
+        KillSwitchLossProtection, KillSwitchLossProtectionConfig, PositionRealizedPnlObservation,
     },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
@@ -198,6 +199,10 @@ use crate::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
+    },
+    bolt_v3_settlement_runtime::{
+        BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSink,
+        BoltV3SettlementRuntimeSinkBackends, BoltV3SettlementRuntimeSinkHandle,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
@@ -258,7 +263,8 @@ use risk_admission_loss::{
     loss_governor_halt_action_policy_from_loaded, loss_governor_policy_from_loaded,
     loss_governor_runtime_feed_config_from_loaded, order_reject_observer_account_id_from_loaded,
     recover_kill_switch_state_before_live_node_build,
-    refresh_capital_admission_venue_spendability_from_source, spawn_venue_truth_runtime,
+    refresh_capital_admission_venue_spendability_from_source,
+    settlement_recovery_config_from_loaded, spawn_venue_truth_runtime,
     submit_reservation_recovery_config_from_loaded, sync_nt_trading_state_for_kill_switch,
     venue_truth_runtime_config_from_loaded, wire_bolt_v3_loss_protection_runtime,
 };
@@ -423,10 +429,90 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> Result<()> {
         // Deliberate no-op: strategy-free live nodes do not create decision evidence.
         Ok(())
     }
+}
+
+type BoltV3LiveSettlementLossProtectionSlot =
+    Rc<RefCell<Option<Rc<RefCell<KillSwitchLossProtection>>>>>;
+
+#[derive(Clone)]
+struct BoltV3LiveSettlementRuntimeSink {
+    loss_protection: Option<BoltV3LiveSettlementLossProtectionSlot>,
+    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+}
+
+impl std::fmt::Debug for BoltV3LiveSettlementRuntimeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoltV3LiveSettlementRuntimeSink")
+            .field(
+                stringify!(loss_protection),
+                &self
+                    .loss_protection
+                    .as_ref()
+                    .is_some_and(|loss_protection| loss_protection.borrow().is_some()),
+            )
+            .field(
+                stringify!(capital_admission_runtime_feed),
+                &self.capital_admission_runtime_feed.is_some(),
+            )
+            .finish()
+    }
+}
+
+impl BoltV3SettlementRuntimeSink for BoltV3LiveSettlementRuntimeSink {
+    fn record_loss_governor_position_realized_pnl(
+        &self,
+        observation: PositionRealizedPnlObservation,
+    ) -> Result<()> {
+        if let Some(loss_protection) = self.loss_protection.as_ref()
+            && let Some(loss_protection) = loss_protection.borrow().as_ref()
+        {
+            loss_protection
+                .borrow_mut()
+                .record_position_realized_pnl(observation)?;
+        }
+        Ok(())
+    }
+
+    fn record_venue_truth_settlement(
+        &self,
+        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    ) -> Result<()> {
+        if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
+            feed.lock()
+                .expect("capital admission runtime feed lock poisoned")
+                .record_venue_truth_settlement(explanation)?;
+        }
+        Ok(())
+    }
+}
+
+fn settlement_runtime_sink_handle(
+    loss_protection: Option<BoltV3LiveSettlementLossProtectionSlot>,
+    capital_admission_runtime_feed: Option<&Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+) -> Option<BoltV3SettlementRuntimeSinkHandle> {
+    if loss_protection.is_none() && capital_admission_runtime_feed.is_none() {
+        return None;
+    }
+    let sink: BoltV3SettlementRuntimeSinkHandle = Rc::new(BoltV3LiveSettlementRuntimeSink {
+        loss_protection,
+        capital_admission_runtime_feed: capital_admission_runtime_feed.cloned(),
+    });
+    Some(sink)
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
@@ -2263,10 +2349,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
             loaded.root.runtime.order_execution_mode,
         );
-    let strategy_execution_controls = BoltV3StrategyExecutionControls {
-        submit_admission: submit_admission.clone(),
-        order_execution_policy,
-    };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -2294,6 +2376,36 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 .expect("node-scoped runtime source announcement should serialize")
         );
     }
+    let settlement_loss_protection_slot: BoltV3LiveSettlementLossProtectionSlot =
+        Rc::new(RefCell::new(None));
+    let settlement_runtime_sink_backends =
+        BoltV3SettlementRuntimeSinkBackends::from_root(&loaded.root);
+    debug_assert!(
+        !settlement_runtime_sink_backends.capital_admission_runtime_feed()
+            || capital_admission_runtime_feed.is_some(),
+        "capital-admission settlement sink backend must match runtime feed construction"
+    );
+    let settlement_runtime_sink = settlement_runtime_sink_handle(
+        settlement_runtime_sink_backends
+            .loss_protection()
+            .then(|| settlement_loss_protection_slot.clone()),
+        settlement_runtime_sink_backends
+            .capital_admission_runtime_feed()
+            .then_some(capital_admission_runtime_feed.as_ref())
+            .flatten(),
+    );
+    debug_assert_eq!(
+        settlement_runtime_sink.is_some(),
+        settlement_runtime_sink_backends.will_configure_runtime_sink()
+    );
+    let settlement_recovery =
+        settlement_recovery_config_from_loaded(loaded, settlement_runtime_sink.is_some())?;
+    let strategy_execution_controls = BoltV3StrategyExecutionControls {
+        submit_admission: submit_admission.clone(),
+        order_execution_policy,
+        settlement_runtime_sink,
+        settlement_recovery,
+    };
     let iv_runtime = loaded
         .root
         .iv
@@ -2413,7 +2525,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         decision_evidence.clone(),
         submit_admission.clone(),
     )?;
+    debug_assert!(
+        !settlement_runtime_sink_backends.loss_protection() || loss_protection.is_some(),
+        "kill-switch settlement sink backend must match loss-protection construction"
+    );
     if let Some(protection) = loss_protection.as_ref() {
+        *settlement_loss_protection_slot.borrow_mut() = Some(protection.clone());
         let seeded_state = protection.borrow().state().clone();
         sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
     }

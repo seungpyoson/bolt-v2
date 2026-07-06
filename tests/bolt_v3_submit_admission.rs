@@ -9,7 +9,8 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
     BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
     BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource,
-    BoltV3RequoteThrottleEvidence, BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
+    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
@@ -1217,6 +1218,17 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
         Err(anyhow::anyhow!("synthetic requote-throttle write failure"))
     }
 
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1369,6 +1381,17 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
         ))
     }
 
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1487,6 +1510,17 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
     fn record_requote_throttle(
         &self,
         _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1614,6 +1648,17 @@ impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
     fn record_requote_throttle(
         &self,
         _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        _evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }

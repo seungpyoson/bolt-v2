@@ -19156,6 +19156,14 @@ reason = '''Stable gate identifier stamped on durable maker requote-throttle evi
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''
 kind = '''string'''
+literal = '''"bolt_v3.settlement"'''
+context = '''pub const BOLT_V3_SETTLEMENT_GATE_ID: &str = "bolt_v3.settlement";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable settlement and settlement booking-error evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
 literal = '''"entry_skip"'''
 context = '''pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";'''
 classification = '''decision_evidence_record_kind'''
@@ -19188,10 +19196,34 @@ reason = '''JSONL envelope discriminator for maker requote-throttle evidence rec
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''
 kind = '''string'''
+literal = '''"settlement"'''
+context = '''pub const BOLT_V3_SETTLEMENT_RECORD_KIND: &str = "settlement";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for successful settlement evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"settlement_booking_error"'''
+context = '''pub const BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND: &str = "settlement_booking_error";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for accepted fail-closed settlement booking-error evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
 literal = '''"loss_governor"'''
 context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";'''
 classification = '''decision_evidence_subsystem_label'''
 reason = '''Stable subsystem label embedded in durable loss-governor halt evidence so operators can distinguish the firing subsystem; it is evidence schema text, not runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"duplicate settlement key `{settlement_key}` in bolt-v3 settlement evidence"'''
+context = '''anyhow!("duplicate settlement key `{settlement_key}` in bolt-v3 settlement evidence")'''
+classification = '''decision_evidence_duplicate_settlement_key_diagnostic'''
+reason = '''Fail-closed diagnostic for ambiguous settlement idempotency evidence during recovery; operator settlement keys are derived from positions, not configured by this literal.'''
 
 [[allowed]]
 path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
@@ -19965,6 +19997,14 @@ reason = "Stable source label for lifecycle evidence emitted from the strategy o
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"settlement_evidence_recovery"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when settlement evidence recovery fails closed; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"preserved fail-closed: fill observed, awaiting position truth"'''
 context = '''"preserved fail-closed: fill observed, awaiting position truth";'''
 classification = "order_lifecycle_recovery_reason_label"
@@ -19981,6 +20021,14 @@ reason = "Stable recovery evidence reason for restart cache probe failure; it di
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"settlement_evidence_recovery_failed"'''
+context = '''raw_reason_text: Some("settlement_evidence_recovery_failed".to_string()),'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for settlement evidence recovery failure; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"unattributed_open_exit_order"'''
 context = '''raw_reason_text: Some("unattributed_open_exit_order".to_string()),'''
 classification = "order_lifecycle_recovery_reason_label"
@@ -19993,6 +20041,14 @@ literal = '''"ambiguous_open_exit_orders"'''
 context = '''raw_reason_text: Some("ambiguous_open_exit_orders".to_string()),'''
 classification = "order_lifecycle_recovery_reason_label"
 reason = "Stable recovery evidence reason for multiple attributed restart open exit orders; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"settlement product id is unbound for instrument `{}`"'''
+context = '''"settlement product id is unbound for instrument `{}`",'''
+classification = "settlement_fail_closed_diagnostic_template"
+reason = "Fail-closed diagnostic emitted when a settlement instrument cannot be structurally mapped into the prediction-market product-id domain; the product id itself remains venue/instrument-derived."
 
 [[allowed]]
 path = "src/bolt_v3_capital_admission_state.rs"
@@ -20273,6 +20329,14 @@ literal = "1"
 context = '''self.next_capture_number += 1;'''
 classification = "venue_truth_capture_sequence_increment"
 reason = "Structural unit increment assigning the next per-account venue capture ordinal; capture cadence remains TOML-owned and no tolerance is introduced."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"settlement lot market id is bound"'''
+context = '''"settlement lot market id is bound"'''
+classification = "venue_truth_debug_invariant_message"
+reason = "Debug assertion text for the invariant that settlement lots accepted by record_settlement carry a bound market id; it is not a venue, market, or runtime setting."
 
 [[allowed]]
 path = "src/bolt_v3_kill_switch.rs"

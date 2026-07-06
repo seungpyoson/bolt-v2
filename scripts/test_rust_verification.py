@@ -1525,6 +1525,8 @@ def assert_managed_env_scrubs_then_injects_fast_linker_wrapper() -> None:
             (["-MM", "input.c"], "user-dependency-only"),
             (["-print-prog-name=ld"], "compiler-query"),
             (["-dumpmachine"], "compiler-query"),
+            (["-dumpspecs"], "compiler-query"),
+            (["--help=warnings"], "compiler-query"),
             (["--version"], "compiler-query"),
             (["-fuse-ld=gold", "input.o", "-o", "output"], "explicit-linker"),
         ]

@@ -1055,7 +1055,7 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
                 "    -Xassembler|-Xclang|-Xlinker|-Xpreprocessor)",
                 "      skip_next=1",
                 "      ;;",
-                "    -c|-S|-E|-M|-MM|--help|--version|-###|-dumpmachine|-dumpversion|-dumpfullversion|-print-*|-fuse-ld=*)",
+                "    -c|-S|-E|-M|-MM|--help|--help=*|--version|-###|-dumpmachine|-dumpversion|-dumpfullversion|-dumpspecs|-print-*|-fuse-ld=*)",
                 '      exec "$real_cc" "$@"',
                 "      ;;",
                 "  esac",

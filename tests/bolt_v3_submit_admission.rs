@@ -1228,6 +1228,10 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1387,6 +1391,10 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -1514,6 +1522,10 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
         &self,
         _evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -1648,6 +1660,10 @@ impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
         &self,
         _evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

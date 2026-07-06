@@ -1457,6 +1457,10 @@ mod tests {
                 "recording order-execution writer received settlement booking-error evidence"
             )
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug, Default)]

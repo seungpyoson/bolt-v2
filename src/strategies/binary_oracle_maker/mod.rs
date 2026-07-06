@@ -1173,6 +1173,11 @@ mod tests {
         ) -> Result<()> {
             anyhow::bail!("maker noop writer received settlement booking-error evidence")
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            // Deliberate no-op: this test fixture never owns durable evidence.
+            Ok(())
+        }
     }
 
     fn test_context() -> StrategyBuildContext {

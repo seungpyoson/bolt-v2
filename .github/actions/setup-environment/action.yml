@@ -33,6 +33,10 @@ inputs:
     description: Whether to resolve the managed target dir.
     required: false
     default: "false"
+  install-rust-linker:
+    description: Whether to install the configured Rust fast linker.
+    required: false
+    default: "false"
   build-jobs-key:
     description: Optional ci/github-actions-runners.toml cargo_build_jobs key to export as CARGO_BUILD_JOBS.
     required: false
@@ -125,6 +129,31 @@ runs:
           echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
           echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
+
+    - name: Install Rust linker
+      if: ${{ inputs.install-rust-linker == 'true' }}
+      shell: bash
+      run: |
+        mapfile -t rust_linker_programs < <(python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
+        if [ "${#rust_linker_programs[@]}" -eq 0 ]; then
+          echo "::error::remote_fast_linker has no configured programs"
+          exit 1
+        fi
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if command -v "$rust_linker_program" >/dev/null; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
+        sudo apt-get update
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
+        echo "::error::failed to install any configured Rust linker"
+        exit 1
 
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}

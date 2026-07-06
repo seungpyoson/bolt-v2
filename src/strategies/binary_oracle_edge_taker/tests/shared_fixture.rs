@@ -287,6 +287,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -398,6 +402,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
         anyhow::bail!("settlement booking-error write failed")
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -528,6 +536,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -768,6 +780,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         self.push_settlement_booking_error(evidence.reason);
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -870,7 +886,9 @@ fn fixture_settlement_identity() -> (String, Currency) {
         .expect("bolt-v3 fixture root should declare a capital pool for the fixture venue");
     (
         pool.account_id.to_string(),
-        Currency::from(pool.collateral_currency.as_str()),
+        crate::bolt_v3_archetypes::binary_oracle_edge_taker::settlement_currency_from_config_code(
+            pool.collateral_currency.as_str(),
+        ),
     )
 }
 

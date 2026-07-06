@@ -575,6 +575,7 @@ fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backtesting_vertical_slice::backfill_execution_plan::BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION;
     use clap::error::ErrorKind;
 
     const COMMITTED_RUN_SPEC: &str = include_str!(
@@ -616,7 +617,13 @@ mod tests {
             }],
             "blocking_issues": []
         });
-        fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact(
+            &path,
+            BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+            &plan,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        )
+        .unwrap();
         path
     }
 
@@ -1004,9 +1011,11 @@ table_families = ["trades"]
             }],
             "blocking_issues": []
         });
-        fs::write(
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len(
             &execution_plan_path,
-            serde_json::to_vec_pretty(&execution_plan).unwrap(),
+            BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+            &execution_plan,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
         )
         .unwrap();
         let cli = Cli {
@@ -1043,9 +1052,11 @@ table_families = ["trades"]
             serde_json::from_slice(&fs::read(&execution_plan_path).unwrap()).unwrap();
         execution_plan["table_family"] =
             serde_json::Value::String(format!("{}-mismatch", spec.source_proof.table_family));
-        fs::write(
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len(
             &execution_plan_path,
-            serde_json::to_vec_pretty(&execution_plan).unwrap(),
+            BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+            &execution_plan,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
         )
         .unwrap();
         let cli = Cli {

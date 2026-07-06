@@ -490,7 +490,16 @@ fn settlement_currency_for_execution_account(
                 && pool.venue_id == execution_venue.as_str()
                 && pool.account_id.to_string() == account_id
         })
-        .map(|pool| Currency::from(pool.collateral_currency.as_str()))
+        .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
+}
+
+pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Currency {
+    let pusd = Currency::pUSD();
+    if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
+        pusd
+    } else {
+        Currency::from(configured)
+    }
 }
 
 #[cfg(test)]
@@ -533,7 +542,9 @@ mod tests {
         assert_eq!(pool.account_id.to_string(), account_id);
         assert_eq!(
             settlement_currency_for_execution_account(&loaded.root, execution_venue, account_id),
-            Some(Currency::from(pool.collateral_currency.as_str()))
+            Some(settlement_currency_from_config_code(
+                pool.collateral_currency.as_str()
+            ))
         );
     }
 }

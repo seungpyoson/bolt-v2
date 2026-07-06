@@ -549,6 +549,11 @@ mod tests {
         ) -> Result<()> {
             anyhow::bail!("registry noop writer received settlement booking-error evidence")
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            // Deliberate no-op: this registry fixture never owns durable evidence.
+            Ok(())
+        }
     }
 
     #[derive(Debug)]

@@ -316,6 +316,10 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .push(evidence.clone());
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Records every order-reject sink attempt but errors on `record_order_reject`,
@@ -444,6 +448,10 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

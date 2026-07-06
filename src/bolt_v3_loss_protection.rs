@@ -1108,5 +1108,10 @@ mod tests {
         ) -> Result<()> {
             anyhow::bail!("loss-protection noop writer received settlement booking-error evidence")
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            // Deliberate no-op: this loss-protection fixture never owns durable evidence.
+            Ok(())
+        }
     }
 }

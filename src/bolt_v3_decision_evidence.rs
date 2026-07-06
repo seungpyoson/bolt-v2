@@ -154,6 +154,7 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         let _ = evidence;
         Ok(())
     }
+    fn drain_shutdown(&self) -> Result<()>;
 }
 
 /// Risk direction of a runtime trading decision, used by [`commit_decision`]
@@ -1810,6 +1811,7 @@ pub enum BoltV3OrderLifecycleTransition {
     BoundaryReclassification,
     EntryFillMaterialized,
     EntryReconcilePending,
+    PositionTruthRematerialized,
     PositionClosed,
     ResidualRemanaged,
     RestartOpenOrderAdopted,
@@ -1883,6 +1885,16 @@ impl JsonlBoltV3DecisionEvidenceWriter {
             .context("failed to write decision evidence record")?;
         file.sync_data()
             .context("failed to sync decision evidence to disk")?;
+        Ok(())
+    }
+
+    pub fn drain_shutdown(&self) -> Result<()> {
+        let file = self
+            .file
+            .lock()
+            .map_err(|_| anyhow!("decision evidence writer lock is poisoned"))?;
+        file.sync_all()
+            .context("failed to drain decision evidence to disk")?;
         Ok(())
     }
 }
@@ -1997,6 +2009,10 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     fn record_venue_truth_divergence(&self, evidence: &VenueTruthDivergenceEvidence) -> Result<()> {
         let line = encode_venue_truth_divergence_line(evidence)?;
         self.append_line(&line)
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        JsonlBoltV3DecisionEvidenceWriter::drain_shutdown(self)
     }
 }
 

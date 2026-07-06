@@ -1199,6 +1199,10 @@ impl BoltV3DecisionEvidenceWriter for RecordingLossHaltEvidenceWriter {
         self.increment_other_evidence_channel();
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn loss_policy() -> LossGovernorPolicy {

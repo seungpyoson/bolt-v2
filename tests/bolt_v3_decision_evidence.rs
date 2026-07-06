@@ -937,6 +937,25 @@ fn read_decision_evidence_json_lines(path: &std::path::Path) -> Vec<serde_json::
         .collect()
 }
 
+#[test]
+fn jsonl_decision_evidence_shutdown_drain_succeeds_after_record_write() {
+    let (_temp, path, writer) = temp_decision_evidence_writer("decision-evidence-shutdown-drain");
+
+    writer
+        .record_entry_skip(&sample_entry_skip_evidence())
+        .expect("entry-skip evidence should write");
+    writer
+        .drain_shutdown()
+        .expect("shutdown drain must fail loudly only when disk sync fails");
+
+    let lines = read_decision_evidence_json_lines(&path);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0]["kind"],
+        serde_json::Value::String("entry_skip".to_string())
+    );
+}
+
 fn append_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     use std::io::Write;
 
@@ -1952,6 +1971,11 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         &self,
         _evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        // Deliberate no-op: this path fixture never owns durable evidence.
         Ok(())
     }
 }

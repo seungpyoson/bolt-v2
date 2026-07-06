@@ -839,22 +839,23 @@ pub async fn persist_catalog_projection_for_source_binding(
     let manifest_uri =
         artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
     let manifest_path = artifact_root.object_path_for_uri(&manifest_uri)?;
-    let manifest_payload = serde_json::to_vec_pretty(&CatalogProjectionManifestDocument {
-        schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION,
-        catalog_root_uri: catalog_root_uri.as_str(),
-        manifest_sha256: manifest_sha256.as_str(),
-        binding: &binding,
-        objects: objects
-            .iter()
-            .map(|object| CatalogProjectionManifestObject {
-                relative_path: object.relative_path.as_str(),
-                uri: object.uri.as_str(),
-                sha256: object.sha256.as_str(),
-                byte_len: object.byte_len,
-            })
-            .collect(),
-    })
-    .context("serialize catalog projection manifest")?;
+    let manifest_payload =
+        crate::reference_artifact::canonical_json_bytes(&CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION,
+            catalog_root_uri: catalog_root_uri.as_str(),
+            manifest_sha256: manifest_sha256.as_str(),
+            binding: &binding,
+            objects: objects
+                .iter()
+                .map(|object| CatalogProjectionManifestObject {
+                    relative_path: object.relative_path.as_str(),
+                    uri: object.uri.as_str(),
+                    sha256: object.sha256.as_str(),
+                    byte_len: object.byte_len,
+                })
+                .collect(),
+        })
+        .context("serialize catalog projection manifest")?;
     let (_version, manifest_create_only_write) = writer
         .put_create_idempotent_with_disposition(&manifest_path, manifest_payload)
         .await

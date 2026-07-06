@@ -13,6 +13,10 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_iv::config::IvRootConfig;
 use crate::bolt_v3_iv::error::IvRejectReason;
 use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
+use crate::bolt_v3_operator_health::{
+    BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3OperatorHealthSurface,
+    BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
+};
 use crate::bolt_v3_providers::hyperliquid::{
     ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
 };
@@ -36,6 +40,25 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
+const PRODUCER_STOPPED_EVENT: &str = "producer_stopped";
+const DRAIN_SHUTDOWN_EVENT: &str = "drain_shutdown";
+
+struct RecordingProducerStopper {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl BoltV3DecisionEvidenceProducerStopper for RecordingProducerStopper {
+    fn stop_before_decision_evidence_drain(
+        self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("test event log lock should be available")
+                .push(PRODUCER_STOPPED_EVENT);
+        })
+    }
+}
 
 mod data_client_probe;
 mod fixtures;
@@ -48,3 +71,222 @@ mod strategy_free_probe;
 mod transport_scope;
 
 use fixtures::*;
+
+#[test]
+fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
+    let writer = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
+        writer.clone(),
+        AccountId::from("ACCOUNT-POISON"),
+    )));
+    let poison_feed = feed.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _guard = poison_feed
+            .lock()
+            .expect("test should acquire feed lock before poisoning it");
+        panic!("poison reject feed");
+    }));
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer);
+
+    let surface = live_operator_health_surface(Some(&feed), &submit_admission, false, 0, None);
+
+    assert_eq!(
+        surface.reject_observer.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert_eq!(
+        surface.reject_observer.read_error.as_deref(),
+        Some(OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR)
+    );
+}
+
+#[test]
+fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth_read_error() {
+    let writer = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    let capital_admission = capital_admission_config_from_loaded(&loaded)
+        .expect("fixture capital admission config should parse")
+        .expect("fixture should configure venue-truth capital admission");
+    let submit_admission =
+        BoltV3SubmitAdmissionState::new_with_capital_admission(writer, capital_admission);
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        submit_admission.poison_inner_for_test();
+    }));
+    assert!(poisoned.is_err());
+
+    let surface = live_operator_health_surface(None, &submit_admission, true, 0, None);
+
+    assert_eq!(
+        surface.venue_truth.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert_eq!(
+        surface.venue_truth.read_error.as_deref(),
+        Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
+    );
+}
+
+#[test]
+fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface() {
+    let logger = BoltV3OperatorHealthTransitionLogger::new();
+    let nominal = BoltV3OperatorHealthSurface::not_configured();
+    let changed = BoltV3OperatorHealthSurface::from_parts(
+        BoltV3RejectObserverHealth::unobserved(),
+        BoltV3VenueTruthHealth::not_configured(),
+        BoltV3InputHealth::not_configured(),
+    );
+
+    assert_eq!(
+        logger.emit_surface(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP, nominal.clone()),
+        BoltV3OperatorHealthTransitionEmission::Emitted
+    );
+    assert_eq!(
+        logger.emit_surface(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP, nominal),
+        BoltV3OperatorHealthTransitionEmission::Deduped
+    );
+    assert_eq!(
+        logger.emit_surface(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP, changed),
+        BoltV3OperatorHealthTransitionEmission::Emitted
+    );
+}
+
+#[test]
+fn operator_health_transition_logger_survives_poisoned_cache_lock() {
+    let logger = BoltV3OperatorHealthTransitionLogger::new();
+    let poison_logger = logger.clone();
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _guard = poison_logger
+            .last_surface
+            .lock()
+            .expect("test should acquire logger lock before poisoning it");
+        panic!("poison operator health transition logger");
+    }));
+    assert!(poisoned.is_err());
+
+    let emission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        logger.emit_surface(
+            OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP,
+            BoltV3OperatorHealthSurface::not_configured(),
+        )
+    }));
+
+    assert_eq!(
+        emission.expect("poisoned logger lock must not panic"),
+        BoltV3OperatorHealthTransitionEmission::LoggerLockPoisoned
+    );
+}
+
+#[tokio::test]
+async fn decision_evidence_shutdown_drain_stops_producers_first() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let producer_guards = RecordingProducerStopper {
+        events: Arc::clone(&events),
+    };
+
+    drain_after_stopping_decision_evidence_producers(producer_guards, || {
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .push(DRAIN_SHUTDOWN_EVENT);
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .expect("test drain should succeed");
+
+    assert_eq!(
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .as_slice(),
+        [PRODUCER_STOPPED_EVENT, DRAIN_SHUTDOWN_EVENT]
+    );
+}
+
+#[tokio::test]
+async fn producer_stop_event_records_when_stop_future_completes() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let producer_guards = RecordingProducerStopper {
+        events: Arc::clone(&events),
+    };
+
+    let stop_future = producer_guards.stop_before_decision_evidence_drain();
+    assert!(
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .is_empty(),
+        "producer stop must not be recorded before the stop future completes"
+    );
+
+    stop_future.await;
+
+    assert_eq!(
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .as_slice(),
+        [PRODUCER_STOPPED_EVENT]
+    );
+}
+
+#[test]
+fn shutdown_classifier_surfaces_drain_failure_after_clean_run_and_capture() {
+    let error = classify_live_node_shutdown(
+        Ok(()),
+        Ok(()),
+        Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(
+            anyhow::anyhow!("drain failed"),
+        )),
+    )
+    .expect_err("drain failure must be surfaced");
+
+    assert!(matches!(
+        error,
+        BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(_)
+    ));
+}
+
+#[test]
+fn shutdown_classifier_composes_runtime_failure_with_drain_failure() {
+    let error = classify_live_node_shutdown(
+        Err(BoltV3LiveNodeError::RuntimeCaptureShutdown(
+            anyhow::anyhow!("capture failed"),
+        )),
+        Ok(()),
+        Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(
+            anyhow::anyhow!("drain failed"),
+        )),
+    )
+    .expect_err("runtime and drain failures must compose");
+
+    assert!(matches!(
+        error,
+        BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain { .. }
+    ));
+    assert!(error.to_string().contains(
+        "LiveNode run, runtime-capture, or IV lifecycle stop failed and bolt-v3 decision evidence shutdown drain failed"
+    ));
+}
+
+#[test]
+fn shutdown_classifier_composes_iv_stop_failure_with_drain_failure() {
+    let error = classify_live_node_shutdown(
+        Ok(()),
+        Err(BoltV3LiveNodeError::Run(anyhow::anyhow!(
+            "iv lifecycle stop failed"
+        ))),
+        Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(
+            anyhow::anyhow!("drain failed"),
+        )),
+    )
+    .expect_err("IV stop and drain failures must compose");
+
+    assert!(matches!(
+        error,
+        BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain { .. }
+    ));
+    assert!(error.to_string().contains(
+        "LiveNode run, runtime-capture, or IV lifecycle stop failed and bolt-v3 decision evidence shutdown drain failed"
+    ));
+}

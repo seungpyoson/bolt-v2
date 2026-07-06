@@ -9,11 +9,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -44,14 +44,6 @@ pub enum SourceUniverseConversionQueueStatus {
 #[serde(rename_all = "snake_case")]
 pub enum SourceUniverseConversionWorkState {
     PendingConversion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceUniverseConversionQueueArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,7 +100,7 @@ pub struct SourceUniverseConversionQueue {
     pub pending_conversion_items: u64,
     pub total_source_bytes: u64,
     pub category_summaries: Vec<SourceUniverseConversionCategorySummary>,
-    pub artifact_refs: Vec<SourceUniverseConversionQueueArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub work_items: Vec<SourceUniverseConversionWorkItem>,
 }
 
@@ -200,31 +192,23 @@ pub fn write_source_universe_conversion_queue(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE);
-    let bytes =
-        serde_json::to_vec_pretty(&queue).context("serialize source-universe conversion queue")?;
-    if path.exists() {
-        let existing = fs::read(&path)
-            .with_context(|| format!("read existing conversion queue {}", path.display()))?;
-        if existing != bytes {
-            ensure!(
-                spec.overwrite_existing_artifacts,
-                "dirty source-universe conversion queue {}: existing file content differs",
-                path.display()
-            );
-            atomic_write(&path, &bytes).with_context(|| {
-                format!("write source-universe conversion queue {}", path.display())
-            })?;
-        }
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!("write source-universe conversion queue {}", path.display())
-        })?;
-    }
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE,
+        &queue,
+        rewrite,
+    )
+    .with_context(|| format!("write source-universe conversion queue {}", path.display()))?;
 
     Ok(SourceUniverseConversionQueueArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         work_item_count: queue.work_item_count,
     })
 }
@@ -300,7 +284,7 @@ pub fn evaluate_source_universe_conversion_queue(
         pending_conversion_items: work_items.len() as u64,
         total_source_bytes,
         category_summaries,
-        artifact_refs: vec![SourceUniverseConversionQueueArtifactRef {
+        artifact_refs: vec![ReferenceArtifactPin {
             role: "source_universe_manifest".to_string(),
             path: source_manifest_artifact_path,
             sha256: source_manifest_hash.clone(),

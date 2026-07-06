@@ -14,8 +14,6 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
-use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
@@ -263,14 +261,18 @@ pub fn write_source_universe_source_proof_set(
         )
     })?;
     let proof_set = evaluate_and_write_source_universe_source_proofs(spec, base_dir, &output_dir)?;
-    let bytes = serde_json::to_vec_pretty(&proof_set)
-        .context("serialize source-universe source-proof set")?;
     let path = output_dir.join(SOURCE_UNIVERSE_SOURCE_PROOF_SET_FILE);
-    write_clean_artifact(&path, &bytes, "source-universe source-proof set")?;
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_UNIVERSE_SOURCE_PROOF_SET_FILE,
+        &proof_set,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+    )
+    .with_context(|| format!("write source-universe source-proof set {}", path.display()))?;
     Ok(SourceUniverseSourceProofSetArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         proof_count: proof_set.proof_count,
     })
 }
@@ -458,10 +460,14 @@ fn evaluate_and_write_source_universe_source_proofs(
                 })?;
             accepted_proof_count += 1;
         }
-        let proof_bytes = serde_json::to_vec_pretty(&proof)
-            .with_context(|| format!("serialize source proof {}", proof.source_proof_id))?;
         let proof_path = output_dir.join(format!("{}.json", proof.source_proof_id));
-        write_clean_artifact(&proof_path, &proof_bytes, "source proof")?;
+        let proof_artifact = crate::reference_artifact::write_reference_artifact_with_len(
+            &proof_path,
+            SOURCE_PROOF_SCHEMA_VERSION,
+            &proof,
+            crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        )
+        .with_context(|| format!("write source proof {}", proof_path.display()))?;
         let proof_artifact_path = portable_artifact_path_for_spec(&proof_path, &spec.output_dir)?;
         summaries.push(SourceUniverseSourceProofSummary {
             source_binding: binding.source_binding.clone(),
@@ -474,7 +480,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             first_archive_date: manifest.first_archive_date,
             last_archive_date: manifest.last_archive_date,
             proof_path: proof_artifact_path,
-            proof_hash: sha256_hex(&proof_bytes),
+            proof_hash: proof_artifact.pin.sha256,
         });
     }
 
@@ -674,19 +680,4 @@ where
     let bytes = fs::read(path).with_context(|| format!("read JSON artifact {}", path.display()))?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("parse JSON artifact {}", path.display()))
-}
-
-fn write_clean_artifact(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
-    if path.exists() {
-        let existing =
-            fs::read(path).with_context(|| format!("read existing {label} {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "dirty {label} {}: existing file content differs",
-            path.display()
-        );
-    } else {
-        atomic_write(path, bytes).with_context(|| format!("write {label} {}", path.display()))?;
-    }
-    Ok(())
 }

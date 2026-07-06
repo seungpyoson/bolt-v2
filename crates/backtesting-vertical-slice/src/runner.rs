@@ -372,6 +372,11 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        // Deliberate no-op: the BVS run guard writer keeps in-memory counters only.
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -2186,8 +2191,9 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestSelectorProvenance, assert_read_back_matches, ensure_settlement_currency_funded,
-        expected_iterations, iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
+        BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
+        assert_read_back_matches, ensure_settlement_currency_funded, expected_iterations,
+        iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
     use crate::canonical_market_data::{
@@ -2279,6 +2285,12 @@ mod tests {
             UnixNanos::from(ts),
             UnixNanos::from(ts),
         )
+    }
+
+    #[test]
+    fn backtest_decision_evidence_writer_drain_shutdown_is_noop() -> Result<()> {
+        let writer = BacktestDecisionEvidenceWriter::default();
+        writer.drain_shutdown()
     }
 
     #[test]
@@ -2857,6 +2869,7 @@ mod tests {
     const ISSUE_789_END_MS: u64 = 1_776_816_300_000;
     const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
     const ISSUE_789_END_NS: i64 = 1_776_816_300_000_000_000;
+    const ISSUE_789_RESULT_ARTIFACT_ROLE: &str = "issue-789-result-artifact.v1";
     const ISSUE_789_CONDITION_ID: &str =
         "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
     const ISSUE_789_UP_TOKEN: &str =
@@ -3198,10 +3211,13 @@ mod tests {
                 "did_not_arm_reason": guard.did_not_arm_reason.clone()
             }
         });
-        let bytes =
-            serde_json::to_vec_pretty(&payload).context("serialize issue #789 result artifact")?;
-        fs::write(&path, bytes)
-            .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
+        crate::reference_artifact::write_reference_artifact_with_len(
+            &path,
+            ISSUE_789_RESULT_ARTIFACT_ROLE,
+            &payload,
+            crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        )
+        .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
         Ok(())
     }
 

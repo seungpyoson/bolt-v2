@@ -862,6 +862,10 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
     ) -> anyhow::Result<()> {
         anyhow::bail!("basket admission writer received settlement booking-error evidence")
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn admission_limits() -> BoltV3BasketAdmissionLimits {

@@ -10,6 +10,7 @@ use nautilus_common::{
 use nautilus_model::events::OrderEventAny;
 use tokio::sync::Notify;
 
+use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
 use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
 };
@@ -35,6 +36,14 @@ use crate::{
 };
 
 use super::*;
+
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE: &str =
+    stringify!(venue_truth_capture_failure);
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY: &str =
+    stringify!(venue_truth_capture_recovery);
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE: &str =
+    stringify!(venue_truth_runtime_failure);
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE: &str = stringify!(venue_truth_divergence);
 
 struct ClosureKillSwitchFlattenExecutor<F: Fn(&KillSwitchLossAction) -> Result<()>> {
     execute_flatten: F,
@@ -82,8 +91,12 @@ pub(super) struct BoltV3VenueTruthRuntimeGuard {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-impl Drop for BoltV3VenueTruthRuntimeGuard {
-    fn drop(&mut self) {
+impl BoltV3VenueTruthRuntimeGuard {
+    pub(super) fn stop_and_join(mut self) {
+        self.stop_and_join_inner();
+    }
+
+    fn stop_and_join_inner(&mut self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
         if let Some(handle) = self.handle.take()
@@ -91,6 +104,12 @@ impl Drop for BoltV3VenueTruthRuntimeGuard {
         {
             log::error!("venue truth runtime thread join failed: {error:?}");
         }
+    }
+}
+
+impl Drop for BoltV3VenueTruthRuntimeGuard {
+    fn drop(&mut self) {
+        self.stop_and_join_inner();
     }
 }
 
@@ -197,6 +216,7 @@ pub(super) fn spawn_venue_truth_runtime(
     feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     stop_handle: LiveNodeHandle,
+    health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
 ) -> BoltV3VenueTruthRuntimeGuard {
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
@@ -204,6 +224,7 @@ pub(super) fn spawn_venue_truth_runtime(
     let thread_shutdown_notify = Arc::clone(&shutdown_notify);
     let spawn_submit_admission = Arc::clone(&submit_admission);
     let spawn_stop_handle = stop_handle.clone();
+    let spawn_health_emitter = health_emitter.clone();
     let handle = std::thread::Builder::new()
         .name("bolt-v3-venue-truth-runtime".to_string())
         .spawn(move || {
@@ -218,6 +239,7 @@ pub(super) fn spawn_venue_truth_runtime(
                         &spawn_stop_handle,
                         0,
                         format!("venue truth runtime build failed: {error:#}"),
+                        spawn_health_emitter.as_ref(),
                     );
                     return;
                 }
@@ -229,6 +251,7 @@ pub(super) fn spawn_venue_truth_runtime(
                 spawn_stop_handle,
                 thread_shutdown_requested,
                 thread_shutdown_notify,
+                spawn_health_emitter,
             ));
         });
     let handle = match handle {
@@ -239,6 +262,7 @@ pub(super) fn spawn_venue_truth_runtime(
                 &stop_handle,
                 0,
                 format!("venue truth runtime thread spawn failed: {error:#}"),
+                health_emitter.as_ref(),
             );
             None
         }
@@ -257,6 +281,7 @@ async fn run_venue_truth_runtime(
     stop_handle: LiveNodeHandle,
     shutdown_requested: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
+    health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -280,6 +305,7 @@ async fn run_venue_truth_runtime(
                     &stop_handle,
                     0,
                     format!("clock failed before venue truth poll: {error:#}"),
+                    health_emitter.as_ref(),
                 );
                 break;
             }
@@ -298,21 +324,44 @@ async fn run_venue_truth_runtime(
                     captures_missed,
                     &error,
                 );
+                if let Some(health_emitter) = health_emitter.as_ref() {
+                    health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+                }
                 continue;
             }
         };
         captures_missed = 0;
-        let reconcile = reconcile_venue_truth_snapshot(&feed, snapshot);
+        let reconcile = reconcile_venue_truth_snapshot_with_health_emission(
+            &feed,
+            snapshot,
+            health_emitter.as_ref(),
+        );
         if let Err(divergence) = reconcile {
             halt_for_venue_truth_divergence(
                 &submit_admission,
                 &config.kill_switch_store,
                 &stop_handle,
                 *divergence,
+                health_emitter.as_ref(),
             );
             break;
         }
     }
+}
+
+fn reconcile_venue_truth_snapshot_with_health_emission(
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    snapshot: crate::bolt_v3_venue_truth::VenueTruthSnapshot,
+    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
+) -> Result<
+    Option<BoltV3SubmitCapitalAdmissionNtComponents>,
+    Box<crate::bolt_v3_venue_truth::VenueTruthDivergence>,
+> {
+    let reconcile = reconcile_venue_truth_snapshot(feed, snapshot)?;
+    if let Some(health_emitter) = health_emitter {
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY);
+    }
+    Ok(reconcile)
 }
 
 fn reconcile_venue_truth_snapshot(
@@ -361,6 +410,7 @@ fn halt_for_venue_truth(
     stop_handle: &LiveNodeHandle,
     source_timestamp_unix_nanos: u64,
     reason: String,
+    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
 ) {
     let state = latch_non_durable_venue_truth_runtime_failure(
         submit_admission,
@@ -371,6 +421,9 @@ fn halt_for_venue_truth(
         "venue truth runtime failure latched memory-only kill switch: {:?}",
         state.kind()
     );
+    if let Some(health_emitter) = health_emitter {
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE);
+    }
     stop_handle.stop();
 }
 
@@ -379,6 +432,7 @@ fn halt_for_venue_truth_divergence(
     kill_switch_store: &KillSwitchStore,
     stop_handle: &LiveNodeHandle,
     divergence: crate::bolt_v3_venue_truth::VenueTruthDivergence,
+    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
 ) {
     let state =
         durably_halt_for_venue_truth_divergence(submit_admission, kill_switch_store, divergence);
@@ -386,6 +440,9 @@ fn halt_for_venue_truth_divergence(
         "venue truth divergence latched kill switch: {:?}",
         state.kind()
     );
+    if let Some(health_emitter) = health_emitter {
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE);
+    }
     stop_handle.stop();
 }
 
@@ -1518,16 +1575,42 @@ impl BoltV3LossProtectionRuntimeGuards {
             retry_handle: None,
         }
     }
+
+    pub(super) async fn stop_and_join(mut self) {
+        self.unsubscribe_position_events();
+        let retry_handle = self.retry_handle.take();
+        drop(self);
+        if let Some(retry_handle) = retry_handle {
+            retry_handle.abort();
+            match retry_handle.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    log::error!(
+                        "bolt-v3 kill-switch loss protection retry task join failed: {error:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn unsubscribe_position_events(&mut self) {
+        if let Some(position_events) = self.position_events.take() {
+            unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+    }
+
+    fn abort_retry_task(&mut self) {
+        if let Some(retry_handle) = self.retry_handle.take() {
+            retry_handle.abort();
+        }
+    }
 }
 
 impl Drop for BoltV3LossProtectionRuntimeGuards {
     fn drop(&mut self) {
-        if let Some(position_events) = self.position_events.take() {
-            unsubscribe_position_events(position_events_pattern(), &position_events);
-        }
-        if let Some(retry_handle) = self.retry_handle.take() {
-            retry_handle.abort();
-        }
+        self.unsubscribe_position_events();
+        self.abort_retry_task();
     }
 }
 
@@ -1707,15 +1790,12 @@ mod tests {
         clock::{Clock, TestClock},
         factories::OrderFactory,
     };
-    use nautilus_core::{Params, UnixNanos};
+    use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{AssetClass, OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
-        identifiers::{
-            AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
-            TraderId,
-        },
+        enums::{AssetClass, OrderType, PositionSide, TimeInForce, TradingState},
+        identifiers::{AccountId, InstrumentId, PositionId, StrategyId, Symbol, TraderId},
         instruments::{BinaryOption, InstrumentAny},
-        orders::{Order, OrderAny},
+        orders::Order,
         types::{Currency, Money, Price, Quantity},
     };
     use ustr::Ustr;
@@ -1778,6 +1858,71 @@ mod tests {
             KillSwitchStateKind::Armed
         );
         assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    }
+
+    #[test]
+    fn venue_truth_failure_recovery_repeat_failure_emits_three_health_transitions() {
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
+            Arc::new(NoStrategyDecisionEvidenceWriter),
+            test_capital_admission_config(),
+        ));
+        let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
+            test_capital_admission_runtime_feed_config(),
+            admission.clone(),
+        )));
+        let logger = BoltV3OperatorHealthTransitionLogger::new();
+        let emissions = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let health_emitter: BoltV3OperatorHealthTransitionEmitter = {
+            let admission = admission.clone();
+            let logger = logger.clone();
+            let emissions = emissions.clone();
+            Arc::new(move |reason| {
+                let surface = live_operator_health_surface(None, &admission, true, 0, None);
+                if logger.emit_surface(reason, surface)
+                    == BoltV3OperatorHealthTransitionEmission::Emitted
+                {
+                    emissions
+                        .lock()
+                        .expect("test emissions lock should not be poisoned")
+                        .push(reason);
+                }
+            })
+        };
+        let mut baseline = test_venue_truth_snapshot();
+        baseline.captured_at = UnixNanos::from(1_100);
+        reconcile_venue_truth_snapshot(&feed, baseline)
+            .expect("initial venue truth snapshot should seed nominal health");
+        assert_eq!(admission.capital_admission_reconciled(), Some(true));
+
+        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+            "clob_open_orders",
+            "transport_or_decode",
+            anyhow::anyhow!("transport failed"),
+        ));
+
+        handle_venue_truth_capture_failure(&admission, 1_200, 1, &error);
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+
+        let mut recovery = test_venue_truth_snapshot();
+        recovery.captured_at = UnixNanos::from(1_300);
+        reconcile_venue_truth_snapshot_with_health_emission(&feed, recovery, Some(&health_emitter))
+            .expect("accepted venue truth snapshot should reconcile");
+
+        handle_venue_truth_capture_failure(&admission, 1_400, 1, &error);
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+
+        let emissions = emissions
+            .lock()
+            .expect("test emissions lock should not be poisoned")
+            .clone();
+        assert_eq!(
+            emissions,
+            vec![
+                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE,
+                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY,
+                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE,
+            ]
+        );
     }
 
     #[test]
@@ -2383,6 +2528,10 @@ mod tests {
                 .push(evidence.clone());
             Ok(())
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -2702,6 +2851,10 @@ mod tests {
             &self,
             _evidence: &BoltV3SettlementBookingErrorEvidence,
         ) -> Result<()> {
+            Ok(())
+        }
+
+        fn drain_shutdown(&self) -> Result<()> {
             Ok(())
         }
     }

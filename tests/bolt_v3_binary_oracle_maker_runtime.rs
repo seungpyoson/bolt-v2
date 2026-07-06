@@ -1077,6 +1077,10 @@ impl BoltV3DecisionEvidenceWriter for FailingRequoteThrottleDecisionEvidenceWrit
     ) -> Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]

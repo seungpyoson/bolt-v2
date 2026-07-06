@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact_index::ArtifactKind;
 
+pub const ARTIFACT_INDEX_PRODUCER_IAM_PROVISIONING_PLAN_ROLE: &str =
+    "artifact-index-producer-iam-provisioning-plan.v1";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactIndexProducerIamPolicy {
     #[serde(rename = "Version")]

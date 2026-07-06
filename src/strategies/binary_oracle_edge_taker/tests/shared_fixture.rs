@@ -273,6 +273,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -370,6 +374,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> Result<()> {
         anyhow::bail!("requote throttle write failed")
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -486,6 +494,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -683,6 +695,10 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .push(RecordedDecisionEvidenceEvent::RequoteThrottle(
                 throttle.clone(),
             ));
+        Ok(())
+    }
+
+    fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
 }

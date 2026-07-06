@@ -60,5 +60,6 @@ bolt-v2 = { path = "../.." }
 
 [dev-dependencies]
 async-trait = "0.1"
+hmac = "=0.12.1"
 nautilus-persistence-macros = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
 tempfile = "3"

@@ -789,6 +789,33 @@ def test_git_check_error_includes_stderr() -> None:
             raise AssertionError(f"expected git stderr in PolicyError, got: {message!r}")
 
 
+def test_shrink_only_remote_get_url_failure_includes_git_stderr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = root / "work"
+        git(root, "init", str(work))
+
+        original_root = VERIFIER.REPO_ROOT
+        original_allow = VERIFIER.FINDING_ALLOWANCES
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = work
+            VERIFIER.FINDING_ALLOWANCES = (
+                allowance("src/bolt_v3_a.rs", "strategies::x::A"),
+            )
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main(["--check-shrink-only-vs-main"])
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.FINDING_ALLOWANCES = original_allow
+        message = stderr.getvalue()
+        if code != 1 or "cannot resolve baseline remote origin" not in message:
+            raise AssertionError(f"expected baseline remote failure, got {code}: {message!r}")
+        if "No such remote" not in message:
+            raise AssertionError(f"expected git stderr in baseline remote failure, got: {message!r}")
+
+
 def test_shrink_only_fetch_failure_includes_git_stderr() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -988,6 +1015,7 @@ def main() -> int:
         test_shrink_only_introducing_pr_passes,
         test_shrink_only_unresolved_baseline_fails_closed,
         test_git_check_error_includes_stderr,
+        test_shrink_only_remote_get_url_failure_includes_git_stderr,
         test_shrink_only_fetch_failure_includes_git_stderr,
         test_shrink_only_fetches_baseline_without_checkout_tracking_ref,
         test_justfile_dependency_baseline_fetch_is_not_checkout_mutation,

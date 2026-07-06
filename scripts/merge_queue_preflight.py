@@ -1676,6 +1676,7 @@ class PrivateFetchRefs:
             )
         self.temp_dir.cleanup()
 
+
 @dataclasses.dataclass(frozen=True)
 class MergeResult:
     clean: bool

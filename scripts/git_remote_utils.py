@@ -28,6 +28,7 @@ def looks_like_local_path(value: str) -> bool:
     return (
         pathlib.Path(value).is_absolute()
         or value.startswith(("~", ".", "/", "\\"))
+        or value.endswith(".git")
         or "/" in value
         or "\\" in value
     )

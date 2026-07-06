@@ -1203,6 +1203,41 @@ def assert_private_fetch_resolves_raw_relative_origin_path() -> None:
         assert_equal(set(payload["pr_heads"].keys()), {"1"}, "raw relative --origin path must fetch PR heads")
 
 
+def assert_private_fetch_resolves_raw_bare_git_origin_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        os.symlink(fixture.remote, fixture.repo / "origin.git")
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            "origin.git",
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "raw-bare-git-origin no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "origin.git --origin path must fetch PR heads")
+
+
 def loose_object_mtimes(repo: pathlib.Path) -> dict[str, int]:
     objects = repo / ".git" / "objects"
     mtimes: dict[str, int] = {}
@@ -1280,6 +1315,11 @@ def assert_shared_remote_url_normalization_matrix() -> None:
             git_remote_utils.fetchable_origin_argument("../origin.git", source_repo),
             str((source_repo / "../origin.git").resolve(strict=False)),
             "raw relative origin path must resolve from checkout",
+        )
+        assert_equal(
+            git_remote_utils.fetchable_origin_argument("origin.git", source_repo),
+            str((source_repo / "origin.git").resolve(strict=False)),
+            "raw bare .git origin path must resolve from checkout",
         )
 
 
@@ -3215,6 +3255,7 @@ def main() -> int:
     assert_private_fetches_resolve_checkout_remote_names()
     assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
     assert_private_fetch_resolves_raw_relative_origin_path()
+    assert_private_fetch_resolves_raw_bare_git_origin_path()
     assert_private_fetches_do_not_freshen_checkout_objects()
     assert_remote_url_normalization_uses_shared_helper()
     assert_shared_remote_url_normalization_matrix()

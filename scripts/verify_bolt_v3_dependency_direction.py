@@ -910,16 +910,15 @@ def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
 
 
 def _read_baseline_source() -> str | None:
-    """Return the fence source from `origin/main`, or None if the fence is not yet
-    present there (the introducing PR). Raises PolicyError if `origin/main` cannot
-    be resolved (fail closed rather than silently skip enforcement)."""
+    """Return the fence source from the mainline baseline, or None if it is not yet
+    present there. Raises PolicyError if the baseline cannot be resolved."""
 
     remote = _git(["remote", "get-url", BASELINE_REMOTE], cwd=REPO_ROOT)
     remote_url = remote.stdout.strip()
     if remote.returncode != 0 or not remote_url:
         raise PolicyError(
             f"cannot resolve baseline remote {BASELINE_REMOTE} "
-            "to enforce allowlist shrink-only"
+            f"to enforce allowlist shrink-only{git_failure_details(remote)}"
         )
     remote_url = fetchable_remote_url(remote_url, REPO_ROOT)
     with tempfile.TemporaryDirectory(prefix="dependency-direction-baseline-") as tmp:

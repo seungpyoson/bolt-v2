@@ -45,6 +45,7 @@ Coverage map (by review finding):
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import datetime as dt
 import hashlib
@@ -1327,6 +1328,74 @@ class CleanupContractTests(unittest.TestCase):
             encoding="utf-8")
         for token in ("HOOK_MARKER", "_hook_is_managed", "not marked managed"):
             self.assertNotIn(token, source)
+
+    def test_install_hooks_uses_plan_for_hook_runtime_mutations(self) -> None:
+        source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
+            encoding="utf-8")
+        module = ast.parse(source)
+        install_hooks = next(
+            node for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == "install_hooks"
+        )
+        disallowed_calls = {
+            "_copy_hook_with_provenance",
+            "_remove_hook_with_provenance",
+            "_shadowed_hook_copy",
+            "_set_runtime_hooks_path",
+            "_write_hook_manifest",
+            "unlink",
+            "chmod",
+        }
+        found: list[str] = []
+        for node in ast.walk(install_hooks):
+            if not isinstance(node, ast.Call):
+                continue
+            call = node.func
+            if isinstance(call, ast.Name) and call.id in disallowed_calls:
+                found.append(call.id)
+            if isinstance(call, ast.Attribute) and call.attr in disallowed_calls:
+                found.append(call.attr)
+            if (
+                isinstance(call, ast.Attribute)
+                and call.attr == "copy2"
+                and isinstance(call.value, ast.Name)
+                and call.value.id == "shutil"
+            ):
+                found.append("shutil.copy2")
+        self.assertEqual(found, [])
+
+    def test_install_hooks_revalidates_plan_before_runtime_mutation(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        hook_source = self.work / ".githooks" / "post-merge"
+        runtime_hooks_dir = git_common_dir_compat(self.work) / "hooks"
+        original_apply = cm.HookInstallPlan.apply
+
+        def mutate_source_before_apply(plan: cm.HookInstallPlan) -> None:
+            hook_source.write_text(
+                "#!/bin/sh\nprintf changed-during-plan\n",
+                encoding="utf-8",
+            )
+            hook_source.chmod(0o755)
+            original_apply(plan)
+
+        with mock.patch.dict(os.environ, GIT_ENV, clear=False):
+            with mock.patch.object(
+                cm.HookInstallPlan,
+                "apply",
+                mutate_source_before_apply,
+            ):
+                with self.assertRaisesRegex(
+                    cm.CleanMergedError,
+                    "hook source changed during install planning",
+                ):
+                    cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
+
+        self.assertFalse((runtime_hooks_dir / "post-merge").exists())
+        manifest = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        self.assertFalse(manifest.exists())
+        config = _run(["git", "config", "--get", "core.hooksPath"],
+                      cwd=self.work, check=False)
+        self.assertNotEqual(config.returncode, 0)
 
     def test_git_common_dir_does_not_require_path_format_flag(self) -> None:
         source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(

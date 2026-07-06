@@ -787,6 +787,26 @@ def _record_hook_provenance(
     }
 
 
+def _record_planned_hook_provenance(
+    *,
+    source_file: pathlib.Path,
+    destination_name: str,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+) -> str:
+    source_sha = _file_sha256(source_file)
+    manifest_hooks[destination_name] = {
+        "source_kind": source_kind,
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "runtime_sha256": source_sha,
+    }
+    return source_sha
+
+
 def _validate_hook_copy_with_provenance(
     *,
     source_file: pathlib.Path,
@@ -832,6 +852,31 @@ def _validate_hook_copy_with_provenance(
             )
 
 
+def _apply_hook_copy(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+) -> None:
+    if _same_path(source_file, destination):
+        if source_kind == "repo-source":
+            destination.chmod(
+                destination.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+        return
+    shutil.copy2(source_file, destination)
+    if source_kind == "repo-source":
+        destination.chmod(
+            destination.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+
+
 def _copy_hook_with_provenance(
     *,
     source_file: pathlib.Path,
@@ -849,31 +894,11 @@ def _copy_hook_with_provenance(
         source_path=source_path,
         manifest_hooks=manifest_hooks,
     )
-    if _same_path(source_file, destination):
-        if source_kind == "repo-source":
-            destination.chmod(
-                destination.stat().st_mode
-                | stat.S_IXUSR
-                | stat.S_IXGRP
-                | stat.S_IXOTH
-            )
-        _record_hook_provenance(
-            source_file=source_file,
-            destination=destination,
-            source_kind=source_kind,
-            source_scope=source_scope,
-            source_path=source_path,
-            manifest_hooks=manifest_hooks,
-        )
-        return
-    shutil.copy2(source_file, destination)
-    if source_kind == "repo-source":
-        destination.chmod(
-            destination.stat().st_mode
-            | stat.S_IXUSR
-            | stat.S_IXGRP
-            | stat.S_IXOTH
-        )
+    _apply_hook_copy(
+        source_file=source_file,
+        destination=destination,
+        source_kind=source_kind,
+    )
     _record_hook_provenance(
         source_file=source_file,
         destination=destination,
@@ -914,10 +939,17 @@ def _shadowed_hook_copy(
     hook_file: pathlib.Path,
 ) -> pathlib.Path:
     destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+    _apply_shadowed_hook_copy(hook_file, destination)
+    return destination
+
+
+def _apply_shadowed_hook_copy(
+    hook_file: pathlib.Path,
+    destination: pathlib.Path,
+) -> None:
     if not destination.exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(hook_file, destination)
-    return destination
 
 
 def _is_shadowed_hook_backup_path(common_dir: pathlib.Path, path: pathlib.Path) -> bool:
@@ -972,9 +1004,230 @@ def _remove_hook_with_provenance(
         entry=entry,
     )
     destination = runtime_hooks_dir / hook_name
+    _apply_hook_removal(destination)
+
+
+def _apply_hook_removal(destination: pathlib.Path) -> None:
     if not destination.exists() and not destination.is_symlink():
         return
     destination.unlink()
+
+
+def _install_plan_path_key(path: pathlib.Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path.absolute())
+
+
+@dataclasses.dataclass
+class HookInstallPlan:
+    preflight_operations: list[Callable[[], None]] = dataclasses.field(
+        default_factory=list
+    )
+    operations: list[Callable[[], None]] = dataclasses.field(default_factory=list)
+    unlinked_paths: set[str] = dataclasses.field(default_factory=set)
+
+    def will_unlink(self, path: pathlib.Path) -> bool:
+        return _install_plan_path_key(path) in self.unlinked_paths
+
+    def stage_shadow_copy(
+        self,
+        *,
+        common_dir: pathlib.Path,
+        hook_file: pathlib.Path,
+    ) -> pathlib.Path:
+        destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+        self.preflight_operations.append(
+            lambda common_dir=common_dir, hook_file=hook_file, destination=destination:
+            _validate_planned_shadow_copy(common_dir, hook_file, destination)
+        )
+        if not destination.exists():
+            self.operations.append(
+                lambda hook_file=hook_file, destination=destination:
+                _apply_shadowed_hook_copy(hook_file, destination)
+            )
+        return destination
+
+    def stage_unlink(self, path: pathlib.Path) -> None:
+        self.unlinked_paths.add(_install_plan_path_key(path))
+        self.operations.append(lambda path=path: _apply_hook_removal(path))
+
+    def stage_copy_hook(
+        self,
+        *,
+        source_file: pathlib.Path,
+        destination: pathlib.Path,
+        source_kind: str,
+        source_scope: str,
+        source_path: str,
+        manifest_hooks: dict[str, Any],
+    ) -> None:
+        validation_manifest_hooks = dict(manifest_hooks)
+        destination_will_be_unlinked = (
+            self.will_unlink(destination) and not _same_path(source_file, destination)
+        )
+        if destination_will_be_unlinked:
+            if source_file.is_symlink():
+                raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+            if not source_file.is_file():
+                raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+        else:
+            _validate_hook_copy_with_provenance(
+                source_file=source_file,
+                destination=destination,
+                source_kind=source_kind,
+                source_scope=source_scope,
+                source_path=source_path,
+                manifest_hooks=validation_manifest_hooks,
+            )
+        source_sha = _record_planned_hook_provenance(
+            source_file=source_file,
+            destination_name=destination.name,
+            source_kind=source_kind,
+            source_scope=source_scope,
+            source_path=source_path,
+            manifest_hooks=manifest_hooks,
+        )
+        self.preflight_operations.append(
+            lambda source_file=source_file, destination=destination, source_kind=source_kind,
+            source_scope=source_scope, source_path=source_path,
+            manifest_hooks=validation_manifest_hooks,
+            destination_will_be_unlinked=destination_will_be_unlinked, source_sha=source_sha:
+            _validate_planned_hook_copy(
+                source_file=source_file,
+                destination=destination,
+                source_kind=source_kind,
+                source_scope=source_scope,
+                source_path=source_path,
+                manifest_hooks=manifest_hooks,
+                destination_will_be_unlinked=destination_will_be_unlinked,
+                source_sha=source_sha,
+            )
+        )
+        self.unlinked_paths.discard(_install_plan_path_key(destination))
+        self.operations.append(
+            lambda source_file=source_file, destination=destination, source_kind=source_kind:
+            _apply_hook_copy(
+                source_file=source_file,
+                destination=destination,
+                source_kind=source_kind,
+            )
+        )
+
+    def stage_remove_hook(
+        self,
+        *,
+        runtime_hooks_dir: pathlib.Path,
+        hook_name: str,
+        entry: dict[str, Any],
+    ) -> None:
+        _validate_hook_removal_with_provenance(
+            runtime_hooks_dir=runtime_hooks_dir,
+            hook_name=hook_name,
+            entry=entry,
+        )
+        self.preflight_operations.append(
+            lambda runtime_hooks_dir=runtime_hooks_dir, hook_name=hook_name, entry=entry:
+            _validate_hook_removal_with_provenance(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+        )
+        destination = runtime_hooks_dir / hook_name
+        self.unlinked_paths.add(_install_plan_path_key(destination))
+        self.operations.append(lambda destination=destination: _apply_hook_removal(destination))
+
+    def stage_set_runtime_hooks_path(
+        self,
+        *,
+        invoke_root: pathlib.Path,
+        source_root: pathlib.Path,
+        runtime_hooks_dir: pathlib.Path,
+        home_dir: pathlib.Path | None,
+    ) -> None:
+        self.operations.append(
+            lambda: _set_runtime_hooks_path(
+                invoke_root=invoke_root,
+                source_root=source_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+        )
+
+    def stage_write_hook_manifest(
+        self,
+        common_dir: pathlib.Path,
+        *,
+        runtime_hooks_dir: pathlib.Path,
+        hooks: dict[str, Any],
+        shadowed_hooks: dict[str, Any],
+        source_dirs: list[dict[str, str]],
+    ) -> None:
+        planned_hooks = dict(hooks)
+        planned_shadowed_hooks = dict(shadowed_hooks)
+        planned_source_dirs = list(source_dirs)
+        self.operations.append(
+            lambda: _write_hook_manifest(
+                common_dir,
+                runtime_hooks_dir=runtime_hooks_dir,
+                hooks=planned_hooks,
+                shadowed_hooks=planned_shadowed_hooks,
+                source_dirs=planned_source_dirs,
+            )
+        )
+
+    def apply(self) -> None:
+        for operation in self.preflight_operations:
+            operation()
+        for operation in self.operations:
+            operation()
+
+
+def _validate_planned_shadow_copy(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+    expected_destination: pathlib.Path,
+) -> None:
+    destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+    if not _same_path(destination, expected_destination):
+        raise CleanMergedError(
+            f"hook {hook_file.name} changed during install planning at {hook_file}; "
+            "retry setup"
+        )
+
+
+def _validate_planned_hook_copy(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+    destination_will_be_unlinked: bool,
+    source_sha: str,
+) -> None:
+    if destination_will_be_unlinked:
+        if source_file.is_symlink():
+            raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+        if not source_file.is_file():
+            raise CleanMergedError(f"refusing to install non-file hook source at {source_file}")
+    else:
+        _validate_hook_copy_with_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind=source_kind,
+            source_scope=source_scope,
+            source_path=source_path,
+            manifest_hooks=manifest_hooks,
+        )
+    current_sha = _file_sha256(source_file)
+    if current_sha != source_sha:
+        raise CleanMergedError(
+            f"hook source changed during install planning at {source_file}; retry setup"
+        )
 
 
 def _manifest_source_file(
@@ -1028,12 +1281,55 @@ def _record_shadowed_hook(
     if hook_file.read_bytes() == repo_source_file.read_bytes():
         return
     manifest_hook_name = hook_name or hook_file.name
+    _record_shadowed_hook_entry(
+        manifest_hook_name=manifest_hook_name,
+        source_path=str(hook_file),
+        source_sha=_file_sha256(hook_file),
+        repo_source_file=repo_source_file,
+        shadowed_hooks=shadowed_hooks,
+        source_scope=source_scope,
+    )
+
+
+def _record_planned_shadowed_hook(
+    *,
+    hook_file: pathlib.Path,
+    shadow_path: pathlib.Path,
+    repo_source_file: pathlib.Path,
+    source_scope: str,
+    shadowed_hooks: dict[str, Any],
+    hook_name: str | None = None,
+) -> None:
+    if hook_file.is_symlink() or repo_source_file.is_symlink():
+        raise CleanMergedError(f"refusing to record symlink hook at {hook_file}")
+    if not hook_file.is_file() or not repo_source_file.is_file():
+        return
+    if hook_file.read_bytes() == repo_source_file.read_bytes():
+        return
+    manifest_hook_name = hook_name or hook_file.name
+    _record_shadowed_hook_entry(
+        manifest_hook_name=manifest_hook_name,
+        source_path=str(shadow_path),
+        source_sha=_file_sha256(hook_file),
+        repo_source_file=repo_source_file,
+        shadowed_hooks=shadowed_hooks,
+        source_scope=source_scope,
+    )
+
+
+def _record_shadowed_hook_entry(
+    *,
+    manifest_hook_name: str,
+    source_path: str,
+    source_sha: str,
+    repo_source_file: pathlib.Path,
+    shadowed_hooks: dict[str, Any],
+    source_scope: str,
+) -> None:
     entries = shadowed_hooks.setdefault(manifest_hook_name, [])
     if not isinstance(entries, list):
         entries = []
         shadowed_hooks[manifest_hook_name] = entries
-    source_path = str(hook_file)
-    source_sha = _file_sha256(hook_file)
     replacement = {
         "source_kind": "active-hook",
         "source_scope": source_scope,
@@ -1585,6 +1881,7 @@ def install_hooks(
     manifest = _load_hook_manifest(common_dir)
     manifest_hooks = dict(_hook_manifest_hooks(manifest))
     shadowed_hooks: dict[str, Any] = {}
+    plan = HookInstallPlan()
 
     configured_active_hook_dirs = _active_hook_dirs(
         invoke_root=invoke_root,
@@ -1662,15 +1959,19 @@ def install_hooks(
                 continue
             if hook_file.name in manifest_hooks:
                 continue
-            shadow_copy = _shadowed_hook_copy(common_dir, hook_file)
-            _record_shadowed_hook(
-                hook_file=shadow_copy,
+            shadow_copy = plan.stage_shadow_copy(
+                common_dir=common_dir,
+                hook_file=hook_file,
+            )
+            _record_planned_shadowed_hook(
+                hook_file=hook_file,
+                shadow_path=shadow_copy,
                 repo_source_file=repo_source_file,
                 source_scope=runtime_source_scope,
                 shadowed_hooks=shadowed_hooks,
                 hook_name=hook_file.name,
             )
-            hook_file.unlink()
+            plan.stage_unlink(hook_file)
     for active_hooks in active_hook_dirs:
         _record_source_dir(
             source_dirs,
@@ -1680,6 +1981,8 @@ def install_hooks(
         if not active_hooks.path.is_dir() or not _same_path(active_hooks.path, runtime_hooks_dir):
             continue
         for hook_file in sorted(active_hooks.path.iterdir(), key=lambda path: path.name):
+            if plan.will_unlink(hook_file):
+                continue
             if not hook_file.is_file() or not _is_git_hook_name(hook_file.name):
                 continue
             if hook_file.name in source_hook_names:
@@ -1688,15 +1991,19 @@ def install_hooks(
                     continue
                 if hook_file.name in manifest_hooks:
                     continue
-                shadow_copy = _shadowed_hook_copy(common_dir, hook_file)
-                _record_shadowed_hook(
-                    hook_file=shadow_copy,
+                shadow_copy = plan.stage_shadow_copy(
+                    common_dir=common_dir,
+                    hook_file=hook_file,
+                )
+                _record_planned_shadowed_hook(
+                    hook_file=hook_file,
+                    shadow_path=shadow_copy,
                     repo_source_file=repo_source_file,
                     source_scope=active_hooks.source_scope,
                     shadowed_hooks=shadowed_hooks,
                     hook_name=hook_file.name,
                 )
-                hook_file.unlink()
+                plan.stage_unlink(hook_file)
                 continue
             entry = manifest_hooks.get(hook_file.name)
             if isinstance(entry, dict):
@@ -1718,7 +2025,7 @@ def install_hooks(
             adopted_source_paths.add(str(hook_file))
     for hook_file in source_hook_files:
         destination = runtime_hooks_dir / hook_file.name
-        _copy_hook_with_provenance(
+        plan.stage_copy_hook(
             source_file=hook_file,
             destination=destination,
             source_kind="repo-source",
@@ -1734,7 +2041,7 @@ def install_hooks(
             or hook_name in source_hook_names
         ):
             continue
-        _remove_hook_with_provenance(
+        plan.stage_remove_hook(
             runtime_hooks_dir=runtime_hooks_dir,
             hook_name=hook_name,
             entry=entry,
@@ -1790,7 +2097,7 @@ def install_hooks(
                     )
                 continue
             destination = runtime_hooks_dir / hook_name
-            _copy_hook_with_provenance(
+            plan.stage_copy_hook(
                 source_file=source_file,
                 destination=destination,
                 source_kind="active-hook",
@@ -1813,7 +2120,7 @@ def install_hooks(
         source_scope = str(entry.get("source_scope") or "manifest")
         if source_file is None:
             if entry.get("source_scope") in {"global", "local", "worktree", "system"}:
-                _remove_hook_with_provenance(
+                plan.stage_remove_hook(
                     runtime_hooks_dir=runtime_hooks_dir,
                     hook_name=hook_name,
                     entry=entry,
@@ -1828,7 +2135,7 @@ def install_hooks(
                 source_file=source_file,
             )
         if not source_file.is_file():
-            _remove_hook_with_provenance(
+            plan.stage_remove_hook(
                 runtime_hooks_dir=runtime_hooks_dir,
                 hook_name=hook_name,
                 entry=entry,
@@ -1846,7 +2153,7 @@ def install_hooks(
             )
             continue
         destination = runtime_hooks_dir / hook_name
-        _copy_hook_with_provenance(
+        plan.stage_copy_hook(
             source_file=source_file,
             destination=destination,
             source_kind="active-hook",
@@ -1875,7 +2182,7 @@ def install_hooks(
                 )
                 continue
             destination = runtime_hooks_dir / hook_file.name
-            _copy_hook_with_provenance(
+            plan.stage_copy_hook(
                 source_file=hook_file,
                 destination=destination,
                 source_kind="active-hook",
@@ -1884,19 +2191,20 @@ def install_hooks(
                 manifest_hooks=manifest_hooks,
             )
 
-    _set_runtime_hooks_path(
+    plan.stage_set_runtime_hooks_path(
         invoke_root=invoke_root,
         source_root=source_root,
         runtime_hooks_dir=runtime_hooks_dir,
         home_dir=home_dir,
     )
-    _write_hook_manifest(
+    plan.stage_write_hook_manifest(
         common_dir,
         runtime_hooks_dir=runtime_hooks_dir,
         hooks=manifest_hooks,
         shadowed_hooks=shadowed_hooks,
         source_dirs=source_dirs,
     )
+    plan.apply()
     return runtime_hooks_dir
 
 

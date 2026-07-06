@@ -887,18 +887,10 @@ impl BinaryOracleEdgeTaker {
             return Ok(());
         };
         let Some(interval_end_ms) = position.lifecycle.interval_end_ms() else {
-            let settlement_key = settlement_key_for_position(&position)?;
-            if !self.settled_position_keys.contains(&settlement_key)
-                && !self.settlement_booking_error_keys.contains(&settlement_key)
-            {
-                self.record_settlement_booking_error(
-                    &position,
-                    settlement_key,
-                    BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                    "settlement input missing interval end".to_string(),
-                    now_ms.saturating_mul(NANOS_PER_MILLI_U64),
-                )?;
-            }
+            self.record_missing_interval_end_settlement_booking_error(
+                &position,
+                now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+            )?;
             return Ok(());
         };
         if now_ms < interval_end_ms {
@@ -931,20 +923,12 @@ impl BinaryOracleEdgeTaker {
         let Some(position) = self.settlement_position_candidate() else {
             return Ok(());
         };
-        let settlement_key = settlement_key_for_position(&position)?;
         let resolution_ts_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         if position.lifecycle.interval_end_ms().is_none() {
-            if !self.settled_position_keys.contains(&settlement_key)
-                && !self.settlement_booking_error_keys.contains(&settlement_key)
-            {
-                self.record_settlement_booking_error(
-                    &position,
-                    settlement_key,
-                    BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                    "settlement input missing interval end".to_string(),
-                    update.ts_event.as_u64(),
-                )?;
-            }
+            self.record_missing_interval_end_settlement_booking_error(
+                &position,
+                update.ts_event.as_u64(),
+            )?;
             return Ok(());
         };
         if !position
@@ -953,6 +937,7 @@ impl BinaryOracleEdgeTaker {
         {
             return Ok(());
         }
+        let settlement_key = settlement_key_for_position(&position)?;
         if self.settled_position_keys.contains(&settlement_key)
             || self.settlement_booking_error_keys.contains(&settlement_key)
         {
@@ -1114,6 +1099,29 @@ impl BinaryOracleEdgeTaker {
             .record_settlement_booking_error(&evidence)?;
         self.settlement_booking_error_keys.insert(settlement_key);
         Ok(())
+    }
+
+    fn record_missing_interval_end_settlement_booking_error(
+        &mut self,
+        position: &OpenPositionState,
+        observed_at_ns: u64,
+    ) -> Result<()> {
+        if position.lifecycle.interval_end_ms().is_some() {
+            return Ok(());
+        }
+        let settlement_key = settlement_key_for_position(position)?;
+        if self.settled_position_keys.contains(&settlement_key)
+            || self.settlement_booking_error_keys.contains(&settlement_key)
+        {
+            return Ok(());
+        }
+        self.record_settlement_booking_error(
+            position,
+            settlement_key,
+            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            "settlement input missing interval end".to_string(),
+            observed_at_ns,
+        )
     }
 
     fn settlement_evidence(
@@ -4535,6 +4543,13 @@ impl BinaryOracleEdgeTaker {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED);
             return evaluation;
         }
+        if self
+            .managed_position()
+            .is_some_and(|managed| managed.position.lifecycle.interval_end_ms().is_none())
+        {
+            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE);
+            return evaluation;
+        }
 
         if !evaluation.forced_flat_reasons.is_empty() {
             evaluation.exit_decision = Some(ExitDecision::Exit);
@@ -5654,6 +5669,14 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<(Option<ClientOrderId>, ExitSubmissionDecision)> {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         self.refresh_current_reference_price_selection_at(now_ms);
+        if let Some(position) = self.settlement_position_candidate()
+            && position.lifecycle.interval_end_ms().is_none()
+        {
+            self.record_missing_interval_end_settlement_booking_error(
+                &position,
+                now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+            )?;
+        }
         let mut decision = self.exit_submission_decision_for_trigger_at(now_ms, trigger_context);
 
         let Some(instrument_id) = decision.instrument_id else {

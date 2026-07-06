@@ -837,6 +837,111 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
 }
 
 #[test]
+fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error_not_exit() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+
+    let instrument_id =
+        InstrumentId::from("condition-RECOVERED-BOOK-DELTA-RECOVERED-BOOK-DELTA-UP.POLYMARKET");
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "recovered-book-delta-missing-interval",
+        "RECOVERED-BOOK-DELTA",
+        "Up",
+        1_000,
+        0,
+    );
+    let position_id = PositionId::from("P-RECOVERED-MISSING-INTERVAL-BOOK-DELTA");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("RECOVERED-MISSING-INTERVAL-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let cache_position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_instrument(instrument.clone())
+            .expect("test cache should accept malformed recovered instrument");
+        cache
+            .add_position(&cache_position, NtOmsType::Netting)
+            .expect("test cache should accept recovered position");
+    }
+    let scope_position = OpenPositionState {
+        lifecycle: BoltV3PositionMarketLifecycle::recover_from_instrument(Some(&instrument)),
+        instrument_id,
+        position_id,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    let settlement_key = settlement_key_for_position(&scope_position)
+        .expect("fixture cache position should derive settlement key");
+
+    strategy.bootstrap_recovery_from_cache();
+    strategy.active.phase = SelectionPhase::Freeze;
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_200 * NANOS_PER_MILLI_U64));
+    strategy
+        .on_book_deltas(&book_deltas(
+            instrument_id,
+            &[
+                (BookAction::Add, OrderSide::Buy, 0.44, 500.0),
+                (BookAction::Add, OrderSide::Sell, 0.46, 500.0),
+            ],
+        ))
+        .expect("book delta should not escape the actor loop");
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && settlement_booking_error_reasons(&events)
+                == vec![BoltV3SettlementBookingErrorReason::SettlementInputInvalid]
+            && strategy
+                .settlement_booking_error_keys
+                .contains(&settlement_key)
+            && open_sell_exit_order_count(&cache, &scope_position) == 0
+            && risk_messages.get_messages().is_empty()
+            && exec_messages.get_messages().is_empty()
+            && matches!(
+                &strategy.exposure,
+                ExposureState::Managed(managed)
+                    if managed.position.position_id == scope_position.position_id
+            ),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered position with missing interval must record terminal booking-error and block forced-flat book-delta exit; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
 fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
     assert_reality_fixtures();
 

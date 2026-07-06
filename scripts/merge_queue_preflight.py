@@ -1597,6 +1597,19 @@ class PrivateFetchRefs:
                 check=True,
                 timeout_seconds=input_timeout_seconds,
             )
+            source_objects = git(
+                repo,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "objects",
+                timeout_seconds=input_timeout_seconds,
+            ).stdout.strip()
+            if not source_objects:
+                raise PreflightError("source Git object directory did not resolve")
+            alternates_dir = git_repo / "objects" / "info"
+            alternates_dir.mkdir(parents=True, exist_ok=True)
+            (alternates_dir / "alternates").write_text(f"{source_objects}\n", encoding="utf-8")
         except Exception:
             temp_dir.cleanup()
             raise

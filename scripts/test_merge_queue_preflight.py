@@ -1223,6 +1223,59 @@ def assert_verifier_worktrees_do_not_write_checkout_git_metadata() -> None:
             raise AssertionError(blocked)
 
 
+def assert_verifier_worktrees_can_read_checkout_object_database() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        local_only_commit = git(
+            fixture.repo,
+            "commit-tree",
+            fixture.base + "^{tree}",
+            "-m",
+            "local-only evidence object",
+        )
+        verifier = root / "require_checkout_object.py"
+        write(
+            verifier,
+            "import subprocess\n"
+            "import sys\n"
+            "subprocess.run(['git', 'cat-file', '-e', sys.argv[1] + '^{commit}'], check=True)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier} {local_only_commit}"])
+
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--config",
+            str(config),
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "checkout-object verifier no-gh rc")
+        if payload["blocked_prs"]:
+            raise AssertionError(payload["blocked_prs"])
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "checkout-object verifier batch")
+
+
 def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
     module = load_preflight_module()
     assert_equal(
@@ -3046,6 +3099,7 @@ def main() -> int:
     assert_private_fetches_resolve_checkout_remote_names()
     assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
+    assert_verifier_worktrees_can_read_checkout_object_database()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()

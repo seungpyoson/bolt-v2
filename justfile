@@ -220,7 +220,6 @@ verify-bolt-v3-boundary-evidence: check-workspace
 # the in-tree dependency allowlist is not a subset of the one on origin/main.
 # No-op on the PR that first introduces the fence; active on every PR after merge.
 verify-bolt-v3-dependency-shrink-only: check-workspace
-    git fetch -q origin main 2>/dev/null
     python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
 
 test-verify-runtime-capture-yaml: check-workspace
@@ -366,7 +365,6 @@ source-fence-static-fences-only-inner: require-local-verification-gate check-wor
     python3 scripts/run_fences.py --fences-only
 
 source-fence: source-fence-static
-    git fetch -q origin main 2>/dev/null
     python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     # Fresh CI runners need the pinned NT checkout before source-capture checks.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked

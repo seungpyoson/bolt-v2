@@ -15,11 +15,11 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
     canonical_trades::{CsvTradeMappingConfig, RawPayloadContainer},
     catalog_projection::{
@@ -78,14 +78,6 @@ pub enum SourceUniverseOperatorInputsStatus {
 pub enum SourceUniverseOperatorInputRecordStatus {
     Ready,
     Blocked,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceUniverseOperatorInputsArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +163,7 @@ pub struct SourceUniverseOperatorInputs {
     pub converter_mapping_count: u64,
     pub ready_input_count: u64,
     pub blocked_input_count: u64,
-    pub artifact_refs: Vec<SourceUniverseOperatorInputsArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub converter_mappings: Vec<SourceUniverseOperatorConverterMapping>,
     pub instrument_specs: Vec<SourceUniverseOperatorInstrumentSpecRecord>,
     pub records: Vec<SourceUniverseOperatorInputRecord>,
@@ -219,34 +211,38 @@ pub fn write_source_universe_operator_inputs(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_OPERATOR_INPUTS_FILE);
-    let bytes =
-        serde_json::to_vec_pretty(&inputs).context("serialize source-universe operator inputs")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source-universe operator-inputs {}",
-                path.display()
-            )
-        })?;
-        if existing != bytes {
-            ensure!(
-                spec.overwrite_existing_artifacts,
-                "dirty source-universe operator-inputs {}: existing file content differs",
-                path.display()
-            );
-            atomic_write(&path, &bytes).with_context(|| {
-                format!("write source-universe operator-inputs {}", path.display())
-            })?;
-        }
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
-        atomic_write(&path, &bytes)
-            .with_context(|| format!("write source-universe operator-inputs {}", path.display()))?;
-    }
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_UNIVERSE_OPERATOR_INPUTS_FILE,
+        &inputs,
+        rewrite,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: |error| {
+                anyhow::anyhow!("serialize source-universe operator-inputs: {error}")
+            },
+            read_existing_error: |path, error| {
+                anyhow::anyhow!("read existing source-universe operator-inputs {path}: {error}")
+            },
+            mismatch_error: |path| {
+                anyhow::anyhow!(
+                    "dirty source-universe operator-inputs {path}: existing file content differs"
+                )
+            },
+            write_error: |path, error| {
+                anyhow::anyhow!("write source-universe operator-inputs {path}: {error}")
+            },
+        },
+    )?;
 
     Ok(SourceUniverseOperatorInputsArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         record_count: inputs.records.len() as u64,
     })
 }
@@ -815,8 +811,8 @@ fn artifact_ref(
     path: PathBuf,
     spec_path: &Path,
     sha256: String,
-) -> Result<SourceUniverseOperatorInputsArtifactRef> {
-    Ok(SourceUniverseOperatorInputsArtifactRef {
+) -> Result<ReferenceArtifactPin> {
+    Ok(ReferenceArtifactPin {
         role: role.to_string(),
         path: portable_artifact_path_for_spec(&path, spec_path)?,
         sha256,

@@ -11,9 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::backfill_coverage::{
     BackfillCoverageLedger, BackfillCoverageRecord, BackfillCoverageStatus,
 };
@@ -233,28 +231,22 @@ pub fn write_backfill_preflight_report(
         error: error.to_string(),
     })?;
     let path = output_dir.join(BACKFILL_PREFLIGHT_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .map_err(|error| BackfillPreflightError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing = fs::read(&path).map_err(|error| BackfillPreflightError::ReadExisting {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-        if existing != bytes {
-            return Err(BackfillPreflightError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| BackfillPreflightError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        BACKFILL_PREFLIGHT_REPORT_FILE,
+        report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillPreflightError::Serialize,
+            read_existing_error: |path, error| BackfillPreflightError::ReadExisting { path, error },
+            mismatch_error: |path| BackfillPreflightError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillPreflightError::Write { path, error },
+        },
+    )?;
     Ok(BackfillPreflightReportArtifact {
         path,
-        content_hash: format!("{:x}", Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
     })
 }
 

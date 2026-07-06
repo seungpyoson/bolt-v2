@@ -2869,6 +2869,7 @@ mod tests {
     const ISSUE_789_END_MS: u64 = 1_776_816_300_000;
     const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
     const ISSUE_789_END_NS: i64 = 1_776_816_300_000_000_000;
+    const ISSUE_789_RESULT_ARTIFACT_ROLE: &str = "issue-789-result-artifact.v1";
     const ISSUE_789_CONDITION_ID: &str =
         "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
     const ISSUE_789_UP_TOKEN: &str =
@@ -3210,10 +3211,13 @@ mod tests {
                 "did_not_arm_reason": guard.did_not_arm_reason.clone()
             }
         });
-        let bytes =
-            serde_json::to_vec_pretty(&payload).context("serialize issue #789 result artifact")?;
-        fs::write(&path, bytes)
-            .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
+        crate::reference_artifact::write_reference_artifact_with_len(
+            &path,
+            ISSUE_789_RESULT_ARTIFACT_ROLE,
+            &payload,
+            crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        )
+        .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
         Ok(())
     }
 

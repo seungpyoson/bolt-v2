@@ -21,6 +21,7 @@ use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE, BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
@@ -107,14 +108,6 @@ pub enum SourceUniverseExecutionPackStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceUniverseExecutionPackArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SourceUniverseExecutionPackRecord {
     pub sequence: u64,
     pub work_item_id: String,
@@ -177,7 +170,7 @@ pub struct SourceUniverseExecutionPack {
     pub skipped_executable_record_count: u64,
     pub executable_source_bytes: u64,
     pub materialized_source_bytes: u64,
-    pub artifact_refs: Vec<SourceUniverseExecutionPackArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub records: Vec<SourceUniverseExecutionPackRecord>,
     pub blocking_reasons: Vec<String>,
 }
@@ -368,15 +361,26 @@ pub fn write_source_universe_execution_pack(
         let gate = gates_by_work_item.get(&record.work_item_id).copied();
         let accepted_tranche =
             accepted_tranche_for_record(record, proof, &operator_inputs.table_family, gate);
-        let accepted_tranche_bytes = serde_json::to_vec_pretty(&accepted_tranche)
-            .context("serialize source-universe accepted tranche")?;
-        let accepted_tranche_hash = sha256_hex(&accepted_tranche_bytes);
         let accepted_tranche_path = run_dir.join(BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE);
-        write_bytes_if_clean(
-            &accepted_tranche_path,
-            &accepted_tranche_bytes,
-            spec.overwrite_existing_artifacts,
-        )?;
+        let rewrite = if spec.overwrite_existing_artifacts {
+            crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
+        } else {
+            crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+        };
+        let accepted_tranche_artifact =
+            crate::reference_artifact::write_reference_artifact_with_len(
+                &accepted_tranche_path,
+                BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,
+                &accepted_tranche,
+                rewrite,
+            )
+            .with_context(|| {
+                format!(
+                    "write source-universe accepted tranche {}",
+                    accepted_tranche_path.display()
+                )
+            })?;
+        let accepted_tranche_hash = accepted_tranche_artifact.pin.sha256.clone();
 
         let execution_plan = evaluate_backfill_execution_plan(
             format!("{}:execution-plan", record.operator_run_id),
@@ -459,7 +463,7 @@ pub fn write_source_universe_execution_pack(
     };
 
     let mut artifact_refs = vec![
-        SourceUniverseExecutionPackArtifactRef {
+        ReferenceArtifactPin {
             role: "source_universe_conversion_work_order".to_string(),
             path: portable_artifact_path_for_spec(
                 &work_order_path,
@@ -467,7 +471,7 @@ pub fn write_source_universe_execution_pack(
             )?,
             sha256: work_order_hash,
         },
-        SourceUniverseExecutionPackArtifactRef {
+        ReferenceArtifactPin {
             role: "source_universe_operator_inputs".to_string(),
             path: portable_artifact_path_for_spec(
                 &operator_inputs_path,
@@ -475,12 +479,12 @@ pub fn write_source_universe_execution_pack(
             )?,
             sha256: operator_inputs_hash,
         },
-        SourceUniverseExecutionPackArtifactRef {
+        ReferenceArtifactPin {
             role: "source_universe_object_gates".to_string(),
             path: portable_artifact_path_for_spec(&object_gates_path, &object_gates_ref.path)?,
             sha256: object_gates_hash,
         },
-        SourceUniverseExecutionPackArtifactRef {
+        ReferenceArtifactPin {
             role: "run_spec_template".to_string(),
             path: portable_artifact_path_for_spec(&template_path, &spec.run_spec_template_path)?,
             sha256: template_hash,
@@ -495,7 +499,7 @@ pub fn write_source_universe_execution_pack(
             .get(&proof_id)
             .with_context(|| format!("missing validated source proof {proof_id} for artifact ref"))?
             .artifact_ref;
-        artifact_refs.push(SourceUniverseExecutionPackArtifactRef {
+        artifact_refs.push(ReferenceArtifactPin {
             role: "source_proof".to_string(),
             path: portable_artifact_path_for_spec(
                 &resolve_existing_path(base_dir, &proof_ref.path),
@@ -532,13 +536,27 @@ pub fn write_source_universe_execution_pack(
     };
 
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
-    let pack_bytes =
-        serde_json::to_vec_pretty(&pack).context("serialize source-universe execution pack")?;
-    write_bytes_if_clean(&pack_path, &pack_bytes, spec.overwrite_existing_artifacts)?;
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
+    } else {
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let pack_artifact = crate::reference_artifact::write_reference_artifact_with_len(
+        &pack_path,
+        SOURCE_UNIVERSE_EXECUTION_PACK_FILE,
+        &pack,
+        rewrite,
+    )
+    .with_context(|| {
+        format!(
+            "write source-universe execution pack {}",
+            pack_path.display()
+        )
+    })?;
     Ok(SourceUniverseExecutionPackArtifact {
         path: pack_path,
-        content_hash: sha256_hex(&pack_bytes),
-        bytes: pack_bytes.len() as u64,
+        content_hash: pack_artifact.pin.sha256,
+        bytes: pack_artifact.bytes,
         materialized_record_count,
     })
 }
@@ -894,7 +912,7 @@ fn accepted_tranche_for_record(
 /// later read/parse failure can never be silently downgraded to "not a match".
 struct ValidatedSourceProof {
     report: SourceProofReport,
-    artifact_ref: crate::source_universe_object_gates::SourceUniverseObjectGateArtifactRef,
+    artifact_ref: ReferenceArtifactPin,
 }
 
 fn source_proofs_by_id(
@@ -984,9 +1002,7 @@ fn gates_by_work_item(
 fn work_order_artifact_ref<'a>(
     work_order: &'a SourceUniverseConversionWorkOrder,
     role: &str,
-) -> Result<
-    &'a crate::source_universe_conversion_work_order::SourceUniverseConversionWorkOrderArtifactRef,
-> {
+) -> Result<&'a ReferenceArtifactPin> {
     work_order
         .artifact_refs
         .iter()
@@ -997,7 +1013,7 @@ fn work_order_artifact_ref<'a>(
 fn operator_inputs_artifact_ref<'a>(
     inputs: &'a SourceUniverseOperatorInputs,
     role: &str,
-) -> Result<&'a crate::source_universe_operator_inputs::SourceUniverseOperatorInputsArtifactRef> {
+) -> Result<&'a ReferenceArtifactPin> {
     inputs
         .artifact_refs
         .iter()

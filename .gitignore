@@ -12,6 +12,8 @@ __pycache__/
 .agent-doctor/
 .agents/
 .beads/
+/.slate/
+/slate.json
 # Agent-local state must be ignored HERE (tracked .gitignore), not only in
 # .git/info/exclude or the global ignore: Entire's attribution scan honors
 # .gitignore alone, and unlisted local trees bloat checkpoint metadata past

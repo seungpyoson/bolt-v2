@@ -75,13 +75,22 @@ a strategy type through a third module under a new name.
 from __future__ import annotations
 
 import ast
+import os
+import re
 import subprocess
 import sys
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from git_remote_utils import fetchable_remote_url, github_actions_git_auth_env  # noqa: E402
+
+REPO_ROOT = SCRIPT_DIR.parent
 MAX_SCAN_FILE_BYTES = 1024 * 1024
 
 # Shared/family layer = everything under `src/bolt_v3_*` (top-level files and
@@ -820,12 +829,40 @@ def is_allowed(finding: Finding) -> bool:
 # merge; after that, every PR is checked.
 # --------------------------------------------------------------------------- #
 
-# The baseline is the protected mainline and ONLY the mainline. `FETCH_HEAD` or a
-# local `main` are deliberately NOT accepted: in a feature worktree `FETCH_HEAD`
-# can point at the branch itself, which would silently compare the allowlist to
-# itself and pass. CI refreshes `origin/main` via `git fetch` before this runs.
+# The baseline is the protected mainline and ONLY the mainline. `FETCH_HEAD`, a
+# local `main`, or a stale checkout `origin/main` are deliberately NOT accepted:
+# those can point at the branch itself or lag the protected branch. The verifier
+# fetches the baseline into an isolated temporary Git database before reading it.
 BASELINE_REL = "scripts/verify_bolt_v3_dependency_direction.py"
-BASELINE_REF = "origin/main"
+BASELINE_REMOTE = "origin"
+BASELINE_BRANCH = "main"
+BASELINE_REF = f"{BASELINE_REMOTE}/{BASELINE_BRANCH}"
+BASELINE_TEMP_REF = f"refs/dependency-direction-baseline/{BASELINE_BRANCH}"
+
+
+def _git(
+    args: list[str],
+    *,
+    cwd: Path,
+    check: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    process_env = None if env is None else {**os.environ, **env}
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=process_env,
+    )
+    if check and result.returncode != 0:
+        raise PolicyError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result
+
+
+def git_failure_details(result: subprocess.CompletedProcess[str]) -> str:
+    details = "\n".join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
+    return f"\n{details}" if details else ""
 
 
 def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
@@ -883,25 +920,53 @@ def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
 
 
 def _read_baseline_source() -> str | None:
-    """Return the fence source from `origin/main`, or None if the fence is not yet
-    present there (the introducing PR). Raises PolicyError if `origin/main` cannot
-    be resolved (fail closed rather than silently skip enforcement)."""
+    """Return the fence source from the mainline baseline, or None if it is not yet
+    present there. Raises PolicyError if the baseline cannot be resolved."""
 
-    rev = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{BASELINE_REF}^{{commit}}"],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if rev.returncode != 0:
+    remote = _git(["remote", "get-url", BASELINE_REMOTE], cwd=REPO_ROOT)
+    remote_url = remote.stdout.strip()
+    if remote.returncode != 0 or not remote_url:
         raise PolicyError(
-            f"cannot resolve baseline ref {BASELINE_REF} (fetch it in CI) "
-            "to enforce allowlist shrink-only"
+            f"cannot resolve baseline remote {BASELINE_REMOTE} "
+            f"to enforce allowlist shrink-only{git_failure_details(remote)}"
         )
-    show = subprocess.run(
-        ["git", "show", f"{BASELINE_REF}:{BASELINE_REL}"],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if show.returncode == 0:
-        return show.stdout
+    remote_url = fetchable_remote_url(remote_url, REPO_ROOT)
+    fetch_env = github_actions_git_auth_env(remote_url)
+    with tempfile.TemporaryDirectory(prefix="dependency-direction-baseline-") as tmp:
+        git_dir = Path(tmp) / "repo.git"
+        _git(["init", "--bare", str(git_dir)], cwd=Path(tmp), check=True)
+        if not git_dir.is_dir():
+            raise PolicyError(f"Git directory {git_dir} does not exist")
+        fetch = _git(
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--refmap=",
+                remote_url,
+                f"refs/heads/{BASELINE_BRANCH}:{BASELINE_TEMP_REF}",
+            ],
+            cwd=git_dir,
+            env=fetch_env or None,
+        )
+        if fetch.returncode != 0:
+            raise PolicyError(
+                f"cannot resolve baseline ref {BASELINE_REF} "
+                f"to enforce allowlist shrink-only{git_failure_details(fetch)}"
+            )
+        rev = _git(
+            ["rev-parse", "--verify", "--quiet", f"{BASELINE_TEMP_REF}^{{commit}}"],
+            cwd=git_dir,
+        )
+        if rev.returncode != 0:
+            raise PolicyError(
+                f"cannot resolve baseline ref {BASELINE_REF} "
+                f"to enforce allowlist shrink-only{git_failure_details(rev)}"
+            )
+        show = _git(["show", f"{BASELINE_TEMP_REF}:{BASELINE_REL}"], cwd=git_dir)
+        if show.returncode == 0:
+            return show.stdout
     return None  # ref resolves but the fence is not on it yet (introducing PR)
 
 

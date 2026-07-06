@@ -884,24 +884,38 @@ def _copy_hook_with_provenance(
     )
 
 
-def _shadowed_hook_copy(
+def _shadowed_hook_destination(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+) -> pathlib.Path:
+    source_sha = _file_sha256(hook_file)
+    shadow_dir = common_dir / "clean-merged.shadowed-hooks"
+    return shadow_dir / f"{hook_file.name}.{source_sha}"
+
+
+def _validate_shadowed_hook_copy(
     common_dir: pathlib.Path,
     hook_file: pathlib.Path,
 ) -> pathlib.Path:
     if hook_file.is_symlink():
         raise CleanMergedError(f"refusing to shadow symlink hook at {hook_file}")
-    source_sha = _file_sha256(hook_file)
-    shadow_dir = common_dir / "clean-merged.shadowed-hooks"
-    shadow_dir.mkdir(parents=True, exist_ok=True)
-    destination = shadow_dir / f"{hook_file.name}.{source_sha}"
+    destination = _shadowed_hook_destination(common_dir, hook_file)
     if destination.is_symlink():
         raise CleanMergedError(f"refusing to shadow into symlink hook at {destination}")
     if destination.exists() and not destination.is_file():
         raise CleanMergedError(f"refusing to shadow into non-file hook at {destination}")
-    if destination.exists():
-        if _file_sha256(destination) != source_sha:
-            raise CleanMergedError(f"refusing to shadow into mismatched hook at {destination}")
-    else:
+    if destination.exists() and _file_sha256(destination) != _file_sha256(hook_file):
+        raise CleanMergedError(f"refusing to shadow into mismatched hook at {destination}")
+    return destination
+
+
+def _shadowed_hook_copy(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+) -> pathlib.Path:
+    destination = _validate_shadowed_hook_copy(common_dir, hook_file)
+    if not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(hook_file, destination)
     return destination
 
@@ -1213,6 +1227,52 @@ def _preflight_manifest_hook_runtime_state(
             source_path=str(source_file),
             manifest_hooks=manifest_hooks,
         )
+
+
+def _preflight_fresh_shadow_collisions(
+    *,
+    active_hook_dirs: list[ActiveHookDir],
+    source_hooks_dir: pathlib.Path,
+    source_hook_names: set[str],
+    manifest_hooks: dict[str, Any],
+    runtime_hooks_dir: pathlib.Path,
+    common_dir: pathlib.Path,
+) -> None:
+    seen: set[pathlib.Path] = set()
+    candidate_dirs = [
+        runtime_hooks_dir,
+        *(
+            active_hooks.path
+            for active_hooks in active_hook_dirs
+            if _same_path(active_hooks.path, runtime_hooks_dir)
+        ),
+    ]
+    for active_hooks_dir in candidate_dirs:
+        if not active_hooks_dir.is_dir() or not _same_path(active_hooks_dir, runtime_hooks_dir):
+            continue
+        try:
+            active_dir_key = active_hooks_dir.resolve()
+        except OSError:
+            active_dir_key = active_hooks_dir.absolute()
+        if active_dir_key in seen:
+            continue
+        seen.add(active_dir_key)
+        for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
+            if hook_file.is_symlink():
+                if hook_file.name in source_hook_names and hook_file.name not in manifest_hooks:
+                    _validate_shadowed_hook_copy(common_dir, hook_file)
+                continue
+            if (
+                not hook_file.is_file()
+                or not _is_git_hook_name(hook_file.name)
+                or hook_file.name not in source_hook_names
+                or hook_file.name in manifest_hooks
+            ):
+                continue
+            repo_source_file = source_hooks_dir / hook_file.name
+            if hook_file.read_bytes() == repo_source_file.read_bytes():
+                continue
+            _validate_shadowed_hook_copy(common_dir, hook_file)
 
 
 def _configured_hooks_path(
@@ -1570,6 +1630,14 @@ def install_hooks(
         common_dir=common_dir,
         home_dir=home_dir,
         source_hook_names=source_hook_names,
+    )
+    _preflight_fresh_shadow_collisions(
+        active_hook_dirs=active_hook_dirs,
+        source_hooks_dir=source_hooks_dir,
+        source_hook_names=source_hook_names,
+        manifest_hooks=manifest_hooks,
+        runtime_hooks_dir=runtime_hooks_dir,
+        common_dir=common_dir,
     )
     source_dirs: list[dict[str, str]] = []
     adopted_source_paths: set[str] = set()

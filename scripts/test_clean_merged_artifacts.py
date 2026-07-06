@@ -2370,6 +2370,72 @@ class CleanupContractTests(unittest.TestCase):
             "#!/bin/sh\nprintf local-applypatch\n",
         )
 
+    def test_install_hooks_preflights_shadow_collisions_before_unlinking_any(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        for hook_name in ("applypatch-msg", "commit-msg"):
+            repo_hook = source_hooks / hook_name
+            repo_hook.write_text(f"#!/bin/sh\nprintf repo-{hook_name}\n", encoding="utf-8")
+            repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/applypatch-msg", ".githooks/commit-msg"],
+             cwd=self.work)
+        _run(["git", "commit", "-m", "track extra hooks"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        first_collision = runtime_hooks / "applypatch-msg"
+        first_collision.write_text("#!/bin/sh\nprintf local-applypatch\n", encoding="utf-8")
+        first_collision.chmod(0o755)
+        symlink_target = self.tmp / "commit-msg-target"
+        symlink_target.write_text("#!/bin/sh\nprintf local-commit\n", encoding="utf-8")
+        (runtime_hooks / "commit-msg").symlink_to(symlink_target)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to shadow symlink hook", proc.stderr)
+        self.assertTrue(first_collision.exists())
+        self.assertEqual(
+            first_collision.read_text(encoding="utf-8"),
+            "#!/bin/sh\nprintf local-applypatch\n",
+        )
+        self.assertFalse(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json").exists()
+        )
+
+    def test_install_hooks_preflights_runtime_collisions_with_nondefault_active_dir(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        for hook_name in ("applypatch-msg", "commit-msg"):
+            repo_hook = source_hooks / hook_name
+            repo_hook.write_text(f"#!/bin/sh\nprintf repo-{hook_name}\n", encoding="utf-8")
+            repo_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/applypatch-msg", ".githooks/commit-msg"],
+             cwd=self.work)
+        _run(["git", "commit", "-m", "track extra hooks"], cwd=self.work)
+        legacy_hooks = self.work / ".legacy-hooks"
+        legacy_hooks.mkdir()
+        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        first_collision = runtime_hooks / "applypatch-msg"
+        first_collision.write_text("#!/bin/sh\nprintf local-applypatch\n", encoding="utf-8")
+        first_collision.chmod(0o755)
+        symlink_target = self.tmp / "commit-msg-target"
+        symlink_target.write_text("#!/bin/sh\nprintf local-commit\n", encoding="utf-8")
+        (runtime_hooks / "commit-msg").symlink_to(symlink_target)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to shadow symlink hook", proc.stderr)
+        self.assertTrue(first_collision.exists())
+        self.assertEqual(
+            first_collision.read_text(encoding="utf-8"),
+            "#!/bin/sh\nprintf local-applypatch\n",
+        )
+
     def test_install_hooks_repeated_default_runtime_collision_keeps_manifest_valid(
         self,
     ) -> None:
@@ -2776,7 +2842,7 @@ class CleanupContractTests(unittest.TestCase):
         proc = run_clean_proc(self.work, "--install-hooks")
 
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("refusing to overwrite non-file hook", proc.stderr)
+        self.assertIn("refusing to shadow symlink hook", proc.stderr)
         self.assertFalse(outside_target.exists())
 
     def test_doctor_reports_symlink_managed_hook_as_outside_allowed_state(self) -> None:

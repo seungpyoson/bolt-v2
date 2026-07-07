@@ -799,9 +799,10 @@ fn reference_current_price_live_input_sources_by_client(
             let Some(provider_instrument) = provider_instrument else {
                 continue;
             };
-            let sources = by_client
-                .entry(source.client_id.to_string())
-                .or_insert_with(Vec::new);
+            let sources = match by_client.entry(source.client_id.to_string()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => entry.insert(Vec::new()),
+            };
             sources.push(BoltV3MissingInputSource {
                 strategy_instance_id: strategy.config.strategy_instance_id.clone(),
                 source_id: source_id.clone(),

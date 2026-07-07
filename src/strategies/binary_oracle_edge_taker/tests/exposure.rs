@@ -3873,15 +3873,15 @@ fn close_order_with_filled_event(order: &mut OrderAny, position_id: PositionId) 
     order
         .apply(accepted)
         .expect("accepted event should apply to test order");
+    let mut fill = order_filled_event_with_details(
+        order.client_order_id(),
+        order.instrument_id(),
+        Some(position_id),
+        order.order_side(),
+    );
+    fill.last_qty = order.quantity();
     order
-        .apply(nautilus_model::events::OrderEventAny::Filled(
-            order_filled_event_with_details(
-                order.client_order_id(),
-                order.instrument_id(),
-                Some(position_id),
-                order.order_side(),
-            ),
-        ))
+        .apply(nautilus_model::events::OrderEventAny::Filled(fill))
         .expect("filled event should apply to accepted test order");
 }
 

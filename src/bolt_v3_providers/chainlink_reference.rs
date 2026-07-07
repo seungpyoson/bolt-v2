@@ -394,6 +394,7 @@ impl DataClient for ChainlinkReferencePriceClient {
         if chainlink_reference_current_transport_mode(&self.websocket).is_some() {
             self.disconnect().await?;
         }
+        let connection_epoch_ms = current_unix_timestamp_ms()?;
         let websocket = chainlink_reference_connect_websocket(
             &self.config,
             Arc::clone(&self.subscriptions),
@@ -403,18 +404,19 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.input_health_missing_sources),
         )
         .await?;
-        let connection_epoch_ms = current_unix_timestamp_ms()?;
         chainlink_reference_store_transport(&self.websocket, websocket)?;
         self.liveness_task = Some(spawn_chainlink_reference_liveness_supervisor(
-            self.client_id,
-            self.config.clone(),
-            Arc::clone(&self.subscriptions),
-            Arc::clone(&self.websocket),
-            self.data_sender.clone(),
-            Arc::clone(&self.last_report_unix_ms),
-            Arc::clone(&self.input_health_report_liveness),
-            Arc::clone(&self.input_health_missing_sources),
-            connection_epoch_ms,
+            ChainlinkReferenceLivenessSupervisorContext {
+                client_id: self.client_id,
+                config: self.config.clone(),
+                subscriptions: Arc::clone(&self.subscriptions),
+                websocket: Arc::clone(&self.websocket),
+                data_sender: self.data_sender.clone(),
+                last_report_unix_ms: Arc::clone(&self.last_report_unix_ms),
+                input_health_report_liveness: Arc::clone(&self.input_health_report_liveness),
+                input_health_missing_sources: Arc::clone(&self.input_health_missing_sources),
+                connection_epoch_ms,
+            },
         ));
         self.connected = true;
         Ok(())
@@ -563,6 +565,15 @@ impl ChainlinkReferenceLivenessSupervisorState {
     }
 }
 
+struct ChainlinkReferenceLivenessTickContext<'a> {
+    config: &'a ChainlinkReferencePriceClientConfig,
+    subscriptions:
+        &'a Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
+    input_health_report_liveness: &'a ChainlinkReferenceInputHealthReportLiveness,
+    input_health_missing_sources: &'a ChainlinkReferenceInputHealthMissingSources,
+    last_report_unix_ms: &'a AtomicU64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ChainlinkReferenceLivenessTickOutcome {
     reconnect: bool,
@@ -575,19 +586,14 @@ struct ChainlinkReferenceLivenessTickOutcome {
 }
 
 fn chainlink_reference_liveness_supervisor_tick(
-    config: &ChainlinkReferencePriceClientConfig,
-    subscriptions: &Arc<
-        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
-    >,
-    input_health_report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
-    input_health_missing_sources: &ChainlinkReferenceInputHealthMissingSources,
-    last_report_unix_ms: &AtomicU64,
+    context: ChainlinkReferenceLivenessTickContext<'_>,
     connection_epoch_ms: u64,
     state: &mut ChainlinkReferenceLivenessSupervisorState,
     now_ms: u64,
     mode: Option<ConnectionMode>,
 ) -> ChainlinkReferenceLivenessTickOutcome {
-    let last_report_ms = last_report_unix_ms.load(Ordering::SeqCst);
+    let config = context.config;
+    let last_report_ms = context.last_report_unix_ms.load(Ordering::SeqCst);
     if last_report_ms > connection_epoch_ms && last_report_ms > state.last_budget_reset_report_ms {
         state.attempted_reconnects = 0;
         state.last_budget_reset_report_ms = last_report_ms;
@@ -598,8 +604,8 @@ fn chainlink_reference_liveness_supervisor_tick(
     let stream_stale = silence_ms > config.idle_timeout_ms;
     let stale_sources = chainlink_reference_stale_input_health_sources(
         config,
-        subscriptions,
-        input_health_report_liveness,
+        context.subscriptions,
+        context.input_health_report_liveness,
         now_ms,
         config.idle_timeout_ms,
         CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
@@ -621,7 +627,7 @@ fn chainlink_reference_liveness_supervisor_tick(
         chainlink_reference_emit_missing_input_health_sources(
             config,
             stale_sources,
-            input_health_missing_sources,
+            context.input_health_missing_sources,
             CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
             false,
         );
@@ -629,8 +635,8 @@ fn chainlink_reference_liveness_supervisor_tick(
     if stream_stale || transport_dead {
         chainlink_reference_emit_missing_input_health_transition(
             config,
-            subscriptions,
-            input_health_missing_sources,
+            context.subscriptions,
+            context.input_health_missing_sources,
             CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
             false,
         );
@@ -655,8 +661,8 @@ fn chainlink_reference_liveness_supervisor_tick(
     {
         let exhausted_sources = chainlink_reference_stale_input_health_sources(
             config,
-            subscriptions,
-            input_health_report_liveness,
+            context.subscriptions,
+            context.input_health_report_liveness,
             now_ms,
             config.idle_timeout_ms,
             CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
@@ -665,7 +671,7 @@ fn chainlink_reference_liveness_supervisor_tick(
             chainlink_reference_emit_missing_input_health_sources(
                 config,
                 exhausted_sources,
-                input_health_missing_sources,
+                context.input_health_missing_sources,
                 CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
                 true,
             );
@@ -673,8 +679,8 @@ fn chainlink_reference_liveness_supervisor_tick(
         if stream_stale || transport_dead {
             chainlink_reference_emit_missing_input_health_transition(
                 config,
-                subscriptions,
-                input_health_missing_sources,
+                context.subscriptions,
+                context.input_health_missing_sources,
                 CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
                 true,
             );
@@ -739,20 +745,34 @@ async fn chainlink_reference_connect_websocket(
     .map_err(anyhow::Error::from)
 }
 
-fn spawn_chainlink_reference_liveness_supervisor(
+struct ChainlinkReferenceLivenessSupervisorContext {
     client_id: ClientId,
     config: ChainlinkReferencePriceClientConfig,
-    subscriptions: Arc<
-        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
-    >,
+    subscriptions:
+        Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_report_unix_ms: Arc<AtomicU64>,
     input_health_report_liveness: ChainlinkReferenceInputHealthReportLiveness,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
-    mut connection_epoch_ms: u64,
+    connection_epoch_ms: u64,
+}
+
+fn spawn_chainlink_reference_liveness_supervisor(
+    context: ChainlinkReferenceLivenessSupervisorContext,
 ) -> JoinHandle<()> {
     get_runtime().spawn(async move {
+        let ChainlinkReferenceLivenessSupervisorContext {
+            client_id,
+            config,
+            subscriptions,
+            websocket,
+            data_sender,
+            last_report_unix_ms,
+            input_health_report_liveness,
+            input_health_missing_sources,
+            connection_epoch_ms: mut connection_epoch_ms,
+        } = context;
         let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
         let mut last_logged_mode = chainlink_reference_current_transport_mode(&websocket);
         loop {
@@ -776,11 +796,13 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 last_logged_mode = mode;
             }
             let tick = chainlink_reference_liveness_supervisor_tick(
-                &config,
-                &subscriptions,
-                &input_health_report_liveness,
-                &input_health_missing_sources,
-                last_report_unix_ms.as_ref(),
+                ChainlinkReferenceLivenessTickContext {
+                    config: &config,
+                    subscriptions: &subscriptions,
+                    input_health_report_liveness: &input_health_report_liveness,
+                    input_health_missing_sources: &input_health_missing_sources,
+                    last_report_unix_ms: last_report_unix_ms.as_ref(),
+                },
                 connection_epoch_ms,
                 &mut supervisor_state,
                 now_ms,
@@ -815,6 +837,15 @@ fn spawn_chainlink_reference_liveness_supervisor(
                     continue;
                 }
             }
+            let next_connection_epoch_ms = match current_unix_timestamp_ms() {
+                Ok(value) => value,
+                Err(error) => {
+                    log::error!(
+                        "Chainlink reference reconnect could not read connection epoch for client_id={client_id}: {error}"
+                    );
+                    now_ms
+                }
+            };
             match chainlink_reference_connect_websocket(
                 &config,
                 Arc::clone(&subscriptions),
@@ -827,15 +858,6 @@ fn spawn_chainlink_reference_liveness_supervisor(
             {
                 Ok(next) => {
                     let mode = next.connection_mode();
-                    let next_connection_epoch_ms = match current_unix_timestamp_ms() {
-                        Ok(value) => value,
-                        Err(error) => {
-                            log::error!(
-                                "Chainlink reference reconnect could not read connection epoch for client_id={client_id}: {error}"
-                            );
-                            now_ms
-                        }
-                    };
                     if let Err(error) = chainlink_reference_store_transport(&websocket, next) {
                         log::error!(
                             "Chainlink reference reconnect could not store new transport for client_id={client_id}: {error}"
@@ -2943,11 +2965,13 @@ mod tests {
         let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
         let connection_epoch_ms = btc_report_ms.saturating_sub(1);
         let first_tick = chainlink_reference_liveness_supervisor_tick(
-            &config,
-            &client.subscriptions,
-            &report_liveness,
-            &input_health_missing_sources,
-            last_report.as_ref(),
+            ChainlinkReferenceLivenessTickContext {
+                config: &config,
+                subscriptions: &client.subscriptions,
+                input_health_report_liveness: &report_liveness,
+                input_health_missing_sources: &input_health_missing_sources,
+                last_report_unix_ms: last_report.as_ref(),
+            },
             connection_epoch_ms,
             &mut supervisor_state,
             btc_report_ms + 1,
@@ -2984,11 +3008,13 @@ mod tests {
 
         let reconnected_epoch_ms = btc_report_ms;
         let second_tick = chainlink_reference_liveness_supervisor_tick(
-            &config,
-            &client.subscriptions,
-            &report_liveness,
-            &input_health_missing_sources,
-            last_report.as_ref(),
+            ChainlinkReferenceLivenessTickContext {
+                config: &config,
+                subscriptions: &client.subscriptions,
+                input_health_report_liveness: &report_liveness,
+                input_health_missing_sources: &input_health_missing_sources,
+                last_report_unix_ms: last_report.as_ref(),
+            },
             reconnected_epoch_ms,
             &mut supervisor_state,
             reconnected_epoch_ms + 1,
@@ -3058,11 +3084,13 @@ mod tests {
         );
 
         let recovered_tick = chainlink_reference_liveness_supervisor_tick(
-            &config,
-            &client.subscriptions,
-            &report_liveness,
-            &input_health_missing_sources,
-            last_report.as_ref(),
+            ChainlinkReferenceLivenessTickContext {
+                config: &config,
+                subscriptions: &client.subscriptions,
+                input_health_report_liveness: &report_liveness,
+                input_health_missing_sources: &input_health_missing_sources,
+                last_report_unix_ms: last_report.as_ref(),
+            },
             reconnected_epoch_ms,
             &mut supervisor_state,
             eth_report_ms + 1,

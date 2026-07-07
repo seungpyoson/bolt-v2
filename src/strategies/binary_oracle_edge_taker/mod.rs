@@ -2167,10 +2167,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn reconcile_runtime_venue_state(&mut self, now_ms: u64) {
-        if let Some(query) = self.runtime_reconcile_order_query() {
-            if self.runtime_reconcile_order_query_due(&query, now_ms) {
-                self.reconcile_runtime_order_query(query, now_ms);
-            }
+        if let Some(query) = self.runtime_reconcile_order_query()
+            && self.runtime_reconcile_order_query_due(&query, now_ms)
+        {
+            self.reconcile_runtime_order_query(query, now_ms);
         }
         self.reconcile_unsupported_observed_position_from_cache(now_ms);
     }
@@ -2381,11 +2381,9 @@ impl BinaryOracleEdgeTaker {
                 if exit.pending_exit.client_order_id == query.client_order_id
         );
         if exit_matches {
-            if filled {
-                if let ExposureState::ExitPending(exit) = &mut self.exposure {
-                    exit.pending_exit.fill_received = true;
-                    exit.pending_exit.filled_quantity = Some(filled_quantity);
-                }
+            if filled && let ExposureState::ExitPending(exit) = &mut self.exposure {
+                exit.pending_exit.fill_received = true;
+                exit.pending_exit.filled_quantity = Some(filled_quantity);
             }
             self.mark_exit_order_terminal(
                 query.client_order_id,

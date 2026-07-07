@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import pathlib
 import subprocess
 import sys
@@ -13,6 +15,15 @@ import textwrap
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "sandbox_safe_push.py"
 BRANCH = "codex/sandbox-safe-push"
+
+
+def load_helper_module() -> object:
+    spec = importlib.util.spec_from_file_location("sandbox_safe_push_under_test", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load sandbox_safe_push.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run(command: list[str], *, cwd: pathlib.Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -97,6 +108,29 @@ def assert_push_uses_url_without_remote_tracking_write() -> None:
             raise AssertionError(result.stdout)
 
 
+def assert_push_uses_configured_push_url() -> None:
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        fetch_bare = tmp / "fetch.git"
+        push_bare = tmp / "push.git"
+        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(fetch_bare)])
+        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(push_bare)])
+        repo = init_work_repo(tmp, remote_path=fetch_bare)
+        git(repo, "remote", "set-url", "--push", "origin", str(push_bare))
+
+        result = run_helper(repo)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        push_ref = run(["git", "ls-remote", "--heads", str(push_bare), BRANCH]).stdout.strip()
+        if push_ref != f"{head}\trefs/heads/{BRANCH}":
+            raise AssertionError(push_ref)
+        fetch_ref = run(["git", "ls-remote", "--heads", str(fetch_bare), BRANCH]).stdout.strip()
+        if fetch_ref:
+            raise AssertionError(fetch_ref)
+
+
 def assert_rejects_unsafe_branch_before_push() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
@@ -145,11 +179,45 @@ def assert_requires_clean_worktree() -> None:
             raise AssertionError(result.stderr)
 
 
+def assert_git_prompt_is_forced_off() -> None:
+    helper = load_helper_module()
+    captured_env: dict[str, str] = {}
+
+    def fake_run(
+        argv: list[str],
+        *,
+        cwd: pathlib.Path,
+        capture_output: bool,
+        text: bool,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        captured_env.update(env)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    original_run = helper.subprocess.run
+    original_prompt = os.environ.get("GIT_TERMINAL_PROMPT")
+    try:
+        os.environ["GIT_TERMINAL_PROMPT"] = "1"
+        helper.subprocess.run = fake_run
+        helper.run_git(pathlib.Path("."), ["status"])
+    finally:
+        helper.subprocess.run = original_run
+        if original_prompt is None:
+            os.environ.pop("GIT_TERMINAL_PROMPT", None)
+        else:
+            os.environ["GIT_TERMINAL_PROMPT"] = original_prompt
+
+    if captured_env.get("GIT_TERMINAL_PROMPT") != "0":
+        raise AssertionError(captured_env.get("GIT_TERMINAL_PROMPT"))
+
+
 def main() -> int:
     assert_push_uses_url_without_remote_tracking_write()
+    assert_push_uses_configured_push_url()
     assert_rejects_unsafe_branch_before_push()
     assert_push_errors_redact_remote_url()
     assert_requires_clean_worktree()
+    assert_git_prompt_is_forced_off()
     print("OK: sandbox-safe push tests passed.")
     return 0
 

@@ -63,7 +63,7 @@ def run_git(
 ) -> subprocess.CompletedProcess[str]:
     argv = ["git", "--no-optional-locks", *args]
     env = os.environ.copy()
-    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         result = subprocess.run(argv, cwd=repo, capture_output=True, text=True, env=env)
     except FileNotFoundError as exc:
@@ -188,10 +188,10 @@ def require_clean_worktree(repo: pathlib.Path) -> None:
 
 
 def remote_url(repo: pathlib.Path, remote: str) -> str:
-    result = run_git(repo, ["remote", "get-url", remote])
+    result = run_git(repo, ["remote", "get-url", "--push", remote])
     url = result.stdout.strip()
     if not url:
-        raise PushError(f"remote {remote!r} has no URL")
+        raise PushError(f"remote {remote!r} has no push URL")
     return url
 
 

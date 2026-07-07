@@ -720,7 +720,7 @@ jobs:
   source-fence-static:
     name: source-fence-static
     needs: ci-policy
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' && needs.ci-policy.outputs.ci_policy_path != 'docs' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

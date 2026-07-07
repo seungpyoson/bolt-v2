@@ -468,7 +468,9 @@ DOCS_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'docs'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
 PULL_REQUEST_EVENT_EXPR = "github.event_name == 'pull_request'"
 SOURCE_FENCE_JOB_IF_VALUE = f"${{{{ {FULL_CI_REQUIRED_EXPR} || {DOCS_POLICY_EXPR} }}}}"
-SOURCE_FENCE_STATIC_JOB_IF_VALUE = f"${{{{ {PULL_REQUEST_EVENT_EXPR} }}}}"
+SOURCE_FENCE_STATIC_JOB_IF_VALUE = (
+    f"${{{{ {PULL_REQUEST_EVENT_EXPR} && needs.ci-policy.outputs.ci_policy_path != 'docs' }}}}"
+)
 SOURCE_FENCE_POLICY_SWITCH = """
 if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
   just source-fence
@@ -11439,7 +11441,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if "ci-policy" not in source_fence_static_needs:
             errors.append("source-fence-static needs ci-policy")
         if not source_fence_static_runs_only_on_pull_request(jobs["source-fence-static"]):
-            errors.append("source-fence-static must run only for pull_request")
+            errors.append("source-fence-static must run only for non-docs pull_request")
         if not source_fence_static_has_provenance_env(jobs["source-fence-static"]):
             errors.append("source-fence-static must pass GitHub provenance env")
 

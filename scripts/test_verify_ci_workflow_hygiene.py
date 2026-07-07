@@ -626,7 +626,7 @@ jobs:
   source-fence-static:
     name: source-fence-static
     needs: ci-policy
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' && needs.ci-policy.outputs.ci_policy_path != 'docs' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@example
@@ -6088,10 +6088,10 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             ),
         ),
         (
-            "source-fence-static must run only for pull_request",
+            "source-fence-static must run only for non-docs pull_request",
             replace_once(
                 workflow,
-                "    if: ${{ github.event_name == 'pull_request' }}",
+                "    if: ${{ github.event_name == 'pull_request' && needs.ci-policy.outputs.ci_policy_path != 'docs' }}",
                 "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
             ),
         ),

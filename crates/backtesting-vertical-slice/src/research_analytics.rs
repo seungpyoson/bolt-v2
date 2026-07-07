@@ -543,11 +543,7 @@ pub fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()>
 fn load_backtest_sweep_source_pairs(
     plan: &BacktestSweepPublicationPlan,
 ) -> Result<Vec<LoadedBacktestSweepRun>> {
-    ensure!(
-        plan.input_dir.is_dir(),
-        "input_dir must be an existing directory: {}",
-        plan.input_dir.display()
-    );
+    ensure_publication_input_dir(&plan.input_dir)?;
     let mut input_entries = fs::read_dir(&plan.input_dir)
         .with_context(|| format!("read input_dir {}", plan.input_dir.display()))?;
     ensure!(
@@ -598,6 +594,22 @@ fn load_backtest_sweep_source_pairs(
         });
     }
     Ok(loaded_runs)
+}
+
+fn ensure_publication_input_dir(input_dir: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(input_dir)
+        .with_context(|| format!("stat input_dir {}", input_dir.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "input_dir must not be a symlink: {}",
+        input_dir.display()
+    );
+    ensure!(
+        metadata.file_type().is_dir(),
+        "input_dir must be an existing directory: {}",
+        input_dir.display()
+    );
+    Ok(())
 }
 
 fn resolve_source_path(
@@ -2115,6 +2127,40 @@ mod tests {
             calls, 0,
             "executor must not run after symlinked source path"
         );
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_input_dir_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let real_input_dir = temp.path().join("real-inputs");
+        fs::create_dir_all(&real_input_dir).expect("create real input dir");
+        let source = write_source_pair(
+            &real_input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let linked_input_dir = temp.path().join("linked-inputs");
+        std::os::unix::fs::symlink(&real_input_dir, &linked_input_dir).expect("symlink input dir");
+        let plan = publication_plan(&temp, linked_input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked input_dir must fail");
+
+        assert_eq!(calls, 0, "executor must not run after symlinked input_dir");
+        assert!(err.to_string().contains("input_dir"), "{err}");
         assert!(err.to_string().contains("symlink"), "{err}");
         assert!(!plan.index_path.exists(), "index must not be written");
     }

@@ -3261,33 +3261,74 @@ def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
     return git_output(repo, "branch", "--show-current")
 
 
-def live_upstream_head(repo: pathlib.Path, branch: str, *, command_name: str = "verify-remote") -> tuple[str | None, str | None]:
-    remote, error = git_output(repo, "config", f"branch.{branch}.remote")
-    if error is not None or not remote:
-        return None, None
-    merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
-    if error is not None or not merge_ref:
-        return None, None
-    if not merge_ref.startswith("refs/heads/"):
-        return None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
-    upstream_branch = merge_ref.removeprefix("refs/heads/")
-    refs, error = git_output(repo, "ls-remote", "--heads", remote, upstream_branch)
+def single_configured_remote(
+    repo: pathlib.Path,
+    *,
+    command_name: str,
+) -> tuple[str | None, str | None]:
+    remotes, error = git_output(repo, "remote")
+    if error is not None:
+        return None, error
+    names = [line.strip() for line in remotes.splitlines() if line.strip()]
+    if len(names) == 1:
+        return names[0], None
+    if not names:
+        return None, f"{command_name} requires a configured Git remote"
+    joined = ", ".join(sorted(names))
+    return None, f"{command_name} requires local upstream metadata when multiple remotes are configured: {joined}"
+
+
+def live_remote_branch_head(
+    repo: pathlib.Path,
+    *,
+    remote: str,
+    branch: str,
+) -> tuple[str | None, str | None]:
+    refs, error = git_output(repo, "ls-remote", "--heads", remote, branch)
     if error is not None:
         return None, error
     for line in refs.splitlines():
         fields = line.split()
-        if len(fields) >= 2 and fields[1] == f"refs/heads/{upstream_branch}":
+        if len(fields) >= 2 and fields[1] == f"refs/heads/{branch}":
             return fields[0], None
     return None, None
 
 
-def upstream_branch_name(repo: pathlib.Path, branch: str, *, command_name: str) -> tuple[str | None, str | None]:
+def live_upstream_head(
+    repo: pathlib.Path,
+    branch: str,
+    *,
+    command_name: str = "verify-remote",
+) -> tuple[str | None, str | None, str | None, str | None]:
+    remote, error = git_output(repo, "config", f"branch.{branch}.remote")
+    if error is not None or not remote:
+        fallback_remote, remote_error = single_configured_remote(repo, command_name=command_name)
+        if remote_error is not None or fallback_remote is None:
+            return None, None, None, remote_error
+        upstream, upstream_error = live_remote_branch_head(
+            repo,
+            remote=fallback_remote,
+            branch=branch,
+        )
+        return upstream, branch if upstream is not None else None, fallback_remote, upstream_error
     merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
-    if error is not None or not merge_ref:
-        return None, f"{command_name} requires pushed HEAD with an upstream"
+    if error is not None:
+        return None, None, None, error
+    if not merge_ref:
+        fallback_remote, remote_error = single_configured_remote(repo, command_name=command_name)
+        if remote_error is not None or fallback_remote is None:
+            return None, None, None, remote_error
+        upstream, upstream_error = live_remote_branch_head(
+            repo,
+            remote=fallback_remote,
+            branch=branch,
+        )
+        return upstream, branch if upstream is not None else None, fallback_remote, upstream_error
     if not merge_ref.startswith("refs/heads/"):
-        return None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
-    return merge_ref.removeprefix("refs/heads/"), None
+        return None, None, None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
+    upstream_branch = merge_ref.removeprefix("refs/heads/")
+    upstream, error = live_remote_branch_head(repo, remote=remote, branch=upstream_branch)
+    return upstream, upstream_branch if upstream is not None else None, remote, error
 
 
 def ensure_clean_pushed_head_preconditions(
@@ -3308,15 +3349,15 @@ def ensure_clean_pushed_head_preconditions(
         return None, None, error
     if not branch:
         return None, None, f"{command_name} requires a named branch"
-    upstream, error = live_upstream_head(repo, branch, command_name=command_name)
+    upstream, upstream_branch, remote, error = live_upstream_head(repo, branch, command_name=command_name)
     if error is not None:
         return None, None, error
-    if upstream is None:
-        hint = "git push -u origin HEAD"
-        return None, None, f"{command_name} requires pushed HEAD with an upstream; run: {hint}"
+    if upstream is None or upstream_branch is None:
+        hint = f"git push {shlex.quote(remote or '<remote>')} HEAD"
+        return None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: {hint}"
     if upstream != head:
         return None, None, f"{command_name} requires HEAD to be pushed to the upstream branch"
-    return head, branch, None
+    return head, upstream_branch, None
 
 
 def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
@@ -3324,13 +3365,7 @@ def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, 
 
 
 def ensure_rust_probe_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
-    head, branch, error = ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
-    if error is not None or head is None or branch is None:
-        return head, branch, error
-    upstream_branch, error = upstream_branch_name(repo, branch, command_name="rust-probe")
-    if error is not None or upstream_branch is None:
-        return None, None, error or "rust-probe requires pushed HEAD with an upstream"
-    return head, upstream_branch, None
+    return ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
 
 
 def pr_create_hint(branch: str) -> str:
@@ -3343,6 +3378,7 @@ def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, An
             "gh",
             "pr",
             "view",
+            branch,
             "--json",
             "number,url,headRefOid,headRefName,state,isDraft,headRepositoryOwner,headRepository",
         ],

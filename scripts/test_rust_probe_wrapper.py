@@ -641,6 +641,20 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
     if (head, branch, error) != (HEAD, UPSTREAM_BRANCH, None):
         raise AssertionError((head, branch, error))
 
+    no_local_upstream_outputs = {
+        ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+        ("rev-parse", "HEAD"): (HEAD, None),
+        ("branch", "--show-current"): (BRANCH, None),
+        ("config", f"branch.{BRANCH}.remote"): ("", None),
+        ("remote",): ("origin", None),
+        ("ls-remote", "--heads", "origin", BRANCH): (f"{HEAD}\trefs/heads/{BRANCH}", None),
+    }
+    head, branch, error, calls = run_with_git_outputs(no_local_upstream_outputs)
+    if (head, branch, error) != (HEAD, BRANCH, None):
+        raise AssertionError((head, branch, error))
+    if ("ls-remote", "--heads", "origin", BRANCH) not in calls:
+        raise AssertionError(calls)
+
     refusal_cases = [
         (
             "dirty worktree",
@@ -648,9 +662,13 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
             "rust-probe requires a clean worktree",
         ),
         (
-            "missing upstream",
-            {("config", f"branch.{BRANCH}.remote"): ("", None)},
-            "rust-probe requires pushed HEAD with an upstream",
+            "missing same-name remote branch",
+            {
+                ("config", f"branch.{BRANCH}.remote"): ("", None),
+                ("remote",): ("origin", None),
+                ("ls-remote", "--heads", "origin", BRANCH): ("", None),
+            },
+            "git push origin HEAD",
         ),
         (
             "unpushed head",

@@ -311,8 +311,20 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("rev-parse", "HEAD"): ("abc", None),
                     ("branch", "--show-current"): ("feature", None),
                     ("config", "branch.feature.remote"): (None, "no upstream"),
+                    ("remote",): ("origin", None),
+                    ("ls-remote", "--heads", "origin", "feature"): ("", None),
                 }[args],
-                "git push -u origin HEAD",
+                "git push origin HEAD",
+            ),
+            (
+                lambda _repo, *args: {
+                    ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+                    ("rev-parse", "HEAD"): ("abc", None),
+                    ("branch", "--show-current"): ("feature", None),
+                    ("config", "branch.feature.remote"): (None, "no upstream"),
+                    ("remote",): ("fork\norigin", None),
+                }[args],
+                "requires local upstream metadata when multiple remotes are configured",
             ),
         ]
         try:
@@ -323,6 +335,34 @@ def assert_verify_remote_precondition_errors() -> None:
                     raise AssertionError((expected, result, output))
         finally:
             owner.git_output = original_git_output
+
+
+def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+        calls.append(args)
+        return {
+            ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+            ("rev-parse", "HEAD"): ("abc", None),
+            ("branch", "--show-current"): ("feature", None),
+            ("config", "branch.feature.remote"): (None, "no upstream"),
+            ("remote",): ("origin", None),
+            ("ls-remote", "--heads", "origin", "feature"): ("abc\trefs/heads/feature", None),
+        }[args]
+
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        head, branch, error = owner.ensure_verify_remote_preconditions(REPO_ROOT)
+    finally:
+        owner.git_output = original_git_output
+
+    if (head, branch, error) != ("abc", "feature", None):
+        raise AssertionError((head, branch, error))
+    if ("ls-remote", "--heads", "origin", "feature") not in calls:
+        raise AssertionError(calls)
 
 
 def assert_verify_remote_pr_errors() -> None:
@@ -1403,6 +1443,7 @@ def main() -> int:
     assert_run_attempt_accepts_positive_ints_only()
     assert_job_database_id_accepts_numeric_database_id_or_id()
     assert_verify_remote_precondition_errors()
+    assert_verify_remote_accepts_same_name_remote_without_local_upstream()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()

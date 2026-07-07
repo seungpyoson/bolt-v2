@@ -193,7 +193,17 @@ def main() -> int:
             findings.append(f"{rel}: Python package/build metadata is not allowed for the Rust runtime")
 
     manifests = cargo_manifest_paths()
-    require_nonempty(manifests, "Cargo manifests", findings)
+    rust_source_paths = sorted((REPO_ROOT / "src").glob("**/*.rs"))
+    floor_findings: list[str] = []
+    require_nonempty(manifests, "Cargo manifests", floor_findings)
+    require_nonempty(rust_source_paths, "Rust source files under src", floor_findings)
+    require_nonempty(RUNTIME_SOURCE_PATHS, "Bolt-v3 runtime source paths", floor_findings)
+    if floor_findings:
+        findings.extend(floor_findings)
+        for finding in findings:
+            print(f"FAIL: {finding}", file=sys.stderr)
+        return 1
+
     for manifest in manifests:
         dependency_names = cargo_dependency_names(manifest)
         rel = manifest.relative_to(REPO_ROOT).as_posix()
@@ -204,28 +214,25 @@ def main() -> int:
     for name in sorted(lock_names & FORBIDDEN_PACKAGE_NAMES):
         findings.append(f"Cargo.lock references forbidden Python bridge package {name!r}")
 
-    rust_source_paths = sorted((REPO_ROOT / "src").glob("**/*.rs"))
-    if require_nonempty(rust_source_paths, "Rust source files under src", findings):
-        for path in rust_source_paths:
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            text = path.read_text(encoding="utf-8")
-            scan_text = strip_rust_comments_and_literals(strip_cfg_test_items(text))
-            for pattern, label in FORBIDDEN_RUST_PATTERNS:
-                for match in pattern.finditer(scan_text):
-                    findings.append(f"{rel}:{line_number(text, match.start())}: {label}")
+    for path in rust_source_paths:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8")
+        scan_text = strip_rust_comments_and_literals(strip_cfg_test_items(text))
+        for pattern, label in FORBIDDEN_RUST_PATTERNS:
+            for match in pattern.finditer(scan_text):
+                findings.append(f"{rel}:{line_number(text, match.start())}: {label}")
 
-    if require_nonempty(RUNTIME_SOURCE_PATHS, "Bolt-v3 runtime source paths", findings):
-        for rel in RUNTIME_SOURCE_PATHS:
-            path = REPO_ROOT / rel
-            if not path.exists():
-                findings.append(f"{rel}: runtime source file is missing")
-                continue
-            text = production_text(path)
-            for pattern, label in FORBIDDEN_RUNTIME_SOURCE_PATTERNS:
-                for match in pattern.finditer(text):
-                    findings.append(
-                        f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
-                    )
+    for rel in RUNTIME_SOURCE_PATHS:
+        path = REPO_ROOT / rel
+        if not path.exists():
+            findings.append(f"{rel}: runtime source file is missing")
+            continue
+        text = production_text(path)
+        for pattern, label in FORBIDDEN_RUNTIME_SOURCE_PATTERNS:
+            for match in pattern.finditer(text):
+                findings.append(
+                    f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
+                )
 
     if MAIN_RS.exists():
         findings.extend(

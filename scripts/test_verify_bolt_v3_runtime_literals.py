@@ -125,7 +125,8 @@ def test_main_fails_closed_when_scan_paths_are_empty() -> None:
             VERIFIER.REPO_ROOT = original_root
 
     output = stderr.getvalue()
-    if code != 1 or "Bolt-v3 runtime literal scan paths: enforcement set is empty" not in output:
+    expected = "FAIL: Bolt-v3 runtime literal scan paths: enforcement set is empty\n"
+    if code != 1 or output != expected:
         raise AssertionError(f"expected empty scan floor, got code={code}, stderr={output!r}")
 
 

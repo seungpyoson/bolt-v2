@@ -317,7 +317,8 @@ def test_main_fails_closed_when_scan_paths_are_empty() -> None:
             VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
 
     output = stderr.getvalue()
-    if code != 1 or "enforcement set is empty" not in output:
+    expected = "FAIL: Bolt-v3 naming scan paths: enforcement set is empty\n"
+    if code != 1 or output != expected:
         raise AssertionError(f"expected empty scan floor finding, got code={code}, stderr={output!r}")
 
 
@@ -346,7 +347,10 @@ accepted_non_nt_names: []
         source.parent.mkdir(parents=True)
         source.write_text("pub struct Clean;\n", encoding="utf-8")
         allowlist_path = root / "allowlist.txt"
-        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
+        allowlist_path.write_text(
+            "src/clean.rs:1\tpub struct PositionSizer;\tfixture stale entry\n",
+            encoding="utf-8",
+        )
         stderr = io.StringIO()
         try:
             VERIFIER.REPO_ROOT = root
@@ -366,8 +370,8 @@ accepted_non_nt_names: []
             VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
 
     output = stderr.getvalue()
-    expected = "Bolt-v3 naming audit rule rows: enforcement set is empty"
-    if code != 1 or expected not in output:
+    expected = "FAIL: Bolt-v3 naming audit rule rows: enforcement set is empty\n"
+    if code != 1 or output != expected:
         raise AssertionError(f"expected empty rule-row floor, got code={code}, stderr={output!r}")
 
 

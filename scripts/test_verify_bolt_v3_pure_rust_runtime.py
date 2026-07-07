@@ -128,7 +128,8 @@ def test_main_fails_closed_when_manifest_discovery_is_empty() -> None:
         (root / "Cargo.lock").write_text("", encoding="utf-8")
         code, stderr = run_main_with_temp_root(root, source)
 
-    if code != 1 or "Cargo manifests: enforcement set is empty" not in stderr:
+    expected = "FAIL: Cargo manifests: enforcement set is empty\n"
+    if code != 1 or stderr != expected:
         raise AssertionError(f"expected empty manifest floor, got code={code}, stderr={stderr!r}")
 
 

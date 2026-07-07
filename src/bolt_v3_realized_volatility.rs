@@ -1754,6 +1754,22 @@ mod tests {
     }
 
     #[test]
+    fn valid_realized_vol_constructor_rejects_negative_and_non_finite_values() {
+        assert_eq!(
+            ValidRealizedVol::new(ZERO_F64).map(ValidRealizedVol::get),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
+            ValidRealizedVol::new(HALF_F64).map(ValidRealizedVol::get),
+            Some(HALF_F64)
+        );
+        assert_eq!(ValidRealizedVol::new(-UNIT_F64), None);
+        assert_eq!(ValidRealizedVol::new(f64::NAN), None);
+        assert_eq!(ValidRealizedVol::new(f64::INFINITY), None);
+        assert_eq!(ValidRealizedVol::new(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
     fn source_samples_are_pruned_to_bounded_retention_horizon() {
         let mut engine = RealizedVolEngine::from_config(config()).unwrap();
 

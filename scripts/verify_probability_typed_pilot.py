@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import rust_source_scanner
+from verify_bolt_v3_provider_leaks import production_text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,25 +27,107 @@ FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
 FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
     r"\b(?:FinancialValue|financial_value_private|Sealed)\b"
 )
-FINANCIAL_VALUE_OWNER_MACRO_INVOCATION_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*!\s*[\(\[\{]"
+# Drift snapshots, not Rust parsers. Broad tokens intentionally fail closed so
+# new owner-module risk surface must be reviewed and allowlisted explicitly.
+FINANCIAL_VALUE_OWNER_RISK_TOKENS = (
+    "#",
+    "!",
+    "use",
+    "FinancialValue",
+    "financial_value_private",
+    "Sealed",
+    "Default",
+    "AmbiguousIfDefault",
+    "macro_rules",
 )
-FINANCIAL_VALUE_OWNER_MACRO_DEFINITION_PATTERN = re.compile(
-    r"\bmacro_rules\s*!\s*([A-Za-z_][A-Za-z0-9_]*)"
+FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
+    ".all(|byte| byte.is_ascii_digit() || matches!(byte, b ..=b ))",
+    "mod financial_value_private {",
+    "pub trait Sealed {}",
+    "#[allow(private_bounds)]",
+    "pub trait FinancialValue: financial_value_private::Sealed {}",
+    "#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+    "impl financial_value_private::Sealed for Probability {}",
+    "impl FinancialValue for Probability {}",
+    "impl financial_value_private::Sealed for crate::bolt_v3_maker_mu_estimator::UsableMu {}",
+    "impl FinancialValue for crate::bolt_v3_maker_mu_estimator::UsableMu {}",
+    "impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ValidRealizedVol {}",
+    "impl FinancialValue for crate::bolt_v3_realized_volatility::ValidRealizedVol {}",
+    "impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}",
+    "impl FinancialValue for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}",
+    "if !value.is_finite() || !eps.is_finite() {",
+    "if !(eps > ZERO_F64 && eps < HALF_F64) {",
+    "#[allow(dead_code)]",
+    "trait AmbiguousIfDefault<A> {",
+    "impl<T: ?Sized> AmbiguousIfDefault<()> for T {}",
+    "impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}",
+    "let _ = <Probability as AmbiguousIfDefault<_>>::_check;",
+    "let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;",
+    "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
+    "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
 )
-FINANCIAL_VALUE_OWNER_ALLOWED_MACROS = frozenset(("assert", "assert_eq", "matches"))
-FINANCIAL_VALUE_OWNER_BANG_OPERATOR_KEYWORDS = frozenset(("if", "while"))
-FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES = frozenset(
+FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
+    ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
+    ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_live_node/tests/data_client_probe.rs", "clients: Default::default(),"),
+    ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
+    ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
+    ("src/bolt_v3_numeric.rs", "trait AmbiguousIfDefault<A> {"),
+    ("src/bolt_v3_numeric.rs", "impl<T: ?Sized> AmbiguousIfDefault<()> for T {}"),
+    ("src/bolt_v3_numeric.rs", "impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}"),
+    ("src/bolt_v3_numeric.rs", "let _ = <Probability as AmbiguousIfDefault<_>>::_check;"),
     (
-        "#[allow(dead_code)]",
-        "#[allow(private_bounds)]",
-        "#[cfg(test)]",
-        "#[derive(Debug,Clone,Copy,PartialEq,PartialOrd)]",
-        "#[test]",
-    )
+        "src/bolt_v3_numeric.rs",
+        "let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
+    ),
+    ("src/bolt_v3_order_execution.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_order_execution.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_submit_admission.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_submit_admission.rs", "#[derive(Default)]"),
+    ("src/shadow_pnl.rs", "#[derive(Debug, Clone, Default)]"),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs",
+        "assert_eq!(order.trigger_type(), Some(TriggerType::Default));",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs",
+        "#[derive(Default)]",
+    ),
+    ("src/strategies/registry.rs", "..Default::default()"),
+    ("src/strategies/registry.rs", "let raw = toml::Value::Table(Default::default());"),
 )
-FINANCIAL_VALUE_OWNER_USE_PATTERN = re.compile(r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?use\b.*$")
-FINANCIAL_VALUE_OWNER_ALLOWED_USES = frozenset(("use super::*;",))
 FINANCIAL_VALUE_MARKER_ALLOWLIST = (
     ("src/bolt_v3_numeric.rs", "mod financial_value_private {"),
     ("src/bolt_v3_numeric.rs", "pub trait Sealed {}"),
@@ -279,11 +362,6 @@ FORBIDDEN_PATTERNS = [
         "path-loaded module in FinancialValue owner module",
     ),
     PatternCheck(
-        "src/bolt_v3_numeric.rs",
-        r"#\s*\[\s*(?:cfg\s*\(\s*test\s*\)|test)\s*\]\s*fn\s+financial_values_do_not_implement_default",
-        "test-only FinancialValue !Default guard",
-    ),
-    PatternCheck(
         "src/bolt_v3_decision_evidence.rs",
         r"pub\s+[A-Za-z0-9_]+:\s*(?:Option\s*<\s*)?Probability",
         "Probability in decision-evidence serde fields",
@@ -351,51 +429,12 @@ def normalize_source_line(line: str) -> str:
     return " ".join(line.strip().split())
 
 
-def normalize_attribute(attribute: str) -> str:
-    return "".join(attribute.split())
-
-
-def rust_attribute_blocks(source: str) -> list[tuple[int, str]]:
-    attributes = []
-    index = 0
-    while index < len(source):
-        if source[index] != "#":
-            index += 1
-            continue
-
-        bracket_index = index + 1
-        while bracket_index < len(source) and source[bracket_index].isspace():
-            bracket_index += 1
-        if bracket_index >= len(source) or source[bracket_index] != "[":
-            index += 1
-            continue
-
-        depth = 0
-        end_index = bracket_index
-        while end_index < len(source):
-            char = source[end_index]
-            if char == "[":
-                depth += 1
-            elif char == "]":
-                depth -= 1
-                if depth == 0:
-                    end_index += 1
-                    break
-            end_index += 1
-
-        attributes.append((index, source[index:end_index]))
-        index = end_index
-    return attributes
-
-
-def rust_brace_depth_at(source: str, target_index: int) -> int:
-    depth = 0
-    for char in source[:target_index]:
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth = max(0, depth - 1)
-    return depth
+def normalized_source_lines(source: str) -> tuple[str, ...]:
+    return tuple(
+        normalized
+        for line in source.splitlines()
+        if (normalized := normalize_source_line(line))
+    )
 
 
 def financial_value_marker_lines(root: Path) -> Counter[tuple[str, str]]:
@@ -424,81 +463,56 @@ def verify_financial_value_marker_allowlist(root: Path) -> list[str]:
     return [f"src/: FinancialValue marker allowlist mismatch: {', '.join(details)}"]
 
 
-def verify_financial_value_default_guard_position(root: Path) -> list[str]:
-    source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
-    guard_matches = list(
-        re.finditer(r"\bfn\s+financial_values_do_not_implement_default\s*\(\)", source)
+def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
+    source = rust_source_scanner.strip_rust_comments_and_literals(
+        production_text(read_source(root, FINANCIAL_VALUE_OWNER_MODULE))
     )
-    top_level_guards = [
-        match for match in guard_matches if rust_brace_depth_at(source, match.start()) == 0
+    actual = tuple(
+        line
+        for line in normalized_source_lines(source)
+        if any(token in line for token in FINANCIAL_VALUE_OWNER_RISK_TOKENS)
+    )
+    expected = FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST
+    if actual == expected:
+        return []
+
+    missing = list((Counter(expected) - Counter(actual)).elements())
+    extra = list((Counter(actual) - Counter(expected)).elements())
+    details = []
+    if missing:
+        details.append(f"missing {missing!r}")
+    if extra:
+        details.append(f"extra {extra!r}")
+    if not details:
+        details.append("order changed")
+    return [
+        f"{FINANCIAL_VALUE_OWNER_MODULE}: FinancialValue owner production risk surface mismatch: {', '.join(details)}"
     ]
-    cfg_test_indexes = [
-        start
-        for start, attribute in rust_attribute_blocks(source)
-        if normalize_attribute(attribute) == "#[cfg(test)]"
-    ]
-    first_cfg_test = min(cfg_test_indexes) if cfg_test_indexes else None
-    if len(top_level_guards) != 1:
-        return [
-            f"{FINANCIAL_VALUE_OWNER_MODULE}: missing always-compiled !Default guard at top level"
-        ]
-    if first_cfg_test is not None and top_level_guards[0].start() > first_cfg_test:
-        return [
-            f"{FINANCIAL_VALUE_OWNER_MODULE}: missing always-compiled !Default guard before test-only code"
-        ]
-    return []
 
 
-def verify_financial_value_owner_macro_allowlist(root: Path) -> list[str]:
-    source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
-    macro_extras = sorted(
-        {
-            match.group(1)
-            for match in FINANCIAL_VALUE_OWNER_MACRO_INVOCATION_PATTERN.finditer(source)
-            if match.group(1) not in FINANCIAL_VALUE_OWNER_ALLOWED_MACROS
-            and match.group(1) not in FINANCIAL_VALUE_OWNER_BANG_OPERATOR_KEYWORDS
-        }
+def verify_financial_value_default_token_allowlist(root: Path) -> list[str]:
+    actual = Counter(
+        (relative_path, line)
+        for relative_path, source in rust_sources(root)
+        for line in normalized_source_lines(source)
+        if "Default" in line
     )
-    macro_definition_extras = sorted(
-        {
-            match.group(1)
-            for match in FINANCIAL_VALUE_OWNER_MACRO_DEFINITION_PATTERN.finditer(source)
-        }
+    expected = Counter(
+        (relative_path, line)
+        for relative_path, line in FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST
+        if (root / relative_path).exists()
     )
-    attribute_extras = sorted(
-        {
-            normalize_attribute(attribute)
-            for _, attribute in rust_attribute_blocks(source)
-            if normalize_attribute(attribute) not in FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES
-        }
-    )
-    use_extras = sorted(
-        {
-            normalize_source_line(line)
-            for line in source.splitlines()
-            if FINANCIAL_VALUE_OWNER_USE_PATTERN.fullmatch(line)
-            and normalize_source_line(line) not in FINANCIAL_VALUE_OWNER_ALLOWED_USES
-        }
-    )
+    if actual == expected:
+        return []
 
-    findings = []
-    if macro_extras:
-        findings.append(
-            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden macro invocation in FinancialValue owner module: {macro_extras!r}"
-        )
-    if macro_definition_extras:
-        findings.append(
-            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden macro definition in FinancialValue owner module: {macro_definition_extras!r}"
-        )
-    if attribute_extras:
-        findings.append(
-            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden attribute in FinancialValue owner module: {attribute_extras!r}"
-        )
-    if use_extras:
-        findings.append(
-            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden use import in FinancialValue owner module: {use_extras!r}"
-        )
-    return findings
+    missing = sorted((expected - actual).elements())
+    extra = sorted((actual - expected).elements())
+    details = []
+    if missing:
+        details.append(f"missing {missing!r}")
+    if extra:
+        details.append(f"extra {extra!r}")
+    return [f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}"]
 
 
 def verify(root: Path) -> list[str]:
@@ -507,8 +521,8 @@ def verify(root: Path) -> list[str]:
     findings.extend(missing_required(root, BOUNDARY_PATTERNS))
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
     findings.extend(verify_financial_value_marker_allowlist(root))
-    findings.extend(verify_financial_value_default_guard_position(root))
-    findings.extend(verify_financial_value_owner_macro_allowlist(root))
+    findings.extend(verify_financial_value_owner_risk_surface(root))
+    findings.extend(verify_financial_value_default_token_allowlist(root))
     return findings
 
 

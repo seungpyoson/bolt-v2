@@ -21,7 +21,13 @@ SPEC.loader.exec_module(VERIFIER)
 def write_sources(root: Path, overrides: dict[str, str] | None = None) -> None:
     sources = {
         "src/bolt_v3_numeric.rs": """
-mod financial_value_private {
+	pub(crate) fn is_sha256_hex_digest(value: &str) -> bool {
+	    value
+	        .bytes()
+	        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+	}
+
+	mod financial_value_private {
     pub trait Sealed {}
 }
 
@@ -42,6 +48,16 @@ impl Probability {
     pub fn new(value: f64) -> Option<Self> { sanitize_probability(value).map(|value| Self { value }) }
     pub fn clamped(value: f64) -> Option<Self> { Some(Self { value }) }
 }
+fn sanitize_open_probability(value: f64, eps: f64) -> Option<f64> {
+    if !value.is_finite() || !eps.is_finite() {
+        return None;
+    }
+    if !(eps > ZERO_F64 && eps < HALF_F64) {
+        return None;
+    }
+    Some(value)
+}
+#[allow(dead_code)]
 fn financial_values_do_not_implement_default() {
     trait AmbiguousIfDefault<A> {
         fn _check() {}
@@ -52,10 +68,8 @@ fn financial_values_do_not_implement_default() {
 
     let _ = <Probability as AmbiguousIfDefault<_>>::_check;
     let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
-    let _ =
-        <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
-    let _ =
-        <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
 }
 
 #[cfg(test)]
@@ -308,8 +322,25 @@ def test_verify_rejects_test_only_financial_value_default_compile_guard() -> Non
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("test-only FinancialValue !Default guard" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected test-only !Default guard finding, got {findings!r}")
+
+
+def test_verify_rejects_stacked_test_attr_financial_value_default_compile_guard() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8").replace(
+                "#[allow(dead_code)]\nfn financial_values_do_not_implement_default()",
+                "#[test]\n#[allow(dead_code)]\nfn financial_values_do_not_implement_default()",
+            ),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("owner production risk surface" in finding for finding in findings):
+            raise AssertionError(f"expected stacked test attr !Default guard finding, got {findings!r}")
 
 
 def test_verify_rejects_cfg_wrapped_financial_value_default_compile_guard() -> None:
@@ -330,7 +361,7 @@ def test_verify_rejects_cfg_wrapped_financial_value_default_compile_guard() -> N
         )
         numeric_path.write_text(source, encoding="utf-8")
         findings = VERIFIER.verify(root)
-        if not any("always-compiled !Default guard" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected cfg-wrapped !Default guard finding, got {findings!r}")
 
 
@@ -352,8 +383,30 @@ pub struct SizingScale(f64);
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("macro invocation in FinancialValue owner module" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected owner macro finding, got {findings!r}")
+
+
+def test_verify_rejects_path_qualified_financial_value_owner_macro_invocation() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_sizing.rs": """
+pub struct SizingScale(f64);
+""",
+            },
+        )
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8")
+            + "\ncrate::evil::matches!(crate::bolt_v3_sizing::SizingScale);\n",
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("owner production risk surface" in finding for finding in findings):
+            raise AssertionError(f"expected path-qualified owner macro finding, got {findings!r}")
 
 
 def test_verify_rejects_financial_value_owner_macro_definition() -> None:
@@ -367,7 +420,7 @@ def test_verify_rejects_financial_value_owner_macro_definition() -> None:
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("macro definition in FinancialValue owner module" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected owner macro definition finding, got {findings!r}")
 
 
@@ -384,7 +437,7 @@ def test_verify_rejects_unapproved_financial_value_owner_attribute() -> None:
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("attribute in FinancialValue owner module" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected owner attribute finding, got {findings!r}")
 
 
@@ -401,7 +454,7 @@ def test_verify_rejects_multiline_unapproved_financial_value_owner_attribute() -
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("attribute in FinancialValue owner module" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected multiline owner attribute finding, got {findings!r}")
 
 
@@ -415,7 +468,7 @@ def test_verify_rejects_unapproved_financial_value_owner_use() -> None:
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("use import in FinancialValue owner module" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected owner use finding, got {findings!r}")
 
 
@@ -429,8 +482,50 @@ def test_verify_rejects_visibility_qualified_financial_value_owner_use() -> None
             encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("use import in FinancialValue owner module" in finding for finding in findings):
+        if not any("owner production risk surface" in finding for finding in findings):
             raise AssertionError(f"expected visibility-qualified owner use finding, got {findings!r}")
+
+
+def test_verify_rejects_split_financial_value_owner_use() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            "use\ncrate::evil::matches;\n" + numeric_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("owner production risk surface" in finding for finding in findings):
+            raise AssertionError(f"expected split owner use finding, got {findings!r}")
+
+
+def test_verify_rejects_cfg_gated_financial_value_default_impl() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_maker_mu_estimator.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, sanitize_probability};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(f64);
+impl UsableMu {
+    fn new(value: f64) -> Self { Self(value) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[cfg(target_os = "windows")]
+impl std::default::Default for UsableMu {
+    fn default() -> Self { Self(0.0) }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("Default token allowlist" in finding for finding in findings):
+            raise AssertionError(f"expected cfg-gated Default impl finding, got {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:
@@ -650,13 +745,17 @@ def main() -> int:
         test_verify_rejects_generic_financial_value_implementor,
         test_verify_rejects_missing_financial_value_default_compile_guard,
         test_verify_rejects_test_only_financial_value_default_compile_guard,
+        test_verify_rejects_stacked_test_attr_financial_value_default_compile_guard,
         test_verify_rejects_cfg_wrapped_financial_value_default_compile_guard,
         test_verify_rejects_unapproved_financial_value_owner_macro_invocation,
+        test_verify_rejects_path_qualified_financial_value_owner_macro_invocation,
         test_verify_rejects_financial_value_owner_macro_definition,
         test_verify_rejects_unapproved_financial_value_owner_attribute,
         test_verify_rejects_multiline_unapproved_financial_value_owner_attribute,
         test_verify_rejects_unapproved_financial_value_owner_use,
         test_verify_rejects_visibility_qualified_financial_value_owner_use,
+        test_verify_rejects_split_financial_value_owner_use,
+        test_verify_rejects_cfg_gated_financial_value_default_impl,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

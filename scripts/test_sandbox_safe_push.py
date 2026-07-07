@@ -155,6 +155,56 @@ def assert_multiple_push_urls_fail_closed() -> None:
                 raise AssertionError(remote_ref)
 
 
+def assert_push_url_rejects_embedded_credentials() -> None:
+    helper = load_helper_module()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(
+        _repo: pathlib.Path,
+        args: list[str],
+        *,
+        display_args: list[str] | None = None,
+        redact_values: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        del display_args, redact_values
+        args_tuple = tuple(args)
+        calls.append(args_tuple)
+        outputs = {
+            ("status", "--porcelain", "--untracked-files=normal"): "",
+            ("rev-parse", "HEAD"): "a" * 40,
+            ("remote", "get-url", "--push", "--all", "origin"): "https://token@example.invalid/repo.git",
+        }
+        if args_tuple not in outputs:
+            raise AssertionError(f"unexpected git call after credential URL: {args_tuple}")
+        return subprocess.CompletedProcess(["git", *args], 0, outputs[args_tuple], "")
+
+    original_run_git = helper.run_git
+    try:
+        helper.run_git = fake_run_git
+        try:
+            helper.push_head(pathlib.Path("."), remote="origin", branch=BRANCH)
+        except helper.PushError as exc:
+            if "must not contain embedded credentials" not in str(exc):
+                raise AssertionError(str(exc)) from exc
+        else:
+            raise AssertionError("credential-bearing push URL was accepted")
+    finally:
+        helper.run_git = original_run_git
+
+    if any(call[0] in ("push", "ls-remote") for call in calls):
+        raise AssertionError(calls)
+
+
+def assert_push_url_allows_ssh_usernames() -> None:
+    helper = load_helper_module()
+
+    for url in ("ssh://git@example.invalid/repo.git", "git@example.invalid:repo.git"):
+        try:
+            helper.validate_push_url(url)
+        except helper.PushError as exc:
+            raise AssertionError((url, str(exc))) from exc
+
+
 def assert_rejects_unsafe_branch_before_push() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
@@ -297,6 +347,8 @@ def main() -> int:
     assert_push_uses_url_without_remote_tracking_write()
     assert_push_uses_configured_push_url()
     assert_multiple_push_urls_fail_closed()
+    assert_push_url_rejects_embedded_credentials()
+    assert_push_url_allows_ssh_usernames()
     assert_rejects_unsafe_branch_before_push()
     assert_push_errors_redact_remote_url()
     assert_git_commands_use_option_boundary_before_remote_url()

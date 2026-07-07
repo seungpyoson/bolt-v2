@@ -577,6 +577,46 @@ def assert_verify_remote_rejects_multiple_push_urls() -> None:
         raise AssertionError(calls)
 
 
+def assert_verify_remote_rejects_embedded_credentials_in_push_url() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+        calls.append(args)
+        outputs = {
+            ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+            ("rev-parse", "HEAD"): ("abc", None),
+            ("branch", "--show-current"): ("feature", None),
+            ("config", "branch.feature.remote"): ("origin", None),
+            ("config", "branch.feature.merge"): ("refs/heads/feature", None),
+            ("remote", "get-url", "--push", "--all", "origin"): (
+                "https://token@example.invalid/repo.git",
+                None,
+            ),
+        }
+        if args not in outputs:
+            raise AssertionError(f"unexpected git call after credential URL: {args}")
+        return outputs[args]
+
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        head, branch, error = owner.ensure_verify_remote_preconditions(REPO_ROOT)
+    finally:
+        owner.git_output = original_git_output
+
+    if head is not None or branch is not None or error is None:
+        raise AssertionError((head, branch, error))
+    if "must not contain embedded credentials" not in error:
+        raise AssertionError(error)
+    if any(call[0] == "ls-remote" for call in calls):
+        raise AssertionError(calls)
+    for url in ("ssh://git@example.invalid/repo.git", "git@example.invalid:repo.git"):
+        error = owner.validate_push_url(url)
+        if error is not None:
+            raise AssertionError((url, error))
+
+
 def assert_sandbox_push_remote_policy_errors_fail_closed() -> None:
     owner = load_owner_module()
     original_load_policy = owner.load_policy
@@ -1704,6 +1744,7 @@ def main() -> int:
     assert_verify_remote_uses_push_url_for_configured_upstream()
     assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push()
     assert_verify_remote_rejects_multiple_push_urls()
+    assert_verify_remote_rejects_embedded_credentials_in_push_url()
     assert_sandbox_push_remote_policy_errors_fail_closed()
     assert_single_push_url_rejects_unsafe_remote_names()
     assert_verify_remote_pr_errors()

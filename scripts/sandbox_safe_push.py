@@ -10,6 +10,7 @@ import pathlib
 import shlex
 import subprocess
 import sys
+import urllib.parse
 from typing import Any
 
 try:
@@ -192,7 +193,18 @@ def remote_url(repo: pathlib.Path, remote: str) -> str:
     urls = [line for line in result.stdout.splitlines() if line]
     if len(urls) != 1:
         raise PushError(f"remote {remote!r} must have exactly one push URL")
-    return urls[0]
+    url = urls[0]
+    validate_push_url(url)
+    return url
+
+
+def validate_push_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
+    if parsed.password is not None or has_http_userinfo:
+        raise PushError(
+            "Git push URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
+        )
 
 
 def live_remote_branch_head(repo: pathlib.Path, *, url: str, branch: str) -> str | None:

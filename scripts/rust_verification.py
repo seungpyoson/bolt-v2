@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 import uuid
 from typing import Any
 
@@ -3317,7 +3318,19 @@ def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tu
     names = [line for line in (urls or "").splitlines() if line]
     if len(names) != 1:
         return None, f"{command_name} requires remote {remote} to have exactly one push URL"
-    return names[0], None
+    url = names[0]
+    url_error = validate_push_url(url)
+    if url_error is not None:
+        return None, url_error
+    return url, None
+
+
+def validate_push_url(url: str) -> str | None:
+    parsed = urllib.parse.urlsplit(url)
+    has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
+    if parsed.password is not None or has_http_userinfo:
+        return "Git push URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
+    return None
 
 
 def fallback_push_remote(

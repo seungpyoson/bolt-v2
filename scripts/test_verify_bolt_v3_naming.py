@@ -259,6 +259,95 @@ def test_main_reports_missing_audit_without_traceback() -> None:
         raise AssertionError(f"expected missing audit finding, got code={code}, stderr={output!r}")
 
 
+def test_main_reports_non_mapping_audit_without_traceback() -> None:
+    for audit_text, type_name in [
+        ("- item\n", "list"),
+        ("justastring\n", "str"),
+    ]:
+        original_root = VERIFIER.REPO_ROOT
+        original_audit_path = VERIFIER.AUDIT_PATH
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audit_path = root / "audit.yaml"
+            audit_path.write_text(audit_text, encoding="utf-8")
+            try:
+                VERIFIER.REPO_ROOT = root
+                VERIFIER.AUDIT_PATH = audit_path
+                with contextlib.redirect_stderr(stderr):
+                    try:
+                        code = VERIFIER.main()
+                    except Exception as exc:
+                        raise AssertionError(
+                            "shape-invalid naming audit should be reported normally"
+                        ) from exc
+            finally:
+                VERIFIER.REPO_ROOT = original_root
+                VERIFIER.AUDIT_PATH = original_audit_path
+
+        output = stderr.getvalue()
+        expected = (
+            "FAIL: invalid Bolt-v3 naming audit file: "
+            f"expected a mapping, got {type_name}\n"
+        )
+        if code != 1 or output != expected:
+            raise AssertionError(
+                f"expected invalid audit finding, got code={code}, stderr={output!r}"
+            )
+
+
+def test_main_reports_unreadable_audit_without_traceback() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.mkdir()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    code = VERIFIER.main()
+                except OSError as exc:
+                    raise AssertionError("unreadable naming audit should be reported normally") from exc
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = f"FAIL: unreadable Bolt-v3 naming audit file: {audit_path}\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected unreadable audit finding, got code={code}, stderr={output!r}")
+
+
+def test_main_reports_undecodable_audit_without_traceback() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_bytes(b"\xff\xfe\x00")
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    code = VERIFIER.main()
+                except UnicodeDecodeError as exc:
+                    raise AssertionError("undecodable naming audit should be reported normally") from exc
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = f"FAIL: invalid Bolt-v3 naming audit file: {audit_path} is not valid UTF-8\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected undecodable audit finding, got code={code}, stderr={output!r}")
+
+
 def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
@@ -580,6 +669,9 @@ def main() -> int:
         test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_names,
         test_main_reports_missing_audit_without_traceback,
+        test_main_reports_non_mapping_audit_without_traceback,
+        test_main_reports_unreadable_audit_without_traceback,
+        test_main_reports_undecodable_audit_without_traceback,
         test_main_reports_path_scoped_forbidden_table_prefix,
         test_main_fails_closed_when_scan_paths_are_empty,
         test_main_fails_closed_when_misnomer_scan_paths_are_empty_before_naming_scan,

@@ -57,7 +57,7 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "Bolt-v3 naming audit rule rows",
         "aggregate-then-terminal",
         "main",
-        "main reports missing/invalid audit config as a normal finding, then aggregates naming floors and returns before forbidden-name and misnomer scans.",
+        "main reports missing, unreadable, undecodable, malformed, or non-mapping audit config as a normal finding, then aggregates naming floors and returns before forbidden-name and misnomer scans.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_bolt_v3_naming.py",

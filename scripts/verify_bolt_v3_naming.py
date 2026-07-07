@@ -104,7 +104,7 @@ def word_re(term: str) -> re.Pattern[str]:
     return re.compile(f"{prefix}{re.escape(term)}{suffix}")
 
 
-def load_audit() -> dict:
+def load_audit() -> object:
     return yaml.safe_load(AUDIT_PATH.read_text(encoding="utf-8")) or {}
 
 
@@ -290,8 +290,21 @@ def main() -> int:
     except FileNotFoundError:
         print(f"FAIL: missing Bolt-v3 naming audit file: {AUDIT_PATH}", file=sys.stderr)
         return 1
+    except UnicodeDecodeError:
+        print(f"FAIL: invalid Bolt-v3 naming audit file: {AUDIT_PATH} is not valid UTF-8", file=sys.stderr)
+        return 1
+    except OSError:
+        print(f"FAIL: unreadable Bolt-v3 naming audit file: {AUDIT_PATH}", file=sys.stderr)
+        return 1
     except yaml.YAMLError as error:
         print(f"FAIL: invalid Bolt-v3 naming audit file: {error}", file=sys.stderr)
+        return 1
+    if not isinstance(audit, dict):
+        print(
+            "FAIL: invalid Bolt-v3 naming audit file: "
+            f"expected a mapping, got {type(audit).__name__}",
+            file=sys.stderr,
+        )
         return 1
     rename_rows = audit.get("renamed_in_current_audit", [])
     defensive_rows = audit.get("defensive_forbidden", [])

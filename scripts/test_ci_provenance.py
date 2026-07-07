@@ -5214,6 +5214,13 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         bvs_changed=False,
     )
     module.evaluate_backtester_gate_verdict(
+        policy_path="noop_fresh",
+        expected_event_class="noop_fresh",
+        full_ci_deferred=False,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
+    module.evaluate_backtester_gate_verdict(
         policy_path="docs",
         expected_event_class="docs",
         full_ci_deferred=False,
@@ -5251,6 +5258,23 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         full_ci_deferred=False,
         job_results=proof_jobs,
         bvs_changed=True,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="noop_fresh",
+        expected_event_class="noop_fresh",
+        full_ci_deferred=False,
+        job_results=proof_jobs,
+        bvs_changed=True,
+    )
+    assert_raises(
+        "bvs-clippy did not succeed",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="noop_fresh",
+            expected_event_class="noop_fresh",
+            full_ci_deferred=False,
+            job_results={**proof_jobs, "clippy": "skipped"},
+            bvs_changed=True,
+        ),
     )
     assert_raises(
         "bvs-clippy did not succeed",

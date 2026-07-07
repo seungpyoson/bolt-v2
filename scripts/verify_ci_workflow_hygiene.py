@@ -872,7 +872,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "e18b0205846df6f4a7def0f24959477697ed5d0e35d3db56ca97547de696dd6c"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "a48cb4a0220a0b69ed7869ed28df15a1cd4358eeb2ada4cb7a77bfe7d926238a"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -13615,6 +13615,7 @@ def has_backtester_full_proof_guard(job_text: str) -> bool:
         "needs.ci-policy.outputs.full_ci_required == 'true'" in job_text
         and "needs.detect.outputs.bvs_changed == 'true'" in job_text
         and "needs.ci-policy.outputs.ci_policy_path == 'noop'" in job_text
+        and "needs.ci-policy.outputs.ci_policy_path == 'noop_fresh'" in job_text
         and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in job_text
     )
 

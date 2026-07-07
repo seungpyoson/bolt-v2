@@ -9265,12 +9265,23 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_policy_gate = replace_once(
         workflow,
-        "if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}",
+        "if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.ci_policy_path == 'noop_fresh' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}",
         "if: ${{ needs.detect.outputs.bvs_changed == 'true' }}",
     )
     missing_policy_errors = verifier.verify_repo_automation_texts({workflow_name: missing_policy_gate})
     if not any("backtester draft deferral managed-heavy jobs must require full CI policy" in error for error in missing_policy_errors):
         raise AssertionError(f"backtester-ci workflow must reject unmanaged heavy policy gates, got: {missing_policy_errors}")
+
+    missing_noop_fresh_gate = replace_once(
+        workflow,
+        " || needs.ci-policy.outputs.ci_policy_path == 'noop_fresh'",
+        "",
+    )
+    missing_noop_fresh_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_fresh_gate})
+    if not any("backtester draft deferral managed-heavy jobs must require full CI policy" in error for error in missing_noop_fresh_errors):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing noop_fresh policy gates, got: {missing_noop_fresh_errors}"
+        )
 
     static_gate_name = replace_once(
         workflow,

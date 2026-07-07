@@ -29,19 +29,21 @@ FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
 FINANCIAL_VALUE_OWNER_MACRO_INVOCATION_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*!\s*[\(\[\{]"
 )
+FINANCIAL_VALUE_OWNER_MACRO_DEFINITION_PATTERN = re.compile(
+    r"\bmacro_rules\s*!\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
 FINANCIAL_VALUE_OWNER_ALLOWED_MACROS = frozenset(("assert", "assert_eq", "matches"))
 FINANCIAL_VALUE_OWNER_BANG_OPERATOR_KEYWORDS = frozenset(("if", "while"))
-FINANCIAL_VALUE_OWNER_ATTRIBUTE_PATTERN = re.compile(r"^\s*#\s*\[[^\]]+\]\s*$")
 FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES = frozenset(
     (
         "#[allow(dead_code)]",
         "#[allow(private_bounds)]",
         "#[cfg(test)]",
-        "#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+        "#[derive(Debug,Clone,Copy,PartialEq,PartialOrd)]",
         "#[test]",
     )
 )
-FINANCIAL_VALUE_OWNER_USE_PATTERN = re.compile(r"^\s*use\b.*$")
+FINANCIAL_VALUE_OWNER_USE_PATTERN = re.compile(r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?use\b.*$")
 FINANCIAL_VALUE_OWNER_ALLOWED_USES = frozenset(("use super::*;",))
 FINANCIAL_VALUE_MARKER_ALLOWLIST = (
     ("src/bolt_v3_numeric.rs", "mod financial_value_private {"),
@@ -349,6 +351,53 @@ def normalize_source_line(line: str) -> str:
     return " ".join(line.strip().split())
 
 
+def normalize_attribute(attribute: str) -> str:
+    return "".join(attribute.split())
+
+
+def rust_attribute_blocks(source: str) -> list[tuple[int, str]]:
+    attributes = []
+    index = 0
+    while index < len(source):
+        if source[index] != "#":
+            index += 1
+            continue
+
+        bracket_index = index + 1
+        while bracket_index < len(source) and source[bracket_index].isspace():
+            bracket_index += 1
+        if bracket_index >= len(source) or source[bracket_index] != "[":
+            index += 1
+            continue
+
+        depth = 0
+        end_index = bracket_index
+        while end_index < len(source):
+            char = source[end_index]
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    end_index += 1
+                    break
+            end_index += 1
+
+        attributes.append((index, source[index:end_index]))
+        index = end_index
+    return attributes
+
+
+def rust_brace_depth_at(source: str, target_index: int) -> int:
+    depth = 0
+    for char in source[:target_index]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depth
+
+
 def financial_value_marker_lines(root: Path) -> Counter[tuple[str, str]]:
     lines: Counter[tuple[str, str]] = Counter()
     for relative_path, source in rust_sources(root):
@@ -375,6 +424,31 @@ def verify_financial_value_marker_allowlist(root: Path) -> list[str]:
     return [f"src/: FinancialValue marker allowlist mismatch: {', '.join(details)}"]
 
 
+def verify_financial_value_default_guard_position(root: Path) -> list[str]:
+    source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
+    guard_matches = list(
+        re.finditer(r"\bfn\s+financial_values_do_not_implement_default\s*\(\)", source)
+    )
+    top_level_guards = [
+        match for match in guard_matches if rust_brace_depth_at(source, match.start()) == 0
+    ]
+    cfg_test_indexes = [
+        start
+        for start, attribute in rust_attribute_blocks(source)
+        if normalize_attribute(attribute) == "#[cfg(test)]"
+    ]
+    first_cfg_test = min(cfg_test_indexes) if cfg_test_indexes else None
+    if len(top_level_guards) != 1:
+        return [
+            f"{FINANCIAL_VALUE_OWNER_MODULE}: missing always-compiled !Default guard at top level"
+        ]
+    if first_cfg_test is not None and top_level_guards[0].start() > first_cfg_test:
+        return [
+            f"{FINANCIAL_VALUE_OWNER_MODULE}: missing always-compiled !Default guard before test-only code"
+        ]
+    return []
+
+
 def verify_financial_value_owner_macro_allowlist(root: Path) -> list[str]:
     source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
     macro_extras = sorted(
@@ -385,12 +459,17 @@ def verify_financial_value_owner_macro_allowlist(root: Path) -> list[str]:
             and match.group(1) not in FINANCIAL_VALUE_OWNER_BANG_OPERATOR_KEYWORDS
         }
     )
+    macro_definition_extras = sorted(
+        {
+            match.group(1)
+            for match in FINANCIAL_VALUE_OWNER_MACRO_DEFINITION_PATTERN.finditer(source)
+        }
+    )
     attribute_extras = sorted(
         {
-            normalize_source_line(line)
-            for line in source.splitlines()
-            if FINANCIAL_VALUE_OWNER_ATTRIBUTE_PATTERN.fullmatch(line)
-            and normalize_source_line(line) not in FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES
+            normalize_attribute(attribute)
+            for _, attribute in rust_attribute_blocks(source)
+            if normalize_attribute(attribute) not in FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES
         }
     )
     use_extras = sorted(
@@ -406,6 +485,10 @@ def verify_financial_value_owner_macro_allowlist(root: Path) -> list[str]:
     if macro_extras:
         findings.append(
             f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden macro invocation in FinancialValue owner module: {macro_extras!r}"
+        )
+    if macro_definition_extras:
+        findings.append(
+            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden macro definition in FinancialValue owner module: {macro_definition_extras!r}"
         )
     if attribute_extras:
         findings.append(
@@ -424,6 +507,7 @@ def verify(root: Path) -> list[str]:
     findings.extend(missing_required(root, BOUNDARY_PATTERNS))
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
     findings.extend(verify_financial_value_marker_allowlist(root))
+    findings.extend(verify_financial_value_default_guard_position(root))
     findings.extend(verify_financial_value_owner_macro_allowlist(root))
     return findings
 

@@ -312,6 +312,28 @@ def test_verify_rejects_test_only_financial_value_default_compile_guard() -> Non
             raise AssertionError(f"expected test-only !Default guard finding, got {findings!r}")
 
 
+def test_verify_rejects_cfg_wrapped_financial_value_default_compile_guard() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        source = numeric_path.read_text(encoding="utf-8")
+        source = source.replace(
+            "fn financial_values_do_not_implement_default()",
+            "#[cfg(test)]\nmod hidden_default_guard {\nuse super::*;\nfn financial_values_do_not_implement_default()",
+            1,
+        )
+        source = source.replace(
+            "\n#[cfg(test)]\nmod tests {",
+            "\n}\n\n#[cfg(test)]\nmod tests {",
+            1,
+        )
+        numeric_path.write_text(source, encoding="utf-8")
+        findings = VERIFIER.verify(root)
+        if not any("always-compiled !Default guard" in finding for finding in findings):
+            raise AssertionError(f"expected cfg-wrapped !Default guard finding, got {findings!r}")
+
+
 def test_verify_rejects_unapproved_financial_value_owner_macro_invocation() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -334,6 +356,21 @@ pub struct SizingScale(f64);
             raise AssertionError(f"expected owner macro finding, got {findings!r}")
 
 
+def test_verify_rejects_financial_value_owner_macro_definition() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            "macro_rules! matches { ($($tokens:tt)*) => { true } }\n"
+            + numeric_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("macro definition in FinancialValue owner module" in finding for finding in findings):
+            raise AssertionError(f"expected owner macro definition finding, got {findings!r}")
+
+
 def test_verify_rejects_unapproved_financial_value_owner_attribute() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -351,6 +388,23 @@ def test_verify_rejects_unapproved_financial_value_owner_attribute() -> None:
             raise AssertionError(f"expected owner attribute finding, got {findings!r}")
 
 
+def test_verify_rejects_multiline_unapproved_financial_value_owner_attribute() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8").replace(
+                "#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+                "#[\n    make_value_marker\n]\n#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+            ),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("attribute in FinancialValue owner module" in finding for finding in findings):
+            raise AssertionError(f"expected multiline owner attribute finding, got {findings!r}")
+
+
 def test_verify_rejects_unapproved_financial_value_owner_use() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -363,6 +417,20 @@ def test_verify_rejects_unapproved_financial_value_owner_use() -> None:
         findings = VERIFIER.verify(root)
         if not any("use import in FinancialValue owner module" in finding for finding in findings):
             raise AssertionError(f"expected owner use finding, got {findings!r}")
+
+
+def test_verify_rejects_visibility_qualified_financial_value_owner_use() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            "pub(crate) use crate::evil::matches;\n" + numeric_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("use import in FinancialValue owner module" in finding for finding in findings):
+            raise AssertionError(f"expected visibility-qualified owner use finding, got {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:
@@ -582,9 +650,13 @@ def main() -> int:
         test_verify_rejects_generic_financial_value_implementor,
         test_verify_rejects_missing_financial_value_default_compile_guard,
         test_verify_rejects_test_only_financial_value_default_compile_guard,
+        test_verify_rejects_cfg_wrapped_financial_value_default_compile_guard,
         test_verify_rejects_unapproved_financial_value_owner_macro_invocation,
+        test_verify_rejects_financial_value_owner_macro_definition,
         test_verify_rejects_unapproved_financial_value_owner_attribute,
+        test_verify_rejects_multiline_unapproved_financial_value_owner_attribute,
         test_verify_rejects_unapproved_financial_value_owner_use,
+        test_verify_rejects_visibility_qualified_financial_value_owner_use,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

@@ -840,6 +840,8 @@ model = "{current_claude}"
         assert loaded_sources.github_api_url == "https://example.invalid/github-api"
 
     original_live_latest_models = live_latest_models
+    original_github_issue_client_from_env = github_issue_client_from_env
+    original_sync_model_freshness_issue = sync_model_freshness_issue
     try:
         globals()["live_latest_models"] = lambda sources, *, provider=PROVIDER_ALL: (
             next_kimi,
@@ -847,11 +849,25 @@ model = "{current_claude}"
             current_claude,
             [],
         )
+        globals()["github_issue_client_from_env"] = lambda sources: object()
+        globals()["sync_model_freshness_issue"] = (
+            lambda *, github, pins, advisory, sources: "issue-updated"
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "ai-review.toml"
             config_path.write_text(config_text, encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 assert main(["--config-file", str(config_path), "--live", "--advisory"]) == 0
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                assert main(
+                    [
+                        "--config-file",
+                        str(config_path),
+                        "--live",
+                        "--advisory",
+                        "--github-notice",
+                    ]
+                ) == 1
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 assert main(["--config-file", str(config_path), "--live", "--advisory", "--provider", PROVIDER_GLM]) == 0
@@ -867,6 +883,8 @@ model = "{current_claude}"
             assert "--github-notice requires --advisory" in stderr.getvalue(), stderr.getvalue()
     finally:
         globals()["live_latest_models"] = original_live_latest_models
+        globals()["github_issue_client_from_env"] = original_github_issue_client_from_env
+        globals()["sync_model_freshness_issue"] = original_sync_model_freshness_issue
 
     secret = "model-freshness-secret-value"
     previous_secret = os.environ.get("MODEL_FRESHNESS_TEST_API_KEY")
@@ -1162,7 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-file", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--live", action="store_true", help="Fetch provider sources and compare pinned models")
-    parser.add_argument("--advisory", action="store_true", help="Emit stale-model outputs but exit zero for drift")
+    parser.add_argument("--advisory", action="store_true", help="Emit stale-model outputs for advisory review jobs")
     parser.add_argument("--github-notice", action="store_true", help="Create, update, or close the durable GitHub stale-model issue")
     parser.add_argument(
         "--provider",
@@ -1222,11 +1240,11 @@ def main(argv: list[str] | None = None) -> int:
             if advisory.state is FreshnessState.STALE:
                 for warning in advisory.model_warnings:
                     print(f"warning: {sanitize_detail(warning)}", file=sys.stderr)
-                return 0
+                return 1 if args.github_notice else 0
             if findings:
                 for finding in findings:
                     print(f"warning: {sanitize_detail(finding)}", file=sys.stderr)
-                return 0
+                return 1 if args.github_notice else 0
             if advisory.state is FreshnessState.UNKNOWN:
                 return 0
         if findings:

@@ -285,6 +285,42 @@ accepted_non_nt_names: []
         raise AssertionError(f"expected path-scoped table finding, got code={code}, stderr={output!r}")
 
 
+def test_main_fails_closed_when_scan_paths_are_empty() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    original_scan_globs = VERIFIER.SCAN_GLOBS
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_text(AUDIT_TEXT, encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+            VERIFIER.SCAN_GLOBS = original_scan_globs
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    output = stderr.getvalue()
+    if code != 1 or "enforcement set is empty" not in output:
+        raise AssertionError(f"expected empty scan floor finding, got code={code}, stderr={output!r}")
+
+
 def run_main_with_misnomer_fixture(
     files: dict[str, str],
     allowlist_text: str | None,
@@ -376,6 +412,7 @@ def main() -> int:
         test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_names,
         test_main_reports_path_scoped_forbidden_table_prefix,
+        test_main_fails_closed_when_scan_paths_are_empty,
         test_capital_admission_misnomer_fence_catches_screaming_snake,
         test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list,
         test_capital_admission_misnomer_fence_fails_closed_without_allowlist,

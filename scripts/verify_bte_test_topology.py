@@ -8,6 +8,8 @@ import re
 import sys
 import tomllib
 
+from verifier_io import require_nonempty
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 BVS_CRATE = pathlib.Path("crates/backtesting-vertical-slice")
 BVS_CARGO_TOML = BVS_CRATE / "Cargo.toml"
@@ -89,6 +91,8 @@ def verify_harness(root: pathlib.Path) -> list[str]:
         return [f"{repo_relative(BVS_HARNESS_PATH)} must exist"]
 
     errors: list[str] = []
+    if not require_nonempty(tests, "backtester integration test files", errors):
+        return errors
     harness_text = harness_path.read_text()
     if '#![recursion_limit = "256"]' not in harness_text:
         errors.append("backtester integration harness must carry the shared recursion_limit")

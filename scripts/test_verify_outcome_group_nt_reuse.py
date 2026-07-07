@@ -205,6 +205,16 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
+    def test_empty_outcome_group_source_set_fails_closed(self) -> None:
+        original = VERIFIER.outcome_group_source_files
+        try:
+            VERIFIER.outcome_group_source_files = lambda root: []
+            findings = self.collect()
+        finally:
+            VERIFIER.outcome_group_source_files = original
+
+        self.assert_has_finding(findings, "outcome-group source files: enforcement set is empty")
+
     def test_missing_required_capability_fails(self) -> None:
         ledger = remove_capability(valid_ledger_toml(), "provider_discovery")
 

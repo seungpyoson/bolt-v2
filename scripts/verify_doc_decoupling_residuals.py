@@ -11,6 +11,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from verifier_io import require_nonempty
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = Path("ci/doc-decoupling-residuals.toml")
@@ -179,9 +181,9 @@ def scanned_source_paths(root: Path) -> list[Path]:
     return sorted(paths)
 
 
-def prose_reference_lines(root: Path) -> list[tuple[str, int, str]]:
+def prose_reference_lines(root: Path, paths: list[Path] | None = None) -> list[tuple[str, int, str]]:
     lines: list[tuple[str, int, str]] = []
-    for path in scanned_source_paths(root):
+    for path in scanned_source_paths(root) if paths is None else paths:
         rel = path.relative_to(root).as_posix()
         try:
             text = path.read_text(encoding="utf-8")
@@ -217,10 +219,12 @@ def collect_findings(root: Path = REPO_ROOT) -> list[str]:
             if snippet not in source_lines:
                 findings.append(f"{LEDGER_PATH}: stale residual ledger snippet for {rel}: {snippet!r}")
 
-    for rel, line_number, line in prose_reference_lines(root):
-        snippets = allowed.get(rel, [])
-        if line not in snippets:
-            findings.append(f"{rel}:{line_number}: unclassified prose reference: {line}")
+    source_paths = scanned_source_paths(root)
+    if require_nonempty(source_paths, "doc-decoupling scanned source paths", findings):
+        for rel, line_number, line in prose_reference_lines(root, source_paths):
+            snippets = allowed.get(rel, [])
+            if line not in snippets:
+                findings.append(f"{rel}:{line_number}: unclassified prose reference: {line}")
 
     return findings
 

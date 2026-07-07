@@ -116,6 +116,18 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         assert rel not in core_files
 
 
+def test_empty_provider_binding_discovery_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(root, {"src/bolt_v3_core.rs": "pub struct CoreOnly;\n"})
+
+        findings = verifier.scan_root(root)
+
+    messages = [finding.message for finding in findings]
+    assert any("bolt_v3_providers" in message and "enforcement set is empty" in message for message in messages), messages
+
+
 def test_shared_market_data_provider_module_name_is_not_concrete_provider() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1055,6 +1067,7 @@ def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
         test_real_scan_covers_provider_neutral_source_files,
+        test_empty_provider_binding_discovery_fails_closed,
         test_closed_provider_variants_and_factory_imports_are_findings,
         test_family_module_and_type_leaks_are_findings_for_new_families,
         test_concrete_market_family_paths_are_not_allowlisted,

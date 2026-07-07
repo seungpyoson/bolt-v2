@@ -18,6 +18,7 @@ from pathlib import Path
 from verify_bolt_v3_provider_leaks import (
     production_text as production_source_text,
 )
+from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -539,15 +540,19 @@ def is_ignored_by_rule(literal: Literal) -> bool:
     return False
 
 
-def scan_literals() -> list[Literal]:
-    candidates: list[Literal] = []
+def scan_paths() -> list[Path]:
     paths = {
         path
         for pattern in SCAN_GLOBS
         for path in REPO_ROOT.glob(pattern)
         if path.is_file()
     }
-    for path in sorted(paths):
+    return sorted(paths)
+
+
+def scan_literals(paths: list[Path] | None = None) -> list[Literal]:
+    candidates: list[Literal] = []
+    for path in scan_paths() if paths is None else paths:
         for literal in scan_file(path):
             if not is_ignored_by_rule(literal):
                 candidates.append(literal)
@@ -561,7 +566,14 @@ def main() -> int:
         print(f"ERROR: failed to load runtime literal audit: {error}", file=sys.stderr)
         return 2
 
-    scanned_literals = scan_literals()
+    paths = scan_paths()
+    path_findings: list[str] = []
+    if not require_nonempty(paths, "Bolt-v3 runtime literal scan paths", path_findings):
+        for finding in path_findings:
+            print(f"FAIL: {finding}", file=sys.stderr)
+        return 1
+
+    scanned_literals = scan_literals(paths)
     unclassified = [literal for literal in scanned_literals if literal.key() not in allowed]
     stale = allowed - {literal.key() for literal in scanned_literals}
 

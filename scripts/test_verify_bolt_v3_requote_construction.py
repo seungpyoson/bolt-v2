@@ -114,8 +114,10 @@ class RequoteConstructionFenceTests(unittest.TestCase):
         self.assertEqual(VERIFIER.collect_violations_from_files([bridge]), [])
 
     def test_empty_source_file_set_fails_closed(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "no Rust source files"):
-            VERIFIER.collect_violations_from_files([])
+        violations = VERIFIER.collect_violations_from_files([])
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].kind, "source-floor")
+        self.assertEqual(violations[0].excerpt, "Rust source files under src: enforcement set is empty")
 
     def test_current_bolt_src_constructs_only_via_bridge(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

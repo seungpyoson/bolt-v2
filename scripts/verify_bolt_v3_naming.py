@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from verifier_io import require_nonempty
+
 try:
     import yaml
 except ImportError:
@@ -242,7 +244,10 @@ def verify_capital_admission_misnomers() -> list[str]:
         return findings
 
     used_allowlist: set[tuple[str, int]] = set()
-    for path in scan_misnomer_paths():
+    paths = scan_misnomer_paths()
+    if not require_nonempty(paths, "capital-admission misnomer scan paths", findings):
+        return findings
+    for path in paths:
         rel = path.relative_to(REPO_ROOT).as_posix()
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(),
@@ -289,25 +294,32 @@ def main() -> int:
     }
 
     findings: list[str] = []
-    for path in scan_paths():
-        text = path.read_text(encoding="utf-8")
-        for forbidden_name, replacement in forbidden.items():
-            if word_re(forbidden_name).search(text):
-                findings.append(
-                    f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
-                    f"{replacement}"
-                )
-        for row in scoped_rows:
-            include = row.get("include_globs") or []
-            if not include or not matches_any(path, include):
-                continue
-            forbidden_name = row.get("from")
-            replacement = row.get("to")
-            if forbidden_name and replacement and word_re(forbidden_name).search(text):
-                findings.append(
-                    f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
-                    f"use {replacement} ({row.get('reason', 'path-scoped rule')})"
-                )
+    require_nonempty(
+        tuple(row for row in [*rename_rows, *defensive_rows, *scoped_rows] if row),
+        "Bolt-v3 naming audit rule rows",
+        findings,
+    )
+    paths = scan_paths()
+    if require_nonempty(paths, "Bolt-v3 naming scan paths", findings):
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for forbidden_name, replacement in forbidden.items():
+                if word_re(forbidden_name).search(text):
+                    findings.append(
+                        f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
+                        f"{replacement}"
+                    )
+            for row in scoped_rows:
+                include = row.get("include_globs") or []
+                if not include or not matches_any(path, include):
+                    continue
+                forbidden_name = row.get("from")
+                replacement = row.get("to")
+                if forbidden_name and replacement and word_re(forbidden_name).search(text):
+                    findings.append(
+                        f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
+                        f"use {replacement} ({row.get('reason', 'path-scoped rule')})"
+                    )
 
     findings.extend(verify_capital_admission_misnomers())
 

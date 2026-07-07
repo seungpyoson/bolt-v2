@@ -18,6 +18,7 @@ from pathlib import Path
 
 import ci_provenance
 from verify_bolt_v3_provider_leaks import production_text
+from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -377,7 +378,10 @@ def scan_wire_boundary(root: Path, findings: list[str]) -> None:
     if f'rev = "{EXPECTED_NT_REV}"' not in cargo_toml:
         findings.append(f"Cargo.toml: nautilus_network rev must remain pinned to {EXPECTED_NT_REV}")
 
-    for path in (root / "src").rglob("*.rs"):
+    source_paths = sorted((root / "src").rglob("*.rs"))
+    if not require_nonempty(source_paths, "Bolt-v3 boundary Rust source files", findings):
+        return
+    for path in source_paths:
         rel = path.relative_to(root).as_posix()
         text = production_text(path.read_text(encoding="utf-8"))
         scan_text = strip_string_literals_preserve_lines(text)

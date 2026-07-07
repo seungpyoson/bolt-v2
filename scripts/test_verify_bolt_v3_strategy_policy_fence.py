@@ -104,6 +104,21 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             any(relative.startswith("src/strategies/") for relative in scanned)
         )
 
+    def test_empty_strategy_policy_source_sets_fail_closed(self) -> None:
+        original_strategy_files = VERIFIER.source_files_for_strategy_policy_fence
+        original_mutation_files = VERIFIER.source_files_for_mutation_fence
+        try:
+            VERIFIER.source_files_for_strategy_policy_fence = lambda: []
+            VERIFIER.source_files_for_mutation_fence = lambda: []
+            violations = VERIFIER.collect_violations()
+        finally:
+            VERIFIER.source_files_for_strategy_policy_fence = original_strategy_files
+            VERIFIER.source_files_for_mutation_fence = original_mutation_files
+
+        labels = {violation.label for violation in violations}
+        self.assertIn("strategy policy source files: enforcement set is empty", labels)
+        self.assertIn("mutation policy source files: enforcement set is empty", labels)
+
     def test_strategy_policy_source_still_flags_runtime_selection_bus_path(self) -> None:
         violations = self.collect_violations_for_temp_sources(
             {

@@ -61,6 +61,14 @@ def test_clean_research_surfaces_have_no_findings() -> None:
         assert verifier.scan_root(root) == []
 
 
+def test_empty_research_code_set_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        findings = verifier.scan_root(Path(tmp))
+
+    assert any("enforcement set is empty" in finding for finding in findings), findings
+
+
 def test_python_import_forms_are_findings() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -130,6 +138,7 @@ def test_specs_and_docs_are_not_research_code_surfaces() -> None:
                 "docs/research/note.md": (
                     "Historical note: nautilus_trader.backtest.node is forbidden.\n"
                 ),
+                "research/clean.py": "def feature_row(value):\n    return value\n",
             },
         )
 
@@ -156,6 +165,7 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_clean_research_surfaces_have_no_findings,
+        test_empty_research_code_set_fails_closed,
         test_python_import_forms_are_findings,
         test_notebook_code_cells_are_scanned,
         test_specs_and_docs_are_not_research_code_surfaces,

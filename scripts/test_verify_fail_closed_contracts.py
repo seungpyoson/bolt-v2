@@ -568,6 +568,7 @@ def test_config_excludes_nested_test_files() -> None:
                     return None
             """,
         )
+        write_file(root, "pkg/clean.py", "def load_contract():\n    return parse()\n")
 
         findings = collect(root)
 
@@ -726,6 +727,7 @@ def test_stale_central_exception_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
+        write_file(root, "pkg/clean.py", "def load_contract():\n    return parse()\n")
         write_file(
             root,
             "ci/fail-closed-exceptions.toml",

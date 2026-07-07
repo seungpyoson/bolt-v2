@@ -7517,6 +7517,75 @@ jobs:
         raise AssertionError(f"flaky detection workflow runner contract must be mapped, got: {errors}")
 
 
+def assert_runner_config_floor_handles_missing_and_empty_inputs() -> None:
+    verifier = load_verifier()
+    real_workflows = {
+        ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+        DEBUG_WORKFLOW_PATH: repo_workflow_text(DEBUG_WORKFLOW_PATH),
+        ".github/workflows/dispatch-ci-cancel.yml": repo_workflow_text(
+            ".github/workflows/dispatch-ci-cancel.yml"
+        ),
+        ".github/workflows/merge-readiness-finalizer.yml": repo_workflow_text(
+            ".github/workflows/merge-readiness-finalizer.yml"
+        ),
+    }
+
+    def assert_floor(errors: list[str], label: str) -> None:
+        if not any(
+            "github-actions-runners.toml" in error and "enforcement set is empty" in error
+            for error in errors
+        ):
+            raise AssertionError(f"{label} must fail closed on empty runner config, got: {errors}")
+
+    cases: tuple[tuple[str, Callable[[], list[str]]], ...] = (
+        (
+            "artifact retention policy",
+            lambda: verifier.verify_artifact_retention_policy({}, {}),
+        ),
+        (
+            "ci runner debug workflow",
+            lambda: verifier.verify_ci_runner_debug_workflow(real_workflows),
+        ),
+        (
+            "dispatch CI cancel workflow",
+            lambda: verifier.verify_dispatch_ci_cancel_workflow(real_workflows),
+        ),
+        (
+            "merge readiness finalizer workflow",
+            lambda: verifier.verify_merge_readiness_finalizer_workflow(real_workflows),
+        ),
+        (
+            "github actions runner contract",
+            lambda: verifier.verify_github_actions_runner_contract(real_workflows),
+        ),
+        (
+            "actionlint runner contract",
+            lambda: verifier.verify_actionlint_runner_contract(real_workflows),
+        ),
+    )
+
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        missing_config = root / "ci" / "github-actions-runners.toml"
+        empty_config = write_temp_runner_config(root / "empty", "")
+        for config_path in (missing_config, empty_config):
+            verifier.DEFAULT_RUNNERS_CONFIG = config_path
+            try:
+                for label, run in cases:
+                    assert_floor(run(), f"{label} with {config_path}")
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                    result = verifier.main()
+                if result != 1 or "enforcement set is empty" not in stderr.getvalue():
+                    raise AssertionError(
+                        "main must report the runner config enforcement floor, "
+                        f"got result={result}, stderr={stderr.getvalue()!r}"
+                    )
+            finally:
+                verifier.DEFAULT_RUNNERS_CONFIG = original_config
+
+
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     workflows = (
         (".github/workflows/flaky-test-detection.yml", 2),
@@ -12822,7 +12891,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             )
         finally:
             verifier.DEFAULT_RUNNERS_CONFIG = original_config
-    expected_missing_config = "managed runner config missing"
+    expected_missing_config = "ci/github-actions-runners.toml: enforcement set is empty"
     if not any(expected_missing_config in error for error in missing_config_errors):
         raise AssertionError(
             "artifact retention policy must fail closed without runner config, "
@@ -18699,6 +18768,7 @@ def main() -> int:
     assert_flaky_detection_workflow_uses_supported_mergify_contract()
     assert_flaky_detection_workflows_are_split_without_mode_gates()
     assert_flaky_detection_workflow_split_gaps_are_reported()
+    assert_runner_config_floor_handles_missing_and_empty_inputs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()

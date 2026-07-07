@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from verify_bolt_v3_pure_rust_runtime import production_text
+from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +185,17 @@ def is_allowed_default_reference(path: str, line: str) -> bool:
 
 
 def collect_violations(paths: tuple[str, ...] = RUNTIME_SOURCE_PATHS) -> list[Violation]:
+    floor_errors: list[str] = []
+    if not require_nonempty(paths, "runtime source paths", floor_errors):
+        return [
+            Violation(
+                path=".",
+                line=0,
+                label=error,
+                text="",
+            )
+            for error in floor_errors
+        ]
     violations: list[Violation] = []
     for relative_path in paths:
         path = REPO_ROOT / relative_path

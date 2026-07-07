@@ -113,6 +113,15 @@ def test_clean_fixture_passes() -> None:
         expect_pass(root)
 
 
+def test_empty_scan_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        err = expect_fail(root)
+
+    if "Bolt-v3 dependency direction source files: enforcement set is empty" not in err:
+        raise AssertionError(f"expected empty source floor finding, got: {err!r}")
+
+
 def test_new_back_reference_fails_with_line_number() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -155,6 +164,7 @@ def test_stale_allowance_fails() -> None:
 def test_strategy_layer_and_non_bolt_v3_not_scanned() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        write_file(root, "src/bolt_v3_foo.rs", "pub struct Clean;\n")
         write_file(root, "src/strategies/foo.rs", "use crate::strategies::registry::X;\n")
         write_file(root, "src/other_module.rs", "use crate::strategies::registry::X;\n")
         expect_pass(root)
@@ -1047,6 +1057,7 @@ def test_file_size_limit_exceeded_fails_cleanly() -> None:
 def main() -> int:
     tests = [
         test_clean_fixture_passes,
+        test_empty_scan_fails_closed,
         test_new_back_reference_fails_with_line_number,
         test_allowance_suppresses_pre_existing_reference,
         test_stale_allowance_fails,

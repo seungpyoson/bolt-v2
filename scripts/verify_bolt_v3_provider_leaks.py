@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from verifier_io import require_nonempty
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -254,9 +256,16 @@ def alternation(names: tuple[str, ...]) -> str:
     return "|".join(re.escape(name) for name in names)
 
 
-def rules_for_root(root: Path) -> list[Rule]:
+def floor_finding(message: str) -> Finding:
+    return Finding(path=".", line=0, message=message, excerpt="")
+
+
+def rules_for_root(root: Path, floor_errors: list[str] | None = None) -> list[Rule]:
     core_files = discovered_core_files(root)
     provider_names = discovered_binding_names(root, "bolt_v3_providers")
+    if floor_errors is not None:
+        require_nonempty(core_files, "Bolt-v3 provider-leak core files", floor_errors)
+        require_nonempty(provider_names, "bolt_v3_providers", floor_errors)
     family_names = tuple(
         name
         for name in discovered_binding_names(root, "bolt_v3_market_families")
@@ -269,7 +278,10 @@ def rules_for_root(root: Path) -> list[Rule]:
 
     # Denylist of NT venue/provider crate stems (Cargo deps minus infra),
     # so unregistered adapter crates are caught alongside registered ones.
-    nt_provider_crate_alt = alternation(discovered_nt_provider_crate_stems(root))
+    nt_provider_crate_stems = discovered_nt_provider_crate_stems(root)
+    if floor_errors is not None:
+        require_nonempty(nt_provider_crate_stems, "NT provider crate stems", floor_errors)
+    nt_provider_crate_alt = alternation(nt_provider_crate_stems)
     # End the crate name on a non-identifier char so `nautilus_binance` does not
     # also need to match a longer crate like `nautilus_binancex`.
     crate_boundary = r"(?![A-Za-z0-9_])"
@@ -968,12 +980,16 @@ def production_text(text: str) -> str:
 
 
 def scan_root(root: Path) -> list[Finding]:
-    findings: list[Finding] = []
+    floor_errors: list[str] = []
+    rules = rules_for_root(root, floor_errors)
+    findings: list[Finding] = [floor_finding(error) for error in floor_errors]
+    if floor_errors:
+        return findings
     # Many rules target the same file (1160 rules over ~144 distinct paths), so
     # cache the production-text strip per path instead of re-stripping ~8x per
     # file. Scan-local dict: bounded to this scan, naturally released after.
     text_cache: dict[Path, str] = {}
-    for rule in rules_for_root(root):
+    for rule in rules:
         path = root / rule.path
         if not path.exists():
             continue

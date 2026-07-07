@@ -2381,9 +2381,17 @@ impl BinaryOracleEdgeTaker {
                 if exit.pending_exit.client_order_id == query.client_order_id
         );
         if exit_matches {
+            let position_absent_from_open_cache = filled
+                && query.position_id.is_some_and(|position_id| {
+                    !self.cached_position_id_still_open(query.instrument_id, position_id)
+                });
             if filled && let ExposureState::ExitPending(exit) = &mut self.exposure {
                 exit.pending_exit.fill_received = true;
                 exit.pending_exit.filled_quantity = Some(filled_quantity);
+                if position_absent_from_open_cache {
+                    exit.pending_exit.close_received = true;
+                    exit.position = None;
+                }
             }
             self.mark_exit_order_terminal(
                 query.client_order_id,

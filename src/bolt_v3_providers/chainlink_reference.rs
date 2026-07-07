@@ -771,7 +771,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
             last_report_unix_ms,
             input_health_report_liveness,
             input_health_missing_sources,
-            connection_epoch_ms: mut connection_epoch_ms,
+            mut connection_epoch_ms,
         } = context;
         let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
         let mut last_logged_mode = chainlink_reference_current_transport_mode(&websocket);

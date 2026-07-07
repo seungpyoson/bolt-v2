@@ -439,18 +439,7 @@ fn print_feed_labels(labels: &[BacktestFeedLabel]) {
 }
 
 fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
-    let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
-    let hash = sha256_hex(&bytes);
-    let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
-    let mut spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
-    if spec.source_bindings_path.is_relative() {
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sibling_relative = base_dir.join(&spec.source_bindings_path);
-        if sibling_relative.exists() {
-            spec.source_bindings_path = sibling_relative;
-        }
-    }
-    Ok((spec, hash))
+    backtesting_vertical_slice::research_analytics::read_run_spec_with_hash(path)
 }
 
 fn read_execution_plan(path: &Path) -> Result<BackfillExecutionPlan> {

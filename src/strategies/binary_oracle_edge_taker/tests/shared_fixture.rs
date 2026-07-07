@@ -1039,7 +1039,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             signal_venue: Some("signal_data_client".to_string()),
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
-            resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
+            resolution_instrument_id: Some("CONFIGURED_ASSET-USD.CHAINLINK".to_string()),
             realized_volatility_surface_id: "<surface_id>".to_string(),
             static_condition_id: None,
             static_yes_outcome: None,

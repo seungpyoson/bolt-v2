@@ -1585,9 +1585,9 @@ fn validate_resolution_retry_interval_covers_http_timeout(
     };
     let client_key = resolution_data.data_client_id.to_string();
     match resolution_oracle_client_http_timeout_secs(root, client_key.as_str()) {
-        Ok(Some(http_timeout_secs)) if target.retry_interval_seconds < http_timeout_secs => {
+        Ok(Some(http_timeout_secs)) if target.retry_interval_seconds <= http_timeout_secs => {
             vec![format!(
-                "{context}: target.retry_interval_secs `{}` must be greater than or equal to clients.{client_key}.data.http_timeout_secs `{http_timeout_secs}` for resolution_data settlement-close retries; otherwise same-boundary in-flight fetch dedupe can consume market_exit_max_attempts before the first HTTP request times out",
+                "{context}: target.retry_interval_secs `{}` must be greater than clients.{client_key}.data.http_timeout_secs `{http_timeout_secs}` for resolution_data settlement-close retries; otherwise same-boundary in-flight fetch dedupe can consume market_exit_max_attempts before the first HTTP request times out",
                 target.retry_interval_seconds,
             )]
         }

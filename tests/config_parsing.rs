@@ -1025,7 +1025,7 @@ fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_voc
 }
 
 #[test]
-fn binary_oracle_resolution_retry_interval_accepts_matching_chainlink_http_timeout() {
+fn binary_oracle_resolution_retry_interval_accepts_chainlink_http_timeout_below_retry_interval() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1056,22 +1056,22 @@ fn binary_oracle_resolution_retry_interval_accepts_matching_chainlink_http_timeo
         messages
             .iter()
             .all(|message| !message.contains("http_timeout_secs")),
-        "matching retry interval and Chainlink strike timeout should not fail timeout validation: {messages:#?}"
+        "Chainlink strike timeout below retry interval should not fail timeout validation: {messages:#?}"
     );
 }
 
 #[test]
-fn binary_oracle_resolution_retry_interval_rejects_chainlink_http_timeout_above_retry_interval() {
+fn binary_oracle_resolution_retry_interval_rejects_chainlink_http_timeout_at_retry_interval() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
     };
 
     let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(
+        "http_timeout_secs = 4",
         "http_timeout_secs = 5",
-        "http_timeout_secs = 6",
     ))
-    .expect("root fixture with slower Chainlink timeout should parse");
+    .expect("root fixture with equal Chainlink timeout should parse");
     let strategy_raw = format!(
         "{}\n\n[resolution_data]\ndata_client_id = \"chainlink_strike\"\ninstrument_id = \"CONFIGURED_ASSET-USD.CHAINLINK\"\n",
         std::fs::read_to_string(support::repo_path(
@@ -1091,9 +1091,9 @@ fn binary_oracle_resolution_retry_interval_rejects_chainlink_http_timeout_above_
     let rendered = messages.join("\n");
     assert!(
         rendered.contains("target.retry_interval_secs `5`")
-            && rendered.contains("clients.chainlink_strike.data.http_timeout_secs `6`")
+            && rendered.contains("clients.chainlink_strike.data.http_timeout_secs `5`")
             && rendered.contains("same-boundary in-flight fetch dedupe"),
-        "Chainlink strike timeout above retry interval must fail closed: {messages:#?}"
+        "Chainlink strike timeout at retry interval must fail closed: {messages:#?}"
     );
 }
 
@@ -4476,7 +4476,7 @@ fn chainlink_client_http_timeout_diverging_from_gate_provider_fails_single_sourc
     // provider's matching value untouched.
     let mutated = replace_in_fixture_section(
         "[clients.chainlink_strike.data]",
-        &[("http_timeout_secs = 5", "http_timeout_secs = 6")],
+        &[("http_timeout_secs = 4", "http_timeout_secs = 6")],
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");

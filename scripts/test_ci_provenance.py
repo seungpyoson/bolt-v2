@@ -211,6 +211,7 @@ run_jobs_per_page = 100
 run_artifacts_per_page = 100
 max_lookback_pages = 10
 max_lookback_age_seconds = 1209600
+inherited_emitter_probe_timeout_seconds = 30
 
 [ci_provenance.artifacts]
 retention_days = 14
@@ -286,6 +287,7 @@ retention_days = 14
 [ci_provenance.api_limits]
 max_lookback_age_seconds = 1209600
 max_lookback_pages = 10
+inherited_emitter_probe_timeout_seconds = 30
 run_artifacts_per_page = 100
 run_jobs_per_page = 100
 workflow_runs_per_page = 100
@@ -822,6 +824,11 @@ def assert_positive_int_config_rejects_booleans() -> None:
             "retention_days = true",
             1,
         ),
+        "ci_provenance.api_limits.inherited_emitter_probe_timeout_seconds must be a positive integer": CONFIG_TOML.replace(
+            "inherited_emitter_probe_timeout_seconds = 30",
+            "inherited_emitter_probe_timeout_seconds = true",
+            1,
+        ),
         "ci_provenance.full_ci.jobs.test.shard_count must be a positive integer": CONFIG_TOML.replace(
             '[ci_provenance.full_ci.jobs.test]\ncheck_name = "test"',
             (
@@ -1190,6 +1197,53 @@ def assert_emit_inherited_ci_record_rejects_malformed_current_run_payload() -> N
             )
 
 
+def assert_emit_inherited_ci_record_rejects_self_referential_root() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload(event="pull_request", head_branch="feature", head_sha=SHA)
+            raise AssertionError((repo, token, path, query))
+
+        env = {
+            "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SHA": OTHER_SHA,
+            "GITHUB_EVENT_NAME": "pull_request",
+            "PR_NUMBER": "960",
+            "PR_BASE_SHA": "1" * 40,
+        }
+        with patched_env(env):
+            assert_raises(
+                "root_run_id must not reference the current workflow run",
+                lambda: module.emit_inherited_ci_record(
+                    config=module.load_config(config),
+                    config_path=config,
+                    required_job_values=[
+                        "detector=success",
+                        "deny=success",
+                        "clippy=success",
+                        "check-aarch64=success",
+                        "source-fence=success",
+                        "nextest-fingerprint=success",
+                        "test-archive=skipped",
+                        "test=success",
+                    ],
+                    conditional_job_values=["build.required=false", "build.result=skipped"],
+                    nextest_fingerprint=NEXTEST_FINGERPRINT,
+                    root_run_id=str(RUN_ID),
+                    root_head_sha=OTHER_SHA,
+                    root_fingerprint_digest=fingerprint_digest(NEXTEST_FINGERPRINT),
+                    api_json=fake_api_json,
+                ),
+            )
+
+
 def assert_unknown_record_schema_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -1287,6 +1341,62 @@ def assert_fingerprint_reuse_old_base_emitter_returns_cache_miss() -> None:
         if result.reuse_found is not False:
             raise AssertionError(result)
         if result.reason != "trusted base provenance emitter does not support inherited CI records":
+            raise AssertionError(result)
+        if fake.queries:
+            raise AssertionError(fake.queries)
+
+
+def assert_fingerprint_reuse_symlink_emitter_returns_cache_miss() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        target_script = tmp_path / "ci_provenance.py"
+        target_script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        symlink_script = tmp_path / "symlink_ci_provenance.py"
+        try:
+            symlink_script.symlink_to(target_script)
+        except OSError:
+            return
+        fake = FakeGitHub(runs_pages=[[run_payload()]])
+        result = resolve_fingerprint_with_fake(
+            module,
+            config,
+            fake,
+            inherited_emitter_script=symlink_script,
+        )
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "inherited CI emitter script is missing or symlinked" not in result.reason:
+            raise AssertionError(result)
+        if fake.queries:
+            raise AssertionError(fake.queries)
+
+
+def assert_fingerprint_reuse_hanging_emitter_returns_cache_miss() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(
+            tmp_path,
+            CONFIG_TOML.replace(
+                "inherited_emitter_probe_timeout_seconds = 30",
+                "inherited_emitter_probe_timeout_seconds = 1",
+                1,
+            ),
+        )
+        hanging_script = tmp_path / "hanging_ci_provenance.py"
+        hanging_script.write_text("import time\ntime.sleep(5)\n", encoding="utf-8")
+        fake = FakeGitHub(runs_pages=[[run_payload()]])
+        result = resolve_fingerprint_with_fake(
+            module,
+            config,
+            fake,
+            inherited_emitter_script=hanging_script,
+        )
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "inherited CI emitter probe timed out" not in result.reason:
             raise AssertionError(result)
         if fake.queries:
             raise AssertionError(fake.queries)
@@ -5846,9 +5956,12 @@ def main() -> int:
     assert_emit_docs_ci_record_requires_skipped_heavy_jobs()
     assert_emit_inherited_ci_record_publishes_root_pointer()
     assert_emit_inherited_ci_record_rejects_malformed_current_run_payload()
+    assert_emit_inherited_ci_record_rejects_self_referential_root()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
     assert_fingerprint_reuse_old_base_emitter_returns_cache_miss()
+    assert_fingerprint_reuse_symlink_emitter_returns_cache_miss()
+    assert_fingerprint_reuse_hanging_emitter_returns_cache_miss()
     assert_fingerprint_reuse_inherited_record_returns_root_pointer()
     assert_fingerprint_reuse_inherited_record_rejects_root_digest_mismatch()
     assert_fingerprint_reuse_inherited_record_rejects_expired_root()

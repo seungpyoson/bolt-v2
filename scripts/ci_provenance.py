@@ -189,6 +189,7 @@ class ProvenanceConfig:
     run_artifacts_per_page: int
     max_lookback_pages: int
     max_lookback_age_seconds: int
+    inherited_emitter_probe_timeout_seconds: int
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -725,6 +726,21 @@ def load_config(
     max_lookback_age_seconds = require_positive_int(
         api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
     )
+    if require_workflows:
+        inherited_emitter_probe_timeout_seconds = require_positive_int(
+            api_limits,
+            "inherited_emitter_probe_timeout_seconds",
+            "ci_provenance.api_limits",
+        )
+    else:
+        inherited_emitter_probe_timeout_seconds = (
+            optional_positive_int(
+                api_limits,
+                "inherited_emitter_probe_timeout_seconds",
+                "ci_provenance.api_limits",
+            )
+            or max_lookback_age_seconds
+        )
     check_lookback_le_retention(retention_days, max_lookback_age_seconds)
     if require_deploy_window:
         deploy_artifact_retention_days = require_positive_int(
@@ -867,6 +883,7 @@ def load_config(
             api_limits, "max_lookback_pages", "ci_provenance.api_limits"
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
+        inherited_emitter_probe_timeout_seconds=inherited_emitter_probe_timeout_seconds,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -2812,16 +2829,19 @@ def no_fingerprint_reuse(reason: str) -> FingerprintReuseResolution:
     )
 
 
-def inherited_ci_emitter_supported(script_path: pathlib.Path) -> bool:
-    if not script_path.is_file():
-        raise ProvenanceError(f"inherited CI emitter script is missing: {script_path}")
+def inherited_ci_emitter_supported(script_path: pathlib.Path, *, timeout_seconds: int) -> bool:
+    if script_path.is_symlink() or not script_path.is_file():
+        raise ProvenanceError(f"inherited CI emitter script is missing or symlinked: {script_path}")
     try:
         completed = subprocess.run(
             [sys.executable, str(script_path), "emit-inherited-ci", "--help"],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise ProvenanceError("inherited CI emitter probe timed out") from exc
     except OSError as exc:
         raise ProvenanceError(f"inherited CI emitter probe failed: {exc}") from exc
     return completed.returncode == 0
@@ -3009,7 +3029,10 @@ def resolve_fingerprint_reuse(
         return no_fingerprint_reuse("malformed current fingerprint")
     if inherited_emitter_script is not None:
         try:
-            if not inherited_ci_emitter_supported(inherited_emitter_script):
+            if not inherited_ci_emitter_supported(
+                inherited_emitter_script,
+                timeout_seconds=config.inherited_emitter_probe_timeout_seconds,
+            ):
                 return no_fingerprint_reuse(
                     "trusted base provenance emitter does not support inherited CI records"
                 )
@@ -3319,7 +3342,10 @@ def emit_inherited_ci_record(
 
     parsed_fingerprint = parse_nextest_fingerprint(nextest_fingerprint, label="current")
     current_fingerprint_digest = nextest_fingerprint_digest(parsed_fingerprint, label="current")
+    current_run_id_value = positive_int_value(run_id, "GITHUB_RUN_ID")
     root_run_id_value = positive_int_value(root_run_id, "root_run_id")
+    if root_run_id_value == current_run_id_value:
+        raise ProvenanceError("root_run_id must not reference the current workflow run")
     if SHA_RE.fullmatch(root_head_sha) is None:
         raise ProvenanceError("root_head_sha must be a 40-character lowercase hex SHA")
     if DIGEST_RE.fullmatch(root_fingerprint_digest) is None:
@@ -3337,7 +3363,7 @@ def emit_inherited_ci_record(
         "provenance_config_digest": provenance_config_digest(config_path),
         "head_sha": head_sha,
         "tested_sha": tested_sha,
-        "run_id": positive_int_value(run_id, "GITHUB_RUN_ID"),
+        "run_id": current_run_id_value,
         "run_attempt": positive_int_value(run_attempt, "GITHUB_RUN_ATTEMPT"),
         "check_suite_id": positive_int_value(check_suite_id, "current workflow run check_suite_id"),
         "event": event_name,

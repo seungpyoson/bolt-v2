@@ -680,10 +680,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
             base_ref="refs/remotes/origin/ci-provenance-reuse-base-${PR_NUMBER}"
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
             merge_group_base="$MERGE_GROUP_BASE_REF"
@@ -695,13 +698,18 @@ jobs:
             else
               base_branch="$merge_group_base"
             fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
             base_ref="refs/remotes/origin/ci-provenance-reuse-base-merge-group-${GITHUB_RUN_ID}"
           else
             echo "unsupported trusted base event: $EVENT_NAME" >&2
             exit 1
           fi
           git check-ref-format "refs/heads/$base_branch"
-          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
           base_tree="$RUNNER_TEMP/ci-provenance-reuse-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
@@ -718,15 +726,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          inherited_emitter_args=()
+          required_emitter="scripts/ci_provenance.py"
           trusted_base_emitter="${{ steps.reuse_provenance_base.outputs.script }}"
           if [[ -n "$trusted_base_emitter" ]]; then
-            inherited_emitter_args+=(--require-inherited-emitter "$trusted_base_emitter")
+            required_emitter="$trusted_base_emitter"
           fi
           python3 scripts/ci_provenance.py resolve-fingerprint \
             --current-run-id "${{ github.run_id }}" \
             --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" \
-            "${inherited_emitter_args[@]}" \
+            --require-inherited-emitter "$required_emitter" \
             | tee -a "$GITHUB_OUTPUT"
 
   test-archive:
@@ -1170,9 +1178,15 @@ jobs:
         id: provenance_base
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
+          base_sha="$PR_BASE_SHA"
+          base_sha="$MERGE_GROUP_BASE_SHA"
           git check-ref-format "refs/heads/$base_branch"
+          echo "trusted base SHA is missing or malformed"
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml
           tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
           echo "tested workflow file is missing or not a regular file"
@@ -15660,10 +15674,13 @@ git() {
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
             base_ref="refs/remotes/origin/ci-provenance-reuse-base-${PR_NUMBER}"
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
             merge_group_base="$MERGE_GROUP_BASE_REF"
@@ -15675,13 +15692,18 @@ git() {
             else
               base_branch="$merge_group_base"
             fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
             base_ref="refs/remotes/origin/ci-provenance-reuse-base-merge-group-${GITHUB_RUN_ID}"
           else
             echo "unsupported trusted base event: $EVENT_NAME" >&2
             exit 1
           fi
           git check-ref-format "refs/heads/$base_branch"
-          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
           base_tree="$RUNNER_TEMP/ci-provenance-reuse-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
@@ -15702,8 +15724,8 @@ git() {
     missing_emitter_arg = replace_once_after(
         BASE_WORKFLOW,
         "  nextest-fingerprint-reuse:",
-        '            inherited_emitter_args+=(--require-inherited-emitter "$trusted_base_emitter")',
-        '            echo "--require-inherited-emitter $trusted_base_emitter"',
+        '--require-inherited-emitter "$required_emitter"',
+        '--omitted-inherited-emitter "$required_emitter"',
     )
     assert_error("nextest-fingerprint-reuse resolver step must match canonical script", missing_emitter_arg)
     resolver_pipe_scalar = replace_once_after(

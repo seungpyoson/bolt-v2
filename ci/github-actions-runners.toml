@@ -369,6 +369,7 @@ run_jobs_per_page = 100
 run_artifacts_per_page = 100
 max_lookback_pages = 10
 max_lookback_age_seconds = 1209600
+inherited_emitter_probe_timeout_seconds = 30
 
 [ci_provenance.artifacts]
 retention_days = 14

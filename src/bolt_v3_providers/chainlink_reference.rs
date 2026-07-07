@@ -262,6 +262,7 @@ impl DataClientFactory for ChainlinkReferencePriceClientFactory {
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             websocket: Arc::new(Mutex::new(None)),
             last_report_unix_ms: Arc::new(AtomicU64::new(0)),
+            input_health_report_liveness: Arc::new(Mutex::new(BTreeMap::new())),
             input_health_missing_sources: Arc::new(Mutex::new(BTreeSet::new())),
             liveness_task: None,
             connected: false,
@@ -286,6 +287,7 @@ struct ChainlinkReferencePriceClient {
         Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     last_report_unix_ms: Arc<AtomicU64>,
+    input_health_report_liveness: ChainlinkReferenceInputHealthReportLiveness,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
     liveness_task: Option<JoinHandle<()>>,
     connected: bool,
@@ -317,6 +319,8 @@ impl ChainlinkReferenceSubscriptionKey {
 
 type ChainlinkReferenceInputHealthMissingSources =
     Arc<Mutex<BTreeSet<ChainlinkReferenceInputHealthSourceKey>>>;
+type ChainlinkReferenceInputHealthReportLiveness =
+    Arc<Mutex<BTreeMap<ChainlinkReferenceInputHealthSourceKey, u64>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ChainlinkReferenceInputHealthSourceKey {
@@ -392,11 +396,18 @@ impl DataClient for ChainlinkReferencePriceClient {
         }
         let now_ms = current_unix_timestamp_ms()?;
         self.last_report_unix_ms.store(now_ms, Ordering::SeqCst);
+        chainlink_reference_seed_input_health_report_liveness(
+            &self.config,
+            &self.subscriptions,
+            &self.input_health_report_liveness,
+            now_ms,
+        );
         let websocket = chainlink_reference_connect_websocket(
             &self.config,
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
             Arc::clone(&self.last_report_unix_ms),
+            Arc::clone(&self.input_health_report_liveness),
             Arc::clone(&self.input_health_missing_sources),
         )
         .await?;
@@ -408,6 +419,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.websocket),
             self.data_sender.clone(),
             Arc::clone(&self.last_report_unix_ms),
+            Arc::clone(&self.input_health_report_liveness),
             Arc::clone(&self.input_health_missing_sources),
         ));
         self.connected = true;
@@ -447,8 +459,19 @@ impl DataClient for ChainlinkReferencePriceClient {
             })?
             .insert(
                 ChainlinkReferenceSubscriptionKey::from_subscription(&subscription),
-                subscription,
+                subscription.clone(),
             );
+        match current_unix_timestamp_ms() {
+            Ok(now_ms) => chainlink_reference_seed_input_health_report_liveness_for_subscription(
+                &self.config,
+                &self.input_health_report_liveness,
+                &subscription,
+                now_ms,
+            ),
+            Err(error) => {
+                log::warn!("Chainlink reference subscription liveness seed skipped: {error}");
+            }
+        }
         Ok(())
     }
 
@@ -456,6 +479,11 @@ impl DataClient for ChainlinkReferencePriceClient {
         let subscription =
             chainlink_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
                 .map_err(anyhow::Error::msg)?;
+        chainlink_reference_remove_input_health_report_liveness_for_subscription(
+            &self.config,
+            &self.input_health_report_liveness,
+            &subscription,
+        );
         self.subscriptions
             .lock()
             .map_err(|error| {
@@ -531,6 +559,7 @@ async fn chainlink_reference_connect_websocket(
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_report_unix_ms: Arc<AtomicU64>,
+    input_health_report_liveness: ChainlinkReferenceInputHealthReportLiveness,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 ) -> anyhow::Result<BoundaryWebSocket> {
     let websocket_config = reference_price_websocket_config(config)?;
@@ -541,6 +570,7 @@ async fn chainlink_reference_connect_websocket(
         last_report_unix_ms,
         Some(ChainlinkReferenceInputHealthRecovery {
             config: config.clone(),
+            input_health_report_liveness,
             input_health_missing_sources,
         }),
     );
@@ -565,6 +595,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_report_unix_ms: Arc<AtomicU64>,
+    input_health_report_liveness: ChainlinkReferenceInputHealthReportLiveness,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 ) -> JoinHandle<()> {
     get_runtime().spawn(async move {
@@ -593,29 +624,68 @@ fn spawn_chainlink_reference_liveness_supervisor(
             let last_report_ms = last_report_unix_ms.load(Ordering::SeqCst);
             let silence_ms = now_ms.saturating_sub(last_report_ms);
             let stale = silence_ms > config.idle_timeout_ms;
+            let stale_sources = chainlink_reference_stale_input_health_sources(
+                &config,
+                &subscriptions,
+                &input_health_report_liveness,
+                now_ms,
+                config.idle_timeout_ms,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+            );
+            let source_stale = !stale_sources.is_empty();
             let transport_dead = !chainlink_reference_transport_connected(true, mode);
-            if !(stale || transport_dead) {
+            if !(stale || source_stale || transport_dead) {
                 attempted_reconnects = 0;
                 continue;
             }
-            chainlink_reference_emit_missing_input_health_transition(
-                &config,
-                &subscriptions,
-                &input_health_missing_sources,
-                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
-                false,
-            );
-            if !config
-                .reconnect_max_attempts
-                .permits_attempt(attempted_reconnects)
-            {
+            if source_stale {
+                chainlink_reference_emit_missing_input_health_sources(
+                    &config,
+                    stale_sources,
+                    &input_health_missing_sources,
+                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+                    false,
+                );
+            }
+            if stale || transport_dead {
                 chainlink_reference_emit_missing_input_health_transition(
                     &config,
                     &subscriptions,
                     &input_health_missing_sources,
-                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
-                    true,
+                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+                    false,
                 );
+            }
+            if !config
+                .reconnect_max_attempts
+                .permits_attempt(attempted_reconnects)
+            {
+                let exhausted_sources = chainlink_reference_stale_input_health_sources(
+                    &config,
+                    &subscriptions,
+                    &input_health_report_liveness,
+                    now_ms,
+                    config.idle_timeout_ms,
+                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+                );
+                if !exhausted_sources.is_empty() {
+                    chainlink_reference_emit_missing_input_health_sources(
+                        &config,
+                        exhausted_sources,
+                        &input_health_missing_sources,
+                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+                        true,
+                    );
+                }
+                if stale || transport_dead {
+                    chainlink_reference_emit_missing_input_health_transition(
+                        &config,
+                        &subscriptions,
+                        &input_health_missing_sources,
+                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+                        true,
+                    );
+                }
                 log::error!(
                     "Chainlink reference reconnect attempts exhausted for client_id={client_id}; transport remains unhealthy"
                 );
@@ -638,11 +708,18 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 }
             }
             last_report_unix_ms.store(now_ms, Ordering::SeqCst);
+            chainlink_reference_seed_input_health_report_liveness(
+                &config,
+                &subscriptions,
+                &input_health_report_liveness,
+                now_ms,
+            );
             match chainlink_reference_connect_websocket(
                 &config,
                 Arc::clone(&subscriptions),
                 data_sender.clone(),
                 Arc::clone(&last_report_unix_ms),
+                Arc::clone(&input_health_report_liveness),
                 Arc::clone(&input_health_missing_sources),
             )
             .await
@@ -701,11 +778,27 @@ fn chainlink_reference_emit_missing_input_health_transition(
     reason: &'static str,
     emit_existing: bool,
 ) {
+    let sources =
+        chainlink_reference_input_health_sources_for_transition(config, subscriptions, reason);
+    chainlink_reference_emit_missing_input_health_sources(
+        config,
+        sources,
+        missing_sources,
+        reason,
+        emit_existing,
+    );
+}
+
+fn chainlink_reference_emit_missing_input_health_sources(
+    config: &ChainlinkReferencePriceClientConfig,
+    sources: Vec<BoltV3MissingInputSource>,
+    missing_sources: &ChainlinkReferenceInputHealthMissingSources,
+    reason: &'static str,
+    emit_existing: bool,
+) {
     let Some(emitter) = config.input_health_transition_emitter.as_ref() else {
         return;
     };
-    let sources =
-        chainlink_reference_input_health_sources_for_transition(config, subscriptions, reason);
     let mut missing_sources = match missing_sources.lock() {
         Ok(missing_sources) => missing_sources,
         Err(error) => {
@@ -788,6 +881,153 @@ fn chainlink_reference_input_health_source_with_reason(
     let mut source = source.clone();
     source.reason = reason.to_string();
     source
+}
+
+fn chainlink_reference_input_health_sources_for_subscription(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscription: &ChainlinkReferenceSubscription,
+    reason: &'static str,
+) -> Vec<BoltV3MissingInputSource> {
+    config
+        .input_health_sources
+        .iter()
+        .filter(|source| {
+            source.asset == subscription.asset
+                && source.source_id == subscription.source_id
+                && source.provider_instrument == subscription.instrument_id
+        })
+        .map(|source| chainlink_reference_input_health_source_with_reason(source, reason))
+        .collect()
+}
+
+fn chainlink_reference_seed_input_health_report_liveness(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscriptions: &Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    now_ms: u64,
+) {
+    let sources = chainlink_reference_input_health_sources_for_transition(
+        config,
+        subscriptions,
+        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
+    );
+    chainlink_reference_seed_input_health_report_liveness_for_sources(
+        report_liveness,
+        sources.iter(),
+        now_ms,
+    );
+}
+
+fn chainlink_reference_seed_input_health_report_liveness_for_subscription(
+    config: &ChainlinkReferencePriceClientConfig,
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    subscription: &ChainlinkReferenceSubscription,
+    now_ms: u64,
+) {
+    let sources = chainlink_reference_input_health_sources_for_subscription(
+        config,
+        subscription,
+        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
+    );
+    chainlink_reference_seed_input_health_report_liveness_for_sources(
+        report_liveness,
+        sources.iter(),
+        now_ms,
+    );
+}
+
+fn chainlink_reference_seed_input_health_report_liveness_for_sources<'a>(
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    sources: impl IntoIterator<Item = &'a BoltV3MissingInputSource>,
+    now_ms: u64,
+) {
+    let mut report_liveness = match report_liveness.lock() {
+        Ok(report_liveness) => report_liveness,
+        Err(error) => {
+            log::error!("Chainlink reference report-liveness state poisoned: {error}");
+            return;
+        }
+    };
+    for source in sources {
+        report_liveness.insert(
+            ChainlinkReferenceInputHealthSourceKey::from_source(source),
+            now_ms,
+        );
+    }
+}
+
+fn chainlink_reference_remove_input_health_report_liveness_for_subscription(
+    config: &ChainlinkReferencePriceClientConfig,
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    subscription: &ChainlinkReferenceSubscription,
+) {
+    let sources = chainlink_reference_input_health_sources_for_subscription(
+        config,
+        subscription,
+        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
+    );
+    let mut report_liveness = match report_liveness.lock() {
+        Ok(report_liveness) => report_liveness,
+        Err(error) => {
+            log::error!("Chainlink reference report-liveness state poisoned: {error}");
+            return;
+        }
+    };
+    for source in sources {
+        report_liveness.remove(&ChainlinkReferenceInputHealthSourceKey::from_source(
+            &source,
+        ));
+    }
+}
+
+fn chainlink_reference_refresh_input_health_report_liveness(
+    config: &ChainlinkReferencePriceClientConfig,
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    updates: &[ReferencePriceUpdate],
+    received_ts_ms: u64,
+) {
+    let sources = chainlink_reference_recovered_input_health_sources(config, updates);
+    chainlink_reference_seed_input_health_report_liveness_for_sources(
+        report_liveness,
+        sources.iter(),
+        received_ts_ms,
+    );
+}
+
+fn chainlink_reference_stale_input_health_sources(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscriptions: &Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    now_ms: u64,
+    idle_timeout_ms: u64,
+    reason: &'static str,
+) -> Vec<BoltV3MissingInputSource> {
+    let sources =
+        chainlink_reference_input_health_sources_for_transition(config, subscriptions, reason);
+    if sources.is_empty() {
+        return Vec::new();
+    }
+    let report_liveness = match report_liveness.lock() {
+        Ok(report_liveness) => report_liveness,
+        Err(error) => {
+            log::error!("Chainlink reference report-liveness state poisoned: {error}");
+            return sources;
+        }
+    };
+    sources
+        .into_iter()
+        .filter(|source| {
+            let key = ChainlinkReferenceInputHealthSourceKey::from_source(source);
+            let Some(last_report_ms) = report_liveness.get(&key).copied() else {
+                return true;
+            };
+            now_ms.saturating_sub(last_report_ms) > idle_timeout_ms
+        })
+        .collect()
 }
 
 fn chainlink_reference_websocket_url(
@@ -990,6 +1230,7 @@ fn chainlink_reference_message_handler(
 #[derive(Clone)]
 struct ChainlinkReferenceInputHealthRecovery {
     config: ChainlinkReferencePriceClientConfig,
+    input_health_report_liveness: ChainlinkReferenceInputHealthReportLiveness,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 }
 
@@ -1053,6 +1294,14 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
             Ok(updates) => {
                 if !updates.is_empty() {
                     last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
+                    if let Some(recovery) = &input_health_recovery {
+                        chainlink_reference_refresh_input_health_report_liveness(
+                            &recovery.config,
+                            &recovery.input_health_report_liveness,
+                            &updates,
+                            received_ts_ms,
+                        );
+                    }
                 }
                 if let Some(recovery) = &input_health_recovery {
                     chainlink_reference_emit_recovered_input_health_for_updates(recovery, &updates);
@@ -1693,6 +1942,7 @@ mod tests {
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
                 websocket: Arc::new(Mutex::new(None)),
                 last_report_unix_ms: Arc::new(AtomicU64::new(0)),
+                input_health_report_liveness: Arc::new(Mutex::new(BTreeMap::new())),
                 input_health_missing_sources: Arc::new(Mutex::new(BTreeSet::new())),
                 liveness_task: None,
                 connected: false,
@@ -2325,6 +2575,7 @@ mod tests {
             test_last_report_clock(),
             Some(ChainlinkReferenceInputHealthRecovery {
                 config,
+                input_health_report_liveness: Arc::new(Mutex::new(BTreeMap::new())),
                 input_health_missing_sources: Arc::clone(&input_health_missing_sources),
             }),
         );
@@ -2387,6 +2638,7 @@ mod tests {
             input_health_missing_sources_with(vec![&btc_source, &eth_source]);
         let recovery = ChainlinkReferenceInputHealthRecovery {
             config,
+            input_health_report_liveness: Arc::new(Mutex::new(BTreeMap::new())),
             input_health_missing_sources: Arc::clone(&input_health_missing_sources),
         };
         let btc_update = reference_price_update(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
@@ -2426,6 +2678,98 @@ mod tests {
                 .lock()
                 .expect("missing source set should be available")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn stale_input_health_marks_only_source_with_stale_report_clock() {
+        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
+        let eth_source =
+            input_health_source(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&transitions);
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
+            recorded
+                .lock()
+                .expect("transition recorder should be available")
+                .push((reason, transition));
+        });
+        let mut config = fixture_config();
+        config.input_health_transition_emitter = Some(emitter);
+        config.input_health_sources = vec![btc_source.clone(), eth_source.clone()];
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([
+            (
+                ChainlinkReferenceSubscriptionKey {
+                    asset: TEST_ASSET.to_string(),
+                    source_id: TEST_SOURCE_ID.to_string(),
+                    instrument_id: TEST_INSTRUMENT_ID.to_string(),
+                },
+                ChainlinkReferenceSubscription {
+                    asset: TEST_ASSET.to_string(),
+                    source_id: TEST_SOURCE_ID.to_string(),
+                    instrument_id: TEST_INSTRUMENT_ID.to_string(),
+                },
+            ),
+            (
+                ChainlinkReferenceSubscriptionKey {
+                    asset: TEST_ETH_ASSET.to_string(),
+                    source_id: TEST_SOURCE_ID.to_string(),
+                    instrument_id: TEST_ETH_INSTRUMENT_ID.to_string(),
+                },
+                ChainlinkReferenceSubscription {
+                    asset: TEST_ETH_ASSET.to_string(),
+                    source_id: TEST_SOURCE_ID.to_string(),
+                    instrument_id: TEST_ETH_INSTRUMENT_ID.to_string(),
+                },
+            ),
+        ])));
+        let report_liveness = Arc::new(Mutex::new(BTreeMap::from([
+            (
+                ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source),
+                20_000,
+            ),
+            (
+                ChainlinkReferenceInputHealthSourceKey::from_source(&eth_source),
+                5_000,
+            ),
+        ])));
+        let input_health_missing_sources = Arc::new(Mutex::new(BTreeSet::new()));
+
+        let stale_sources = chainlink_reference_stale_input_health_sources(
+            &config,
+            &subscriptions,
+            &report_liveness,
+            20_001,
+            10_000,
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+        );
+        chainlink_reference_emit_missing_input_health_sources(
+            &config,
+            stale_sources,
+            &input_health_missing_sources,
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+            false,
+        );
+
+        let recorded = transitions
+            .lock()
+            .expect("transition recorder should be available");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE);
+        assert!(recorded[0].1.missing);
+        assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ETH_ASSET);
+        let missing_sources = input_health_missing_sources
+            .lock()
+            .expect("missing source set should be available");
+        assert!(
+            !missing_sources.contains(&ChainlinkReferenceInputHealthSourceKey::from_source(
+                &btc_source
+            ))
+        );
+        assert!(
+            missing_sources.contains(&ChainlinkReferenceInputHealthSourceKey::from_source(
+                &eth_source
+            ))
         );
     }
 

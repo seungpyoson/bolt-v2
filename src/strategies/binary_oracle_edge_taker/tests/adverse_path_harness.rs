@@ -389,7 +389,7 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
 }
 
 #[test]
-fn feed_outage_at_resolution_records_booking_error_without_booking_settlement() {
+fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budget_exhausted() {
     assert_reality_fixtures();
 
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -416,14 +416,29 @@ fn feed_outage_at_resolution_records_booking_error_without_booking_settlement() 
         .expect("fixture should configure market close");
     strategy
         .check_resolution_feed_outage_at_market_end(close_ms)
-        .expect("feed outage check should record booking-error evidence");
+        .expect("feed outage check should dispatch the first close fetch");
 
     let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 0
+            && close_fetch_count == 1
+            && !matches!(strategy.exposure, ExposureState::Flat),
+        "resolution feed outage must first request a close-boundary fetch before terminal booking-error; exposure={:?}, close_fetch_count={close_fetch_count}, events={events:?}",
+        strategy.exposure
+    );
+
+    emit_settlement_close_retry_budget_events(&mut strategy, close_ms);
+
+    let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
+            && close_fetch_count == strategy.config.market_exit_max_attempts as usize
             && !matches!(strategy.exposure, ExposureState::Flat),
-        "resolution feed outage must fail closed: no settlement booking, one loud booking-error record, exposure preserved for venue-truth fence; exposure={:?}, events={events:?}",
+        "resolution feed outage must fail closed after close-fetch retry exhaustion: no settlement booking, one loud booking-error record, exposure preserved for venue-truth fence; exposure={:?}, close_fetch_count={close_fetch_count}, events={events:?}",
         strategy.exposure
     );
 
@@ -1131,16 +1146,18 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
 
     strategy.bootstrap_recovery_from_cache();
     roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
-    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+    emit_settlement_close_retry_budget_events(&mut strategy, position_interval_end_ms);
 
     let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
+            && close_fetch_count == strategy.config.market_exit_max_attempts as usize
             && strategy
                 .settlement_booking_error_keys
                 .contains(&settlement_key),
-        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error instead of silent limbo; exposure={:?} events={events:?}",
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error after close-fetch retry exhaustion instead of silent limbo; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
     );
 }

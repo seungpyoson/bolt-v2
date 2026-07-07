@@ -309,6 +309,14 @@ impl BinaryOracleEdgeTakerBuilder {
                 Some(config.spike_guard_cooldown_secs),
             ),
             (
+                stringify!(retry_interval_seconds),
+                Some(config.retry_interval_seconds),
+            ),
+            (
+                stringify!(market_exit_max_attempts),
+                Some(config.market_exit_max_attempts),
+            ),
+            (
                 stringify!(sizing_ev_reference_bps),
                 Some(config.sizing_ev_reference_bps),
             ),

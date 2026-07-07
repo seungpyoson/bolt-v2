@@ -2236,6 +2236,11 @@ impl BinaryOracleEdgeTaker {
 
     fn reconcile_runtime_order_query(&mut self, query: RuntimeReconcileOrderQuery, now_ms: u64) {
         let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
+        if query.failure_outcome == BoltV3OrderLifecycleOutcome::ExitPending
+            && self.apply_cached_terminal_order_for_reconcile(&query, ts_event_ns)
+        {
+            return;
+        }
         if self.materialize_cached_position_for_reconcile(&query, ts_event_ns) {
             return;
         }
@@ -2270,6 +2275,9 @@ impl BinaryOracleEdgeTaker {
                 avg_px_open: position.avg_px_open,
             }
         };
+        if !self.cached_position_id_still_open(spec.instrument_id, spec.position_id) {
+            return false;
+        }
         self.materialize_position_from_reconcile_pass(spec, ts_event_ns);
         true
     }
@@ -2481,18 +2489,26 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn cached_position_still_open(&self, position: &OpenPositionState) -> bool {
+        self.cached_position_id_still_open(position.instrument_id, position.position_id)
+    }
+
+    fn cached_position_id_still_open(
+        &self,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+    ) -> bool {
         let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
         let execution_venue = self.context.execution_venue();
         self.cache()
             .positions_open(
                 Some(&execution_venue),
-                Some(&position.instrument_id),
+                Some(&instrument_id),
                 Some(&strategy_id),
                 None,
                 None,
             )
             .into_iter()
-            .any(|cached| cached.id == position.position_id)
+            .any(|cached| cached.id == position_id)
     }
 
     fn active_held_instrument_id(&self) -> Option<InstrumentId> {

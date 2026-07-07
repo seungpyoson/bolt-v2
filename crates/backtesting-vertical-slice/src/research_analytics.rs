@@ -566,6 +566,7 @@ fn load_backtest_sweep_source_pairs(
     );
 
     let mut loaded_runs = Vec::with_capacity(plan.sources.len());
+    let mut seen_output_dir_names = BTreeSet::new();
     let mut seen_output_prefixes = BTreeSet::new();
     for source in &plan.sources {
         let (run_spec_path, source_run_spec_path) =
@@ -575,6 +576,11 @@ fn load_backtest_sweep_source_pairs(
         let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
         let output_prefix =
             validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
+        ensure!(
+            seen_output_dir_names.insert(run_spec.manifest.run_id.clone()),
+            "duplicate output_dir_name {:?}",
+            run_spec.manifest.run_id
+        );
         ensure!(
             seen_output_prefixes.insert(output_prefix.clone()),
             "duplicate manifest.output_prefix {output_prefix:?}"
@@ -1761,8 +1767,8 @@ mod tests {
         artifact_root: &str,
     ) {
         let uri = format!(
-            "{artifact_root}/backtests/{}/result-contract.json",
-            spec.manifest.run_id
+            "{artifact_root}/backtests/{}/{}",
+            spec.manifest.run_id, RESULT_CONTRACT_FILE
         );
         let contract = test_contract(spec, object_bytes, &uri);
         fs::write(

@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -36,6 +37,7 @@ SUPPORTED_MODES = {
     "check-ci-gate",
     "ci-policy",
     "emit-full-ci",
+    "emit-inherited-ci",
     "resolve-gate-carry-forward",
     "resolve-exact-sha",
     "resolve-fingerprint",
@@ -117,6 +119,7 @@ REUSE_RELEVANT_WORKFLOW_JOBS = (
     "build",
 )
 REUSE_RELEVANT_WORKFLOW_ENV_KEYS = ("JUST_VERSION", "RUST_VERIFICATION_ROOT_BASE")
+INHERITED_SKIPPED_REQUIRED_JOBS = frozenset({"test-archive"})
 GITHUB_API_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -186,6 +189,7 @@ class ProvenanceConfig:
     run_artifacts_per_page: int
     max_lookback_pages: int
     max_lookback_age_seconds: int
+    inherited_emitter_probe_timeout_seconds: int
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -222,6 +226,9 @@ class FingerprintReuseResolution:
     source_run_id: str
     source_sha: str
     source_artifact_id: str
+    root_run_id: str
+    root_head_sha: str
+    root_fingerprint_digest: str
     reason: str
 
 
@@ -719,6 +726,21 @@ def load_config(
     max_lookback_age_seconds = require_positive_int(
         api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
     )
+    if require_workflows:
+        inherited_emitter_probe_timeout_seconds = require_positive_int(
+            api_limits,
+            "inherited_emitter_probe_timeout_seconds",
+            "ci_provenance.api_limits",
+        )
+    else:
+        inherited_emitter_probe_timeout_seconds = (
+            optional_positive_int(
+                api_limits,
+                "inherited_emitter_probe_timeout_seconds",
+                "ci_provenance.api_limits",
+            )
+            or max_lookback_age_seconds
+        )
     check_lookback_le_retention(retention_days, max_lookback_age_seconds)
     if require_deploy_window:
         deploy_artifact_retention_days = require_positive_int(
@@ -861,6 +883,7 @@ def load_config(
             api_limits, "max_lookback_pages", "ci_provenance.api_limits"
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
+        inherited_emitter_probe_timeout_seconds=inherited_emitter_probe_timeout_seconds,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -1089,8 +1112,8 @@ def evaluate_ci_gate_verdict(
         require_job_result(
             job_results,
             "ci-provenance-emit",
-            "skipped",
-            "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse",
+            "success",
+            "ci-provenance-emit did not succeed during nextest fingerprint reuse",
         )
     else:
         emit_result = job_results.get("ci-provenance-emit")
@@ -1812,6 +1835,14 @@ def require_record_digest(record: dict[str, object], key: str) -> str:
     return value
 
 
+def nextest_fingerprint_digest(value: object, *, label: str) -> str:
+    fingerprint = parse_nextest_fingerprint(value, label=label)
+    match = NEXTEST_FINGERPRINT_RE.fullmatch(fingerprint)
+    if match is None:
+        raise ProvenanceError(f"malformed {label} fingerprint")
+    return match.group("digest")
+
+
 def require_positive_record_id(record: dict[str, object], key: str) -> None:
     value = record.get(key)
     if isinstance(value, int) and value > 0:
@@ -1819,6 +1850,20 @@ def require_positive_record_id(record: dict[str, object], key: str) -> None:
     if isinstance(value, str) and value.isdecimal() and int(value) > 0:
         return
     raise ProvenanceError(f"record {key} must be a positive integer or numeric string")
+
+
+def require_provenance_root(record: dict[str, object]) -> tuple[int, str, str]:
+    root = record.get("provenance_root")
+    if not isinstance(root, dict):
+        raise ProvenanceError("record provenance_root must be an object")
+    root_run_id = positive_int_value(root.get("run_id"), "record provenance_root.run_id")
+    root_head_sha = root.get("head_sha")
+    if not isinstance(root_head_sha, str) or SHA_RE.fullmatch(root_head_sha) is None:
+        raise ProvenanceError("record provenance_root.head_sha must be a 40-character lowercase hex SHA")
+    root_fingerprint_digest = root.get("fingerprint_digest")
+    if not isinstance(root_fingerprint_digest, str) or DIGEST_RE.fullmatch(root_fingerprint_digest) is None:
+        raise ProvenanceError("record provenance_root.fingerprint_digest must be a sha256 hex digest")
+    return root_run_id, root_head_sha, root_fingerprint_digest
 
 
 def validate_created_at(value: object) -> None:
@@ -1858,6 +1903,9 @@ def validate_required_jobs(record: dict[str, object], config: ProvenanceConfig, 
                     raise ProvenanceError(f"record docs required job {job} must be success")
             elif conclusion != "skipped":
                 raise ProvenanceError(f"record docs required job {job} must be skipped")
+        elif kind == "inherited-ci" and job in INHERITED_SKIPPED_REQUIRED_JOBS:
+            if conclusion != "skipped":
+                raise ProvenanceError(f"record inherited required job {job} must be skipped")
         elif conclusion != "success":
             raise ProvenanceError(f"record required_jobs.{job} must be success")
 
@@ -1890,8 +1938,8 @@ def validate_record_schema(
     if record.get("schema_version") != config.schema_version:
         raise ProvenanceError(f"unknown provenance schema {record.get('schema_version')!r}")
     kind = record.get("kind")
-    if kind not in {"full-ci", "docs-ci"}:
-        raise ProvenanceError("record kind must be full-ci or docs-ci")
+    if kind not in {"full-ci", "docs-ci", "inherited-ci"}:
+        raise ProvenanceError("record kind must be full-ci, docs-ci, or inherited-ci")
     require_record_string(record, "repository")
     if require_record_string(record, "workflow_path") != config.workflow_path:
         raise ProvenanceError("record workflow_path does not match config")
@@ -1924,6 +1972,18 @@ def validate_record_schema(
         not isinstance(nextest_fingerprint, str) or not nextest_fingerprint
     ):
         raise ProvenanceError("record nextest_fingerprint must be string or null")
+    if kind == "inherited-ci":
+        if nextest_fingerprint is None:
+            raise ProvenanceError("record inherited nextest_fingerprint must be present")
+        _root_run_id, _root_head_sha, root_fingerprint_digest = require_provenance_root(record)
+        record_fingerprint_digest = nextest_fingerprint_digest(
+            nextest_fingerprint,
+            label="record",
+        )
+        if root_fingerprint_digest != record_fingerprint_digest:
+            raise ProvenanceError("record provenance_root root fingerprint does not match nextest_fingerprint")
+    elif "provenance_root" in record:
+        raise ProvenanceError("record provenance_root is only allowed for inherited-ci records")
     validate_created_at(record.get("created_at"))
 
 
@@ -1943,6 +2003,8 @@ def validate_exact_sha_record(
     )
     if SHA_RE.fullmatch(requested_sha) is None:
         raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
+    if record.get("kind") != "full-ci":
+        raise ProvenanceError("exact-SHA provenance must be full-ci")
     if record.get("event") == "pull_request":
         raise ProvenanceError("pull_request provenance cannot validate exact-SHA reuse for a PR head")
     if record.get("event") != config.deploy_source_event:
@@ -2066,6 +2128,119 @@ def validate_artifact_metadata(
         )
 
 
+def validate_inherited_root_provenance(
+    *,
+    repo: str,
+    token: str,
+    root_run_id: int,
+    root_head_sha: str,
+    root_fingerprint_digest: str,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path,
+    api_json,
+    api_bytes,
+    now: datetime.datetime,
+) -> None:
+    root_run = api_json(repo, token, f"actions/runs/{root_run_id}", None)
+    if not isinstance(root_run, dict):
+        raise ProvenanceError(f"root run {root_run_id} payload is malformed")
+    if positive_int_value(root_run.get("id"), "root workflow run id") != root_run_id:
+        raise ProvenanceError(f"root run {root_run_id} payload ID does not match pointer")
+    if as_text(root_run.get("head_sha")) != root_head_sha:
+        raise ProvenanceError(f"root run {root_run_id} SHA does not match pointer")
+    root_created_at = root_run.get("created_at")
+    if not isinstance(root_created_at, str):
+        raise ProvenanceError(f"root run {root_run_id} created_at must be a string")
+    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    if parse_timestamp(root_created_at) < cutoff:
+        raise ProvenanceError(f"root run {root_run_id} is outside provenance lookback")
+    root_run_attempt = positive_int_value(root_run.get("run_attempt"), "root workflow run run_attempt")
+    artifacts_payload = api_json(
+        repo,
+        token,
+        f"actions/runs/{root_run_id}/artifacts",
+        {"per_page": str(config.run_artifacts_per_page)},
+    )
+    if not isinstance(artifacts_payload, dict):
+        raise ProvenanceError(f"root run {root_run_id} artifacts payload is malformed")
+    artifacts = artifacts_payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ProvenanceError(f"root run {root_run_id} artifacts payload is malformed")
+    require_complete_first_page(
+        artifacts_payload,
+        artifacts,
+        per_page=config.run_artifacts_per_page,
+        label=f"root run {root_run_id} artifacts",
+    )
+    fingerprint_matches = matching_artifacts(artifacts, prefix=config.fingerprint_artifact_prefix)
+    if len(fingerprint_matches) != 1:
+        if not fingerprint_matches:
+            raise ProvenanceError(f"root run {root_run_id} has no fingerprint artifact")
+        raise ProvenanceError(f"root run {root_run_id} has ambiguous fingerprint artifacts")
+    expected_name = provenance_artifact_name(config, root_run_attempt)
+    provenance_matches = matching_artifacts(artifacts, name=expected_name)
+    if len(provenance_matches) != 1:
+        if not provenance_matches:
+            raise ProvenanceError(f"root run {root_run_id} has no provenance artifact")
+        raise ProvenanceError(f"root run {root_run_id} has ambiguous provenance artifacts")
+
+    fingerprint_artifact = fingerprint_matches[0]
+    provenance_artifact = provenance_matches[0]
+    validate_artifact_run_metadata(fingerprint_artifact, root_run, label="root fingerprint")
+    validate_artifact_run_metadata(provenance_artifact, root_run, label="root provenance")
+    artifact_fingerprint = fingerprint_from_artifact_name(fingerprint_artifact, config)
+    artifact_digest = nextest_fingerprint_digest(artifact_fingerprint, label="root artifact")
+    if artifact_digest != root_fingerprint_digest:
+        raise ProvenanceError(f"root run {root_run_id} fingerprint artifact does not match pointer")
+    archive_url = require_record_string(provenance_artifact, "archive_download_url")
+    root_record = artifact_record_from_zip(api_bytes(repo, token, archive_url))
+    if positive_int_value(root_record.get("run_attempt"), "root record run_attempt") != root_run_attempt:
+        raise ProvenanceError("root record run_attempt does not match source run attempt")
+    tested_sha = require_record_sha(root_record, "tested_sha")
+    expected_workflow_digest = workflow_digest_from_github(
+        repo,
+        token,
+        config,
+        tested_sha,
+        api_bytes,
+    )
+    validate_record_schema(
+        root_record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=expected_workflow_digest,
+    )
+    if root_record.get("kind") == "inherited-ci":
+        raise ProvenanceError("root provenance must be an executed record")
+    validate_record_matches_run(root_record, root_run)
+    if require_record_sha(root_record, "head_sha") != root_head_sha:
+        raise ProvenanceError("root provenance head_sha does not match pointer")
+    record_digest = nextest_fingerprint_digest(
+        root_record.get("nextest_fingerprint"),
+        label="root record",
+    )
+    if record_digest != root_fingerprint_digest:
+        raise ProvenanceError("root provenance fingerprint does not match pointer")
+    jobs_payload = api_json(
+        repo,
+        token,
+        f"actions/runs/{root_run_id}/jobs",
+        {"per_page": str(config.run_jobs_per_page)},
+    )
+    if not isinstance(jobs_payload, dict):
+        raise ProvenanceError(f"root run {root_run_id} jobs payload is malformed")
+    jobs = jobs_payload.get("jobs")
+    if not isinstance(jobs, list):
+        raise ProvenanceError(f"root run {root_run_id} jobs payload is malformed")
+    require_complete_first_page(
+        jobs_payload,
+        jobs,
+        per_page=config.run_jobs_per_page,
+        label=f"root run {root_run_id} jobs",
+    )
+    validate_job_evidence(jobs_payload, config, root_record, deploy_reuse_requested=False)
+
+
 def parse_nextest_fingerprint(value: object, *, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise ProvenanceError(f"malformed {label} fingerprint")
@@ -2137,6 +2312,16 @@ def require_job_success(by_name: dict[str, dict[str, object]], check_name: str) 
         raise ProvenanceError(f"required job {check_name} was {status!r}/{conclusion!r}")
 
 
+def require_job_skipped(by_name: dict[str, dict[str, object]], check_name: str) -> None:
+    job = by_name.get(check_name)
+    if job is None:
+        raise ProvenanceError(f"missing skipped job {check_name}")
+    status = job.get("status")
+    conclusion = job.get("conclusion")
+    if status != "completed" or conclusion != "skipped":
+        raise ProvenanceError(f"skipped job {check_name} was {status!r}/{conclusion!r}")
+
+
 def validate_job_evidence(
     jobs_payload: dict[str, object],
     config: ProvenanceConfig,
@@ -2145,8 +2330,12 @@ def validate_job_evidence(
     deploy_reuse_requested: bool,
 ) -> None:
     by_name = jobs_by_name(jobs_payload)
+    kind = record.get("kind")
     for logical_job in config.required_jobs:
         for check_name in expanded_check_names(config, logical_job):
+            if kind == "inherited-ci" and logical_job in INHERITED_SKIPPED_REQUIRED_JOBS:
+                require_job_skipped(by_name, check_name)
+                continue
             require_job_success(by_name, check_name)
 
     conditional_jobs = record.get("conditional_jobs")
@@ -2380,6 +2569,7 @@ def validate_gate_carry_forward_provenance(
     config_path: pathlib.Path,
     api_json,
     api_bytes,
+    now: datetime.datetime,
 ) -> None:
     if SHA_RE.fullmatch(base_sha) is None:
         raise ProvenanceError("base_sha must be a 40-character lowercase hex SHA")
@@ -2431,6 +2621,20 @@ def validate_gate_carry_forward_provenance(
         expected_workflow_digest=expected_workflow_digest,
     )
     validate_record_matches_run(record, run)
+    if record.get("kind") == "inherited-ci":
+        root_run_id, root_head_sha, root_fingerprint_digest = require_provenance_root(record)
+        validate_inherited_root_provenance(
+            repo=repo,
+            token=token,
+            root_run_id=root_run_id,
+            root_head_sha=root_head_sha,
+            root_fingerprint_digest=root_fingerprint_digest,
+            config=config,
+            config_path=config_path,
+            api_json=api_json,
+            api_bytes=api_bytes,
+            now=now,
+        )
     if record.get("event") != "pull_request":
         raise ProvenanceError("carry-forward provenance must come from a pull_request run")
     if record.get("head_sha") != requested_sha:
@@ -2440,10 +2644,6 @@ def validate_gate_carry_forward_provenance(
         raise ProvenanceError("carry-forward provenance pull_request metadata is malformed")
     if pull_request.get("base_sha") != base_sha:
         raise ProvenanceError("base_sha does not match current PR base")
-
-
-def missing_gate_carry_forward_provenance_error(exc: ProvenanceError, run_id: int) -> bool:
-    return str(exc) == f"source run {run_id} has no provenance artifact"
 
 
 def gate_carry_forward_dominance_key(run: dict[str, object]) -> tuple[str, int]:
@@ -2563,15 +2763,11 @@ def resolve_gate_carry_forward(
         reverse=True,
     )
     require_newest_gate_carry_forward_bucket_success(candidates)
-    saw_successful_gate_without_provenance = False
     for run in candidates:
         run_id = positive_int_value(run.get("id"), "workflow run id")
         status = as_text(run.get("status"))
         conclusion = as_text(run.get("conclusion"))
         if not gate_run_is_proven_success(run):
-            if saw_successful_gate_without_provenance:
-                last_error = f"older same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
-                continue
             raise ProvenanceError(
                 f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
             )
@@ -2593,34 +2789,22 @@ def resolve_gate_carry_forward(
         try:
             require_job_success(jobs_by_name(jobs_payload), gate_name)
         except ProvenanceError as exc:
-            if saw_successful_gate_without_provenance:
-                last_error = f"older same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
-                continue
             raise ProvenanceError(
                 f"newest same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
             ) from exc
         if require_provenance_base:
-            try:
-                validate_gate_carry_forward_provenance(
-                    repo=repo,
-                    token=token,
-                    run=run,
-                    requested_sha=requested_sha,
-                    base_sha=base_sha,
-                    config=config,
-                    config_path=config_path,
-                    api_json=api_json,
-                    api_bytes=api_bytes,
-                )
-            except ProvenanceError as exc:
-                if missing_gate_carry_forward_provenance_error(exc, run_id):
-                    saw_successful_gate_without_provenance = True
-                    last_error = str(exc)
-                    continue
-                if saw_successful_gate_without_provenance:
-                    last_error = str(exc)
-                    continue
-                raise
+            validate_gate_carry_forward_provenance(
+                repo=repo,
+                token=token,
+                run=run,
+                requested_sha=requested_sha,
+                base_sha=base_sha,
+                config=config,
+                config_path=config_path,
+                api_json=api_json,
+                api_bytes=api_bytes,
+                now=now,
+            )
         return GateCarryForwardResolution(
             carry_forward_verified=True,
             source_run_id=str(run_id),
@@ -2638,8 +2822,29 @@ def no_fingerprint_reuse(reason: str) -> FingerprintReuseResolution:
         source_run_id="",
         source_sha="",
         source_artifact_id="",
+        root_run_id="",
+        root_head_sha="",
+        root_fingerprint_digest="",
         reason=reason,
     )
+
+
+def inherited_ci_emitter_supported(script_path: pathlib.Path, *, timeout_seconds: int) -> bool:
+    if script_path.is_symlink() or not script_path.is_file():
+        raise ProvenanceError(f"inherited CI emitter script is missing or symlinked: {script_path}")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script_path), "emit-inherited-ci", "--help"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProvenanceError("inherited CI emitter probe timed out") from exc
+    except OSError as exc:
+        raise ProvenanceError(f"inherited CI emitter probe failed: {exc}") from exc
+    return completed.returncode == 0
 
 
 def matching_artifacts(
@@ -2676,6 +2881,7 @@ def validate_fingerprint_candidate(
     config_path: pathlib.Path,
     api_json,
     api_bytes,
+    now: datetime.datetime,
 ) -> FingerprintReuseResolution:
     run_id = positive_int_value(run.get("id"), "workflow run id")
     run_attempt = positive_int_value(run.get("run_attempt"), "workflow run run_attempt")
@@ -2746,6 +2952,27 @@ def validate_fingerprint_candidate(
             return no_fingerprint_reuse(f"source run {run_id} fingerprint artifact does not match provenance")
         if record_fingerprint != current_fingerprint:
             return no_fingerprint_reuse(f"source run {run_id} fingerprint does not match current run")
+        if record.get("kind") == "inherited-ci":
+            root_run_id, root_head_sha, root_fingerprint_digest = require_provenance_root(record)
+            validate_inherited_root_provenance(
+                repo=repo,
+                token=token,
+                root_run_id=root_run_id,
+                root_head_sha=root_head_sha,
+                root_fingerprint_digest=root_fingerprint_digest,
+                config=config,
+                config_path=config_path,
+                api_json=api_json,
+                api_bytes=api_bytes,
+                now=now,
+            )
+        else:
+            root_run_id = run_id
+            root_head_sha = require_record_sha(record, "head_sha")
+            root_fingerprint_digest = nextest_fingerprint_digest(
+                record_fingerprint,
+                label="source record",
+            )
     except ProvenanceError as exc:
         return no_fingerprint_reuse(str(exc))
 
@@ -2774,6 +3001,9 @@ def validate_fingerprint_candidate(
         source_run_id=str(run_id),
         source_sha=require_record_sha(record, "tested_sha"),
         source_artifact_id=artifact_id_text(provenance_artifact),
+        root_run_id=str(root_run_id),
+        root_head_sha=root_head_sha,
+        root_fingerprint_digest=root_fingerprint_digest,
         reason=f"matched source run {run_id}",
     )
 
@@ -2789,6 +3019,7 @@ def resolve_fingerprint_reuse(
     api_json=github_api_json,
     api_bytes=github_api_bytes,
     now: datetime.datetime | None = None,
+    inherited_emitter_script: pathlib.Path | None = None,
 ) -> FingerprintReuseResolution:
     if current_fingerprint is None:
         return no_fingerprint_reuse("missing current fingerprint")
@@ -2796,6 +3027,17 @@ def resolve_fingerprint_reuse(
         parsed_current = parse_nextest_fingerprint(current_fingerprint, label="current")
     except ProvenanceError:
         return no_fingerprint_reuse("malformed current fingerprint")
+    if inherited_emitter_script is not None:
+        try:
+            if not inherited_ci_emitter_supported(
+                inherited_emitter_script,
+                timeout_seconds=config.inherited_emitter_probe_timeout_seconds,
+            ):
+                return no_fingerprint_reuse(
+                    "trusted base provenance emitter does not support inherited CI records"
+                )
+        except ProvenanceError as exc:
+            return no_fingerprint_reuse(f"trusted base provenance emitter check failed: {exc}")
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
     cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
@@ -2867,6 +3109,7 @@ def resolve_fingerprint_reuse(
                 config_path=config_path,
                 api_json=api_json,
                 api_bytes=api_bytes,
+                now=now,
             )
             if result.reuse_found:
                 return result
@@ -2883,6 +3126,9 @@ def output_resolution_lines(result: FingerprintReuseResolution) -> str:
         "source_run_id": result.source_run_id,
         "source_sha": result.source_sha,
         "source_artifact_id": result.source_artifact_id,
+        "root_run_id": result.root_run_id,
+        "root_head_sha": result.root_head_sha,
+        "root_fingerprint_digest": result.root_fingerprint_digest,
         "reason": result.reason.replace("\n", " "),
     }
     return "".join(f"{key}={value}\n" for key, value in values.items())
@@ -2935,6 +3181,9 @@ def parse_required_job_results(
                     raise ProvenanceError(f"docs required job {job} did not succeed: {result}")
             elif result != "skipped":
                 raise ProvenanceError(f"docs required job {job} must be skipped: {result}")
+        elif ci_policy_path == "inherited" and job in INHERITED_SKIPPED_REQUIRED_JOBS:
+            if result != "skipped":
+                raise ProvenanceError(f"inherited required job {job} must be skipped: {result}")
         elif result != "success":
             raise ProvenanceError(f"required job {job} did not succeed: {result}")
     return results
@@ -3006,6 +3255,8 @@ def emit_full_ci_record(
     tested_sha = require_env("GITHUB_SHA")
     event_name = require_env("GITHUB_EVENT_NAME")
     run_payload = api_json(repo, token, f"actions/runs/{run_id}", None)
+    if not isinstance(run_payload, dict):
+        raise ProvenanceError("current workflow run payload is malformed")
     head_sha = as_text(run_payload.get("head_sha"))
     if SHA_RE.fullmatch(head_sha) is None:
         raise ProvenanceError("current workflow run head_sha is malformed")
@@ -3047,6 +3298,93 @@ def emit_full_ci_record(
             ci_policy_path=ci_policy_path,
         ),
         "nextest_fingerprint": nextest_fingerprint,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    validate_record_schema(
+        record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=workflow_digest,
+    )
+    return record
+
+
+def emit_inherited_ci_record(
+    *,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path,
+    workflow_file: pathlib.Path | None = None,
+    required_job_values: list[str],
+    conditional_job_values: list[str],
+    nextest_fingerprint: str,
+    root_run_id: str,
+    root_head_sha: str,
+    root_fingerprint_digest: str,
+    api_json=github_api_json,
+) -> dict[str, object]:
+    repo = require_env("GITHUB_REPOSITORY")
+    token = require_env("GITHUB_TOKEN")
+    run_id = require_env("GITHUB_RUN_ID")
+    run_attempt = require_env("GITHUB_RUN_ATTEMPT")
+    tested_sha = require_env("GITHUB_SHA")
+    event_name = require_env("GITHUB_EVENT_NAME")
+    run_payload = api_json(repo, token, f"actions/runs/{run_id}", None)
+    if not isinstance(run_payload, dict):
+        raise ProvenanceError("current workflow run payload is malformed")
+    head_sha = as_text(run_payload.get("head_sha"))
+    if SHA_RE.fullmatch(head_sha) is None:
+        raise ProvenanceError("current workflow run head_sha is malformed")
+    check_suite_id = run_payload.get("check_suite_id")
+    positive_int_value(check_suite_id, "current workflow run check_suite_id")
+    head_branch = run_payload.get("head_branch")
+    if head_branch is not None and not isinstance(head_branch, str):
+        raise ProvenanceError("current workflow run head_branch is malformed")
+
+    parsed_fingerprint = parse_nextest_fingerprint(nextest_fingerprint, label="current")
+    current_fingerprint_digest = nextest_fingerprint_digest(parsed_fingerprint, label="current")
+    current_run_id_value = positive_int_value(run_id, "GITHUB_RUN_ID")
+    root_run_id_value = positive_int_value(root_run_id, "root_run_id")
+    if root_run_id_value == current_run_id_value:
+        raise ProvenanceError("root_run_id must not reference the current workflow run")
+    if SHA_RE.fullmatch(root_head_sha) is None:
+        raise ProvenanceError("root_head_sha must be a 40-character lowercase hex SHA")
+    if DIGEST_RE.fullmatch(root_fingerprint_digest) is None:
+        raise ProvenanceError("root_fingerprint_digest must be a sha256 hex digest")
+    if root_fingerprint_digest != current_fingerprint_digest:
+        raise ProvenanceError("root fingerprint digest does not match current nextest fingerprint")
+    workflow_digest = workflow_file_digest(config, workflow_file)
+
+    record = {
+        "schema_version": config.schema_version,
+        "kind": "inherited-ci",
+        "repository": repo,
+        "workflow_path": config.workflow_path,
+        "workflow_digest": workflow_digest,
+        "provenance_config_digest": provenance_config_digest(config_path),
+        "head_sha": head_sha,
+        "tested_sha": tested_sha,
+        "run_id": current_run_id_value,
+        "run_attempt": positive_int_value(run_attempt, "GITHUB_RUN_ATTEMPT"),
+        "check_suite_id": positive_int_value(check_suite_id, "current workflow run check_suite_id"),
+        "event": event_name,
+        "head_branch": head_branch,
+        "pull_request": pull_request_metadata_from_env(event_name),
+        "required_jobs": parse_required_job_results(
+            required_job_values,
+            config,
+            ci_policy_path="inherited",
+        ),
+        "conditional_jobs": parse_conditional_job_results(
+            conditional_job_values,
+            config,
+            ci_policy_path="full",
+        ),
+        "nextest_fingerprint": parsed_fingerprint,
+        "provenance_root": {
+            "run_id": root_run_id_value,
+            "head_sha": root_head_sha,
+            "fingerprint_digest": root_fingerprint_digest,
+        },
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     validate_record_schema(
@@ -3103,6 +3441,15 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--required-job", action="append", default=[])
         parser.add_argument("--conditional-job", action="append", default=[])
         parser.add_argument("--nextest-fingerprint")
+    if mode == "emit-inherited-ci":
+        parser.add_argument("--output", type=pathlib.Path)
+        parser.add_argument("--workflow-file", type=pathlib.Path)
+        parser.add_argument("--required-job", action="append", default=[])
+        parser.add_argument("--conditional-job", action="append", default=[])
+        parser.add_argument("--nextest-fingerprint", required=True)
+        parser.add_argument("--root-run-id", required=True)
+        parser.add_argument("--root-head-sha", required=True)
+        parser.add_argument("--root-fingerprint-digest", required=True)
     if mode == "validate-record":
         parser.add_argument("--record", type=pathlib.Path, required=True)
     if mode == "resolve-exact-sha":
@@ -3115,6 +3462,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--token")
         parser.add_argument("--current-run-id")
         parser.add_argument("--current-fingerprint")
+        parser.add_argument("--require-inherited-emitter", type=pathlib.Path)
     return parser
 
 
@@ -3222,6 +3570,24 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 args.output.write_text(encoded, encoding="utf-8")
                 print(f"wrote {args.output}")
+        elif mode == "emit-inherited-ci":
+            record = emit_inherited_ci_record(
+                config=config,
+                config_path=args.config,
+                workflow_file=args.workflow_file,
+                required_job_values=args.required_job,
+                conditional_job_values=args.conditional_job,
+                nextest_fingerprint=args.nextest_fingerprint,
+                root_run_id=args.root_run_id,
+                root_head_sha=args.root_head_sha,
+                root_fingerprint_digest=args.root_fingerprint_digest,
+            )
+            encoded = json.dumps(record, sort_keys=True, indent=2) + "\n"
+            if args.output is None:
+                print(encoded, end="")
+            else:
+                args.output.write_text(encoded, encoding="utf-8")
+                print(f"wrote {args.output}")
         elif mode == "validate-record":
             validate_record_schema(load_json(args.record), config, config_path=args.config)
             print("record valid")
@@ -3243,6 +3609,7 @@ def main(argv: list[str] | None = None) -> int:
                 current_run_id=args.current_run_id or require_env("GITHUB_RUN_ID"),
                 config=config,
                 config_path=args.config,
+                inherited_emitter_script=args.require_inherited_emitter,
             )
             print(output_resolution_lines(result), end="")
         return 0

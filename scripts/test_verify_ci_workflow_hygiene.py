@@ -667,18 +667,75 @@ jobs:
       source_run_id: ${{ steps.reuse.outputs.source_run_id }}
       source_sha: ${{ steps.reuse.outputs.source_sha }}
       source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      root_run_id: ${{ steps.reuse.outputs.root_run_id }}
+      root_head_sha: ${{ steps.reuse.outputs.root_head_sha }}
+      root_fingerprint_digest: ${{ steps.reuse.outputs.root_fingerprint_digest }}
       reason: ${{ steps.reuse.outputs.reason }}
     steps:
+      - name: Prepare trusted base provenance emitter
+        id: reuse_provenance_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-reuse-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-reuse-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/heads/$base_branch"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
+          base_tree="$RUNNER_TEMP/ci-provenance-reuse-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+          provenance_script="$base_tree/scripts/ci_provenance.py"
+          if [[ ! -f "$provenance_script" || -L "$provenance_script" ]]; then
+            echo "trusted base provenance script is missing or not a regular file: $provenance_script" >&2
+            exit 1
+          fi
+          echo "script=$provenance_script" >> "$GITHUB_OUTPUT"
+
       - name: Resolve nextest fingerprint reuse
         id: reuse
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: >
-          python3 scripts/ci_provenance.py resolve-fingerprint
-          --current-run-id "${{ github.run_id }}"
-          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
-          | tee -a "$GITHUB_OUTPUT"
+        run: |
+          required_emitter="scripts/ci_provenance.py"
+          trusted_base_emitter="${{ steps.reuse_provenance_base.outputs.script }}"
+          if [[ -n "$trusted_base_emitter" ]]; then
+            required_emitter="$trusted_base_emitter"
+          fi
+          python3 scripts/ci_provenance.py resolve-fingerprint \
+            --current-run-id "${{ github.run_id }}" \
+            --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" \
+            --require-inherited-emitter "$required_emitter" \
+            | tee -a "$GITHUB_OUTPUT"
 
   test-archive:
     name: nextest archive
@@ -1024,6 +1081,18 @@ jobs:
               echo "nextest fingerprint reuse did not expose source_artifact_id"
               exit 1
             fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.root_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose root_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.root_head_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose root_head_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.root_fingerprint_digest }}" ]]; then
+              echo "nextest fingerprint reuse did not expose root_fingerprint_digest"
+              exit 1
+            fi
             echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
             exit 0
           fi
@@ -1102,19 +1171,56 @@ jobs:
   ci-provenance-emit:
     name: ci-provenance-emit
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
-    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') }}
     runs-on: ubuntu-latest
     steps:
       - name: Prepare trusted base provenance tree
         id: provenance_base
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
           git check-ref-format "refs/heads/$base_branch"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
+          base_tree="$RUNNER_TEMP/ci-provenance-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
           tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
-          echo "tested workflow file is missing or not a regular file"
+          if [[ ! -f "$tested_workflow" || -L "$tested_workflow" ]]; then
+            echo "tested workflow file is missing or not a regular file: $tested_workflow" >&2
+            exit 1
+          fi
+          mkdir -p "$base_tree/.github/workflows"
           cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"
           {
             echo "script=$base_tree/scripts/ci_provenance.py"
@@ -1138,22 +1244,48 @@ jobs:
           if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--workflow-file"; then
             workflow_args+=(--workflow-file "$provenance_workflow")
           fi
-          python3 "$provenance_script" emit-full-ci \
-            --config "$provenance_config" \
-            "${policy_args[@]}" \
-            "${workflow_args[@]}" \
-            --output ci-provenance.json \
-            --required-job detector=${{ needs.detector.result }} \
-            --required-job deny=${{ needs.deny.result }} \
-            --required-job clippy=${{ needs.clippy.result }} \
-            --required-job check-aarch64=${{ needs.check-aarch64.result }} \
-            --required-job source-fence=${{ needs.source-fence.result }} \
-            --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
-            --required-job test-archive=${{ needs.test-archive.result }} \
-            --required-job test=${{ needs.test.result }} \
-            --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
-            --conditional-job build.result=${{ needs.build.result }} \
-            --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if ! python3 "$provenance_script" emit-inherited-ci --help >/dev/null; then
+              echo "trusted base provenance emitter does not support inherited CI records" >&2
+              exit 1
+            fi
+            python3 "$provenance_script" emit-inherited-ci \
+              --config "$provenance_config" \
+              "${workflow_args[@]}" \
+              --output ci-provenance.json \
+              --required-job detector=${{ needs.detector.result }} \
+              --required-job deny=${{ needs.deny.result }} \
+              --required-job clippy=${{ needs.clippy.result }} \
+              --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+              --required-job source-fence=${{ needs.source-fence.result }} \
+              --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+              --required-job test-archive=${{ needs.test-archive.result }} \
+              --required-job test=${{ needs.test.result }} \
+              --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+              --conditional-job build.result=${{ needs.build.result }} \
+              --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" \
+              --root-run-id "${{ needs.nextest-fingerprint-reuse.outputs.root_run_id }}" \
+              --root-head-sha "${{ needs.nextest-fingerprint-reuse.outputs.root_head_sha }}" \
+              --root-fingerprint-digest "${{ needs.nextest-fingerprint-reuse.outputs.root_fingerprint_digest }}"
+          else
+            python3 "$provenance_script" emit-full-ci \
+              --config "$provenance_config" \
+              "${policy_args[@]}" \
+              "${workflow_args[@]}" \
+              --output ci-provenance.json \
+              --required-job detector=${{ needs.detector.result }} \
+              --required-job deny=${{ needs.deny.result }} \
+              --required-job clippy=${{ needs.clippy.result }} \
+              --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+              --required-job source-fence=${{ needs.source-fence.result }} \
+              --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+              --required-job test-archive=${{ needs.test-archive.result }} \
+              --required-job test=${{ needs.test.result }} \
+              --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+              --conditional-job build.result=${{ needs.build.result }} \
+              --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+          fi
       - name: Upload CI provenance
         id: upload-ci-provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1189,11 +1321,39 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
-          base_ref="refs/remotes/origin/ci-gate-base-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-gate-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-gate-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
           git check-ref-format "refs/heads/$base_branch"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
           base_tree="$RUNNER_TEMP/ci-gate-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
@@ -1897,6 +2057,8 @@ def assert_error(
 ) -> None:
     verifier = load_verifier()
     errors = verifier.verify_text(workflow, action, nextest_config)
+    if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in fragment:
+        errors = [error for error in errors if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error]
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
@@ -6098,7 +6260,7 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') }}",
                 "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
@@ -15644,16 +15806,81 @@ git() {
     )
     assert_error("nextest-fingerprint-reuse must use secure current nextest fingerprint output", stale_fingerprint_with_decoy)
     assert_error("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint", stale_fingerprint_with_decoy)
-    resolver_pipe_scalar = replace_once_after(
+    missing_base_probe = replace_once_after(
         BASE_WORKFLOW,
         "  nextest-fingerprint-reuse:",
-        "        run: >",
+        """      - name: Prepare trusted base provenance emitter
+        id: reuse_provenance_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-reuse-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-reuse-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/heads/$base_branch"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
+          base_tree="$RUNNER_TEMP/ci-provenance-reuse-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+          provenance_script="$base_tree/scripts/ci_provenance.py"
+          if [[ ! -f "$provenance_script" || -L "$provenance_script" ]]; then
+            echo "trusted base provenance script is missing or not a regular file: $provenance_script" >&2
+            exit 1
+          fi
+          echo "script=$provenance_script" >> "$GITHUB_OUTPUT"
+
+""",
+        "",
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must probe trusted base inherited emitter support",
+        missing_base_probe,
+    )
+    missing_emitter_arg = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        '--require-inherited-emitter "$required_emitter"',
+        '--omitted-inherited-emitter "$required_emitter"',
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical script", missing_emitter_arg)
+    resolver_pipe_scalar = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Resolve nextest fingerprint reuse",
         "        run: |",
+        "        run: >",
     )
     assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_pipe_scalar)
     resolver_extra_workdir = replace_once_after(
         BASE_WORKFLOW,
-        "  nextest-fingerprint-reuse:",
+        "      - name: Resolve nextest fingerprint reuse",
         "        shell: bash\n",
         """        shell: bash
         working-directory: /tmp
@@ -16229,13 +16456,27 @@ def main() -> int:
             "MERGE_GROUP_BASE_REF: ''",
         ),
         (
+            "MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}",
+            "MERGE_GROUP_BASE_SHA: ''",
+        ),
+        (
             'git check-ref-format "refs/heads/$base_branch"',
             "echo skip-base-ref-format-check",
+        ),
+        (
+            'git fetch --no-tags origin "+${base_sha}:${base_ref}"',
+            'git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"',
         ),
         (
             'git archive "$base_ref" scripts/ ci/github-actions-runners.toml',
             'git archive "$base_ref" scripts/',
         ),
+    ):
+        assert_error(
+            "gate must use pinned trusted base-tree ci_provenance.py verdict",
+            replace_once_after(BASE_WORKFLOW, "  gate:\n", marker, replacement),
+        )
+    for marker, replacement in (
         (
             "steps.verdict_base.outputs.script",
             "steps.verdict_base.outputs.local_script",
@@ -17597,7 +17838,7 @@ def main() -> int:
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') }}",
             "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )
@@ -17607,6 +17848,15 @@ def main() -> int:
             BASE_WORKFLOW,
             'python3 "$provenance_script" emit-full-ci',
             "python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must run provenance emitter",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  ci-provenance-emit:",
+            'git fetch --no-tags origin "+${base_sha}:${base_ref}"',
+            'git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"',
         ),
     )
     assert_error(

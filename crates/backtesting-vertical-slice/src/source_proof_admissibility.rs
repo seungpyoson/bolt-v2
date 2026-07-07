@@ -399,8 +399,9 @@ pub fn write_source_proof_admissibility_report(
         ReferenceArtifactRewrite::FailOnDirty,
         ReferenceArtifactErrorMappers {
             serialize_error: SourceProofAdmissibilityWriteError::Serialize,
-            read_existing_error: |path, error| {
-                SourceProofAdmissibilityWriteError::ReadExisting { path, error }
+            read_existing_error: |path, error| SourceProofAdmissibilityWriteError::ReadExisting {
+                path,
+                error,
             },
             mismatch_error: |path| SourceProofAdmissibilityWriteError::ExistingArtifactMismatch {
                 path,

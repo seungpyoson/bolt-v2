@@ -68,7 +68,7 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
 )
 # Intentional global tripwire: any new `Default` token under src/ must be
 # reviewed before allowlisting. Narrowing this to registered-type-adjacent
-# lines would reintroduce alias/cfg/off-file impl prediction gaps.
+# lines would make cfg-inactive/off-file aliases depend on prediction again.
 FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),
@@ -515,7 +515,14 @@ def verify_financial_value_default_token_allowlist(root: Path) -> list[str]:
         details.append(f"missing {missing!r}")
     if extra:
         details.append(f"extra {extra!r}")
-    return [f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}"]
+    guidance = (
+        "Add unrelated Default usage to FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST "
+        "after review. Do not allowlist Default for Probability, UsableMu, "
+        "ValidRealizedVol, ReadyRealizedVol, or aliases of them."
+    )
+    return [
+        f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}. {guidance}"
+    ]
 
 
 def verify(root: Path) -> list[str]:

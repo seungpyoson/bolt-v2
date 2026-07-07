@@ -526,6 +526,8 @@ impl std::default::Default for UsableMu {
         findings = VERIFIER.verify(root)
         if not any("Default token allowlist" in finding for finding in findings):
             raise AssertionError(f"expected cfg-gated Default impl finding, got {findings!r}")
+        if not any("Do not allowlist Default for Probability" in finding for finding in findings):
+            raise AssertionError(f"expected Default allowlist guidance, got {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:

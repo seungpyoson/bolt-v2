@@ -19,7 +19,6 @@ use clap::Parser;
 
 use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
 
-use backtesting_vertical_slice::hashing::sha256_hex;
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     backfill_execution_plan::{
@@ -565,6 +564,7 @@ fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use backtesting_vertical_slice::backfill_execution_plan::BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION;
+    use backtesting_vertical_slice::hashing::sha256_hex;
     use clap::error::ErrorKind;
 
     const COMMITTED_RUN_SPEC: &str = include_str!(

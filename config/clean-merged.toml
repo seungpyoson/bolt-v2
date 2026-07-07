@@ -65,7 +65,7 @@ cwd_visibility_timeout_s = 1
 [clean-merged.daily_maintenance_launch_agent]
 # Daily launchd entry point for repository maintenance that must never block.
 label = "com.kunchenguid.bolt-v2.daily-maintenance"
-program_arguments = ["/bin/sh", "-lc", "set -e; just clean-merged --include-target-dirs --apply; just cache-prune --apply"]
+program_arguments = ["/bin/sh", "-lc", "status=0; just clean-merged --include-target-dirs --apply || status=$?; just cache-prune --apply || status=$?; exit \"$status\""]
 environment_path = "<shim-dir>:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 standard_out_path = "<git-common-dir>/daily-maintenance.out.log"
 standard_error_path = "<git-common-dir>/daily-maintenance.err.log"

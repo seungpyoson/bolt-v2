@@ -4007,7 +4007,20 @@ def command_may_reference_rust_target(command: str, patterns: tuple[str, ...]) -
     )
 
 
-def command_mentions_path(command: str, roots: set[pathlib.Path]) -> bool:
+def command_path_candidates(tokens: list[str]) -> list[str]:
+    candidates: list[str] = []
+    for token in tokens:
+        candidates.append(token)
+        if token.startswith(("--manifest-path=", "--target-dir=")):
+            _, _, value = token.partition("=")
+            if value:
+                candidates.append(value)
+    return candidates
+
+
+def command_mentions_path(
+    command: str, roots: set[pathlib.Path], *, relative_to: pathlib.Path | None = None,
+) -> bool:
     root_texts = {str(root) for root in roots}
     if any(text in command for text in root_texts):
         return True
@@ -4015,14 +4028,18 @@ def command_mentions_path(command: str, roots: set[pathlib.Path]) -> bool:
         tokens = shlex.split(command)
     except ValueError:
         tokens = command.split()
-    for token in tokens:
+    for token in command_path_candidates(tokens):
         path = pathlib.Path(token)
-        if not path.is_absolute():
+        if path.is_absolute():
+            candidate = path
+        elif relative_to is not None:
+            candidate = relative_to / path
+        else:
             continue
         try:
-            resolved = path.resolve(strict=False)
+            resolved = candidate.resolve(strict=False)
         except (OSError, RuntimeError):
-            resolved = path.absolute()
+            resolved = candidate.absolute()
         for root in roots:
             if path_is_or_inside(resolved, root):
                 return True
@@ -4071,8 +4088,12 @@ def active_target_dir_processes(
         matching_processes.append((pid, command))
     for pid, command in matching_processes:
         cwd, cwd_error = clean_merged_process_cwd(pid, timeout_s=config.cwd_visibility_timeout_s)
-        command_mentions_target = command_mentions_path(command, target_roots)
-        command_mentions_worktree = command_mentions_path(command, worktree_roots)
+        command_mentions_target = command_mentions_path(
+            command, target_roots, relative_to=cwd,
+        ) if cwd is not None else command_mentions_path(command, target_roots)
+        command_mentions_worktree = command_mentions_path(
+            command, worktree_roots, relative_to=cwd,
+        ) if cwd is not None else command_mentions_path(command, worktree_roots)
         cwd_related = cwd is not None and (
             path_is_or_inside(cwd, worktree_resolved) or path_is_or_inside(cwd, target_resolved)
         )

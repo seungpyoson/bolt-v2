@@ -4663,6 +4663,31 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         self.assertTrue(target.exists(), "manifest-path build must block target dir removal")
         self.assertIn("target-dir-refused-active-process", applied.stdout)
 
+    def test_target_dir_reaper_refuses_relative_manifest_path_from_outside_worktree(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/relative-manifest-path-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        outside = self.tmp / "outside-relative"
+        outside.mkdir()
+        relative_manifest = os.path.relpath(wt / "Cargo.toml", outside)
+        proc_dir = self.tmp / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(outside)
+        env = self._fake_ps_env(
+            f"printf '123 cargo build --manifest-path {relative_manifest}\\n'\n",
+        )
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "relative manifest-path build must block target dir removal")
+        self.assertIn("target-dir-refused-active-process", applied.stdout)
+
     def test_target_dir_process_timeouts_come_from_config(self) -> None:
         append_lane_t_config(
             self.work,

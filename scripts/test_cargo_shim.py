@@ -810,7 +810,7 @@ def test_installer_creates_idempotent_daily_clean_merged_launch_agent(tmp_path):
     assert payload["ProgramArguments"] == [
         "/bin/sh",
         "-lc",
-        "set -e; just clean-merged --include-target-dirs --apply; just cache-prune --apply",
+        "status=0; just clean-merged --include-target-dirs --apply || status=$?; just cache-prune --apply || status=$?; exit \"$status\"",
     ]
     path_entries = payload["EnvironmentVariables"]["PATH"].split(os.pathsep)
     assert path_entries[0] == str(install_dir)

@@ -221,10 +221,10 @@ draft_pr_opened = "iteration"
 draft_pr_reopened = "iteration"
 draft_pr_edited = "iteration"
 converted_to_draft = "iteration"
-ready_pr = "full"
+ready_pr = "noop"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
-ready_for_review = "full"
+ready_for_review = "noop"
 docs = "docs"
 workflow_dispatch = "iteration"
 main_push = "full"
@@ -266,10 +266,10 @@ merge_group = "full"
 main_push = "full"
 workflow_dispatch = "iteration"
 docs = "docs"
-ready_for_review = "full"
+ready_for_review = "noop"
 ready_pr_reopened = "noop"
 ready_pr_edited_no_base = "noop"
-ready_pr = "full"
+ready_pr = "noop"
 converted_to_draft = "iteration"
 draft_pr_edited = "iteration"
 draft_pr_reopened = "iteration"
@@ -2007,10 +2007,10 @@ def assert_ci_policy_outputs_matrix() -> None:
             "draft_pr_reopened": "iteration",
             "draft_pr_edited": "iteration",
             "converted_to_draft": "iteration",
-            "ready_pr": "full",
+            "ready_pr": "noop",
             "ready_pr_edited_no_base": "noop",
             "ready_pr_reopened": "noop",
-            "ready_for_review": "full",
+            "ready_for_review": "noop",
             "docs": "docs",
             "workflow_dispatch": "iteration",
             "main_push": "full",
@@ -2038,7 +2038,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "reopened", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_reopened"),
             ("pull_request", "edited", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_edited"),
             ("pull_request", "converted_to_draft", "true", "false", "refs/pull/1/merge", "false", "iteration", "converted_to_draft"),
-            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "false", "full", "ready_pr"),
+            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "false", "noop", "ready_pr"),
             ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "true", "docs", "docs"),
             ("pull_request", "edited", "false", "false", "refs/pull/1/merge", "true", "noop", "ready_pr_edited_no_base"),
             ("pull_request", "edited", "false", "true", "refs/pull/1/merge", "true", "docs", "docs"),
@@ -2535,10 +2535,11 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             or tmp_non_draft.get("reason") != "ready_pr"
             or tmp_non_draft.get("gate_name") != "gate"
             or tmp_non_draft.get("backtester_gate_name") != "backtester-gate"
-            or tmp_non_draft.get("full_ci_required") != "true"
+            or tmp_non_draft.get("ci_policy_path") != "noop"
+            or tmp_non_draft.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"non-draft tmp mergify ref must fall back to normal ready PR proof: {tmp_non_draft}"
+                f"non-draft tmp mergify ref must fall back to normal ready PR noop proof: {tmp_non_draft}"
             )
 
         code, stdout, stderr = run_with_event_sender(tmp_args, "12345")
@@ -2563,7 +2564,7 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
     # #1104 proof PRs can be marked ready by a human, so github.event.sender.id is not
     # always mergify[bot]. Bind to pull_request.user.id as well; a spoofed head ref
     # with a non-Mergify author must not earn mergify_temp_pr, but still follows the
-    # normal ready_for_review full-PR policy.
+    # normal ready_for_review noop-PR policy.
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         base_args = [
@@ -2613,10 +2614,11 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
             or spoof.get("reason") != "ready_for_review"
             or spoof.get("gate_name") != "gate"
             or spoof.get("backtester_gate_name") != "backtester-gate"
-            or spoof.get("full_ci_required") != "true"
+            or spoof.get("ci_policy_path") != "noop"
+            or spoof.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"non-Mergify-authored proof-shaped PR must fall back to normal ready proof: {spoof}"
+                f"non-Mergify-authored proof-shaped PR must fall back to normal ready noop proof: {spoof}"
             )
 
         half_spoof_args = list(base_args)
@@ -2630,10 +2632,11 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
             or half_spoof.get("reason") != "ready_for_review"
             or half_spoof.get("gate_name") != "gate"
             or half_spoof.get("backtester_gate_name") != "backtester-gate"
-            or half_spoof.get("full_ci_required") != "true"
+            or half_spoof.get("ci_policy_path") != "noop"
+            or half_spoof.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"Mergify sender with non-Mergify author must fall back to normal ready proof: {half_spoof}"
+                f"Mergify sender with non-Mergify author must fall back to normal ready noop proof: {half_spoof}"
             )
 
 
@@ -2675,10 +2678,11 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
             or result.get("reason") != "ready_pr"
             or result.get("gate_name") != "gate"
             or result.get("backtester_gate_name") != "backtester-gate"
-            or result.get("full_ci_required") != "true"
+            or result.get("ci_policy_path") != "noop"
+            or result.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"human-sync Mergify proof PR must fall back to normal ready PR proof: {result}"
+                f"human-sync Mergify proof PR must fall back to normal ready PR noop proof: {result}"
             )
 
 
@@ -2830,7 +2834,7 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
     # GAP-1 canary across the WHOLE full-CI action set (imported, never re-listed): a
     # spoofed mergify head ref from a non-actor sender must NEVER earn reason
     # mergify_temp_pr. Draft fallback actions stay on gate-iteration; non-draft
-    # ready_for_review falls back to the normal ready-PR full gate.
+    # ready_for_review falls back to the normal ready-PR noop gate.
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -2841,7 +2845,7 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
     non_actor = config.mergify_temp_pr_actor_id + 1
     cases = [(a, False) for a in sorted(module.MERGIFY_TEMP_PR_FULL_ACTIONS)] + [("edited", True)]
     for action, base_changed in cases:
-        # ready_for_review is the only full action delivered on a NON-draft PR; every other
+        # ready_for_review is the only action delivered on a NON-draft PR; every other
         # action a mergify temp PR fires is on a draft. A temp PR is always a draft, so here
         # the actor binding is the only clause that should fail.
         draft = action != "ready_for_review"
@@ -2860,7 +2864,8 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
         if action == "ready_for_review":
             if (
                 result.reason != "ready_for_review"
-                or not result.full_ci_required
+                or result.ci_policy_path != "noop"
+                or result.full_ci_required
                 or result.gate_name != gate_required
                 or result.backtester_gate_name != backtester_required
             ):
@@ -2872,11 +2877,10 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
             raise AssertionError(f"{action}: non-actor spoof must demote to gate-iteration: {result}")
 
 
-def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
+def assert_ready_pr_uses_required_noop_signal_without_dispatch_full() -> None:
     # Standing CI policy: draft PRs and manual workflow_dispatch are the cheap
-    # iteration loop. A ready PR gets the one automatic full pull_request signal;
-    # no-code ready transitions carry required-context noop proof, and merge_group
-    # remains the final merge gate.
+    # iteration loop. Ready PR events publish required-context noop proof;
+    # merge_group remains the final full merge gate.
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -2886,38 +2890,15 @@ def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
     backtester_required = config.gate_names["backtester_required"]
     backtester_iteration = config.gate_names["backtester_iteration"]
 
-    # (A) ready PR opened/synchronize publishes the required full pull_request gate.
-    ready = module.evaluate_ci_policy(
-        config,
-        event_name="pull_request",
-        event_action="opened",
-        pull_request_draft=False,
-        pull_request_head_ref="",
-        pull_request_base_changed=False,
-        event_sender_id=4242,
-        ref="refs/pull/1/merge",
-    )
-    if ready.ci_policy_path != "full" or not ready.full_ci_required or ready.full_ci_deferred:
-        raise AssertionError(f"ready PR must resolve to full required CI: {ready}")
-    if ready.expected_event_class != "full":
-        raise AssertionError(f"ready PR must resolve expected_event_class full: {ready}")
-    if ready.gate_name != gate_required or ready.backtester_gate_name != backtester_required:
-        raise AssertionError(f"ready PR must publish required gate names: {ready}")
-    full_jobs = base_ci_gate_jobs()
-    module.evaluate_ci_gate_verdict(
-        policy_path="full",
-        expected_event_class="full",
-        full_ci_deferred=False,
-        ignore_emit_failure=False,
-        reuse_found=False,
-        carry_forward_verified=False,
-        job_results=full_jobs,
-        build_required=False,
-    )
-
-    # (B) a ready PR edited/reopened without a content/base change carries the
-    # required context as noop, rather than burning another full run.
-    for action, reason in (("edited", "ready_pr_edited_no_base"), ("reopened", "ready_pr_reopened")):
+    # (A) ready PR opened/synchronize/ready_for_review and metadata-only ready
+    # transitions publish required-context noop proof, without burning full lanes.
+    for action, reason in (
+        ("opened", "ready_pr"),
+        ("synchronize", "ready_pr"),
+        ("ready_for_review", "ready_for_review"),
+        ("edited", "ready_pr_edited_no_base"),
+        ("reopened", "ready_pr_reopened"),
+    ):
         noop = module.evaluate_ci_policy(
             config,
             event_name="pull_request",
@@ -2933,12 +2914,15 @@ def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
             or noop.ci_policy_path != "noop"
             or noop.expected_event_class != "noop"
             or noop.full_ci_required
+            or noop.full_ci_deferred
             or noop.gate_name != gate_required
             or noop.backtester_gate_name != backtester_required
         ):
             raise AssertionError(f"{action} ready PR must publish required noop proof: {noop}")
+    if "source-fence-static" in module.CI_HEAVY_JOBS:
+        raise AssertionError("source-fence-static must stay out of CI_HEAVY_JOBS")
 
-    # (C) draft PR iteration succeeds on skipped-heavy evidence; the negative control
+    # (B) draft PR iteration succeeds on skipped-heavy evidence; the negative control
     # — a full/required verdict over that same evidence — fails closed.
     draft = module.evaluate_ci_policy(
         config,
@@ -2989,7 +2973,7 @@ def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
             build_required=False,
         ),
     )
-    # (D) the merge boundary still produces full proof from every trusted producer.
+    # (C) the merge boundary still produces full proof from every trusted producer.
     merge_group = module.evaluate_ci_policy(
         config,
         event_name="merge_group",
@@ -3030,7 +3014,7 @@ def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
     )
     if main_push.gate_name != gate_required:
         raise AssertionError(f"push to main must produce the required gate: {main_push}")
-    # (E) force_full_ci on a pull_request also publishes the required full gate.
+    # (D) force_full_ci on a pull_request also publishes the required full gate.
     with tempfile.TemporaryDirectory() as tmp:
         forced = module.load_config(
             write_config(pathlib.Path(tmp), CONFIG_TOML.replace("force_full_ci = false", "force_full_ci = true"))
@@ -3049,7 +3033,7 @@ def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
         raise AssertionError(f"force_full_ci must keep ci_policy_path full: {forced_result}")
     if forced_result.gate_name != gate_required or forced_result.backtester_gate_name != backtester_required:
         raise AssertionError(f"force_full_ci on a pull_request must publish required gates: {forced_result}")
-    # (F) a spoofed mergify head ref from a non-actor sender stays gate-iteration.
+    # (E) a spoofed mergify head ref from a non-actor sender stays gate-iteration.
     spoof = module.evaluate_ci_policy(
         config,
         event_name="pull_request",
@@ -3373,13 +3357,13 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'converted_to_draft = "iteration"',
             'converted_to_draft = "full"',
         ),
-        "ci_provenance.policy.ready_pr must be full": CONFIG_TOML.replace(
+        "ci_provenance.policy.ready_pr must be noop": CONFIG_TOML.replace(
+            'ready_pr = "noop"',
             'ready_pr = "full"',
-            'ready_pr = "iteration"',
         ),
-        "ci_provenance.policy.ready_for_review must be full": CONFIG_TOML.replace(
+        "ci_provenance.policy.ready_for_review must be noop": CONFIG_TOML.replace(
+            'ready_for_review = "noop"',
             'ready_for_review = "full"',
-            'ready_for_review = "iteration"',
         ),
         "ci_provenance.policy.ready_pr_edited_no_base must be noop": CONFIG_TOML.replace(
             'ready_pr_edited_no_base = "noop"',
@@ -5274,7 +5258,7 @@ def main() -> int:
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()
     assert_mergify_actor_binding_demotes_every_full_action()
-    assert_ready_pr_uses_automatic_full_signal_without_dispatch_full()
+    assert_ready_pr_uses_required_noop_signal_without_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()

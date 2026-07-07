@@ -284,6 +284,7 @@ REQUIRED_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "source-fence-static",
     "nextest-fingerprint",
     "test-archive",
     "nextest-fingerprint-reuse",
@@ -357,6 +358,7 @@ CI_POLICY_ROW_SEMANTICS = {
     "tag": PolicyRowSemantics(changes_target=True),
     "unknown_event": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True),
 }
+NOOP_PROOF_ALLOWED_POLICY_ROWS = frozenset({"ready_pr", "ready_for_review"})
 TAG_SKIPPED_JOBS = (
     "deny",
     "clippy",
@@ -391,6 +393,7 @@ JOB_REQUIRED_JUST_RECIPE = {
     "clippy": "clippy",
     "check-aarch64": "check-aarch64",
     "source-fence": "source-fence",
+    "source-fence-static": "source-fence-static",
     "build": "build",
 }
 LIVE_NODE_TEST_GROUP = "live-node"
@@ -454,7 +457,9 @@ SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
 DOCS_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'docs'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+PULL_REQUEST_EVENT_EXPR = "github.event_name == 'pull_request'"
 SOURCE_FENCE_JOB_IF_VALUE = f"${{{{ {FULL_CI_REQUIRED_EXPR} || {DOCS_POLICY_EXPR} }}}}"
+SOURCE_FENCE_STATIC_JOB_IF_VALUE = f"${{{{ {PULL_REQUEST_EVENT_EXPR} }}}}"
 SOURCE_FENCE_POLICY_SWITCH = """
 if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
   just source-fence
@@ -1950,11 +1955,21 @@ def policy_proof_invariant_errors(policy: dict[str, object]) -> list[str]:
             if value != "tag_reuse":
                 errors.append("ci_provenance.policy.tag is proof-affecting and must be tag_reuse")
             continue
-        if policy_row_is_proof_affecting(semantics) and value != "full":
-            errors.append(
-                f"ci_provenance.policy.{row} is proof-affecting and must be full "
-                "or queue-covered iteration"
-            )
+        if policy_row_is_proof_affecting(semantics):
+            allowed_values = {"full"}
+            if row in NOOP_PROOF_ALLOWED_POLICY_ROWS:
+                allowed_values.add("noop")
+            if value not in allowed_values:
+                if "noop" in allowed_values:
+                    errors.append(
+                        f"ci_provenance.policy.{row} is proof-affecting and must be full, noop, "
+                        "or queue-covered iteration"
+                    )
+                else:
+                    errors.append(
+                        f"ci_provenance.policy.{row} is proof-affecting and must be full "
+                        "or queue-covered iteration"
+                    )
     return errors
 
 
@@ -9623,6 +9638,10 @@ def source_fence_checkout_uses_docs_head_ref(job_lines: list[str]) -> bool:
     return len(checkout_blocks) == 1 and block_has_input(checkout_blocks[0], "ref", SOURCE_FENCE_CHECKOUT_REF)
 
 
+def source_fence_static_runs_only_on_pull_request(job_lines: list[str]) -> bool:
+    return job_if_value(job_lines) == SOURCE_FENCE_STATIC_JOB_IF_VALUE
+
+
 def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
@@ -11397,6 +11416,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not source_fence_checkout_uses_docs_head_ref(jobs["source-fence"]):
             errors.append("source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise")
 
+    if "source-fence-static" in jobs:
+        source_fence_static_needs = extract_needs(jobs["source-fence-static"])
+        if "ci-policy" not in source_fence_static_needs:
+            errors.append("source-fence-static needs ci-policy")
+        if not source_fence_static_runs_only_on_pull_request(jobs["source-fence-static"]):
+            errors.append("source-fence-static must run only for pull_request")
+
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
             errors.append(f"{job_name} must run just {recipe}")
@@ -11956,6 +11982,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate needs {job}")
         if "nextest-fingerprint-reuse" not in gate_needs:
             errors.append("gate needs nextest-fingerprint-reuse")
+        if "source-fence-static" in gate_needs:
+            errors.append("gate must not need source-fence-static")
         errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
         errors.extend(gate_checks_nextest_fingerprint_reuse(gate_text))

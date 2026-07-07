@@ -27,6 +27,7 @@ deny = "managed_light"
 clippy = "managed_heavy"
 check-aarch64 = "managed_heavy"
 source-fence = "managed_heavy"
+source-fence-static = "github_hosted"
 nextest-fingerprint = "managed_heavy"
 test-archive = "managed_heavy"
 nextest-fingerprint-reuse = "github_hosted"
@@ -616,19 +617,18 @@ expired_decision = "KEEP"
 keep_reason = "personal/non-CI artifact is not a cleanup candidate"
 
 # Draft PRs and manual workflow_dispatch are cheap iteration feedback. Ready PR
-# opened/synchronize/ready_for_review runs publish the automatic full signal;
-# ready metadata-only transitions carry required noop proof, and merge-boundary
-# paths remain full.
+# opened/synchronize/ready_for_review runs publish required noop proof, and
+# merge-boundary paths remain full.
 [ci_provenance.policy]
 draft_pr_synchronize = "iteration"
 draft_pr_opened = "iteration"
 draft_pr_reopened = "iteration"
 draft_pr_edited = "iteration"
 converted_to_draft = "iteration"
-ready_pr = "full"
+ready_pr = "noop"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
-ready_for_review = "full"
+ready_for_review = "noop"
 docs = "docs"
 workflow_dispatch = "iteration"
 main_push = "full"

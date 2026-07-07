@@ -623,6 +623,21 @@ jobs:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
+  source-fence-static:
+    name: source-fence-static
+    needs: ci-policy
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@example
+      - uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+      - uses: actions/setup-python@example
+        with:
+          python-version: "3.12"
+      - run: just source-fence-static
+
   nextest-fingerprint:
     name: nextest fingerprint
     needs: [ci-policy, detector]
@@ -3181,11 +3196,11 @@ check_name = "test"
         ),
         (
             "ci_provenance.policy.ready_pr is proof-affecting",
-            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+            valid.replace('ready_pr = "noop"', 'ready_pr = "defer"'),
         ),
         (
             "ci_provenance.policy.ready_for_review is proof-affecting",
-            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+            valid.replace('ready_for_review = "noop"', 'ready_for_review = "defer"'),
         ),
         (
             "ci_provenance.policy.main_push is proof-affecting",
@@ -3235,12 +3250,12 @@ check_name = "test"
             valid.replace('converted_to_draft = "iteration"', 'converted_to_draft = "full"'),
         ),
         (
-            "ci_provenance.policy.ready_pr must be full",
-            valid.replace('ready_pr = "full"', 'ready_pr = "iteration"'),
+            "ci_provenance.policy.ready_pr must be noop",
+            valid.replace('ready_pr = "noop"', 'ready_pr = "iteration"'),
         ),
         (
-            "ci_provenance.policy.ready_for_review must be full",
-            valid.replace('ready_for_review = "full"', 'ready_for_review = "iteration"'),
+            "ci_provenance.policy.ready_for_review must be noop",
+            valid.replace('ready_for_review = "noop"', 'ready_for_review = "iteration"'),
         ),
         (
             "ci_provenance.policy.ready_pr_edited_no_base must be noop",
@@ -3271,10 +3286,10 @@ check_name = "test"
         "draft_pr_reopened": "defer",
         "draft_pr_edited": "defer",
         "converted_to_draft": "defer",
-        "ready_pr": "full",
+        "ready_pr": "noop",
         "ready_pr_edited_no_base": "noop",
         "ready_pr_reopened": "noop",
-        "ready_for_review": "full",
+        "ready_for_review": "noop",
         "docs": "docs",
         "workflow_dispatch": "iteration",
         "main_push": "full",
@@ -3321,8 +3336,7 @@ def assert_ci_policy_matrix() -> None:
     mergify_prefix = str(config["mergify"]["temp_pr_head_ref_prefix"])
     actor_id = int(config["mergify"]["mergify_temp_pr_actor_id"])
     # Draft pull_request rows are the cheap iteration loop. Ready PR opened,
-    # synchronize, ready_for_review, and base edits publish the automatic full
-    # pull_request signal; ready no-code metadata transitions carry noop proof.
+    # synchronize, ready_for_review, and base edits publish required noop proof.
     # The actor-bound mergify temp PR is covered separately below because it
     # depends on the event sender id.
     cases = [
@@ -3333,12 +3347,12 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "reopened", True, False, "refs/pull/1/merge", "iteration"),
         ("pull_request", "edited", True, False, "refs/pull/1/merge", "iteration"),
         ("pull_request", "converted_to_draft", True, False, "refs/pull/1/merge", "iteration"),
-        ("pull_request", "opened", False, False, "refs/pull/1/merge", "full"),
-        ("pull_request", "synchronize", False, False, "refs/pull/1/merge", "full"),
+        ("pull_request", "opened", False, False, "refs/pull/1/merge", "noop"),
+        ("pull_request", "synchronize", False, False, "refs/pull/1/merge", "noop"),
         ("pull_request", "edited", False, False, "refs/pull/1/merge", "noop"),
-        ("pull_request", "edited", False, True, "refs/pull/1/merge", "full"),
+        ("pull_request", "edited", False, True, "refs/pull/1/merge", "noop"),
         ("pull_request", "reopened", False, False, "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", False, False, "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", False, False, "refs/pull/1/merge", "noop"),
         ("workflow_dispatch", "", True, False, "refs/heads/codex/branch", "iteration"),
         ("merge_group", "checks_requested", False, False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
         ("unknown_event", "", True, False, "refs/heads/codex/branch", "full"),
@@ -3469,11 +3483,11 @@ def assert_ci_policy_matrix() -> None:
     if (
         ready_spoof_result.reason == "mergify_temp_pr"
         or ready_spoof_result.gate_name != "gate"
-        or ready_spoof_result.ci_policy_path != "full"
+        or ready_spoof_result.ci_policy_path != "noop"
         or ready_spoof_result.reason != "ready_for_review"
     ):
         raise AssertionError(
-            f"non-Mergify-authored ready spoof must fall back to normal ready PR proof: {ready_spoof_result}"
+            f"non-Mergify-authored ready spoof must fall back to normal ready PR noop proof: {ready_spoof_result}"
         )
 
     ready_split_identity_result = verifier.evaluate_ci_policy(
@@ -3493,12 +3507,12 @@ def assert_ci_policy_matrix() -> None:
     if (
         ready_split_identity_result.reason == "mergify_temp_pr"
         or ready_split_identity_result.gate_name != "gate"
-        or ready_split_identity_result.ci_policy_path != "full"
+        or ready_split_identity_result.ci_policy_path != "noop"
         or ready_split_identity_result.reason != "ready_for_review"
     ):
         raise AssertionError(
             "Mergify-sender ready event with non-Mergify author must fall back to "
-            f"normal ready PR proof: {ready_split_identity_result}"
+            f"normal ready PR noop proof: {ready_split_identity_result}"
         )
 
     human_sync_result = verifier.evaluate_ci_policy(
@@ -3518,10 +3532,12 @@ def assert_ci_policy_matrix() -> None:
     if (
         human_sync_result.reason == "mergify_temp_pr"
         or human_sync_result.gate_name != "gate"
-        or human_sync_result.ci_policy_path != "full"
+        or human_sync_result.ci_policy_path != "noop"
         or human_sync_result.reason != "ready_pr"
     ):
-        raise AssertionError(f"human-sender Mergify sync must fall back to normal ready PR proof: {human_sync_result}")
+        raise AssertionError(
+            f"human-sender Mergify sync must fall back to normal ready PR noop proof: {human_sync_result}"
+        )
 
     # Mergify title/body edits arrive as draft metadata edits without a base
     # change; they must stay cheap instead of publishing required gates.
@@ -4149,7 +4165,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.reason,
         )
         if expected_reason == "ready_pr":
-            expected = ("full", True, False, "gate", "backtester-gate", "full", expected_reason)
+            expected = ("noop", False, False, "gate", "backtester-gate", "noop", expected_reason)
         elif expected_reason == "ready_pr_reopened":
             expected = ("noop", False, False, "gate", "backtester-gate", "noop", expected_reason)
         else:
@@ -6052,6 +6068,38 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
                 workflow,
                 "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}",
                 "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
+            ),
+        ),
+        (
+            "missing required job source-fence-static",
+            without_job(workflow, "source-fence-static"),
+        ),
+        (
+            "source-fence-static needs ci-policy",
+            replace_once(
+                workflow,
+                "  source-fence-static:\n    name: source-fence-static\n    needs: ci-policy",
+                "  source-fence-static:\n    name: source-fence-static\n    needs: detector",
+            ),
+        ),
+        (
+            "source-fence-static must run only for pull_request",
+            replace_once(
+                workflow,
+                "    if: ${{ github.event_name == 'pull_request' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            ),
+        ),
+        (
+            "source-fence-static must run just source-fence-static",
+            replace_once(workflow, "      - run: just source-fence-static", "      - run: echo skip source-fence-static"),
+        ),
+        (
+            "gate must not need source-fence-static",
+            replace_once(
+                workflow,
+                GATE_NEEDS,
+                "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, source-fence-static, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]",
             ),
         ),
         (
@@ -16280,6 +16328,7 @@ def main() -> int:
         "clippy",
         "check-aarch64",
         "source-fence",
+        "source-fence-static",
         "nextest-fingerprint",
         "test-archive",
         "test",

@@ -73,18 +73,18 @@ POLICY_ROWS = (
     "unknown_event",
 )
 # Draft pull_request rows and workflow_dispatch are the cheap iteration loop. Ready
-# pull_request rows publish the one automatic full signal; no-code ready metadata
-# transitions carry required-context noop proof; merge-boundary rows stay full.
+# pull_request rows publish required-context noop proof; merge-boundary rows stay
+# full.
 POLICY_REQUIRED_VALUES = {
     "draft_pr_synchronize": "iteration",
     "draft_pr_opened": "iteration",
     "draft_pr_reopened": "iteration",
     "draft_pr_edited": "iteration",
     "converted_to_draft": "iteration",
-    "ready_pr": "full",
+    "ready_pr": "noop",
     "ready_pr_edited_no_base": "noop",
     "ready_pr_reopened": "noop",
-    "ready_for_review": "full",
+    "ready_for_review": "noop",
     "docs": "docs",
     "workflow_dispatch": "iteration",
     "main_push": "full",
@@ -1201,7 +1201,12 @@ def expected_event_class_for(reason: str, path: str) -> str:
         "converted_to_draft",
     }:
         return "defer"
-    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"} and path == "noop":
+    if reason in {
+        "ready_pr",
+        "ready_for_review",
+        "ready_pr_edited_no_base",
+        "ready_pr_reopened",
+    } and path == "noop":
         return "noop"
     if reason == "workflow_dispatch":
         return "iteration"
@@ -1214,8 +1219,7 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
     if event_name == "workflow_dispatch":
         return "iteration"
     # Draft pull_request rows remain feedback-only; ready pull_request full/noop
-    # rows publish required contexts so a ready PR can receive the single automatic
-    # full signal without using manual dispatch-full.
+    # rows publish required contexts without using manual dispatch-full.
     if event_name == "pull_request" and path == "iteration":
         return "iteration"
     if path in POLICY_VALUES:
@@ -1376,9 +1380,11 @@ def evaluate_ci_policy(
         path = config.policy["unknown_event"]
         reason = "unknown_event"
 
-    if event_name == "pull_request" and docs_only and path == "full" and reason not in {
+    if event_name == "pull_request" and docs_only and path in {"full", "noop"} and reason not in {
         "force_full_ci",
         "mergify_temp_pr",
+        "ready_pr_edited_no_base",
+        "ready_pr_reopened",
     }:
         path = config.policy["docs"]
         reason = "docs"

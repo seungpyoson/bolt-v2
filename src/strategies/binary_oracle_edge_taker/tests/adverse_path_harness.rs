@@ -811,6 +811,50 @@ fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_
 }
 
 #[test]
+fn position_market_lifecycle_unroutable_close_fetch_records_terminal_booking_error() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-CLOSE-FETCH-NO-ROUTE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    strategy.config.resolution_client_id = None;
+    strategy.config.resolution_instrument_id = None;
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+
+    let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && settlement_booking_error_reasons(&events)
+                == vec![BoltV3SettlementBookingErrorReason::ResolutionFeedMissing]
+            && close_fetch_count == 0,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: an unroutable settlement-close fetch must fail loud instead of retrying forever; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
 fn position_market_lifecycle_close_fetch_retry_waits_for_retry_interval() {
     assert_reality_fixtures();
 
@@ -927,6 +971,59 @@ fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch
             && matches!(strategy.exposure, ExposureState::Managed(_)),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: selection-blocked held position must issue its own WindowCloseSettlement fetch without terminal outage evidence; exposure={:?} close_events={close_events:?} events={events:?}",
         strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_close_and_open_fetches_use_boundary_scoped_durable_slots() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-CLOSE-OPEN-BOUNDARY-SLOTS"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    let event_start = strategy.resolution_strike_subscribe_events.len();
+    strategy.active = ActiveMarketState::idle();
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+
+    let events = strategy.resolution_strike_subscribe_events[event_start..].to_vec();
+    let close_events = events
+        .iter()
+        .filter(|event| event.report_boundary == ResolutionStrikeReportBoundary::WindowClose)
+        .collect::<Vec<_>>();
+    let open_events = events
+        .iter()
+        .filter(|event| event.report_boundary == ResolutionStrikeReportBoundary::WindowOpen)
+        .collect::<Vec<_>>();
+    assert!(
+        close_events.len() == 1
+            && close_events[0].trigger == ResolutionStrikeFetchTrigger::DurableIndex
+            && open_events.len() == 1
+            && open_events[0].trigger == ResolutionStrikeFetchTrigger::DurableIndex
+            && close_events[0].boundary_unix_seconds
+                == position_interval_end_ms / MILLIS_PER_SECOND_U64
+            && open_events[0].boundary_unix_seconds
+                == position_interval_end_ms / MILLIS_PER_SECOND_U64,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: window-close and window-open resolution fetches must not share a single durable subscription slot; events={events:?}",
     );
 }
 

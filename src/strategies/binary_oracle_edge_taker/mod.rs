@@ -11,7 +11,7 @@ use nautilus_core::UnixNanos;
 #[cfg(test)]
 use nautilus_model::enums::PositionSide;
 use nautilus_model::{
-    data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
+    data::{CustomData, IndexPriceUpdate, QuoteTick, TradeTick},
     enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -201,7 +201,11 @@ use self::subscriptions::{
 #[cfg(test)]
 use self::subscriptions::{
     REFERENCE_PRICE_SUBSCRIBE_ACTION, REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
-    ResolutionStrikeFetchTrigger, ResolutionStrikeReportBoundary,
+    ResolutionStrikeFetchTrigger,
+};
+use self::subscriptions::{
+    ResolutionReportBoundarySubscriptionState, ResolutionReportSubscriptionOutcome,
+    ResolutionStrikeReportBoundary,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -703,8 +707,8 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_quotes: BTreeMap<String, ReferenceQuote>,
     reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
     selection_missing_since_ms: Option<u64>,
-    resolution_strike_index_subscription: Option<InstrumentId>,
-    resolution_strike_custom_subscription: Option<DataType>,
+    resolution_report_boundary_subscriptions:
+        BTreeMap<ResolutionStrikeReportBoundary, ResolutionReportBoundarySubscriptionState>,
     resolution_strike_fetch_sequence: u64,
     entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     settled_position_keys: BTreeSet<String>,
@@ -823,8 +827,7 @@ impl BinaryOracleEdgeTaker {
             reference_price_quotes: BTreeMap::new(),
             reference_price_source_health,
             selection_missing_since_ms: None,
-            resolution_strike_index_subscription: None,
-            resolution_strike_custom_subscription: None,
+            resolution_report_boundary_subscriptions: BTreeMap::new(),
             resolution_strike_fetch_sequence: INITIAL_COUNTER_U64,
             entry_reject_state: BTreeMap::new(),
             settled_position_keys: BTreeSet::new(),
@@ -1000,13 +1003,36 @@ impl BinaryOracleEdgeTaker {
                 "resolution feed missing after settlement close fetch attempts exhausted; settlement not booked".to_string(),
                 now_ms.saturating_mul(NANOS_PER_MILLI_U64),
             )?;
-        } else if attempt_due && self.subscribe_resolution_settlement_close(interval_end_ms) {
-            if let Some(state) = self
-                .settlement_close_fetch_attempts
-                .get_mut(&settlement_key)
-            {
-                state.attempt_count = state.attempt_count.saturating_add(COUNTER_INCREMENT_U64);
-                state.last_attempt_ms = Some(now_ms);
+        } else if attempt_due {
+            match self.subscribe_resolution_settlement_close(interval_end_ms) {
+                ResolutionReportSubscriptionOutcome::Dispatched => {
+                    if let Some(state) = self
+                        .settlement_close_fetch_attempts
+                        .get_mut(&settlement_key)
+                    {
+                        state.attempt_count =
+                            state.attempt_count.saturating_add(COUNTER_INCREMENT_U64);
+                        state.last_attempt_ms = Some(now_ms);
+                    }
+                }
+                ResolutionReportSubscriptionOutcome::MissingRoute => {
+                    self.record_settlement_booking_error(
+                        position,
+                        settlement_key,
+                        BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                        "resolution feed route unavailable for settlement close fetch; settlement not booked".to_string(),
+                        now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+                    )?;
+                }
+                ResolutionReportSubscriptionOutcome::AssetBindingRejected => {
+                    self.record_settlement_booking_error(
+                        position,
+                        settlement_key,
+                        BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                        "resolution feed asset binding rejected settlement close fetch; settlement not booked".to_string(),
+                        now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+                    )?;
+                }
             }
         }
         Ok(())

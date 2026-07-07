@@ -262,6 +262,7 @@ impl DataClientFactory for ChainlinkReferencePriceClientFactory {
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             websocket: Arc::new(Mutex::new(None)),
             last_message_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_report_unix_ms: Arc::new(AtomicU64::new(0)),
             input_health_missing_sources: Arc::new(Mutex::new(BTreeSet::new())),
             liveness_task: None,
             connected: false,
@@ -286,6 +287,7 @@ struct ChainlinkReferencePriceClient {
         Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     last_message_unix_ms: Arc<AtomicU64>,
+    last_report_unix_ms: Arc<AtomicU64>,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
     liveness_task: Option<JoinHandle<()>>,
     connected: bool,
@@ -390,13 +392,15 @@ impl DataClient for ChainlinkReferencePriceClient {
         if chainlink_reference_current_transport_mode(&self.websocket).is_some() {
             self.disconnect().await?;
         }
-        self.last_message_unix_ms
-            .store(current_unix_timestamp_ms()?, Ordering::SeqCst);
+        let now_ms = current_unix_timestamp_ms()?;
+        self.last_message_unix_ms.store(now_ms, Ordering::SeqCst);
+        self.last_report_unix_ms.store(now_ms, Ordering::SeqCst);
         let websocket = chainlink_reference_connect_websocket(
             &self.config,
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
             Arc::clone(&self.last_message_unix_ms),
+            Arc::clone(&self.last_report_unix_ms),
             Arc::clone(&self.input_health_missing_sources),
         )
         .await?;
@@ -408,6 +412,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.websocket),
             self.data_sender.clone(),
             Arc::clone(&self.last_message_unix_ms),
+            Arc::clone(&self.last_report_unix_ms),
             Arc::clone(&self.input_health_missing_sources),
         ));
         self.connected = true;
@@ -531,6 +536,7 @@ async fn chainlink_reference_connect_websocket(
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
+    last_report_unix_ms: Arc<AtomicU64>,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 ) -> anyhow::Result<BoundaryWebSocket> {
     let websocket_config = reference_price_websocket_config(config)?;
@@ -539,6 +545,7 @@ async fn chainlink_reference_connect_websocket(
         subscriptions,
         data_sender,
         last_message_unix_ms,
+        last_report_unix_ms,
         Some(ChainlinkReferenceInputHealthRecovery {
             config: config.clone(),
             input_health_missing_sources,
@@ -565,6 +572,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
+    last_report_unix_ms: Arc<AtomicU64>,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 ) -> JoinHandle<()> {
     get_runtime().spawn(async move {
@@ -590,8 +598,8 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 );
                 last_logged_mode = mode;
             }
-            let last_message_ms = last_message_unix_ms.load(Ordering::SeqCst);
-            let silence_ms = now_ms.saturating_sub(last_message_ms);
+            let last_report_ms = last_report_unix_ms.load(Ordering::SeqCst);
+            let silence_ms = now_ms.saturating_sub(last_report_ms);
             let stale = silence_ms > config.idle_timeout_ms;
             let transport_dead = !chainlink_reference_transport_connected(true, mode);
             if !(stale || transport_dead) {
@@ -638,11 +646,13 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 }
             }
             last_message_unix_ms.store(now_ms, Ordering::SeqCst);
+            last_report_unix_ms.store(now_ms, Ordering::SeqCst);
             match chainlink_reference_connect_websocket(
                 &config,
                 Arc::clone(&subscriptions),
                 data_sender.clone(),
                 Arc::clone(&last_message_unix_ms),
+                Arc::clone(&last_report_unix_ms),
                 Arc::clone(&input_health_missing_sources),
             )
             .await
@@ -984,6 +994,7 @@ fn chainlink_reference_message_handler(
         subscriptions,
         data_sender,
         last_message_unix_ms,
+        Arc::new(AtomicU64::new(0)),
         None,
     )
 }
@@ -1001,6 +1012,7 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
+    last_report_unix_ms: Arc<AtomicU64>,
     input_health_recovery: Option<ChainlinkReferenceInputHealthRecovery>,
 ) -> WireMessageHandler {
     Arc::new(move |message: WireMessage| {
@@ -1053,6 +1065,7 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
         };
         match updates {
             Ok(updates) => {
+                last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
                 if let Some(recovery) = &input_health_recovery {
                     chainlink_reference_emit_recovered_input_health_for_updates(recovery, &updates);
                 }
@@ -1692,6 +1705,7 @@ mod tests {
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
                 websocket: Arc::new(Mutex::new(None)),
                 last_message_unix_ms: Arc::new(AtomicU64::new(0)),
+                last_report_unix_ms: Arc::new(AtomicU64::new(0)),
                 input_health_missing_sources: Arc::new(Mutex::new(BTreeSet::new())),
                 liveness_task: None,
                 connected: false,
@@ -1701,6 +1715,10 @@ mod tests {
     }
 
     fn test_last_message_clock() -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(0))
+    }
+
+    fn test_last_report_clock() -> Arc<AtomicU64> {
         Arc::new(AtomicU64::new(0))
     }
 
@@ -2068,14 +2086,21 @@ mod tests {
                 TEST_INSTRUMENT_ID,
             ))
             .expect("catalog-backed Chainlink reference subscription should be accepted");
-        let handler = chainlink_reference_message_handler(
+        let last_report = test_last_report_clock();
+        let handler = chainlink_reference_message_handler_with_input_health_recovery(
             client.config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
             test_last_message_clock(),
+            Arc::clone(&last_report),
+            None,
         );
 
         handler(WireMessage::text(chainlink_report_frame_json()));
+        assert!(
+            last_report.load(Ordering::SeqCst) > 0,
+            "matched Chainlink report frames should refresh report-data liveness"
+        );
 
         let event = data_receiver
             .try_recv()
@@ -2227,20 +2252,28 @@ mod tests {
     }
 
     #[test]
-    fn control_frames_refresh_liveness_without_emitting_custom_data() {
+    fn control_frames_refresh_transport_liveness_without_report_liveness() {
         let (client, mut data_receiver) = fixture_client();
         let last_message = test_last_message_clock();
-        let handler = chainlink_reference_message_handler(
+        let last_report = test_last_report_clock();
+        let handler = chainlink_reference_message_handler_with_input_health_recovery(
             client.config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
             Arc::clone(&last_message),
+            Arc::clone(&last_report),
+            None,
         );
 
         handler(WireMessage::Ping(vec![1]));
         assert!(
             last_message.load(Ordering::SeqCst) > 0,
-            "Chainlink Ping control frames should refresh the liveness clock"
+            "Chainlink Ping control frames should refresh the transport liveness clock"
+        );
+        assert_eq!(
+            last_report.load(Ordering::SeqCst),
+            0,
+            "Chainlink Ping control frames must not refresh report-data liveness"
         );
         handler(WireMessage::Pong(vec![2]));
         handler(WireMessage::Close);
@@ -2289,6 +2322,7 @@ mod tests {
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
             test_last_message_clock(),
+            test_last_report_clock(),
             Some(ChainlinkReferenceInputHealthRecovery {
                 config,
                 input_health_missing_sources: Arc::clone(&input_health_missing_sources),

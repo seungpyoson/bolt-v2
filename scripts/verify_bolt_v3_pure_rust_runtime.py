@@ -181,17 +181,6 @@ def missing_main_rs_entrypoint_calls(text: str) -> list[str]:
 def main() -> int:
     findings: list[str] = []
 
-    cargo_dependencies = cargo_dependency_names(CARGO_TOML)
-    if "aws-sdk-ssm" not in cargo_dependencies:
-        findings.append("Cargo.toml does not include aws-sdk-ssm")
-    if "aws-config" not in cargo_dependencies:
-        findings.append("Cargo.toml does not include aws-config")
-
-    for rel in FORBIDDEN_ROOT_FILES:
-        path = REPO_ROOT / rel
-        if path.exists():
-            findings.append(f"{rel}: Python package/build metadata is not allowed for the Rust runtime")
-
     manifests = cargo_manifest_paths()
     rust_source_paths = sorted((REPO_ROOT / "src").glob("**/*.rs"))
     floor_findings: list[str] = []
@@ -203,6 +192,17 @@ def main() -> int:
         for finding in findings:
             print(f"FAIL: {finding}", file=sys.stderr)
         return 1
+
+    cargo_dependencies = cargo_dependency_names(CARGO_TOML)
+    if "aws-sdk-ssm" not in cargo_dependencies:
+        findings.append("Cargo.toml does not include aws-sdk-ssm")
+    if "aws-config" not in cargo_dependencies:
+        findings.append("Cargo.toml does not include aws-config")
+
+    for rel in FORBIDDEN_ROOT_FILES:
+        path = REPO_ROOT / rel
+        if path.exists():
+            findings.append(f"{rel}: Python package/build metadata is not allowed for the Rust runtime")
 
     for manifest in manifests:
         dependency_names = cargo_dependency_names(manifest)

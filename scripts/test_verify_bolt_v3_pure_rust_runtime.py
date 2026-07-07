@@ -53,11 +53,13 @@ def run_main_with_temp_root(
     runtime_source_paths: tuple[str, ...] | None = None,
 ) -> tuple[int, str]:
     original_root = VERIFIER.REPO_ROOT
+    original_cargo_toml = VERIFIER.CARGO_TOML
     original_main_rs = VERIFIER.MAIN_RS
     original_runtime_source_paths = VERIFIER.RUNTIME_SOURCE_PATHS
     stderr = io.StringIO()
     try:
         VERIFIER.REPO_ROOT = root
+        VERIFIER.CARGO_TOML = root / "Cargo.toml"
         VERIFIER.MAIN_RS = main_rs
         if runtime_source_paths is not None:
             VERIFIER.RUNTIME_SOURCE_PATHS = runtime_source_paths
@@ -65,6 +67,7 @@ def run_main_with_temp_root(
             code = VERIFIER.main()
     finally:
         VERIFIER.REPO_ROOT = original_root
+        VERIFIER.CARGO_TOML = original_cargo_toml
         VERIFIER.MAIN_RS = original_main_rs
         VERIFIER.RUNTIME_SOURCE_PATHS = original_runtime_source_paths
     return code, stderr.getvalue()

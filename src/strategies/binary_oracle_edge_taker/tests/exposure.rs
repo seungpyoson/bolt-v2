@@ -1617,7 +1617,7 @@ fn runtime_reconcile_query_failure_writes_evidence_and_retries_without_state_cha
 }
 
 #[test]
-fn runtime_reconcile_absent_unsupported_observed_position_flattens_with_reconcile_source() {
+fn runtime_reconcile_closed_unsupported_observed_position_flattens_with_reconcile_source() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -1635,6 +1635,41 @@ fn runtime_reconcile_absent_unsupported_observed_position_flattens_with_reconcil
         observed.clone(),
         UnsupportedObservedReason::LiveUnsupportedContract,
     );
+    let instrument = strategy
+        .current_instrument(instrument_id)
+        .expect("active instrument should be cached for reconcile test");
+    let mut entry_fill = order_filled_event_with_details(
+        ClientOrderId::from("ENTRY-UNSUPPORTED-RECONCILE-CLOSED"),
+        instrument_id,
+        Some(observed.position_id),
+        observed.entry_order_side,
+    );
+    entry_fill.last_qty = observed.quantity;
+    let mut cached_position = Position::new(&instrument, entry_fill);
+    let exit_order_side = match observed.side {
+        PositionSide::Long => OrderSide::Sell,
+        PositionSide::Short => OrderSide::Buy,
+        PositionSide::Flat | PositionSide::NoPositionSide => observed.entry_order_side,
+    };
+    let mut close_fill = order_filled_event_with_details(
+        ClientOrderId::from("EXIT-UNSUPPORTED-RECONCILE-CLOSED"),
+        instrument_id,
+        Some(observed.position_id),
+        exit_order_side,
+    );
+    close_fill.trade_id =
+        nautilus_model::identifiers::TradeId::from("TRADE-UNSUPPORTED-RECONCILE-CLOSED");
+    close_fill.last_qty = observed.quantity;
+    cached_position.apply(&close_fill);
+    assert!(cached_position.is_closed());
+    cache
+        .borrow_mut()
+        .add_position(&cached_position, NtOmsType::Netting)
+        .expect("test cache should accept closed unsupported position");
+    cache
+        .borrow_mut()
+        .update_position(&cached_position)
+        .expect("test cache should index closed unsupported position");
 
     emit_selection_retry_time_event(&mut strategy, 1_205);
 
@@ -1650,8 +1685,39 @@ fn runtime_reconcile_absent_unsupported_observed_position_flattens_with_reconcil
                     && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
                     && record.position_id.as_deref() == Some(observed_position_id.as_str())
         )),
-        "absent unsupported observed position must flatten with reconcile_pass source"
+        "closed unsupported observed position must flatten with reconcile_pass source"
     );
+}
+
+#[test]
+fn runtime_reconcile_unsupported_observed_position_waits_without_closed_position_cache() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let instrument_id = selected_entry_instrument(&strategy);
+    let observed = configured_position_probe(&mut strategy, instrument_id);
+    let observed_position_id = observed.position_id;
+    set_unsupported_observed(
+        &mut strategy,
+        observed,
+        UnsupportedObservedReason::LiveUnsupportedContract,
+    );
+
+    emit_selection_retry_time_event(&mut strategy, 1_205);
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::UnsupportedObserved(UnsupportedObservedState {
+            observed: OpenPositionState { position_id, .. },
+            ..
+        }) if position_id == observed_position_id
+    ));
 }
 
 #[test]

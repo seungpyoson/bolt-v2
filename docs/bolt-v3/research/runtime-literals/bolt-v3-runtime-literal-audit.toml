@@ -20125,10 +20125,10 @@ reason = "Stable reconcile-pass evidence reason template for fail-closed entry r
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"observed position absent from NT open-position cache"'''
-context = '''"observed position absent from NT open-position cache".to_string(),'''
+literal = '''"observed position present in NT closed-position cache"'''
+context = '''"observed position present in NT closed-position cache".to_string(),'''
 classification = "order_lifecycle_reconcile_reason_label"
-reason = "Stable reconcile-pass evidence reason for closing unsupported-observed exposure after the NT open-position cache no longer reports the observed position; it classifies evidence and does not configure strategy behavior."
+reason = "Stable reconcile-pass evidence reason for closing unsupported-observed exposure after the NT closed-position cache positively reports the observed position closed; it classifies evidence and does not configure strategy behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"

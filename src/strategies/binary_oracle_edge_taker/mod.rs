@@ -2468,8 +2468,10 @@ impl BinaryOracleEdgeTaker {
             return;
         }
         let observed_position = observed.observed.clone();
-        let position_still_open = self.cached_position_still_open(&observed_position);
-        if position_still_open {
+        if !self.cached_position_id_closed(
+            observed_position.instrument_id,
+            observed_position.position_id,
+        ) {
             return;
         }
         let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
@@ -2484,7 +2486,7 @@ impl BinaryOracleEdgeTaker {
             client_order_id: None,
             prior_client_order_id: None,
             raw_reason_text: Some(
-                "observed position absent from NT open-position cache".to_string(),
+                "observed position present in NT closed-position cache".to_string(),
             ),
             order_side: None,
             filled_quantity: None,
@@ -2492,10 +2494,6 @@ impl BinaryOracleEdgeTaker {
             ts_event_ns: Some(ts_event_ns),
         });
         self.refresh_book_subscriptions_for_current_state();
-    }
-
-    fn cached_position_still_open(&self, position: &OpenPositionState) -> bool {
-        self.cached_position_id_still_open(position.instrument_id, position.position_id)
     }
 
     fn cached_position_id_still_open(

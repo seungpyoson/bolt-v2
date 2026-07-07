@@ -16,6 +16,10 @@ struct ArtifactRefCandidate {
     location: String,
 }
 
+const DATED_SOURCE_ATTESTATION_OWNERS: &[&str] = &[
+    "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
+];
+
 /// Gate policy: committed reference JSON can contain both live artifact pins and
 /// historical source attestations. Reference-tree targets remain live pins
 /// checked against current bytes or the evicted-fixture index. Source-tree
@@ -45,10 +49,7 @@ fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
                 &repo_root,
                 &evicted_index,
                 &json_path,
-                &artifact_ref.location,
-                &artifact_ref.role,
-                &artifact_ref.path,
-                &artifact_ref.sha256,
+                &artifact_ref,
                 &mut mismatches,
             );
         }
@@ -215,6 +216,32 @@ fn dated_status_source_path_pins_are_point_in_time_attestations() {
 }
 
 #[test]
+fn dated_source_attestation_exceptions_are_registered_by_owner_path() {
+    let renamed_date_like_status = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/renamed-status.2026-06-16.json",
+    );
+
+    assert!(should_enforce_artifact_ref(
+        renamed_date_like_status,
+        "crates/backtesting-vertical-slice/src/source_proof.rs"
+    ));
+}
+
+#[test]
+fn repo_path_normalization_removes_current_directory_prefixes() {
+    assert_eq!(
+        normalize_repo_path("./specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json")
+            .expect("normalize ./ path"),
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    );
+    assert_eq!(
+        normalize_repo_path("repo://./specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json")
+            .expect("normalize repo://./ path"),
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    );
+}
+
+#[test]
 fn artifact_ref_collector_treats_flat_path_hash_siblings_as_pins() {
     let json = serde_json::json!({
         "object_gates_path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
@@ -254,21 +281,22 @@ fn check_artifact_ref(
     repo_root: &Path,
     evicted_index: &EvictedFixtureIndex,
     owner_path: &Path,
-    location: &str,
-    role: &str,
-    artifact_path: &str,
-    recorded_sha256: &str,
+    artifact_ref: &ArtifactRefCandidate,
     mismatches: &mut Vec<String>,
 ) {
-    let artifact_path = match normalize_repo_path(artifact_path) {
+    let artifact_path = match normalize_repo_path(&artifact_ref.path) {
         Ok(path) => path,
         Err(err) => {
             mismatches.push(format!(
-                "{} {location} role {role} path {artifact_path} recorded {recorded_sha256} actual <invalid path: {err}>",
+                "{} {} role {} path {} recorded {} actual <invalid path: {err}>",
                 owner_path
                     .strip_prefix(repo_root)
                     .unwrap_or(owner_path)
-                    .display()
+                    .display(),
+                artifact_ref.location,
+                artifact_ref.role,
+                artifact_ref.path,
+                artifact_ref.sha256
             ));
             return;
         }
@@ -280,19 +308,33 @@ fn check_artifact_ref(
 
     let actual_sha256 = actual_sha256(repo_root, evicted_index, &artifact_path);
 
-    if recorded_sha256 != actual_sha256 {
+    if artifact_ref.sha256 != actual_sha256 {
         mismatches.push(format!(
-            "{} {location} role {role} path {artifact_path} recorded {recorded_sha256} actual {actual_sha256}",
+            "{} {} role {} path {artifact_path} recorded {} actual {actual_sha256}",
             owner_path
                 .strip_prefix(repo_root)
                 .unwrap_or(owner_path)
-                .display()
+                .display(),
+            artifact_ref.location,
+            artifact_ref.role,
+            artifact_ref.sha256
         ));
     }
 }
 
 fn should_enforce_artifact_ref(owner_path: &Path, artifact_path: &str) -> bool {
-    !(is_dated_status_file(owner_path) && is_source_tree_path(artifact_path))
+    !(is_registered_dated_source_attestation(owner_path) && is_source_tree_path(artifact_path))
+}
+
+fn is_registered_dated_source_attestation(path: &Path) -> bool {
+    DATED_SOURCE_ATTESTATION_OWNERS.iter().any(|owner| {
+        is_dated_status_file(Path::new(owner)) && path_matches_repo_suffix(path, owner)
+    })
+}
+
+fn path_matches_repo_suffix(path: &Path, repo_suffix: &str) -> bool {
+    let path = path.to_string_lossy().replace('\\', "/");
+    path == repo_suffix || path.ends_with(&format!("/{repo_suffix}"))
 }
 
 fn is_dated_status_file(path: &Path) -> bool {
@@ -333,16 +375,24 @@ fn normalize_repo_path(path: &str) -> Result<String, String> {
     if repo_path.is_absolute() {
         return Err("path is absolute".to_string());
     }
-    if repo_path.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::ParentDir | std::path::Component::RootDir
-        )
-    }) {
-        return Err("path escapes repository root".to_string());
+    let mut normalized = PathBuf::new();
+    for component in repo_path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err("path escapes repository root".to_string());
+            }
+        }
+    }
+    let normalized = normalized.to_string_lossy().replace('\\', "/");
+    if normalized.is_empty() {
+        return Err("path is empty".to_string());
     }
 
-    Ok(path.to_string())
+    Ok(normalized)
 }
 
 fn actual_sha256(

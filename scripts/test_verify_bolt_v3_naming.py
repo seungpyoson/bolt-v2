@@ -445,6 +445,29 @@ def test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list() ->
         raise AssertionError(f"expected legitimate sizer keep-list to pass, got {code}, {output!r}")
 
 
+def test_capital_admission_misnomer_scan_paths_floor_is_exact() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            findings = VERIFIER.verify_capital_admission_misnomers()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    expected = ["capital-admission misnomer scan paths: enforcement set is empty"]
+    if findings != expected:
+        raise AssertionError(f"expected exact misnomer scan floor, got {findings!r}")
+
+
 def test_capital_admission_misnomer_fence_fails_closed_without_allowlist() -> None:
     code, output = run_main_with_misnomer_fixture(
         {"src/core.rs": "pub struct CapitalAdmissionOnly;\n"},
@@ -470,6 +493,7 @@ def main() -> int:
         test_main_fails_closed_when_audit_rule_rows_are_empty,
         test_capital_admission_misnomer_fence_catches_screaming_snake,
         test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list,
+        test_capital_admission_misnomer_scan_paths_floor_is_exact,
         test_capital_admission_misnomer_fence_fails_closed_without_allowlist,
     ]
     for test in tests:

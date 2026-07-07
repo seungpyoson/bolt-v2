@@ -373,14 +373,19 @@ def scan_exemption_issue_state(root: Path, findings: list[str]) -> None:
             findings.append(f"{EXEMPTIONS}: issue #{issue} is {state}; remove or replace the deferral")
 
 
-def scan_wire_boundary(root: Path, findings: list[str]) -> None:
+def boundary_source_paths(root: Path) -> list[Path]:
+    return sorted((root / "src").rglob("*.rs"))
+
+
+def scan_wire_boundary(root: Path, findings: list[str], source_paths: list[Path] | None = None) -> None:
+    source_paths = boundary_source_paths(root) if source_paths is None else source_paths
+    if not require_nonempty(source_paths, "Bolt-v3 boundary Rust source files", findings):
+        return
+
     cargo_toml = read(root, "Cargo.toml")
     if f'rev = "{EXPECTED_NT_REV}"' not in cargo_toml:
         findings.append(f"Cargo.toml: nautilus_network rev must remain pinned to {EXPECTED_NT_REV}")
 
-    source_paths = sorted((root / "src").rglob("*.rs"))
-    if not require_nonempty(source_paths, "Bolt-v3 boundary Rust source files", findings):
-        return
     for path in source_paths:
         rel = path.relative_to(root).as_posix()
         text = production_text(path.read_text(encoding="utf-8"))
@@ -668,10 +673,14 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:
         today = dt.date.today()
     findings: list[str] = []
+    source_paths = boundary_source_paths(root)
+    floor_findings: list[str] = []
+    if not require_nonempty(source_paths, "Bolt-v3 boundary Rust source files", floor_findings):
+        return floor_findings
     entries = scan_registry(root, findings)
     scan_exemptions(root, entries, findings, today=today)
     scan_exemption_issue_state(root, findings)
-    scan_wire_boundary(root, findings)
+    scan_wire_boundary(root, findings, source_paths)
     scan_chainlink_tests(root, findings)
     scan_fixture_origin(root, findings)
     scan_static_wiring(root, findings)

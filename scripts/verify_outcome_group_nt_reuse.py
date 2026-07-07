@@ -200,7 +200,10 @@ def validate_ledger(root: Path) -> list[str]:
 
 
 def outcome_group_source_files(root: Path) -> list[Path]:
-    return source_set_files(OUTCOME_GROUP_SOURCE_ROOTS, repo_root=root)
+    try:
+        return source_set_files(OUTCOME_GROUP_SOURCE_ROOTS, repo_root=root)
+    except FileNotFoundError:
+        return []
 
 
 def scan_text(source: str) -> str:
@@ -402,9 +405,13 @@ def validate_just_wiring(root: Path) -> list[str]:
 
 
 def collect_findings(root: Path = REPO_ROOT) -> list[str]:
+    source_findings = validate_outcome_sources(root)
+    if source_findings == ["outcome-group source files: enforcement set is empty"]:
+        return source_findings
+
     findings: list[str] = []
     findings.extend(validate_ledger(root))
-    findings.extend(validate_outcome_sources(root))
+    findings.extend(source_findings)
     findings.extend(validate_just_wiring(root))
     return findings
 

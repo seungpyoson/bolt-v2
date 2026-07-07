@@ -86,6 +86,7 @@ def test_missing_harness_shape_is_reported() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         write(root / "crates/backtesting-vertical-slice/Cargo.toml", "[package]\nname = \"x\"\n")
+        write(root / "crates/backtesting-vertical-slice/tests/a_contract.rs", "#[test]\nfn a() {}\n")
         errors = verifier.verify_root(root)
         assert "backtester Cargo.toml must set package.autotests = false" in errors
         assert any("explicit integration test harness" in error for error in errors)
@@ -126,7 +127,7 @@ path = "tests/backtesting_vertical_slice_tests.rs"
         )
         errors = verifier.verify_root(root)
 
-    assert any("backtester integration test files: enforcement set is empty" in error for error in errors), errors
+    assert errors == ["backtester integration test files: enforcement set is empty"], errors
 
 
 def test_inner_attrs_must_move_to_harness() -> None:

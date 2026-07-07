@@ -74,8 +74,8 @@ class StrategyPolicyFenceTests(unittest.TestCase):
                 self.write_source(temp_root, relative_path, source)
 
             VERIFIER.REPO_ROOT = temp_root
-            VERIFIER.source_set_files = lambda roots: original_source_set_files(
-                roots, repo_root=temp_root
+            VERIFIER.source_set_files = lambda roots, repo_root=None: original_source_set_files(
+                roots, repo_root=temp_root if repo_root is None else repo_root
             )
             try:
                 return VERIFIER.collect_violations()
@@ -105,19 +105,44 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
     def test_empty_strategy_policy_source_sets_fail_closed(self) -> None:
-        original_strategy_files = VERIFIER.source_files_for_strategy_policy_fence
-        original_mutation_files = VERIFIER.source_files_for_mutation_fence
+        original_root = VERIFIER.REPO_ROOT
         try:
-            VERIFIER.source_files_for_strategy_policy_fence = lambda: []
-            VERIFIER.source_files_for_mutation_fence = lambda: []
-            violations = VERIFIER.collect_violations()
+            with tempfile.TemporaryDirectory() as tmp:
+                VERIFIER.REPO_ROOT = Path(tmp)
+                violations = VERIFIER.collect_violations()
         finally:
-            VERIFIER.source_files_for_strategy_policy_fence = original_strategy_files
-            VERIFIER.source_files_for_mutation_fence = original_mutation_files
+            VERIFIER.REPO_ROOT = original_root
 
-        labels = {violation.label for violation in violations}
-        self.assertIn("strategy policy source files: enforcement set is empty", labels)
-        self.assertIn("mutation policy source files: enforcement set is empty", labels)
+        labels = [violation.label for violation in violations]
+        self.assertEqual(
+            labels,
+            [
+                "strategy policy source files: enforcement set is empty",
+                "mutation policy source files: enforcement set is empty",
+            ],
+        )
+
+    def test_empty_strategy_policy_source_sets_use_real_collectors(self) -> None:
+        original_root = VERIFIER.REPO_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                VERIFIER.REPO_ROOT = Path(tmp)
+                strategy_files = VERIFIER.source_files_for_strategy_policy_fence()
+                mutation_files = VERIFIER.source_files_for_mutation_fence()
+                violations = VERIFIER.collect_violations()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+        self.assertEqual(strategy_files, [])
+        self.assertEqual(mutation_files, [])
+        labels = [violation.label for violation in violations]
+        self.assertEqual(
+            labels,
+            [
+                "strategy policy source files: enforcement set is empty",
+                "mutation policy source files: enforcement set is empty",
+            ],
+        )
 
     def test_strategy_policy_source_still_flags_runtime_selection_bus_path(self) -> None:
         violations = self.collect_violations_for_temp_sources(

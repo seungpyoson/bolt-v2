@@ -496,18 +496,9 @@ def test_empty_wire_boundary_source_set_fails_closed() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write(
-            root,
-            "Cargo.toml",
-            (
-                'nautilus-network = { git = "https://github.com/nautechsystems/nautilus_trader.git", '
-                f'rev = "{verifier.EXPECTED_NT_REV}" }}\n'
-            ),
-        )
-        findings: list[str] = []
-        verifier.scan_wire_boundary(root, findings)
+        findings = verifier.scan_root(root)
 
-    assert_finding(findings, "Bolt-v3 boundary Rust source files: enforcement set is empty")
+    assert findings == ["Bolt-v3 boundary Rust source files: enforcement set is empty"], findings
 
 
 def test_planted_unregistered_any_class_fails() -> None:

@@ -390,9 +390,13 @@ def production_rust_files_under(relative_root: str) -> list:
 
 
 def source_files_for_strategy_policy_fence() -> list:
+    try:
+        source_set = source_set_files(STRATEGY_SOURCE_ROOTS, repo_root=REPO_ROOT)
+    except FileNotFoundError:
+        source_set = []
     files = {
         path
-        for path in source_set_files(STRATEGY_SOURCE_ROOTS)
+        for path in source_set
         if not is_test_source_file(path)
     }
     files.update(production_rust_files_under("src/strategies"))

@@ -663,9 +663,8 @@ fn live_operator_health_surface(
         reject_observer,
         venue_truth,
         input_health.unwrap_or_else(|| {
-            // Lane 5 live input health is intentionally Unobserved here: Lane 2
-            // stale-policy fail-closed checks and `ops reference-current-price-health`
-            // cover reference inputs until the follow-up live input-health emitter lands.
+            // If no live transition emitter has produced a source observation yet,
+            // keep the surface fail-closed as Unobserved for the configured sources.
             BoltV3InputHealth::unobserved(input_health_configured_source_count)
         }),
     )

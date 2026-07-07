@@ -2116,6 +2116,14 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn reconcile_runtime_venue_state(&mut self, now_ms: u64) {
+        self.run_runtime_reconcile_pass(now_ms);
+    }
+
+    pub(crate) fn reconcile_runtime_venue_state_after_reconnect(&mut self, now_ms: u64) {
+        self.run_runtime_reconcile_pass(now_ms);
+    }
+
+    fn run_runtime_reconcile_pass(&mut self, now_ms: u64) {
         if let Some(query) = self.runtime_reconcile_order_query() {
             if self.runtime_reconcile_order_query_due(&query, now_ms) {
                 self.reconcile_runtime_order_query(query, now_ms);

@@ -11,7 +11,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -262,6 +262,7 @@ impl DataClientFactory for ChainlinkReferencePriceClientFactory {
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             websocket: Arc::new(Mutex::new(None)),
             last_message_unix_ms: Arc::new(AtomicU64::new(0)),
+            input_health_missing: Arc::new(AtomicBool::new(false)),
             liveness_task: None,
             connected: false,
         }))
@@ -285,6 +286,7 @@ struct ChainlinkReferencePriceClient {
         Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     last_message_unix_ms: Arc<AtomicU64>,
+    input_health_missing: Arc<AtomicBool>,
     liveness_task: Option<JoinHandle<()>>,
     connected: bool,
 }
@@ -368,6 +370,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
             Arc::clone(&self.last_message_unix_ms),
+            Arc::clone(&self.input_health_missing),
         )
         .await?;
         chainlink_reference_store_transport(&self.websocket, websocket)?;
@@ -378,6 +381,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.websocket),
             self.data_sender.clone(),
             Arc::clone(&self.last_message_unix_ms),
+            Arc::clone(&self.input_health_missing),
         ));
         self.connected = true;
         Ok(())
@@ -500,13 +504,18 @@ async fn chainlink_reference_connect_websocket(
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
+    input_health_missing: Arc<AtomicBool>,
 ) -> anyhow::Result<BoundaryWebSocket> {
     let websocket_config = reference_price_websocket_config(config)?;
-    let handler = chainlink_reference_message_handler(
+    let handler = chainlink_reference_message_handler_with_input_health_recovery(
         config.feed_bindings.clone(),
         subscriptions,
         data_sender,
         last_message_unix_ms,
+        Some(ChainlinkReferenceInputHealthRecovery {
+            config: config.clone(),
+            input_health_missing,
+        }),
     );
     bolt_v3_wire_boundary::connect_websocket(
         websocket_config,
@@ -529,6 +538,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
+    input_health_missing: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     get_runtime().spawn(async move {
         let mut attempted_reconnects = 0_u32;
@@ -561,6 +571,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 attempted_reconnects = 0;
                 continue;
             }
+            input_health_missing.store(true, Ordering::SeqCst);
             chainlink_reference_emit_input_health_transition(
                 &config,
                 &subscriptions,
@@ -604,6 +615,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 Arc::clone(&subscriptions),
                 data_sender.clone(),
                 Arc::clone(&last_message_unix_ms),
+                Arc::clone(&input_health_missing),
             )
             .await
             {
@@ -626,12 +638,6 @@ fn spawn_chainlink_reference_liveness_supervisor(
                     };
                     log::warn!(
                         "Chainlink reference DataClient reconnect completed for client_id={client_id}; transport_mode={mode:?} replayed_subscription_count={subscription_count}"
-                    );
-                    chainlink_reference_emit_input_health_transition(
-                        &config,
-                        &subscriptions,
-                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
-                        false,
                     );
                     attempted_reconnects = 0;
                     last_logged_mode = Some(mode);
@@ -909,6 +915,7 @@ fn require_matching_reference_param(
     Ok(())
 }
 
+#[cfg(test)]
 fn chainlink_reference_message_handler(
     feed_bindings: Vec<ChainlinkStrikeFeedBinding>,
     subscriptions: Arc<
@@ -916,6 +923,30 @@ fn chainlink_reference_message_handler(
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
+) -> WireMessageHandler {
+    chainlink_reference_message_handler_with_input_health_recovery(
+        feed_bindings,
+        subscriptions,
+        data_sender,
+        last_message_unix_ms,
+        None,
+    )
+}
+
+#[derive(Clone)]
+struct ChainlinkReferenceInputHealthRecovery {
+    config: ChainlinkReferencePriceClientConfig,
+    input_health_missing: Arc<AtomicBool>,
+}
+
+fn chainlink_reference_message_handler_with_input_health_recovery(
+    feed_bindings: Vec<ChainlinkStrikeFeedBinding>,
+    subscriptions: Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    last_message_unix_ms: Arc<AtomicU64>,
+    input_health_recovery: Option<ChainlinkReferenceInputHealthRecovery>,
 ) -> WireMessageHandler {
     Arc::new(move |message: WireMessage| {
         let received_ts_ms = match current_unix_timestamp_ms() {
@@ -967,6 +998,9 @@ fn chainlink_reference_message_handler(
         };
         match updates {
             Ok(updates) => {
+                if let Some(recovery) = &input_health_recovery {
+                    chainlink_reference_emit_recovered_input_health_for_updates(recovery, &updates);
+                }
                 for update in updates {
                     if let Err(error) =
                         data_sender.send(DataEvent::Data(Data::Custom(update.to_custom_data())))
@@ -978,6 +1012,66 @@ fn chainlink_reference_message_handler(
             Err(error) => log::warn!("Chainlink reference frame dropped: {error}"),
         }
     })
+}
+
+fn chainlink_reference_emit_recovered_input_health_for_updates(
+    recovery: &ChainlinkReferenceInputHealthRecovery,
+    updates: &[ReferencePriceUpdate],
+) {
+    if updates.is_empty() || !recovery.input_health_missing.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(emitter) = recovery.config.input_health_transition_emitter.as_ref() else {
+        return;
+    };
+    let sources = chainlink_reference_recovered_input_health_sources(&recovery.config, updates);
+    if sources.is_empty()
+        || recovery
+            .input_health_missing
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+    {
+        return;
+    }
+    for source in sources {
+        emitter(
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
+            BoltV3InputHealthSourceTransition {
+                source,
+                missing: false,
+            },
+        );
+    }
+}
+
+fn chainlink_reference_recovered_input_health_sources(
+    config: &ChainlinkReferencePriceClientConfig,
+    updates: &[ReferencePriceUpdate],
+) -> Vec<BoltV3MissingInputSource> {
+    let mut sources = BTreeMap::new();
+    for update in updates {
+        for source in &config.input_health_sources {
+            if source.asset == update.asset()
+                && source.source_id == update.source_id()
+                && source.provider == update.provider()
+                && source.provider_instrument == update.provider_instrument()
+            {
+                let mut recovered = source.clone();
+                recovered.reason = CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED.to_string();
+                sources.insert(
+                    (
+                        recovered.strategy_instance_id.clone(),
+                        recovered.source_id.clone(),
+                        recovered.asset.clone(),
+                        recovered.provider.clone(),
+                        recovered.provider_instrument.clone(),
+                    ),
+                    recovered,
+                );
+            }
+        }
+    }
+    sources.into_values().collect()
 }
 
 fn chainlink_reference_updates_from_report_frame(
@@ -1530,6 +1624,7 @@ mod tests {
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
                 websocket: Arc::new(Mutex::new(None)),
                 last_message_unix_ms: Arc::new(AtomicU64::new(0)),
+                input_health_missing: Arc::new(AtomicBool::new(false)),
                 liveness_task: None,
                 connected: false,
             },
@@ -2025,6 +2120,73 @@ mod tests {
             matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
             "control frames should leave the data channel open and empty, got {error:?}"
         );
+    }
+
+    #[test]
+    fn recovered_input_health_waits_for_matching_report_after_missing() {
+        let (mut client, _data_receiver) = fixture_client();
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                TEST_INSTRUMENT_ID,
+            ))
+            .expect("catalog-backed Chainlink reference subscription should be accepted");
+        let source = BoltV3MissingInputSource {
+            strategy_instance_id: "binary-edge-taker".to_string(),
+            source_id: TEST_SOURCE_ID.to_string(),
+            asset: TEST_ASSET.to_string(),
+            provider: REFERENCE_PRICE_PROVIDER_KEY.to_string(),
+            provider_instrument: TEST_INSTRUMENT_ID.to_string(),
+            reason: "test".to_string(),
+        };
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&transitions);
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
+            recorded
+                .lock()
+                .expect("transition recorder should be available")
+                .push((reason, transition));
+        });
+        let mut config = client.config.clone();
+        config.input_health_transition_emitter = Some(emitter);
+        config.input_health_sources = vec![source];
+        let input_health_missing = Arc::new(AtomicBool::new(true));
+        let handler = chainlink_reference_message_handler_with_input_health_recovery(
+            config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            test_last_message_clock(),
+            Some(ChainlinkReferenceInputHealthRecovery {
+                config,
+                input_health_missing: Arc::clone(&input_health_missing),
+            }),
+        );
+
+        handler(WireMessage::Ping(vec![1]));
+
+        assert!(
+            transitions
+                .lock()
+                .expect("transition recorder should be available")
+                .is_empty(),
+            "control frames must not mark a missing reference input recovered"
+        );
+        assert!(input_health_missing.load(Ordering::SeqCst));
+
+        handler(WireMessage::text(chainlink_report_frame_json()));
+
+        let recorded = transitions
+            .lock()
+            .expect("transition recorder should be available");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].0,
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED
+        );
+        assert!(!recorded[0].1.missing);
+        assert_eq!(recorded[0].1.source.source_id.as_str(), TEST_SOURCE_ID);
+        assert!(!input_health_missing.load(Ordering::SeqCst));
     }
 
     #[test]

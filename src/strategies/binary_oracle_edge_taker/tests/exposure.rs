@@ -1338,6 +1338,42 @@ fn runtime_reconcile_canceled_pending_entry_flattens_with_reconcile_source() {
 }
 
 #[test]
+fn runtime_reconnect_reconcile_runs_same_pass_immediately() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-RECONNECT-CANCELED");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+    let mut order =
+        configured_entry_order_for_reconcile(&mut strategy, instrument_id, entry_client_order_id);
+    close_order_with_canceled_event(&mut order);
+    cache
+        .borrow_mut()
+        .add_order(
+            order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept closed entry order");
+
+    strategy.reconcile_runtime_venue_state_after_reconnect(reconcile_due_time_ms(&strategy, 1_000));
+
+    assert!(
+        matches!(strategy.exposure, ExposureState::Flat),
+        "runtime reconnect must run the same cache-backed reconcile pass immediately"
+    );
+}
+
+#[test]
 fn runtime_reconcile_cached_position_materializes_managed_with_reconcile_source() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(

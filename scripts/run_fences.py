@@ -40,6 +40,7 @@ STANDALONE_TEST_FILENAMES = (
     "test_local_verification_gate.py",
     "test_lane_governor.py",
     "test_run_fences.py",
+    "test_verifier_io.py",
 )
 
 

@@ -201,6 +201,10 @@ def collect_findings(root: Path = REPO_ROOT) -> list[str]:
     for index, entry in enumerate(entries):
         validate_entry(entry, index, findings)
 
+    source_paths = scanned_source_paths(root)
+    if not require_nonempty(source_paths, "doc-decoupling scanned source paths", findings):
+        return findings
+
     allowed: dict[str, list[str]] = {}
     for entry in entries:
         path = entry.get("path")
@@ -219,12 +223,10 @@ def collect_findings(root: Path = REPO_ROOT) -> list[str]:
             if snippet not in source_lines:
                 findings.append(f"{LEDGER_PATH}: stale residual ledger snippet for {rel}: {snippet!r}")
 
-    source_paths = scanned_source_paths(root)
-    if require_nonempty(source_paths, "doc-decoupling scanned source paths", findings):
-        for rel, line_number, line in prose_reference_lines(root, source_paths):
-            snippets = allowed.get(rel, [])
-            if line not in snippets:
-                findings.append(f"{rel}:{line_number}: unclassified prose reference: {line}")
+    for rel, line_number, line in prose_reference_lines(root, source_paths):
+        snippets = allowed.get(rel, [])
+        if line not in snippets:
+            findings.append(f"{rel}:{line_number}: unclassified prose reference: {line}")
 
     return findings
 

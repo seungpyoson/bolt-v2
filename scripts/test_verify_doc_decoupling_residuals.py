@@ -238,7 +238,7 @@ def test_empty_scanned_source_set_fails_closed() -> None:
         )
         findings = VERIFIER.collect_findings(root)
 
-    assert_finding(findings, "doc-decoupling scanned source paths: enforcement set is empty")
+    assert findings == ["doc-decoupling scanned source paths: enforcement set is empty"], findings
 
 
 def test_doc_sync_exception_requires_owner_issue() -> None:

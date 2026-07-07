@@ -1764,6 +1764,44 @@ mod tests {
     }
 
     #[test]
+    fn sweep_publication_rejects_result_contract_uri_mismatch_without_index() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let artifact_root = TEST_ARTIFACT_ROOT;
+        let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
+        let wrong_result_contract_uri =
+            format!("{artifact_root}/backtests/ra-run-b/{RESULT_CONTRACT_FILE}");
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                let contract = test_contract(spec, object_bytes, &wrong_result_contract_uri);
+                fs::write(
+                    output_dir.join(RESULT_CONTRACT_FILE),
+                    serde_json::to_vec_pretty(&contract).expect("serialize contract"),
+                )
+                .expect("write result contract");
+                Ok(())
+            },
+        )
+        .expect_err("result contract URI mismatch must fail publication");
+
+        assert!(err.to_string().contains("result_contract_uri"), "{err}");
+        assert!(
+            !plan.index_path.exists(),
+            "index artifact must not be left behind"
+        );
+    }
+
+    #[test]
     fn sweep_publication_refuses_dirty_index_without_clobbering_existing_bytes() {
         let temp = TempDir::new().expect("temp dir");
         let input_dir = temp.path().join("inputs");

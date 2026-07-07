@@ -20,11 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifact_index::LifecycleState,
-    artifact_store::{
-        ArtifactIndexHotLifecycleConfig, ArtifactLifecycleConfig, ArtifactQuietWindowSeconds,
-        ArtifactStorageProfile, ArtifactStoreConfig, ArtifactSubpaths, CreateOnlyProbeConfig,
-        S3ArtifactStoreConfig, S3ConditionalPutMode, S3CopyIfNotExistsMode,
-    },
+    artifact_store::validate_artifact_root,
     hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
@@ -36,6 +32,7 @@ const RUN_POINTER_INDEX_REFERENCE_ARTIFACT_ROLE: &str = "run-pointer-index.v1";
 const RESEARCH_ANALYTICS_KIND_PATH: &str = "research-analytics";
 const RESEARCH_ANALYTICS_SCHEMA_VERSION: &str = "v1";
 const RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY: &str = "experiment-results";
+const RUN_POINTER_BACKTESTS_SUBPATH: &str = "backtests";
 const RUN_POINTER_INDEX_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, Clone)]
@@ -581,6 +578,8 @@ fn load_backtest_sweep_source_pairs(
             "duplicate output_dir_name {:?}",
             run_spec.manifest.run_id
         );
+        // The current run-id-scoped prefix rule makes this redundant, but keep
+        // the remote-prefix uniqueness invariant explicit if that scope changes.
         ensure!(
             seen_output_prefixes.insert(output_prefix.clone()),
             "duplicate manifest.output_prefix {output_prefix:?}"
@@ -734,7 +733,10 @@ fn validate_publication_run_spec_artifact_scope(
         run_spec.manifest.run_id,
         run_spec.manifest.output_prefix
     );
-    let expected_prefix = format!("{artifact_root}/backtests/{}", run_spec.manifest.run_id);
+    let expected_prefix = format!(
+        "{artifact_root}/{RUN_POINTER_BACKTESTS_SUBPATH}/{}",
+        run_spec.manifest.run_id
+    );
     ensure!(
         output_prefix == expected_prefix,
         "run spec {} manifest.output_prefix {:?} must equal {:?}",
@@ -941,58 +943,7 @@ fn validate_run_pointer_artifact_root(artifact_root: &str) -> Result<String> {
         artifact_root == artifact_root.trim_end_matches('/'),
         "artifact_root must be normalized without a trailing slash"
     );
-    Ok(artifact_store_config_for_root_validation(artifact_root)
-        .resolve()?
-        .artifact_root_uri()
-        .to_string())
-}
-
-fn artifact_store_config_for_root_validation(artifact_root: &str) -> ArtifactStoreConfig {
-    ArtifactStoreConfig {
-        artifact_root: artifact_root.to_string(),
-        s3: S3ArtifactStoreConfig {
-            region: "us-east-1".to_string(),
-            conditional_put: S3ConditionalPutMode::Etag,
-            copy_if_not_exists: S3CopyIfNotExistsMode::Multipart,
-        },
-        create_only_probe: CreateOnlyProbeConfig {
-            prefix: "create-only-probe".to_string(),
-            object_name: "probe.json".to_string(),
-            copy_source_object_name: "copy-source.json".to_string(),
-            copy_dest_object_name: "copy-dest.json".to_string(),
-        },
-        catalog_projection_manifest_object: "catalog-projection/manifest.json".to_string(),
-        subpaths: ArtifactSubpaths {
-            raw: "raw".to_string(),
-            nt_catalog: "nt-catalog".to_string(),
-            nt_catalog_synthetic_proof: "nt-catalog-synthetic-proof".to_string(),
-            source_proofs: "source-proofs".to_string(),
-            backtests: "backtests".to_string(),
-            artifact_index: "artifact-index".to_string(),
-            research_analytics: "research-analytics".to_string(),
-        },
-        lifecycle: ArtifactLifecycleConfig {
-            retention: "forever".to_string(),
-            default_delete_expiration: "disabled".to_string(),
-            storage_profiles: vec![
-                ArtifactStorageProfile::Active,
-                ArtifactStorageProfile::Archive,
-                ArtifactStorageProfile::DeepArchive,
-            ],
-            quiet_window_seconds: ArtifactQuietWindowSeconds {
-                raw: 1,
-                nt_catalog: 1,
-                source_proofs: 1,
-                backtests: 1,
-                artifact_index: 1,
-                research_analytics: 1,
-            },
-            hot_index: ArtifactIndexHotLifecycleConfig {
-                latest_pointer_storage_profile: ArtifactStorageProfile::Active,
-                current_snapshot_storage_profile: ArtifactStorageProfile::Active,
-            },
-        },
-    }
+    validate_artifact_root(artifact_root)
 }
 
 fn exact_run_id_set(

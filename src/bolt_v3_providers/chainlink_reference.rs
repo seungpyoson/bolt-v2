@@ -9,8 +9,11 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     rc::Rc,
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use nautilus_common::{
@@ -31,14 +34,20 @@ use nautilus_model::{
 };
 use nautilus_network::{http::USER_AGENT, mode::ConnectionMode};
 use serde::Deserialize;
+use tokio::task::JoinHandle;
 use url::Url;
 use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
+        BoltV3AdapterConfigs, BoltV3AdapterMappingError, BoltV3ClientAdapterConfig,
+        BoltV3DataClientAdapterConfig,
     },
     bolt_v3_config::ClientBlock,
+    bolt_v3_operator_health::{
+        BoltV3InputHealthSourceTransition, BoltV3InputHealthTransitionEmitter,
+        BoltV3MissingInputSource,
+    },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
@@ -74,6 +83,15 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[];
 const FACTORY_NAME: &str = KEY;
 const CONFIG_TYPE: &str = "ChainlinkReferencePriceClientConfig";
 const CHAINLINK_REFERENCE_FEED_IDS_QUERY_FIELD: &str = "feedIDs";
+const CHAINLINK_REFERENCE_TRANSPORT_RECONNECT_MAX_ATTEMPTS: u32 = 0;
+const CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE: &str =
+    "chainlink reference stream stale before provider reconnect";
+const CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED: &str =
+    "chainlink reference provider reconnect attempts exhausted";
+const CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED: &str =
+    "chainlink reference stream recovered after provider reconnect";
+const CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_SUBSCRIPTION_UNAVAILABLE: &str =
+    "chainlink reference subscription state unavailable during liveness transition";
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -88,8 +106,45 @@ pub struct ChainlinkReferencePriceDataConfig {
     pub reconnect_delay_max_ms: u64,
     pub reconnect_backoff_factor: f64,
     pub reconnect_jitter_ms: u64,
-    pub reconnect_max_attempts: Option<u32>,
+    pub reconnect_max_attempts: ChainlinkReferenceReconnectMaxAttempts,
     pub idle_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainlinkReferenceReconnectMaxAttempts {
+    Unlimited,
+    Limited(u32),
+}
+
+impl ChainlinkReferenceReconnectMaxAttempts {
+    fn permits_attempt(self, attempted_reconnects: u32) -> bool {
+        match self {
+            Self::Unlimited => true,
+            Self::Limited(max_attempts) => attempted_reconnects < max_attempts,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ChainlinkReferenceReconnectMaxAttempts {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Text(String),
+            Number(u32),
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Text(value) if value == "unlimited" => Ok(Self::Unlimited),
+            Wire::Text(value) => Err(serde::de::Error::custom(format!(
+                "expected \"unlimited\" or a positive integer, got {value:?}"
+            ))),
+            Wire::Number(max_attempts) => Ok(Self::Limited(max_attempts)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -140,9 +195,11 @@ pub struct ChainlinkReferencePriceClientConfig {
     pub reconnect_delay_max_ms: u64,
     pub reconnect_backoff_factor: f64,
     pub reconnect_jitter_ms: u64,
-    pub reconnect_max_attempts: Option<u32>,
+    pub reconnect_max_attempts: ChainlinkReferenceReconnectMaxAttempts,
     pub idle_timeout_ms: u64,
     pub feed_bindings: Vec<ChainlinkStrikeFeedBinding>,
+    pub input_health_transition_emitter: Option<BoltV3InputHealthTransitionEmitter>,
+    pub input_health_sources: Vec<BoltV3MissingInputSource>,
     pub api_key: Zeroizing<String>,
     pub api_secret: Zeroizing<String>,
 }
@@ -166,6 +223,11 @@ impl std::fmt::Debug for ChainlinkReferencePriceClientConfig {
             .field("reconnect_max_attempts", &self.reconnect_max_attempts)
             .field("idle_timeout_ms", &self.idle_timeout_ms)
             .field("feed_bindings", &self.feed_bindings)
+            .field(
+                "input_health_transition_emitter_configured",
+                &self.input_health_transition_emitter.is_some(),
+            )
+            .field("input_health_sources", &self.input_health_sources)
             .field("api_key", &REDACTED)
             .field("api_secret", &REDACTED)
             .finish()
@@ -198,7 +260,9 @@ impl DataClientFactory for ChainlinkReferencePriceClientFactory {
             config: config.clone(),
             data_sender: get_data_event_sender(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
-            websocket: None,
+            websocket: Arc::new(Mutex::new(None)),
+            last_message_unix_ms: Arc::new(AtomicU64::new(0)),
+            liveness_task: None,
             connected: false,
         }))
     }
@@ -219,7 +283,9 @@ struct ChainlinkReferencePriceClient {
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     subscriptions:
         Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
-    websocket: Option<BoundaryWebSocket>,
+    websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
+    last_message_unix_ms: Arc<AtomicU64>,
+    liveness_task: Option<JoinHandle<()>>,
     connected: bool,
 }
 
@@ -283,9 +349,7 @@ impl DataClient for ChainlinkReferencePriceClient {
     fn is_connected(&self) -> bool {
         chainlink_reference_transport_connected(
             self.connected,
-            self.websocket
-                .as_ref()
-                .map(BoundaryWebSocket::connection_mode),
+            chainlink_reference_current_transport_mode(&self.websocket),
         )
     }
 
@@ -294,54 +358,36 @@ impl DataClient for ChainlinkReferencePriceClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
-        if self.websocket.is_some() {
+        if chainlink_reference_current_transport_mode(&self.websocket).is_some() {
             self.disconnect().await?;
         }
-        let feed_ids = self
-            .config
-            .feed_bindings
-            .iter()
-            .map(|binding| binding.feed_id.clone())
-            .collect::<Vec<_>>();
-        let (url, path_with_query) = chainlink_reference_websocket_url(
-            &self.config.websocket_endpoint,
-            &self.config.websocket_path,
-            &feed_ids,
-        )?;
-        let credentials =
-            chainlink_data_streams_credentials(&self.config.api_key, &self.config.api_secret)
-                .map_err(|error| {
-                    anyhow::anyhow!("Chainlink reference credentials invalid: {error}")
-                })?;
-        let authorization_timestamp_ms = current_unix_timestamp_ms()?;
-        let headers = chainlink_reference_websocket_headers(chainlink_data_streams_auth_headers(
-            &credentials,
-            &path_with_query,
-            authorization_timestamp_ms,
-        ));
-        let websocket_config =
-            chainlink_reference_websocket_client_config(&self.config, url, headers);
-        let handler = chainlink_reference_message_handler(
-            self.config.feed_bindings.clone(),
+        self.last_message_unix_ms
+            .store(current_unix_timestamp_ms()?, Ordering::SeqCst);
+        let websocket = chainlink_reference_connect_websocket(
+            &self.config,
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
-        );
-        let websocket = bolt_v3_wire_boundary::connect_websocket(
-            websocket_config,
-            Some(handler),
-            None,
-            None,
-            vec![],
-            None,
+            Arc::clone(&self.last_message_unix_ms),
         )
         .await?;
-        self.websocket = Some(websocket);
+        chainlink_reference_store_transport(&self.websocket, websocket)?;
+        self.liveness_task = Some(spawn_chainlink_reference_liveness_supervisor(
+            self.client_id,
+            self.config.clone(),
+            Arc::clone(&self.subscriptions),
+            Arc::clone(&self.websocket),
+            self.data_sender.clone(),
+            Arc::clone(&self.last_message_unix_ms),
+        ));
         self.connected = true;
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
-        if let Some(websocket) = self.websocket.take() {
+        if let Some(task) = self.liveness_task.take() {
+            task.abort();
+        }
+        if let Some(websocket) = chainlink_reference_take_transport(&self.websocket)? {
             websocket.disconnect().await;
         }
         self.connected = false;
@@ -393,7 +439,17 @@ impl DataClient for ChainlinkReferencePriceClient {
 
 impl ChainlinkReferencePriceClient {
     fn spawn_disconnect(&mut self) {
-        if let Some(websocket) = self.websocket.take() {
+        if let Some(task) = self.liveness_task.take() {
+            task.abort();
+        }
+        let websocket = match chainlink_reference_take_transport(&self.websocket) {
+            Ok(websocket) => websocket,
+            Err(error) => {
+                log::warn!("Chainlink reference disconnect dropped: {error}");
+                None
+            }
+        };
+        if let Some(websocket) = websocket {
             get_runtime().spawn(async move {
                 websocket.disconnect().await;
             });
@@ -401,11 +457,276 @@ impl ChainlinkReferencePriceClient {
     }
 }
 
+fn chainlink_reference_current_transport_mode(
+    websocket: &Arc<Mutex<Option<BoundaryWebSocket>>>,
+) -> Option<ConnectionMode> {
+    websocket
+        .lock()
+        .ok()
+        .and_then(|websocket| websocket.as_ref().map(BoundaryWebSocket::connection_mode))
+}
+
+fn chainlink_reference_take_transport(
+    websocket: &Arc<Mutex<Option<BoundaryWebSocket>>>,
+) -> anyhow::Result<Option<BoundaryWebSocket>> {
+    websocket
+        .lock()
+        .map(|mut websocket| websocket.take())
+        .map_err(|error| anyhow::anyhow!("Chainlink reference transport state poisoned: {error}"))
+}
+
+fn chainlink_reference_store_transport(
+    websocket: &Arc<Mutex<Option<BoundaryWebSocket>>>,
+    next: BoundaryWebSocket,
+) -> anyhow::Result<()> {
+    let mut websocket = websocket.lock().map_err(|error| {
+        anyhow::anyhow!("Chainlink reference transport state poisoned: {error}")
+    })?;
+    *websocket = Some(next);
+    Ok(())
+}
+
 fn chainlink_reference_transport_connected(
     started: bool,
     transport_mode: Option<ConnectionMode>,
 ) -> bool {
     started && transport_mode.is_some_and(|mode| mode.is_active())
+}
+
+async fn chainlink_reference_connect_websocket(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscriptions: Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    last_message_unix_ms: Arc<AtomicU64>,
+) -> anyhow::Result<BoundaryWebSocket> {
+    let websocket_config = reference_price_websocket_config(config)?;
+    let handler = chainlink_reference_message_handler(
+        config.feed_bindings.clone(),
+        subscriptions,
+        data_sender,
+        last_message_unix_ms,
+    );
+    bolt_v3_wire_boundary::connect_websocket(
+        websocket_config,
+        Some(handler),
+        None,
+        None,
+        vec![],
+        None,
+    )
+    .await
+    .map_err(anyhow::Error::from)
+}
+
+fn spawn_chainlink_reference_liveness_supervisor(
+    client_id: ClientId,
+    config: ChainlinkReferencePriceClientConfig,
+    subscriptions: Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    last_message_unix_ms: Arc<AtomicU64>,
+) -> JoinHandle<()> {
+    get_runtime().spawn(async move {
+        let mut attempted_reconnects = 0_u32;
+        let mut last_logged_mode = chainlink_reference_current_transport_mode(&websocket);
+        loop {
+            tokio::time::sleep(Duration::from_millis(config.idle_timeout_ms)).await;
+            let now_ms = match current_unix_timestamp_ms() {
+                Ok(value) => value,
+                Err(error) => {
+                    log::error!(
+                        "Chainlink reference liveness check skipped for client_id={client_id}: {error}"
+                    );
+                    continue;
+                }
+            };
+            let mode = chainlink_reference_current_transport_mode(&websocket);
+            if mode != last_logged_mode {
+                log::warn!(
+                    "Chainlink reference transport state transition for client_id={client_id}: {:?} -> {:?}",
+                    last_logged_mode,
+                    mode
+                );
+                last_logged_mode = mode;
+            }
+            let last_message_ms = last_message_unix_ms.load(Ordering::SeqCst);
+            let silence_ms = now_ms.saturating_sub(last_message_ms);
+            let stale = silence_ms > config.idle_timeout_ms;
+            let transport_dead = !chainlink_reference_transport_connected(true, mode);
+            if !(stale || transport_dead) {
+                attempted_reconnects = 0;
+                continue;
+            }
+            chainlink_reference_emit_input_health_transition(
+                &config,
+                &subscriptions,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+                true,
+            );
+            if !config
+                .reconnect_max_attempts
+                .permits_attempt(attempted_reconnects)
+            {
+                chainlink_reference_emit_input_health_transition(
+                    &config,
+                    &subscriptions,
+                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+                    true,
+                );
+                log::error!(
+                    "Chainlink reference reconnect attempts exhausted for client_id={client_id}; transport remains unhealthy"
+                );
+                break;
+            }
+            attempted_reconnects = attempted_reconnects.saturating_add(1);
+            log::error!(
+                "Chainlink reference stream dead for client_id={client_id}: silence_ms={silence_ms} idle_timeout_ms={} transport_mode={:?}; reconnecting with fresh Data Streams auth headers",
+                config.idle_timeout_ms,
+                mode
+            );
+            match chainlink_reference_take_transport(&websocket) {
+                Ok(Some(existing)) => existing.disconnect().await,
+                Ok(None) => {}
+                Err(error) => {
+                    log::error!(
+                        "Chainlink reference reconnect could not take old transport for client_id={client_id}: {error}"
+                    );
+                    continue;
+                }
+            }
+            last_message_unix_ms.store(now_ms, Ordering::SeqCst);
+            match chainlink_reference_connect_websocket(
+                &config,
+                Arc::clone(&subscriptions),
+                data_sender.clone(),
+                Arc::clone(&last_message_unix_ms),
+            )
+            .await
+            {
+                Ok(next) => {
+                    let mode = next.connection_mode();
+                    if let Err(error) = chainlink_reference_store_transport(&websocket, next) {
+                        log::error!(
+                            "Chainlink reference reconnect could not store new transport for client_id={client_id}: {error}"
+                        );
+                        continue;
+                    }
+                    let subscription_count = match subscriptions.lock() {
+                        Ok(subscriptions) => subscriptions.len(),
+                        Err(error) => {
+                            log::error!(
+                                "Chainlink reference reconnect could not read subscription count for client_id={client_id}: {error}"
+                            );
+                            continue;
+                        }
+                    };
+                    log::warn!(
+                        "Chainlink reference DataClient reconnect completed for client_id={client_id}; transport_mode={mode:?} replayed_subscription_count={subscription_count}"
+                    );
+                    chainlink_reference_emit_input_health_transition(
+                        &config,
+                        &subscriptions,
+                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
+                        false,
+                    );
+                    attempted_reconnects = 0;
+                    last_logged_mode = Some(mode);
+                }
+                Err(error) => {
+                    log::error!(
+                        "Chainlink reference DataClient reconnect failed for client_id={client_id}: {error}"
+                    );
+                }
+            }
+        }
+    })
+}
+
+fn chainlink_reference_emit_input_health_transition(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscriptions: &Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    reason: &'static str,
+    missing: bool,
+) {
+    let Some(emitter) = config.input_health_transition_emitter.as_ref() else {
+        return;
+    };
+    for source in
+        chainlink_reference_input_health_sources_for_transition(config, subscriptions, reason)
+    {
+        emitter(
+            reason,
+            BoltV3InputHealthSourceTransition { source, missing },
+        );
+    }
+}
+
+fn chainlink_reference_input_health_sources_for_transition(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscriptions: &Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    reason: &'static str,
+) -> Vec<BoltV3MissingInputSource> {
+    if config.input_health_sources.is_empty() {
+        return Vec::new();
+    }
+    let active_subscriptions = match subscriptions.lock() {
+        Ok(subscriptions) => subscriptions.values().cloned().collect::<Vec<_>>(),
+        Err(error) => {
+            log::error!(
+                "Chainlink reference input-health transition could not read subscriptions: {error}"
+            );
+            return config
+                .input_health_sources
+                .iter()
+                .map(|source| {
+                    chainlink_reference_input_health_source_with_reason(
+                        source,
+                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_SUBSCRIPTION_UNAVAILABLE,
+                    )
+                })
+                .collect();
+        }
+    };
+    let mut sources = if active_subscriptions.is_empty() {
+        config.input_health_sources.clone()
+    } else {
+        config
+            .input_health_sources
+            .iter()
+            .filter(|source| {
+                active_subscriptions.iter().any(|subscription| {
+                    subscription.asset == source.asset
+                        && subscription.source_id == source.source_id
+                        && subscription.instrument_id == source.provider_instrument
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if sources.is_empty() {
+        sources = config.input_health_sources.clone();
+    }
+    sources
+        .iter()
+        .map(|source| chainlink_reference_input_health_source_with_reason(source, reason))
+        .collect()
+}
+
+fn chainlink_reference_input_health_source_with_reason(
+    source: &BoltV3MissingInputSource,
+    reason: &'static str,
+) -> BoltV3MissingInputSource {
+    let mut source = source.clone();
+    source.reason = reason.to_string();
+    source
 }
 
 fn chainlink_reference_websocket_url(
@@ -518,7 +839,7 @@ pub(crate) fn chainlink_reference_websocket_client_config(
         reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
         reconnect_backoff_factor: Some(config.reconnect_backoff_factor),
         reconnect_jitter_ms: Some(config.reconnect_jitter_ms),
-        reconnect_max_attempts: config.reconnect_max_attempts,
+        reconnect_max_attempts: Some(CHAINLINK_REFERENCE_TRANSPORT_RECONNECT_MAX_ATTEMPTS),
         idle_timeout_ms: Some(config.idle_timeout_ms),
         backend: config.transport_backend,
         proxy_url: None,
@@ -594,23 +915,42 @@ fn chainlink_reference_message_handler(
         Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    last_message_unix_ms: Arc<AtomicU64>,
 ) -> WireMessageHandler {
     Arc::new(move |message: WireMessage| {
+        let received_ts_ms = match current_unix_timestamp_ms() {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("Chainlink reference frame dropped: {error}");
+                return;
+            }
+        };
+        last_message_unix_ms.store(received_ts_ms, Ordering::SeqCst);
         let frame_bytes = match message {
             WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes,
-            _ => return,
+            WireMessage::Ping(bytes) => {
+                log::info!(
+                    "Chainlink reference WebSocket ping received: payload_bytes={}",
+                    bytes.len()
+                );
+                return;
+            }
+            WireMessage::Pong(bytes) => {
+                log::info!(
+                    "Chainlink reference WebSocket pong received: payload_bytes={}",
+                    bytes.len()
+                );
+                return;
+            }
+            WireMessage::Close => {
+                log::warn!("Chainlink reference WebSocket close frame received");
+                return;
+            }
         };
         let frame = match std::str::from_utf8(frame_bytes.as_ref()) {
             Ok(frame) => frame,
             Err(error) => {
                 log::warn!("Chainlink reference frame dropped: invalid UTF-8: {error}");
-                return;
-            }
-        };
-        let received_ts_ms = match current_unix_timestamp_ms() {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!("Chainlink reference frame dropped: {error}");
                 return;
             }
         };
@@ -773,9 +1113,12 @@ fn validate_data_bounds(key: &str, data: &ChainlinkReferencePriceDataConfig) -> 
         data.reconnect_jitter_ms,
         &mut errors,
     );
-    if data.reconnect_max_attempts != Some(0) {
+    if matches!(
+        data.reconnect_max_attempts,
+        ChainlinkReferenceReconnectMaxAttempts::Limited(0)
+    ) {
         errors.push(format!(
-            "clients.{key}.data.reconnect_max_attempts must be explicitly set to 0 because Chainlink reference WebSocket auth headers are regenerated only on DataClient connect"
+            "clients.{key}.data.reconnect_max_attempts must be positive or \"unlimited\"; Chainlink reference reconnects are provider-supervised so Data Streams auth headers are regenerated on every reconnect"
         ));
     }
     validate_positive_u64(
@@ -902,6 +1245,39 @@ pub fn map_adapters(
     })
 }
 
+pub(crate) fn attach_live_input_health_transition_emitter(
+    adapters: &mut BoltV3AdapterConfigs,
+    input_health_transition_emitter: BoltV3InputHealthTransitionEmitter,
+    input_health_sources_by_client: &BTreeMap<String, Vec<BoltV3MissingInputSource>>,
+) {
+    for (client_key, client_config) in &mut adapters.clients {
+        let Some(data) = client_config.data.as_mut() else {
+            continue;
+        };
+        let Some(config) = data
+            .config
+            .as_any()
+            .downcast_ref::<ChainlinkReferencePriceClientConfig>()
+        else {
+            continue;
+        };
+        let input_health_sources = input_health_sources_by_client
+            .get(client_key)
+            .into_iter()
+            .flat_map(|sources| sources.iter())
+            .filter(|source| source.provider == REFERENCE_PRICE_PROVIDER_KEY)
+            .cloned()
+            .collect::<Vec<_>>();
+        if input_health_sources.is_empty() {
+            continue;
+        }
+        let mut updated = config.clone();
+        updated.input_health_transition_emitter = Some(input_health_transition_emitter.clone());
+        updated.input_health_sources = input_health_sources;
+        data.config = Box::new(updated);
+    }
+}
+
 pub(crate) fn reference_price_client_config(
     root: &crate::bolt_v3_config::BoltV3RootConfig,
     client_key: &str,
@@ -924,6 +1300,14 @@ pub(crate) fn reference_price_client_config(
 pub(crate) fn reference_price_websocket_config(
     config: &ChainlinkReferencePriceClientConfig,
 ) -> anyhow::Result<WebSocketConfig> {
+    let authorization_timestamp_ms = current_unix_timestamp_ms()?;
+    chainlink_reference_websocket_config_at(config, authorization_timestamp_ms)
+}
+
+fn chainlink_reference_websocket_config_at(
+    config: &ChainlinkReferencePriceClientConfig,
+    authorization_timestamp_ms: u64,
+) -> anyhow::Result<WebSocketConfig> {
     let feed_ids = config
         .feed_bindings
         .iter()
@@ -934,7 +1318,6 @@ pub(crate) fn reference_price_websocket_config(
         &config.websocket_path,
         &feed_ids,
     )?;
-    let authorization_timestamp_ms = current_unix_timestamp_ms()?;
     let credentials = chainlink_data_streams_credentials(&config.api_key, &config.api_secret)?;
     let headers = chainlink_reference_websocket_headers(chainlink_data_streams_auth_headers(
         &credentials,
@@ -1012,6 +1395,8 @@ fn map_data(
         reconnect_max_attempts: cfg.reconnect_max_attempts,
         idle_timeout_ms: cfg.idle_timeout_ms,
         feed_bindings,
+        input_health_transition_emitter: None,
+        input_health_sources: Vec::new(),
         api_key: secrets.api_key.clone(),
         api_secret: secrets.api_secret.clone(),
     })
@@ -1077,9 +1462,11 @@ mod tests {
             reconnect_delay_max_ms: 5_000,
             reconnect_backoff_factor: 1.5,
             reconnect_jitter_ms: 100,
-            reconnect_max_attempts: Some(0),
+            reconnect_max_attempts: ChainlinkReferenceReconnectMaxAttempts::Unlimited,
             idle_timeout_ms: 10_000,
             feed_bindings: vec![fixture_feed_binding()],
+            input_health_transition_emitter: None,
+            input_health_sources: Vec::new(),
             api_key: Zeroizing::new("chainlink-api-key".to_string()),
             api_secret: Zeroizing::new("chainlink-api-secret".to_string()),
         }
@@ -1141,11 +1528,17 @@ mod tests {
                 config,
                 data_sender,
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
-                websocket: None,
+                websocket: Arc::new(Mutex::new(None)),
+                last_message_unix_ms: Arc::new(AtomicU64::new(0)),
+                liveness_task: None,
                 connected: false,
             },
             data_receiver,
         )
+    }
+
+    fn test_last_message_clock() -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(0))
     }
 
     #[test]
@@ -1172,6 +1565,44 @@ mod tests {
                 .contains("chainlink_data_streams.feed_bindings must contain one or more"),
             "unexpected empty feed binding error: {error}"
         );
+    }
+
+    #[test]
+    fn attach_live_input_health_transition_emitter_reboxes_chainlink_reference_config() {
+        let mut adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::from([(
+                "chainlink_reference".to_string(),
+                BoltV3ClientAdapterConfig {
+                    data: Some(BoltV3DataClientAdapterConfig {
+                        factory: Box::new(ChainlinkReferencePriceClientFactory),
+                        config: Box::new(fixture_config()),
+                    }),
+                    execution: None,
+                },
+            )]),
+        };
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(|_, _| {});
+        let source = BoltV3MissingInputSource {
+            strategy_instance_id: "binary-edge-taker".to_string(),
+            source_id: "chainlink_primary".to_string(),
+            asset: "BTC".to_string(),
+            provider: REFERENCE_PRICE_PROVIDER_KEY.to_string(),
+            provider_instrument: TEST_INSTRUMENT_ID.to_string(),
+            reason: "test".to_string(),
+        };
+        let sources_by_client =
+            BTreeMap::from([("chainlink_reference".to_string(), vec![source.clone()])]);
+
+        attach_live_input_health_transition_emitter(&mut adapters, emitter, &sources_by_client);
+
+        let config = adapters
+            .clients
+            .get("chainlink_reference")
+            .and_then(|client| client.data.as_ref())
+            .and_then(|data| data.config_as::<ChainlinkReferencePriceClientConfig>())
+            .expect("Chainlink reference config should remain downcastable after rebox");
+        assert!(config.input_health_transition_emitter.is_some());
+        assert_eq!(config.input_health_sources, vec![source]);
     }
 
     #[test]
@@ -1232,6 +1663,56 @@ mod tests {
                 .iter()
                 .any(|(key, value)| key == "X-Authorization-Signature-SHA256" && value.len() == 64)
         );
+    }
+
+    #[test]
+    fn websocket_config_disables_transport_reconnect_for_provider_level_resign() {
+        let mut config = fixture_config();
+        config.reconnect_max_attempts = ChainlinkReferenceReconnectMaxAttempts::Limited(3);
+
+        let websocket = chainlink_reference_websocket_config_at(&config, 1_700_000_000_000)
+            .expect("Chainlink WebSocket config should build");
+
+        assert_eq!(
+            websocket.reconnect_max_attempts,
+            Some(CHAINLINK_REFERENCE_TRANSPORT_RECONNECT_MAX_ATTEMPTS),
+            "transport reconnect must stay disabled so the provider supervisor rebuilds signed headers"
+        );
+    }
+
+    #[test]
+    fn reconnect_websocket_config_resigns_chainlink_auth_headers() {
+        let config = fixture_config();
+
+        let first = chainlink_reference_websocket_config_at(&config, 1_700_000_000_000)
+            .expect("first signed WebSocket config should build");
+        let second = chainlink_reference_websocket_config_at(&config, 1_700_000_001_000)
+            .expect("second signed WebSocket config should build");
+
+        let header = |config: &WebSocketConfig, name: &str| {
+            config
+                .headers
+                .iter()
+                .find_map(|(key, value)| (key == name).then_some(value.as_str()))
+                .expect("signed Chainlink header should be present")
+        };
+        assert_eq!(header(&first, "X-Authorization-Timestamp"), "1700000000000");
+        assert_eq!(
+            header(&second, "X-Authorization-Timestamp"),
+            "1700000001000"
+        );
+        assert_ne!(
+            header(&first, "X-Authorization-Signature-SHA256"),
+            header(&second, "X-Authorization-Signature-SHA256")
+        );
+    }
+
+    #[test]
+    fn chainlink_reference_reconnect_attempt_budget_is_provider_level() {
+        assert!(ChainlinkReferenceReconnectMaxAttempts::Unlimited.permits_attempt(u32::MAX));
+        assert!(ChainlinkReferenceReconnectMaxAttempts::Limited(2).permits_attempt(1));
+        assert!(!ChainlinkReferenceReconnectMaxAttempts::Limited(2).permits_attempt(2));
+        assert!(!ChainlinkReferenceReconnectMaxAttempts::Limited(0).permits_attempt(0));
     }
 
     #[test]
@@ -1364,6 +1845,7 @@ mod tests {
             client.config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
+            test_last_message_clock(),
         );
 
         handler(WireMessage::text(chainlink_report_frame_json()));
@@ -1420,6 +1902,7 @@ mod tests {
             client.config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
+            test_last_message_clock(),
         );
 
         handler(WireMessage::binary(chainlink_report_frame_json()));
@@ -1460,6 +1943,7 @@ mod tests {
             client.config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
+            test_last_message_clock(),
         );
 
         handler(WireMessage::binary(frame_bytes.to_vec()));
@@ -1501,6 +1985,7 @@ mod tests {
             client.config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
             client.data_sender.clone(),
+            test_last_message_clock(),
         );
 
         handler(WireMessage::binary(vec![0xff, 0xfe, 0xfd]));
@@ -1511,6 +1996,34 @@ mod tests {
         assert!(
             matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
             "invalid UTF-8 binary Chainlink frame should leave the data channel open and empty, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn control_frames_refresh_liveness_without_emitting_custom_data() {
+        let (client, mut data_receiver) = fixture_client();
+        let last_message = test_last_message_clock();
+        let handler = chainlink_reference_message_handler(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            Arc::clone(&last_message),
+        );
+
+        handler(WireMessage::Ping(vec![1]));
+        assert!(
+            last_message.load(Ordering::SeqCst) > 0,
+            "Chainlink Ping control frames should refresh the liveness clock"
+        );
+        handler(WireMessage::Pong(vec![2]));
+        handler(WireMessage::Close);
+
+        let error = data_receiver
+            .try_recv()
+            .expect_err("Chainlink control frames must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "control frames should leave the data channel open and empty, got {error:?}"
         );
     }
 

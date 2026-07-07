@@ -1823,6 +1823,8 @@ pub enum BoltV3OrderLifecycleTransition {
     OrderRejected,
     OrderCanceled,
     OrderExpired,
+    OrderFilled,
+    ReconcileQueryFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

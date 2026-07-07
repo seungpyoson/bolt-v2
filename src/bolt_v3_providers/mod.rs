@@ -53,10 +53,14 @@ const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
 const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
+    bolt_v3_adapters::{
+        BoltV3AdapterConfigs, BoltV3AdapterMappingError, BoltV3ClientAdapterConfig,
+        BoltV3MarketClockFn,
+    },
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
+    bolt_v3_operator_health::{BoltV3InputHealthTransitionEmitter, BoltV3MissingInputSource},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_venue_truth::{VenueTruthOrderEventMapper, VenueTruthSnapshotSource},
     strategies::registry::FeeProvider,
@@ -77,6 +81,18 @@ pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
 }
 
 pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
+
+pub(crate) fn attach_live_input_health_transition_emitters(
+    adapters: &mut BoltV3AdapterConfigs,
+    input_health_transition_emitter: BoltV3InputHealthTransitionEmitter,
+    input_health_sources_by_client: &BTreeMap<String, Vec<BoltV3MissingInputSource>>,
+) {
+    chainlink_reference::attach_live_input_health_transition_emitter(
+        adapters,
+        input_health_transition_emitter,
+        input_health_sources_by_client,
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderExclusiveSignerOwner {

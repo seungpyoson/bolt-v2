@@ -1227,6 +1227,333 @@ fn late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat() {
 }
 
 #[test]
+fn runtime_reconcile_timer_queries_pending_entry_order_from_nt_cache() {
+    let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-RECONCILE-QUERY");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+    let order =
+        configured_entry_order_for_reconcile(&mut strategy, instrument_id, entry_client_order_id);
+    cache
+        .borrow_mut()
+        .add_order(
+            order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept open entry order");
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    emit_selection_retry_time_event(&mut strategy, reconcile_due_time_ms);
+
+    assert!(
+        strategy.runtime_reconcile_query_events.iter().any(|event| {
+            event.client_order_id == entry_client_order_id && event.instrument_id == instrument_id
+        }),
+        "selection retry timer must dispatch an NT order query for unresolved pending entry"
+    );
+    assert!(matches!(strategy.exposure, ExposureState::PendingEntry(_)));
+}
+
+#[test]
+fn runtime_reconcile_timer_waits_until_pending_entry_order_is_stale() {
+    let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-RECONCILE-YOUNG");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+    let order =
+        configured_entry_order_for_reconcile(&mut strategy, instrument_id, entry_client_order_id);
+    cache
+        .borrow_mut()
+        .add_order(
+            order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept open entry order");
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    emit_selection_retry_time_event(&mut strategy, reconcile_due_time_ms.saturating_sub(1));
+
+    assert!(
+        strategy.runtime_reconcile_query_events.is_empty(),
+        "young pending entry must wait for the configured retry interval before venue reconcile"
+    );
+    assert!(matches!(strategy.exposure, ExposureState::PendingEntry(_)));
+}
+
+#[test]
+fn runtime_reconcile_canceled_pending_entry_flattens_with_reconcile_source() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-RECONCILE-CANCELED");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+    let mut order =
+        configured_entry_order_for_reconcile(&mut strategy, instrument_id, entry_client_order_id);
+    close_order_with_canceled_event(&mut order);
+    cache
+        .borrow_mut()
+        .add_order(
+            order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept closed entry order");
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    emit_selection_retry_time_event(&mut strategy, reconcile_due_time_ms);
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderCanceled
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
+                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                    && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-CANCELED")
+        )),
+        "terminal cache truth must flatten pending entry with reconcile_pass source"
+    );
+}
+
+#[test]
+fn runtime_reconcile_cached_position_materializes_managed_with_reconcile_source() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-RECONCILE-FILLED");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_entry_reconcile_pending(
+        &mut strategy,
+        pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+    let position_id = PositionId::from("P-RECONCILE-FILLED");
+    let instrument = strategy
+        .current_instrument(instrument_id)
+        .expect("active instrument should be cached for reconcile test");
+    let position = Position::new(
+        &instrument,
+        order_filled_event(entry_client_order_id, instrument_id, position_id),
+    );
+    cache
+        .borrow_mut()
+        .add_position(&position, NtOmsType::Netting)
+        .expect("test cache should accept filled position");
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    emit_selection_retry_time_event(&mut strategy, reconcile_due_time_ms);
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::Managed(ManagedPositionState {
+            position: OpenPositionState { position_id: managed_position_id, .. },
+            ..
+        }) if managed_position_id == position_id
+    ));
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryFillMaterialized
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                    && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-FILLED")
+                    && record.position_id.as_deref() == Some("P-RECONCILE-FILLED")
+        )),
+        "cached position truth must materialize managed exposure with reconcile_pass evidence"
+    );
+}
+
+#[test]
+fn runtime_reconcile_filled_exit_terminal_frees_slot_with_reconcile_source() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-RECONCILE-FILLED"),
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    let exit_client_order_id = ClientOrderId::from("EXIT-RECONCILE-FILLED");
+    set_exit_pending(
+        &mut strategy,
+        position.clone(),
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let order_config = strategy
+        .normal_exit_order_execution_config()
+        .expect("test config should build exit order config");
+    let exit_order_side = strategy
+        .configured_position_contract()
+        .expect("test config should carry position contract")
+        .exit_order_side;
+    let mut order = strategy
+        .build_exit_order_with_execution_config(
+            order_config,
+            instrument_id,
+            exit_order_side,
+            position.quantity,
+            Price::new(0.45, 2),
+            exit_client_order_id,
+        )
+        .expect("configured exit order should build for reconcile test");
+    close_order_with_filled_event(&mut order, position.position_id);
+    cache
+        .borrow_mut()
+        .add_order(
+            order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept filled exit order");
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    emit_selection_retry_time_event(&mut strategy, reconcile_due_time_ms);
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderFilled
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
+                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                    && record.client_order_id.as_deref() == Some("EXIT-RECONCILE-FILLED")
+        )),
+        "filled exit terminal cache truth must free the slot with reconcile_pass evidence"
+    );
+}
+
+#[test]
+fn runtime_reconcile_query_failure_writes_evidence_and_retries_without_state_change() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let entry_client_order_id = ClientOrderId::from("ENTRY-RECONCILE-MISSING-ORDER");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms.saturating_add(1));
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::PendingEntry(PendingEntryState { client_order_id, .. })
+            if client_order_id == entry_client_order_id
+    ));
+    let instrument_id_text = instrument_id.to_string();
+    let failures = evidence
+        .events()
+        .into_iter()
+        .filter(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::ReconcileQueryFailed
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::PendingEntry
+                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                    && record.instrument_id.as_deref() == Some(instrument_id_text.as_str())
+                    && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-MISSING-ORDER")
+        ))
+        .count();
+    assert_eq!(
+        failures, 2,
+        "failed reconcile query should write loud evidence and retry without mutating exposure"
+    );
+}
+
+#[test]
+fn runtime_reconcile_absent_unsupported_observed_position_flattens_with_reconcile_source() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let instrument_id = selected_entry_instrument(&strategy);
+    let observed = configured_position_probe(&mut strategy, instrument_id);
+    let observed_position_id = observed.position_id.to_string();
+    set_unsupported_observed(
+        &mut strategy,
+        observed.clone(),
+        UnsupportedObservedReason::LiveUnsupportedContract,
+    );
+
+    emit_selection_retry_time_event(&mut strategy, 1_205);
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionClosed
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
+                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                    && record.position_id.as_deref() == Some(observed_position_id.as_str())
+        )),
+        "absent unsupported observed position must flatten with reconcile_pass source"
+    );
+}
+
+#[test]
 fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_closed_state() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
 
@@ -2603,6 +2930,7 @@ fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
     );
     let pending = PendingEntryState {
         client_order_id: ClientOrderId::from("ENTRY-001"),
+        submitted_at_ms: Some(1_000),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -2982,6 +3310,7 @@ fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
     let pending = PendingEntryState {
         client_order_id: ClientOrderId::from("ENTRY-RECONCILE-001"),
+        submitted_at_ms: Some(1_000),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -3042,6 +3371,7 @@ fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
         position: Some(managed.clone()),
         pending_exit: PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-STATE-001"),
+            submitted_at_ms: Some(1_000),
             market_id: Some("MKT-1".to_string()),
             position_id: Some(PositionId::from("P-EXIT-STATE-001")),
             fill_received: false,
@@ -3098,6 +3428,7 @@ fn residual_position_after_terminal_preserves_fill_precision() {
         position: Some(managed),
         pending_exit: PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-PRECISION-001"),
+            submitted_at_ms: Some(1_000),
             market_id: Some("MKT-1".to_string()),
             position_id: Some(PositionId::from("P-EXIT-PRECISION-001")),
             fill_received: true,
@@ -3135,6 +3466,7 @@ fn residual_position_after_terminal_uses_observed_position_after_fill() {
         }),
         pending_exit: PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-OBSERVED-RESIDUAL-001"),
+            submitted_at_ms: Some(1_000),
             market_id: open_position.lifecycle.market_id_owned(),
             position_id: Some(open_position.position_id),
             fill_received: true,
@@ -3172,6 +3504,7 @@ fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state(
         }),
         pending_exit: PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-RESIDUAL-001"),
+            submitted_at_ms: Some(1_000),
             market_id: open_position.lifecycle.market_id_owned(),
             position_id: Some(open_position.position_id),
             fill_received: true,
@@ -3244,6 +3577,7 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
     let entry_client_order_id = ClientOrderId::from("ENTRY-REMATERIALIZED-001");
     let pending = PendingEntryState {
         client_order_id: entry_client_order_id,
+        submitted_at_ms: Some(1_000),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -3481,6 +3815,7 @@ fn pending_entry_for_terminal_override(
     let book = configured_book_for_instrument(strategy, instrument_id);
     PendingEntryState {
         client_order_id,
+        submitted_at_ms: Some(1_000),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -3495,4 +3830,130 @@ fn pending_entry_for_terminal_override(
         historical_entry_fee_bps: Some(0.0),
         book,
     }
+}
+
+fn configured_entry_order_for_reconcile(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+    client_order_id: ClientOrderId,
+) -> OrderAny {
+    strategy
+        .build_configured_entry_order(
+            instrument_id,
+            strategy
+                .configured_entry_order_side()
+                .expect("test config should carry entry order side"),
+            Quantity::new(10.0, 2),
+            Price::new(0.45, 2),
+            client_order_id,
+        )
+        .expect("configured entry order should build for reconcile test")
+}
+
+fn close_order_with_canceled_event(order: &mut OrderAny) {
+    let (submitted, accepted) = submitted_and_accepted_events_for_reconcile(order);
+    order
+        .apply(submitted)
+        .expect("submitted event should apply to test order");
+    order
+        .apply(accepted)
+        .expect("accepted event should apply to test order");
+    order
+        .apply(nautilus_model::events::OrderEventAny::Canceled(
+            reconcile_order_canceled_event(order),
+        ))
+        .expect("canceled event should apply to accepted test order");
+}
+
+fn close_order_with_filled_event(order: &mut OrderAny, position_id: PositionId) {
+    let (submitted, accepted) = submitted_and_accepted_events_for_reconcile(order);
+    order
+        .apply(submitted)
+        .expect("submitted event should apply to test order");
+    order
+        .apply(accepted)
+        .expect("accepted event should apply to test order");
+    order
+        .apply(nautilus_model::events::OrderEventAny::Filled(
+            order_filled_event_with_details(
+                order.client_order_id(),
+                order.instrument_id(),
+                Some(position_id),
+                order.order_side(),
+            ),
+        ))
+        .expect("filled event should apply to accepted test order");
+}
+
+fn submitted_and_accepted_events_for_reconcile(
+    order: &OrderAny,
+) -> (
+    nautilus_model::events::OrderEventAny,
+    nautilus_model::events::OrderEventAny,
+) {
+    let trader_id = nautilus_model::identifiers::TraderId::from("TRADER-001");
+    let strategy_id = StrategyId::from("BINARYORACLEEDGETAKER-001");
+    let instrument_id = order.instrument_id();
+    let client_order_id = order.client_order_id();
+    let account_id = nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT");
+    (
+        nautilus_model::events::OrderEventAny::Submitted(
+            nautilus_model::events::OrderSubmitted::new(
+                trader_id,
+                strategy_id,
+                instrument_id,
+                client_order_id,
+                account_id,
+                nautilus_core::UUID4::new(),
+                UnixNanos::from(1_000_u64),
+                UnixNanos::from(1_000_u64),
+            ),
+        ),
+        nautilus_model::events::OrderEventAny::Accepted(
+            nautilus_model::events::OrderAccepted::new(
+                trader_id,
+                strategy_id,
+                instrument_id,
+                client_order_id,
+                nautilus_model::identifiers::VenueOrderId::from("V-RECONCILE-001"),
+                account_id,
+                nautilus_core::UUID4::new(),
+                UnixNanos::from(1_001_u64),
+                UnixNanos::from(1_001_u64),
+                false,
+            ),
+        ),
+    )
+}
+
+fn reconcile_order_canceled_event(order: &OrderAny) -> nautilus_model::events::OrderCanceled {
+    nautilus_model::events::OrderCanceled::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        order.instrument_id(),
+        order.client_order_id(),
+        nautilus_core::UUID4::new(),
+        UnixNanos::from(1_002_u64),
+        UnixNanos::from(1_002_u64),
+        false,
+        Some(nautilus_model::identifiers::VenueOrderId::from(
+            "V-RECONCILE-001",
+        )),
+        Some(nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT")),
+    )
+}
+
+fn emit_selection_retry_time_event(strategy: &mut BinaryOracleEdgeTaker, event_ts_ms: u64) {
+    let event = TimeEvent::new(
+        ustr::Ustr::from(strategy.selection_retry_timer_name().as_str()),
+        nautilus_core::UUID4::new(),
+        UnixNanos::from(event_ts_ms * NANOS_PER_MILLI_U64),
+        UnixNanos::from(event_ts_ms * NANOS_PER_MILLI_U64),
+    );
+    DataActor::on_time_event(strategy, &event)
+        .expect("selection retry time event should route through strategy handler");
+}
+
+fn reconcile_due_time_ms(strategy: &BinaryOracleEdgeTaker, submitted_at_ms: u64) -> u64 {
+    submitted_at_ms.saturating_add(strategy.runtime_reconcile_min_age_ms())
 }

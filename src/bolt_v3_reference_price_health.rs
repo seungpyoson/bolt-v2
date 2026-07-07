@@ -1106,7 +1106,7 @@ mod tests {
         );
         data.insert(
             "reconnect_max_attempts".to_string(),
-            toml::Value::Integer(0),
+            toml::Value::String("unlimited".to_string()),
         );
         data.insert("idle_timeout_ms".to_string(), toml::Value::Integer(2000));
     }

@@ -12,14 +12,14 @@ use nautilus_core::UnixNanos;
 use nautilus_model::enums::PositionSide;
 use nautilus_model::{
     data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
-    enums::{OrderSide, OrderType, TimeInForce},
+    enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     types::{Currency, Price, Quantity},
 };
 use nautilus_system::trader::Trader;
-use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
@@ -201,7 +201,7 @@ use self::subscriptions::{
 #[cfg(test)]
 use self::subscriptions::{
     REFERENCE_PRICE_SUBSCRIBE_ACTION, REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
-    ResolutionStrikeFetchTrigger,
+    ResolutionStrikeFetchTrigger, ResolutionStrikeReportBoundary,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -221,6 +221,7 @@ const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";
 const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";
 const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";
 const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";
+const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: &str = "reconcile_pass";
 const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
     "preserved fail-closed: fill observed, awaiting position truth";
 
@@ -264,6 +265,23 @@ struct PendingEntryTerminalEventInput {
 }
 
 #[derive(Debug, Clone)]
+struct RuntimeReconcileOrderQuery {
+    client_order_id: ClientOrderId,
+    submitted_at_ms: Option<u64>,
+    instrument_id: InstrumentId,
+    market_id: Option<String>,
+    position_id: Option<PositionId>,
+    failure_outcome: BoltV3OrderLifecycleOutcome,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeReconcileQueryEvent {
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+}
+
+#[derive(Debug, Clone)]
 struct FlatTerminalEntryOverride {
     client_order_id: ClientOrderId,
     market_id: Option<String>,
@@ -277,6 +295,19 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
     SignedTradeFlowConfig {
         window_secs: config.trade_flow_window_secs,
         max_samples: config.trade_flow_max_samples,
+    }
+}
+
+fn reconcile_transition_for_order_status(
+    status: OrderStatus,
+) -> Option<BoltV3OrderLifecycleTransition> {
+    match status {
+        OrderStatus::Denied => Some(BoltV3OrderLifecycleTransition::OrderDenied),
+        OrderStatus::Rejected => Some(BoltV3OrderLifecycleTransition::OrderRejected),
+        OrderStatus::Canceled => Some(BoltV3OrderLifecycleTransition::OrderCanceled),
+        OrderStatus::Expired => Some(BoltV3OrderLifecycleTransition::OrderExpired),
+        OrderStatus::Filled => Some(BoltV3OrderLifecycleTransition::OrderFilled),
+        _ => None,
     }
 }
 
@@ -678,6 +709,7 @@ pub struct BinaryOracleEdgeTaker {
     entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     settled_position_keys: BTreeSet<String>,
     settlement_booking_error_keys: BTreeSet<String>,
+    settlement_close_fetch_attempts: BTreeMap<String, SettlementCloseFetchAttemptState>,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -695,6 +727,8 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
     #[cfg(test)]
     live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
+    #[cfg(test)]
+    runtime_reconcile_query_events: Vec<RuntimeReconcileQueryEvent>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -711,6 +745,12 @@ struct SettlementEvidenceIds {
     settlement_key: String,
     market_id: String,
     product_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct SettlementCloseFetchAttemptState {
+    interval_end_ms: u64,
+    attempt_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -788,6 +828,7 @@ impl BinaryOracleEdgeTaker {
             entry_reject_state: BTreeMap::new(),
             settled_position_keys: BTreeSet::new(),
             settlement_booking_error_keys: BTreeSet::new(),
+            settlement_close_fetch_attempts: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
             book_subscription_events: Vec::new(),
@@ -797,6 +838,8 @@ impl BinaryOracleEdgeTaker {
             reference_price_subscribe_events: Vec::new(),
             #[cfg(test)]
             live_input_subscription_retry_events: Vec::new(),
+            #[cfg(test)]
+            runtime_reconcile_query_events: Vec::new(),
         }
     }
 
@@ -902,20 +945,54 @@ impl BinaryOracleEdgeTaker {
         {
             return Ok(());
         }
-        // Feed outage at resolution is accepted fail-closed behavior: do not
-        // book settlement, preserve exposure, and emit loud evidence so later
-        // venue deltas remain unexplained and halt at the venue-truth fence.
-        let evidence = self.settlement_booking_error_evidence(
+        self.retry_settlement_close_fetch_or_record_terminal_failure(
             &position,
-            settlement_key.clone(),
-            BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
-            "resolution feed missing at market end; settlement not booked".to_string(),
-            now_ms.saturating_mul(NANOS_PER_MILLI_U64),
-        );
-        self.context
-            .decision_evidence()
-            .record_settlement_booking_error(&evidence)?;
-        self.settlement_booking_error_keys.insert(settlement_key);
+            settlement_key,
+            interval_end_ms,
+            now_ms,
+        )
+    }
+
+    fn retry_settlement_close_fetch_or_record_terminal_failure(
+        &mut self,
+        position: &OpenPositionState,
+        settlement_key: String,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) -> Result<()> {
+        let retry_budget = self.config.market_exit_max_attempts;
+        let attempts_exhausted = {
+            let state = self
+                .settlement_close_fetch_attempts
+                .entry(settlement_key.clone())
+                .or_insert(SettlementCloseFetchAttemptState {
+                    interval_end_ms,
+                    attempt_count: INITIAL_COUNTER_U64,
+                });
+            if state.interval_end_ms != interval_end_ms {
+                *state = SettlementCloseFetchAttemptState {
+                    interval_end_ms,
+                    attempt_count: INITIAL_COUNTER_U64,
+                };
+            }
+            if state.attempt_count >= retry_budget {
+                true
+            } else {
+                state.attempt_count = state.attempt_count.saturating_add(COUNTER_INCREMENT_U64);
+                false
+            }
+        };
+        if attempts_exhausted {
+            self.record_settlement_booking_error(
+                position,
+                settlement_key,
+                BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                "resolution feed missing after settlement close fetch attempts exhausted; settlement not booked".to_string(),
+                now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+            )?;
+        } else {
+            self.subscribe_resolution_settlement_close(interval_end_ms);
+        }
         Ok(())
     }
 
@@ -1057,6 +1134,8 @@ impl BinaryOracleEdgeTaker {
             .decision_evidence()
             .record_settlement(&evidence)?;
         self.settled_position_keys.insert(settlement_key);
+        self.settlement_close_fetch_attempts
+            .remove(&evidence.settlement_key);
         if let Some(sink) = self.context.settlement_runtime_sink() {
             let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence) {
                 Ok(explanation) => explanation,
@@ -1098,6 +1177,8 @@ impl BinaryOracleEdgeTaker {
             .decision_evidence()
             .record_settlement_booking_error(&evidence)?;
         self.settlement_booking_error_keys.insert(settlement_key);
+        self.settlement_close_fetch_attempts
+            .remove(&evidence.settlement_key);
         Ok(())
     }
 
@@ -2034,6 +2115,354 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn reconcile_runtime_venue_state(&mut self, now_ms: u64) {
+        if let Some(query) = self.runtime_reconcile_order_query() {
+            if self.runtime_reconcile_order_query_due(&query, now_ms) {
+                self.reconcile_runtime_order_query(query, now_ms);
+            }
+        }
+        self.reconcile_unsupported_observed_position_from_cache(now_ms);
+    }
+
+    fn runtime_reconcile_order_query_due(
+        &self,
+        query: &RuntimeReconcileOrderQuery,
+        now_ms: u64,
+    ) -> bool {
+        query.submitted_at_ms.is_none_or(|submitted_at_ms| {
+            now_ms.saturating_sub(submitted_at_ms) >= self.runtime_reconcile_min_age_ms()
+        })
+    }
+
+    fn runtime_reconcile_min_age_ms(&self) -> u64 {
+        self.config
+            .retry_interval_seconds
+            .saturating_mul(MILLIS_PER_SECOND_U64)
+    }
+
+    fn runtime_reconcile_order_query(&self) -> Option<RuntimeReconcileOrderQuery> {
+        match &self.exposure {
+            ExposureState::PendingEntry(pending) => Some(RuntimeReconcileOrderQuery {
+                client_order_id: pending.client_order_id,
+                submitted_at_ms: pending.submitted_at_ms,
+                instrument_id: pending.instrument_id,
+                market_id: pending.lifecycle.market_id_owned(),
+                position_id: None,
+                failure_outcome: BoltV3OrderLifecycleOutcome::PendingEntry,
+            }),
+            ExposureState::EntryReconcilePending { pending, .. } => {
+                Some(RuntimeReconcileOrderQuery {
+                    client_order_id: pending.client_order_id,
+                    submitted_at_ms: pending.submitted_at_ms,
+                    instrument_id: pending.instrument_id,
+                    market_id: pending.lifecycle.market_id_owned(),
+                    position_id: None,
+                    failure_outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                })
+            }
+            ExposureState::ExitPending(exit) => Some(RuntimeReconcileOrderQuery {
+                client_order_id: exit.pending_exit.client_order_id,
+                submitted_at_ms: exit.pending_exit.submitted_at_ms,
+                instrument_id: exit.position.as_ref().map_or_else(
+                    || self.active_held_instrument_id(),
+                    |position| Some(position.position.instrument_id),
+                )?,
+                market_id: exit.pending_exit.market_id.clone().or_else(|| {
+                    exit.position
+                        .as_ref()
+                        .and_then(|position| position.position.lifecycle.market_id_owned())
+                }),
+                position_id: exit.pending_exit.position_id.or_else(|| {
+                    exit.position
+                        .as_ref()
+                        .map(|position| position.position.position_id)
+                }),
+                failure_outcome: BoltV3OrderLifecycleOutcome::ExitPending,
+            }),
+            _ => None,
+        }
+    }
+
+    fn reconcile_runtime_order_query(&mut self, query: RuntimeReconcileOrderQuery, now_ms: u64) {
+        let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
+        if self.materialize_cached_position_for_reconcile(&query, ts_event_ns) {
+            return;
+        }
+        if self.apply_cached_terminal_order_for_reconcile(&query, ts_event_ns) {
+            return;
+        }
+        self.query_order_for_reconcile(query, ts_event_ns);
+    }
+
+    fn materialize_cached_position_for_reconcile(
+        &mut self,
+        query: &RuntimeReconcileOrderQuery,
+        ts_event_ns: u64,
+    ) -> bool {
+        if !self.is_registered() {
+            return false;
+        }
+        let spec = {
+            let Some(position) = self.cache().position_for_order(&query.client_order_id) else {
+                return false;
+            };
+            if position.instrument_id != query.instrument_id {
+                return false;
+            }
+            PositionMaterializationSpec {
+                instrument_id: position.instrument_id,
+                position_id: position.id,
+                entry_order_side: position.entry,
+                side: position.side,
+                quantity: position.quantity,
+                avg_px_open: position.avg_px_open,
+            }
+        };
+        self.materialize_position_from_reconcile_pass(spec, ts_event_ns);
+        true
+    }
+
+    fn apply_cached_terminal_order_for_reconcile(
+        &mut self,
+        query: &RuntimeReconcileOrderQuery,
+        ts_event_ns: u64,
+    ) -> bool {
+        if !self.is_registered() {
+            return false;
+        }
+        let Some(order) = self.cache().order_owned(&query.client_order_id) else {
+            return false;
+        };
+        let Some(transition) = reconcile_transition_for_order_status(order.status()) else {
+            return false;
+        };
+        if !order.is_closed() {
+            return false;
+        }
+        let filled_quantity = order.filled_qty();
+        let filled = is_positive_finite(filled_quantity.as_f64());
+        if let ExposureState::PendingEntry(pending) = &self.exposure
+            && pending.client_order_id == query.client_order_id
+            && pending.instrument_id == query.instrument_id
+        {
+            if filled {
+                let pending = pending.clone();
+                self.exposure = ExposureState::EntryReconcilePending {
+                    pending: pending.clone(),
+                    reason: EntryReconcileReason::AwaitingPositionMaterialization,
+                    observed_fill_quantity: Some(filled_quantity),
+                };
+                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                    transition: BoltV3OrderLifecycleTransition::EntryReconcilePending,
+                    outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                    source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+                    market_id: pending.lifecycle.market_id_owned(),
+                    instrument_id: Some(pending.instrument_id),
+                    position_id: None,
+                    client_order_id: Some(pending.client_order_id),
+                    prior_client_order_id: None,
+                    raw_reason_text: Some(format!(
+                        "terminal order status {:?} with filled quantity from NT cache",
+                        order.status()
+                    )),
+                    order_side: Some(order.order_side()),
+                    filled_quantity: Some(filled_quantity),
+                    residual_quantity: None,
+                    ts_event_ns: Some(ts_event_ns),
+                });
+            } else {
+                self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+                    client_order_id: query.client_order_id,
+                    event_instrument_id: query.instrument_id,
+                    transition,
+                    source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+                    raw_reason_text: Some(format!(
+                        "terminal order status {:?} from NT cache",
+                        order.status()
+                    )),
+                    ts_event_ns,
+                    terminal_proves_zero_fill: true,
+                });
+            }
+            return true;
+        }
+        if let ExposureState::EntryReconcilePending { pending, .. } = &self.exposure
+            && pending.client_order_id == query.client_order_id
+            && pending.instrument_id == query.instrument_id
+        {
+            if filled {
+                self.record_reconcile_query_failure(
+                    query.clone(),
+                    format!(
+                        "terminal order status {:?} has filled quantity but no cached position",
+                        order.status()
+                    ),
+                    ts_event_ns,
+                );
+            } else {
+                self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+                    client_order_id: query.client_order_id,
+                    event_instrument_id: query.instrument_id,
+                    transition,
+                    source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+                    raw_reason_text: Some(format!(
+                        "terminal order status {:?} from NT cache",
+                        order.status()
+                    )),
+                    ts_event_ns,
+                    terminal_proves_zero_fill: true,
+                });
+            }
+            return true;
+        }
+        let exit_matches = matches!(
+            &self.exposure,
+            ExposureState::ExitPending(exit)
+                if exit.pending_exit.client_order_id == query.client_order_id
+        );
+        if exit_matches {
+            if filled {
+                if let ExposureState::ExitPending(exit) = &mut self.exposure {
+                    exit.pending_exit.fill_received = true;
+                    exit.pending_exit.filled_quantity = Some(filled_quantity);
+                }
+            }
+            self.mark_exit_order_terminal(
+                query.client_order_id,
+                query.instrument_id,
+                transition,
+                ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+                Some(format!(
+                    "terminal order status {:?} from NT cache",
+                    order.status()
+                )),
+                ts_event_ns,
+            );
+            return true;
+        }
+        false
+    }
+
+    fn query_order_for_reconcile(&mut self, query: RuntimeReconcileOrderQuery, ts_event_ns: u64) {
+        if !self.is_registered() {
+            self.record_reconcile_query_failure(
+                query,
+                "strategy is not registered for NT order query".to_string(),
+                ts_event_ns,
+            );
+            return;
+        }
+        let Some(order) = self.cache().order_owned(&query.client_order_id) else {
+            self.record_reconcile_query_failure(
+                query,
+                "NT cache is missing order for reconcile query".to_string(),
+                ts_event_ns,
+            );
+            return;
+        };
+        self.record_runtime_reconcile_query_event(&query);
+        let client_id = ClientId::from(self.config.client_id.as_str());
+        if let Err(error) = self.query_order(&order, Some(client_id), None) {
+            self.record_reconcile_query_failure(
+                query,
+                format!("NT order query failed: {error:#}"),
+                ts_event_ns,
+            );
+        }
+    }
+
+    fn record_reconcile_query_failure(
+        &mut self,
+        query: RuntimeReconcileOrderQuery,
+        raw_reason_text: String,
+        ts_event_ns: u64,
+    ) {
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::ReconcileQueryFailed,
+            outcome: query.failure_outcome,
+            source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+            market_id: query.market_id,
+            instrument_id: Some(query.instrument_id),
+            position_id: query.position_id,
+            client_order_id: Some(query.client_order_id),
+            prior_client_order_id: None,
+            raw_reason_text: Some(raw_reason_text),
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: Some(ts_event_ns),
+        });
+    }
+
+    fn reconcile_unsupported_observed_position_from_cache(&mut self, now_ms: u64) {
+        let ExposureState::UnsupportedObserved(observed) = &self.exposure else {
+            return;
+        };
+        if !self.is_registered() {
+            return;
+        }
+        let observed_position = observed.observed.clone();
+        let position_still_open = self.cached_position_still_open(&observed_position);
+        if position_still_open {
+            return;
+        }
+        let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
+        self.exposure = ExposureState::Flat;
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::PositionClosed,
+            outcome: BoltV3OrderLifecycleOutcome::Flat,
+            source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+            market_id: observed_position.lifecycle.market_id_owned(),
+            instrument_id: Some(observed_position.instrument_id),
+            position_id: Some(observed_position.position_id),
+            client_order_id: None,
+            prior_client_order_id: None,
+            raw_reason_text: Some(
+                "observed position absent from NT open-position cache".to_string(),
+            ),
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: Some(ts_event_ns),
+        });
+        self.refresh_book_subscriptions_for_current_state();
+    }
+
+    fn cached_position_still_open(&self, position: &OpenPositionState) -> bool {
+        let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        let execution_venue = self.context.execution_venue();
+        self.cache()
+            .positions_open(
+                Some(&execution_venue),
+                Some(&position.instrument_id),
+                Some(&strategy_id),
+                None,
+                None,
+            )
+            .into_iter()
+            .any(|cached| cached.id == position.position_id)
+    }
+
+    fn active_held_instrument_id(&self) -> Option<InstrumentId> {
+        self.active
+            .books
+            .up
+            .instrument_id
+            .or(self.active.books.down.instrument_id)
+    }
+
+    #[cfg(test)]
+    fn record_runtime_reconcile_query_event(&mut self, query: &RuntimeReconcileOrderQuery) {
+        self.runtime_reconcile_query_events
+            .push(RuntimeReconcileQueryEvent {
+                client_order_id: query.client_order_id,
+                instrument_id: query.instrument_id,
+            });
+    }
+
+    #[cfg(not(test))]
+    fn record_runtime_reconcile_query_event(&mut self, _query: &RuntimeReconcileOrderQuery) {}
+
     fn set_unsupported_observed_exposure(
         &mut self,
         observed: OpenPositionState,
@@ -2382,6 +2811,7 @@ impl BinaryOracleEdgeTaker {
             position: Some(managed_position),
             pending_exit: PendingExitState {
                 client_order_id,
+                submitted_at_ms: None,
                 market_id: position.lifecycle.market_id_owned(),
                 position_id: Some(position.position_id),
                 fill_received: false,
@@ -3925,6 +4355,31 @@ impl BinaryOracleEdgeTaker {
         spec: PositionMaterializationSpec,
         ts_event_ns: u64,
     ) {
+        self.materialize_position_from_truth(
+            spec,
+            ts_event_ns,
+            ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+        );
+    }
+
+    fn materialize_position_from_reconcile_pass(
+        &mut self,
+        spec: PositionMaterializationSpec,
+        ts_event_ns: u64,
+    ) {
+        self.materialize_position_from_truth(
+            spec,
+            ts_event_ns,
+            ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+        );
+    }
+
+    fn materialize_position_from_truth(
+        &mut self,
+        spec: PositionMaterializationSpec,
+        ts_event_ns: u64,
+        source: &'static str,
+    ) {
         let PositionMaterializationSpec {
             instrument_id,
             position_id,
@@ -3957,6 +4412,13 @@ impl BinaryOracleEdgeTaker {
         };
         let pending_context = self.pending_entry_context_for(instrument_id);
         let pending_matches = pending_context.is_some();
+        let reconcile_entry_materialization = source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+            && matches!(
+                &self.exposure,
+                ExposureState::PendingEntry(pending)
+                    | ExposureState::EntryReconcilePending { pending, .. }
+                    if pending.instrument_id == instrument_id
+            );
         let observed_open_side = is_observed_open_side(side);
         let tradable_position_supported =
             self.configured_position_contract()
@@ -3980,7 +4442,7 @@ impl BinaryOracleEdgeTaker {
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                     transition: BoltV3OrderLifecycleTransition::EntryReconcilePending,
                     outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
-                    source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                    source,
                     market_id,
                     instrument_id: Some(instrument_id),
                     position_id: Some(position_id),
@@ -4100,11 +4562,30 @@ impl BinaryOracleEdgeTaker {
                 pending_entry,
             }),
         };
+        if reconcile_entry_materialization && let Some(pending) = pending_context.as_ref() {
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: BoltV3OrderLifecycleTransition::EntryFillMaterialized,
+                outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
+                source,
+                market_id: pending.lifecycle.market_id_owned(),
+                instrument_id: Some(instrument_id),
+                position_id: Some(position_id),
+                client_order_id: Some(pending.client_order_id),
+                prior_client_order_id: None,
+                raw_reason_text: Some(
+                    "cached position materialized during runtime reconcile".to_string(),
+                ),
+                order_side: Some(entry_order_side),
+                filled_quantity: Some(quantity),
+                residual_quantity: None,
+                ts_event_ns: Some(ts_event_ns),
+            });
+        }
         if let Some(terminal_override) = position_truth_rematerialization_override {
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                 transition: BoltV3OrderLifecycleTransition::PositionTruthRematerialized,
                 outcome: BoltV3OrderLifecycleOutcome::Managed,
-                source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                source,
                 market_id: terminal_override.market_id.or(rematerialized_market_id),
                 instrument_id: Some(instrument_id),
                 position_id: Some(position_id),
@@ -4172,7 +4653,7 @@ impl BinaryOracleEdgeTaker {
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                 transition: BoltV3OrderLifecycleTransition::ResidualRemanaged,
                 outcome: BoltV3OrderLifecycleOutcome::Managed,
-                source: ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL,
+                source,
                 market_id: residual_position.lifecycle.market_id_owned(),
                 instrument_id: Some(residual_position.instrument_id),
                 position_id: Some(residual_position.position_id),
@@ -5776,6 +6257,7 @@ impl BinaryOracleEdgeTaker {
             position: Some(managed_position.clone()),
             pending_exit: PendingExitState {
                 client_order_id,
+                submitted_at_ms: Some(now_ms),
                 market_id: managed_position.position.lifecycle.market_id_owned(),
                 position_id: Some(managed_position.position.position_id),
                 fill_received: false,
@@ -6186,6 +6668,7 @@ impl BinaryOracleEdgeTaker {
         self.last_flat_terminal_entry_override = None;
         self.exposure = ExposureState::PendingEntry(PendingEntryState {
             client_order_id,
+            submitted_at_ms: Some(now_ms),
             lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
                 self.current_market_id().map(str::to_string),
                 decision.evaluation.selected_side,
@@ -6663,6 +7146,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         if event.name.as_str() == self.selection_retry_timer_name() {
             self.refresh_selection_from_cache(now_ms);
             self.retry_missing_live_input_subscriptions_at(now_ms);
+            self.reconcile_runtime_venue_state(now_ms);
         }
         self.check_resolution_feed_outage_at_market_end(now_ms)?;
         Ok(())

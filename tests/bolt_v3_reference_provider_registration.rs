@@ -91,7 +91,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
-reconnect_max_attempts = 0
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [secrets]
@@ -118,7 +118,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
-reconnect_max_attempts = 0
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [execution]
@@ -138,7 +138,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 }
 
 #[test]
-fn chainlink_reference_requires_internal_reconnect_disabled_for_fresh_auth_headers() {
+fn chainlink_reference_requires_provider_level_reconnect_budget_for_fresh_auth_headers() {
     let missing_reconnect_bound = client_from_toml(
         r#"
 venue = "CHAINLINK_REFERENCE_PRICE"
@@ -162,14 +162,13 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
     );
     let errors = validate_client_block("chainlink_reference", &missing_reconnect_bound);
     assert!(
-        errors
-            .iter()
-            .any(|message| message.contains("reconnect_max_attempts")
-                && message.contains("must be explicitly set to 0")),
-        "missing Chainlink reconnect_max_attempts=0 should fail validation, got: {errors:#?}"
+        errors.iter().any(
+            |message| message.contains("reconnect_max_attempts") && message.contains("missing")
+        ),
+        "missing Chainlink reconnect_max_attempts should fail validation, got: {errors:#?}"
     );
 
-    let enabled_reconnect = client_from_toml(
+    let zero_reconnect = client_from_toml(
         r#"
 venue = "CHAINLINK_REFERENCE_PRICE"
 
@@ -183,7 +182,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
-reconnect_max_attempts = 1
+reconnect_max_attempts = 0
 idle_timeout_ms = 10000
 
 [secrets]
@@ -191,13 +190,14 @@ api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 "#,
     );
-    let errors = validate_client_block("chainlink_reference", &enabled_reconnect);
+    let errors = validate_client_block("chainlink_reference", &zero_reconnect);
     assert!(
-        errors
-            .iter()
-            .any(|message| message.contains("reconnect_max_attempts")
-                && message.contains("must be explicitly set to 0")),
-        "enabled Chainlink internal reconnect should fail validation, got: {errors:#?}"
+        errors.iter().any(|message| {
+            message.contains("reconnect_max_attempts")
+                && message.contains("positive")
+                && message.contains("unlimited")
+        }),
+        "zero Chainlink reconnect_max_attempts should fail validation, got: {errors:#?}"
     );
 }
 
@@ -218,7 +218,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
-reconnect_max_attempts = 0
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [secrets]

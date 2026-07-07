@@ -769,7 +769,7 @@ fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll(
 }
 
 #[test]
-fn position_market_lifecycle_feed_outage_records_from_later_time_event() {
+fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_exhausted() {
     assert_reality_fixtures();
 
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -795,15 +795,102 @@ fn position_market_lifecycle_feed_outage_records_from_later_time_event() {
         .expect("fixture should configure position interval end");
 
     roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
-    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+    emit_settlement_close_retry_budget_events(&mut strategy, position_interval_end_ms);
 
     let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
             && settlement_booking_error_reasons(&events)
-                == vec![BoltV3SettlementBookingErrorReason::ResolutionFeedMissing],
-        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: old-position feed outage must be recorded from later interval time events; exposure={:?} events={events:?}",
+                == vec![BoltV3SettlementBookingErrorReason::ResolutionFeedMissing]
+            && close_fetch_count == strategy.config.market_exit_max_attempts as usize,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: old-position feed outage must be recorded only after close-fetch retry budget exhaustion; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SELECTION-BLOCKED-CLOSE-FETCH"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    strategy.active = ActiveMarketState::idle();
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+
+    let events = evidence.events();
+    let close_events = settlement_close_fetch_events(&strategy);
+    assert!(
+        close_events.len() == 1
+            && close_events[0].boundary_unix_seconds
+                == position_interval_end_ms / MILLIS_PER_SECOND_U64
+            && settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 0
+            && matches!(strategy.exposure, ExposureState::Managed(_)),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: selection-blocked held position must issue its own WindowCloseSettlement fetch without terminal outage evidence; exposure={:?} close_events={close_events:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_late_matching_resolution_tick_after_watchdog_books_settlement() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-ROLLED-LATE-RESOLUTION"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+    emit_resolution_update_at(&mut strategy, 3_200.0, position_interval_end_ms);
+
+    let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
+    assert!(
+        settlement_evidence_count(&events) == 1
+            && settlement_booking_error_count(&events) == 0
+            && matches!(strategy.exposure, ExposureState::Flat)
+            && close_fetch_count == 1,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: late matching resolution tick after watchdog must still book settlement; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
     );
 }
@@ -1733,6 +1820,38 @@ fn emit_time_event_at(strategy: &mut BinaryOracleEdgeTaker, event_ts_ms: u64) {
         .expect("time event should route through the strategy handler");
 }
 
+fn emit_settlement_close_retry_budget_events(
+    strategy: &mut BinaryOracleEdgeTaker,
+    position_interval_end_ms: u64,
+) {
+    let retry_interval_ms = strategy
+        .config
+        .retry_interval_seconds
+        .saturating_mul(MILLIS_PER_SECOND_U64);
+    for attempt in INITIAL_COUNTER_U64..=strategy.config.market_exit_max_attempts {
+        emit_time_event_at(
+            strategy,
+            position_interval_end_ms
+                .saturating_add(1)
+                .saturating_add(attempt.saturating_mul(retry_interval_ms)),
+        );
+    }
+}
+
+fn settlement_close_fetch_events(
+    strategy: &BinaryOracleEdgeTaker,
+) -> Vec<&ResolutionStrikeSubscribeEvent> {
+    strategy
+        .resolution_strike_subscribe_events
+        .iter()
+        .filter(|event| event.report_boundary == ResolutionStrikeReportBoundary::WindowClose)
+        .collect()
+}
+
+fn settlement_close_fetch_event_count(strategy: &BinaryOracleEdgeTaker) -> usize {
+    settlement_close_fetch_events(strategy).len()
+}
+
 fn roll_active_to_next_interval(
     strategy: &mut BinaryOracleEdgeTaker,
     next_interval_start_ms: u64,
@@ -1876,6 +1995,7 @@ fn set_exit_pending_with_filled_quantity(
     strategy.exposure = ExposureState::ExitPending(ExitPendingState {
         pending_exit: PendingExitState {
             client_order_id,
+            submitted_at_ms: Some(1_000),
             market_id: position.lifecycle.market_id_owned(),
             position_id: Some(position.position_id),
             fill_received: true,

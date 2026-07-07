@@ -182,8 +182,9 @@ use crate::{
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
     bolt_v3_operator_health::{
-        BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3OperatorHealthTransitionEmitter,
-        BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
+        BoltV3InputHealth, BoltV3InputHealthSourceTransition, BoltV3InputHealthTransitionEmitter,
+        BoltV3MissingInputSource, BoltV3OperatorHealthSurface,
+        BoltV3OperatorHealthTransitionEmitter, BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
         node_scoped_runtime_source_announcements, runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::{
@@ -192,7 +193,7 @@ use crate::{
     },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
-        ProviderRuntimeApprovals,
+        ProviderRuntimeApprovals, ReferencePriceIdentifierKind, reference_price_provider_metadata,
     },
     bolt_v3_reference_price::reference_price_source_is_runtime_available,
     bolt_v3_secrets::{
@@ -297,6 +298,8 @@ const OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR: &str =
     stringify!(order_reject_observer_feed_lock_poisoned);
 const OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR: &str =
     stringify!(submit_admission_state_lock_poisoned);
+const OPERATOR_HEALTH_INPUT_SOURCE_UNOBSERVED_REASON: &str =
+    "no live input-health transition observed for reference_current_price source";
 
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
@@ -673,8 +676,152 @@ fn configured_reference_current_price_source_count(loaded: &LoadedBoltV3Config) 
         .strategies
         .iter()
         .filter_map(|strategy| strategy.config.reference_current_price.as_ref())
-        .map(|reference| reference.source_order.len())
+        .map(|reference| {
+            reference
+                .source_order
+                .iter()
+                .filter(|source_id| {
+                    reference.sources.get(*source_id).is_some_and(|source| {
+                        reference_price_source_is_runtime_available(reference, source)
+                    })
+                })
+                .count()
+        })
         .sum()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BoltV3InputHealthSourceKey {
+    strategy_instance_id: String,
+    source_id: String,
+    asset: String,
+    provider: String,
+    provider_instrument: String,
+}
+
+impl BoltV3InputHealthSourceKey {
+    fn from_source(source: &BoltV3MissingInputSource) -> Self {
+        Self {
+            strategy_instance_id: source.strategy_instance_id.clone(),
+            source_id: source.source_id.clone(),
+            asset: source.asset.clone(),
+            provider: source.provider.clone(),
+            provider_instrument: source.provider_instrument.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BoltV3LiveInputHealthAccumulator {
+    configured_source_count: usize,
+    configured_sources: BTreeMap<BoltV3InputHealthSourceKey, BoltV3MissingInputSource>,
+    observed_sources: BTreeSet<BoltV3InputHealthSourceKey>,
+    missing_sources: BTreeMap<BoltV3InputHealthSourceKey, BoltV3MissingInputSource>,
+    has_transition: bool,
+}
+
+impl BoltV3LiveInputHealthAccumulator {
+    fn new(
+        configured_source_count: usize,
+        sources_by_client: &BTreeMap<String, Vec<BoltV3MissingInputSource>>,
+    ) -> Self {
+        let configured_sources = sources_by_client
+            .values()
+            .flat_map(|sources| sources.iter())
+            .map(|source| {
+                let mut source = source.clone();
+                source.reason = OPERATOR_HEALTH_INPUT_SOURCE_UNOBSERVED_REASON.to_string();
+                (BoltV3InputHealthSourceKey::from_source(&source), source)
+            })
+            .collect();
+        Self {
+            configured_source_count,
+            configured_sources,
+            observed_sources: BTreeSet::new(),
+            missing_sources: BTreeMap::new(),
+            has_transition: false,
+        }
+    }
+
+    fn apply_transition(
+        &mut self,
+        transition: BoltV3InputHealthSourceTransition,
+    ) -> BoltV3InputHealth {
+        self.has_transition = true;
+        let key = BoltV3InputHealthSourceKey::from_source(&transition.source);
+        if transition.missing {
+            self.observed_sources.remove(&key);
+            self.missing_sources.insert(key, transition.source);
+        } else {
+            self.observed_sources.insert(key.clone());
+            self.missing_sources.remove(&key);
+        }
+        self.snapshot()
+    }
+
+    fn snapshot(&self) -> BoltV3InputHealth {
+        if self.configured_source_count == 0 {
+            return BoltV3InputHealth::not_configured();
+        }
+        if !self.has_transition {
+            return BoltV3InputHealth::unobserved(self.configured_source_count);
+        }
+        let mut missing_sources = Vec::new();
+        for (key, source) in &self.configured_sources {
+            if let Some(missing_source) = self.missing_sources.get(key) {
+                missing_sources.push(missing_source.clone());
+            } else if !self.observed_sources.contains(key) {
+                missing_sources.push(source.clone());
+            }
+        }
+        for (key, source) in &self.missing_sources {
+            if !self.configured_sources.contains_key(key) {
+                missing_sources.push(source.clone());
+            }
+        }
+        BoltV3InputHealth::from_live_missing_sources(self.configured_source_count, missing_sources)
+    }
+}
+
+fn reference_current_price_live_input_sources_by_client(
+    loaded: &LoadedBoltV3Config,
+) -> BTreeMap<String, Vec<BoltV3MissingInputSource>> {
+    let mut by_client = BTreeMap::<String, Vec<BoltV3MissingInputSource>>::new();
+    for strategy in &loaded.strategies {
+        let Some(reference) = strategy.config.reference_current_price.as_ref() else {
+            continue;
+        };
+        for source_id in &reference.source_order {
+            let Some(source) = reference.sources.get(source_id) else {
+                continue;
+            };
+            if !reference_price_source_is_runtime_available(reference, source) {
+                continue;
+            }
+            let Some(metadata) = reference_price_provider_metadata(source.provider.as_str()) else {
+                continue;
+            };
+            let provider_instrument = match metadata.identifier_kind {
+                ReferencePriceIdentifierKind::InstrumentId => source.instrument_id.clone(),
+                ReferencePriceIdentifierKind::Symbol => source.symbol.clone(),
+            };
+            let Some(provider_instrument) = provider_instrument else {
+                continue;
+            };
+            let sources = by_client
+                .entry(source.client_id.to_string())
+                .or_insert_with(Vec::new);
+            sources.push(BoltV3MissingInputSource {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                source_id: source_id.clone(),
+                asset: reference.asset.clone(),
+                provider: source.provider.as_str().to_string(),
+                provider_instrument,
+                reason: OPERATOR_HEALTH_INPUT_SOURCE_UNOBSERVED_REASON.to_string(),
+            });
+        }
+    }
+    by_client
 }
 
 struct BoltV3LiveNodeRuntimeComponents {
@@ -2323,20 +2470,50 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let operator_health_transition_logger = BoltV3OperatorHealthTransitionLogger::new();
     let input_health_configured_source_count =
         configured_reference_current_price_source_count(loaded);
-    let operator_health_transition_emitter: BoltV3OperatorHealthTransitionEmitter = {
+    let input_health_sources_by_client =
+        reference_current_price_live_input_sources_by_client(loaded);
+    let input_health_accumulator = Arc::new(Mutex::new(BoltV3LiveInputHealthAccumulator::new(
+        input_health_configured_source_count,
+        &input_health_sources_by_client,
+    )));
+    let emit_operator_health_surface: Arc<
+        dyn Fn(&'static str, Option<BoltV3InputHealth>) + Send + Sync + 'static,
+    > = {
         let order_reject_observer_feed = order_reject_observer_feed.clone();
         let submit_admission = submit_admission.clone();
         let logger = operator_health_transition_logger.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
-        Arc::new(move |reason| {
+        Arc::new(move |reason, input_health| {
             let surface = live_operator_health_surface(
                 order_reject_observer_feed.as_ref(),
                 &submit_admission,
                 venue_truth_configured,
                 input_health_configured_source_count,
-                None,
+                input_health,
             );
             logger.emit_surface(reason, surface);
+        })
+    };
+    let operator_health_transition_emitter: BoltV3OperatorHealthTransitionEmitter = {
+        let emit_operator_health_surface = emit_operator_health_surface.clone();
+        let input_health_accumulator = input_health_accumulator.clone();
+        Arc::new(move |reason| {
+            let input_health = input_health_accumulator
+                .lock()
+                .ok()
+                .map(|accumulator| accumulator.snapshot());
+            emit_operator_health_surface(reason, input_health);
+        })
+    };
+    let input_health_transition_emitter: BoltV3InputHealthTransitionEmitter = {
+        let emit_operator_health_surface = emit_operator_health_surface.clone();
+        let input_health_accumulator = input_health_accumulator.clone();
+        Arc::new(move |reason, transition| {
+            let input_health = match input_health_accumulator.lock() {
+                Ok(mut accumulator) => accumulator.apply_transition(transition),
+                Err(_) => BoltV3InputHealth::unobserved(input_health_configured_source_count),
+            };
+            emit_operator_health_surface(reason, Some(input_health));
         })
     };
     let order_reject_observer_feed_subscription = order_reject_observer_feed.as_ref().map(|feed| {
@@ -2351,6 +2528,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         );
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
+    let mut adapters = adapters;
+    bolt_v3_providers::attach_live_input_health_transition_emitters(
+        &mut adapters,
+        input_health_transition_emitter,
+        &input_health_sources_by_client,
+    );
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;

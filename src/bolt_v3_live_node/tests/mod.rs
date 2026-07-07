@@ -128,6 +128,76 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
 }
 
 #[test]
+fn live_input_health_accumulator_starts_unobserved_then_tracks_source_transitions() {
+    let chainlink_source = BoltV3MissingInputSource {
+        strategy_instance_id: "binary-edge-taker".to_string(),
+        source_id: "chainlink_primary".to_string(),
+        asset: "BTC".to_string(),
+        provider: "chainlink_ws".to_string(),
+        provider_instrument: "BTC-USD.CHAINLINK".to_string(),
+        reason: "initial".to_string(),
+    };
+    let polyresearch_source = BoltV3MissingInputSource {
+        strategy_instance_id: "binary-edge-taker".to_string(),
+        source_id: "polyresearch_backup".to_string(),
+        asset: "BTC".to_string(),
+        provider: "polyresearch".to_string(),
+        provider_instrument: "BTC".to_string(),
+        reason: "initial".to_string(),
+    };
+    let sources_by_client = BTreeMap::from([
+        (
+            "chainlink_reference".to_string(),
+            vec![chainlink_source.clone()],
+        ),
+        (
+            "polyresearch_reference".to_string(),
+            vec![polyresearch_source.clone()],
+        ),
+    ]);
+    let mut accumulator = BoltV3LiveInputHealthAccumulator::new(2, &sources_by_client);
+
+    assert_eq!(
+        accumulator.snapshot().status,
+        BoltV3OperatorHealthStatus::Unobserved
+    );
+
+    let after_chainlink_recovered =
+        accumulator.apply_transition(BoltV3InputHealthSourceTransition {
+            source: chainlink_source.clone(),
+            missing: false,
+        });
+
+    assert_eq!(
+        after_chainlink_recovered.status,
+        BoltV3OperatorHealthStatus::MissingInput
+    );
+    assert_eq!(after_chainlink_recovered.observed_source_count, 1);
+    assert_eq!(
+        after_chainlink_recovered.missing_sources[0].source_id,
+        "polyresearch_backup"
+    );
+    assert_eq!(
+        after_chainlink_recovered.missing_sources[0].reason,
+        OPERATOR_HEALTH_INPUT_SOURCE_UNOBSERVED_REASON
+    );
+
+    let mut stale_chainlink_source = chainlink_source;
+    stale_chainlink_source.reason = "stale".to_string();
+    let after_chainlink_stale = accumulator.apply_transition(BoltV3InputHealthSourceTransition {
+        source: stale_chainlink_source,
+        missing: true,
+    });
+
+    assert_eq!(
+        after_chainlink_stale.status,
+        BoltV3OperatorHealthStatus::MissingInput
+    );
+    assert_eq!(after_chainlink_stale.observed_source_count, 0);
+    assert_eq!(after_chainlink_stale.missing_sources.len(), 2);
+}
+
+#[test]
 fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface() {
     let logger = BoltV3OperatorHealthTransitionLogger::new();
     let nominal = BoltV3OperatorHealthSurface::not_configured();

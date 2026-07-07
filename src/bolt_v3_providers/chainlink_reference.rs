@@ -394,14 +394,6 @@ impl DataClient for ChainlinkReferencePriceClient {
         if chainlink_reference_current_transport_mode(&self.websocket).is_some() {
             self.disconnect().await?;
         }
-        let now_ms = current_unix_timestamp_ms()?;
-        self.last_report_unix_ms.store(now_ms, Ordering::SeqCst);
-        chainlink_reference_seed_input_health_report_liveness(
-            &self.config,
-            &self.subscriptions,
-            &self.input_health_report_liveness,
-            now_ms,
-        );
         let websocket = chainlink_reference_connect_websocket(
             &self.config,
             Arc::clone(&self.subscriptions),
@@ -411,6 +403,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.input_health_missing_sources),
         )
         .await?;
+        let connection_epoch_ms = current_unix_timestamp_ms()?;
         chainlink_reference_store_transport(&self.websocket, websocket)?;
         self.liveness_task = Some(spawn_chainlink_reference_liveness_supervisor(
             self.client_id,
@@ -421,6 +414,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.last_report_unix_ms),
             Arc::clone(&self.input_health_report_liveness),
             Arc::clone(&self.input_health_missing_sources),
+            connection_epoch_ms,
         ));
         self.connected = true;
         Ok(())
@@ -552,6 +546,165 @@ fn chainlink_reference_transport_connected(
     started && transport_mode.is_some_and(|mode| mode.is_active())
 }
 
+#[derive(Debug)]
+struct ChainlinkReferenceLivenessSupervisorState {
+    attempted_reconnects: u32,
+    last_budget_reset_report_ms: u64,
+    source_reconnect_attempted: BTreeSet<ChainlinkReferenceInputHealthSourceKey>,
+}
+
+impl ChainlinkReferenceLivenessSupervisorState {
+    fn new() -> Self {
+        Self {
+            attempted_reconnects: u32::MIN,
+            last_budget_reset_report_ms: u64::MIN,
+            source_reconnect_attempted: BTreeSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChainlinkReferenceLivenessTickOutcome {
+    reconnect: bool,
+    exhausted: bool,
+    silence_ms: u64,
+    stream_stale: bool,
+    source_stale: bool,
+    source_reconnect: bool,
+    transport_dead: bool,
+}
+
+fn chainlink_reference_liveness_supervisor_tick(
+    config: &ChainlinkReferencePriceClientConfig,
+    subscriptions: &Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    input_health_report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    input_health_missing_sources: &ChainlinkReferenceInputHealthMissingSources,
+    last_report_unix_ms: &AtomicU64,
+    connection_epoch_ms: u64,
+    state: &mut ChainlinkReferenceLivenessSupervisorState,
+    now_ms: u64,
+    mode: Option<ConnectionMode>,
+) -> ChainlinkReferenceLivenessTickOutcome {
+    let last_report_ms = last_report_unix_ms.load(Ordering::SeqCst);
+    if last_report_ms > connection_epoch_ms && last_report_ms > state.last_budget_reset_report_ms {
+        state.attempted_reconnects = 0;
+        state.last_budget_reset_report_ms = last_report_ms;
+    }
+
+    let stream_liveness_ms = last_report_ms.max(connection_epoch_ms);
+    let silence_ms = now_ms.saturating_sub(stream_liveness_ms);
+    let stream_stale = silence_ms > config.idle_timeout_ms;
+    let stale_sources = chainlink_reference_stale_input_health_sources(
+        config,
+        subscriptions,
+        input_health_report_liveness,
+        now_ms,
+        config.idle_timeout_ms,
+        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+    );
+    let stale_source_keys = stale_sources
+        .iter()
+        .map(ChainlinkReferenceInputHealthSourceKey::from_source)
+        .collect::<BTreeSet<_>>();
+    state
+        .source_reconnect_attempted
+        .retain(|key| stale_source_keys.contains(key));
+    let source_stale = !stale_source_keys.is_empty();
+    let source_reconnect = stale_source_keys
+        .iter()
+        .any(|key| !state.source_reconnect_attempted.contains(key));
+    let transport_dead = !chainlink_reference_transport_connected(true, mode);
+
+    if source_stale {
+        chainlink_reference_emit_missing_input_health_sources(
+            config,
+            stale_sources,
+            input_health_missing_sources,
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+            false,
+        );
+    }
+    if stream_stale || transport_dead {
+        chainlink_reference_emit_missing_input_health_transition(
+            config,
+            subscriptions,
+            input_health_missing_sources,
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+            false,
+        );
+    }
+
+    let reconnect = stream_stale || source_reconnect || transport_dead;
+    if !reconnect {
+        return ChainlinkReferenceLivenessTickOutcome {
+            reconnect: false,
+            exhausted: false,
+            silence_ms,
+            stream_stale,
+            source_stale,
+            source_reconnect,
+            transport_dead,
+        };
+    }
+
+    if !config
+        .reconnect_max_attempts
+        .permits_attempt(state.attempted_reconnects)
+    {
+        let exhausted_sources = chainlink_reference_stale_input_health_sources(
+            config,
+            subscriptions,
+            input_health_report_liveness,
+            now_ms,
+            config.idle_timeout_ms,
+            CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+        );
+        if !exhausted_sources.is_empty() {
+            chainlink_reference_emit_missing_input_health_sources(
+                config,
+                exhausted_sources,
+                input_health_missing_sources,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+                true,
+            );
+        }
+        if stream_stale || transport_dead {
+            chainlink_reference_emit_missing_input_health_transition(
+                config,
+                subscriptions,
+                input_health_missing_sources,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
+                true,
+            );
+        }
+        return ChainlinkReferenceLivenessTickOutcome {
+            reconnect: false,
+            exhausted: true,
+            silence_ms,
+            stream_stale,
+            source_stale,
+            source_reconnect,
+            transport_dead,
+        };
+    }
+
+    state.attempted_reconnects = state.attempted_reconnects.saturating_add(1);
+    if source_reconnect {
+        state.source_reconnect_attempted.extend(stale_source_keys);
+    }
+    ChainlinkReferenceLivenessTickOutcome {
+        reconnect: true,
+        exhausted: false,
+        silence_ms,
+        stream_stale,
+        source_stale,
+        source_reconnect,
+        transport_dead,
+    }
+}
+
 async fn chainlink_reference_connect_websocket(
     config: &ChainlinkReferencePriceClientConfig,
     subscriptions: Arc<
@@ -597,9 +750,10 @@ fn spawn_chainlink_reference_liveness_supervisor(
     last_report_unix_ms: Arc<AtomicU64>,
     input_health_report_liveness: ChainlinkReferenceInputHealthReportLiveness,
     input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
+    mut connection_epoch_ms: u64,
 ) -> JoinHandle<()> {
     get_runtime().spawn(async move {
-        let mut attempted_reconnects = 0_u32;
+        let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
         let mut last_logged_mode = chainlink_reference_current_transport_mode(&websocket);
         loop {
             tokio::time::sleep(Duration::from_millis(config.idle_timeout_ms)).await;
@@ -621,81 +775,35 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 );
                 last_logged_mode = mode;
             }
-            let last_report_ms = last_report_unix_ms.load(Ordering::SeqCst);
-            let silence_ms = now_ms.saturating_sub(last_report_ms);
-            let stale = silence_ms > config.idle_timeout_ms;
-            let stale_sources = chainlink_reference_stale_input_health_sources(
+            let tick = chainlink_reference_liveness_supervisor_tick(
                 &config,
                 &subscriptions,
                 &input_health_report_liveness,
+                &input_health_missing_sources,
+                last_report_unix_ms.as_ref(),
+                connection_epoch_ms,
+                &mut supervisor_state,
                 now_ms,
-                config.idle_timeout_ms,
-                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
+                mode,
             );
-            let source_stale = !stale_sources.is_empty();
-            let transport_dead = !chainlink_reference_transport_connected(true, mode);
-            if !(stale || source_stale || transport_dead) {
-                attempted_reconnects = 0;
-                continue;
-            }
-            if source_stale {
-                chainlink_reference_emit_missing_input_health_sources(
-                    &config,
-                    stale_sources,
-                    &input_health_missing_sources,
-                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
-                    false,
-                );
-            }
-            if stale || transport_dead {
-                chainlink_reference_emit_missing_input_health_transition(
-                    &config,
-                    &subscriptions,
-                    &input_health_missing_sources,
-                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
-                    false,
-                );
-            }
-            if !config
-                .reconnect_max_attempts
-                .permits_attempt(attempted_reconnects)
-            {
-                let exhausted_sources = chainlink_reference_stale_input_health_sources(
-                    &config,
-                    &subscriptions,
-                    &input_health_report_liveness,
-                    now_ms,
-                    config.idle_timeout_ms,
-                    CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
-                );
-                if !exhausted_sources.is_empty() {
-                    chainlink_reference_emit_missing_input_health_sources(
-                        &config,
-                        exhausted_sources,
-                        &input_health_missing_sources,
-                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
-                        true,
-                    );
-                }
-                if stale || transport_dead {
-                    chainlink_reference_emit_missing_input_health_transition(
-                        &config,
-                        &subscriptions,
-                        &input_health_missing_sources,
-                        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
-                        true,
-                    );
-                }
+            if tick.exhausted {
                 log::error!(
                     "Chainlink reference reconnect attempts exhausted for client_id={client_id}; transport remains unhealthy"
                 );
                 break;
             }
-            attempted_reconnects = attempted_reconnects.saturating_add(1);
+            if !tick.reconnect {
+                continue;
+            }
             log::error!(
-                "Chainlink reference stream dead for client_id={client_id}: silence_ms={silence_ms} idle_timeout_ms={} transport_mode={:?}; reconnecting with fresh Data Streams auth headers",
+                "Chainlink reference liveness unhealthy for client_id={client_id}: silence_ms={} idle_timeout_ms={} transport_mode={:?} stream_stale={} source_stale={} source_reconnect={} transport_dead={}; reconnecting with fresh Data Streams auth headers",
+                tick.silence_ms,
                 config.idle_timeout_ms,
-                mode
+                mode,
+                tick.stream_stale,
+                tick.source_stale,
+                tick.source_reconnect,
+                tick.transport_dead
             );
             match chainlink_reference_take_transport(&websocket) {
                 Ok(Some(existing)) => existing.disconnect().await,
@@ -707,13 +815,6 @@ fn spawn_chainlink_reference_liveness_supervisor(
                     continue;
                 }
             }
-            last_report_unix_ms.store(now_ms, Ordering::SeqCst);
-            chainlink_reference_seed_input_health_report_liveness(
-                &config,
-                &subscriptions,
-                &input_health_report_liveness,
-                now_ms,
-            );
             match chainlink_reference_connect_websocket(
                 &config,
                 Arc::clone(&subscriptions),
@@ -726,12 +827,22 @@ fn spawn_chainlink_reference_liveness_supervisor(
             {
                 Ok(next) => {
                     let mode = next.connection_mode();
+                    let next_connection_epoch_ms = match current_unix_timestamp_ms() {
+                        Ok(value) => value,
+                        Err(error) => {
+                            log::error!(
+                                "Chainlink reference reconnect could not read connection epoch for client_id={client_id}: {error}"
+                            );
+                            now_ms
+                        }
+                    };
                     if let Err(error) = chainlink_reference_store_transport(&websocket, next) {
                         log::error!(
                             "Chainlink reference reconnect could not store new transport for client_id={client_id}: {error}"
                         );
                         continue;
                     }
+                    connection_epoch_ms = next_connection_epoch_ms;
                     let subscription_count = chainlink_reference_replayed_subscription_count(
                         &subscriptions,
                         client_id,
@@ -739,7 +850,6 @@ fn spawn_chainlink_reference_liveness_supervisor(
                     log::warn!(
                         "Chainlink reference DataClient reconnect completed for client_id={client_id}; transport_mode={mode:?} replayed_subscription_count={subscription_count:?}"
                     );
-                    attempted_reconnects = 0;
                     last_logged_mode = Some(mode);
                 }
                 Err(error) => {
@@ -898,26 +1008,6 @@ fn chainlink_reference_input_health_sources_for_subscription(
         })
         .map(|source| chainlink_reference_input_health_source_with_reason(source, reason))
         .collect()
-}
-
-fn chainlink_reference_seed_input_health_report_liveness(
-    config: &ChainlinkReferencePriceClientConfig,
-    subscriptions: &Arc<
-        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
-    >,
-    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
-    now_ms: u64,
-) {
-    let sources = chainlink_reference_input_health_sources_for_transition(
-        config,
-        subscriptions,
-        CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
-    );
-    chainlink_reference_seed_input_health_report_liveness_for_sources(
-        report_liveness,
-        sources.iter(),
-        now_ms,
-    );
 }
 
 fn chainlink_reference_seed_input_health_report_liveness_for_subscription(
@@ -2774,6 +2864,226 @@ mod tests {
     }
 
     #[test]
+    fn liveness_supervisor_resets_budget_only_after_post_reconnect_report() {
+        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
+        let eth_source =
+            input_health_source(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
+        let btc_key = ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source);
+        let eth_key = ChainlinkReferenceInputHealthSourceKey::from_source(&eth_source);
+        let (mut client, mut data_receiver) =
+            fixture_client_with_bindings(vec![fixture_feed_binding(), fixture_eth_feed_binding()]);
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                TEST_INSTRUMENT_ID,
+            ))
+            .expect("BTC Chainlink reference subscription should be accepted");
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ETH_ASSET,
+                TEST_SOURCE_ID,
+                TEST_ETH_INSTRUMENT_ID,
+            ))
+            .expect("ETH Chainlink reference subscription should be accepted");
+
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&transitions);
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
+            recorded
+                .lock()
+                .expect("transition recorder should be available")
+                .push((reason, transition));
+        });
+        let mut config = client.config.clone();
+        config.idle_timeout_ms = 60_000;
+        config.reconnect_max_attempts = ChainlinkReferenceReconnectMaxAttempts::Limited(2);
+        config.input_health_transition_emitter = Some(emitter);
+        config.input_health_sources = vec![btc_source.clone(), eth_source.clone()];
+        let last_report = test_last_report_clock();
+        let report_liveness = Arc::new(Mutex::new(BTreeMap::from([
+            (btc_key.clone(), 1),
+            (eth_key.clone(), 1),
+        ])));
+        let input_health_missing_sources = Arc::new(Mutex::new(BTreeSet::new()));
+        let handler = chainlink_reference_message_handler_with_input_health_recovery(
+            config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            Arc::clone(&last_report),
+            Some(ChainlinkReferenceInputHealthRecovery {
+                config: config.clone(),
+                input_health_report_liveness: Arc::clone(&report_liveness),
+                input_health_missing_sources: Arc::clone(&input_health_missing_sources),
+            }),
+        );
+
+        handler(WireMessage::text(chainlink_report_frame_json()));
+
+        let btc_report_ms = last_report.load(Ordering::SeqCst);
+        assert!(
+            btc_report_ms > 1,
+            "matched BTC report should refresh the client-level report clock"
+        );
+        {
+            let report_liveness = report_liveness
+                .lock()
+                .expect("report liveness should be available");
+            assert_eq!(report_liveness.get(&btc_key).copied(), Some(btc_report_ms));
+            assert_eq!(
+                report_liveness.get(&eth_key).copied(),
+                Some(1),
+                "BTC reports must not refresh ETH source liveness"
+            );
+        }
+        let _ = data_receiver
+            .try_recv()
+            .expect("BTC report should emit a data event");
+
+        let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
+        let connection_epoch_ms = btc_report_ms.saturating_sub(1);
+        let first_tick = chainlink_reference_liveness_supervisor_tick(
+            &config,
+            &client.subscriptions,
+            &report_liveness,
+            &input_health_missing_sources,
+            last_report.as_ref(),
+            connection_epoch_ms,
+            &mut supervisor_state,
+            btc_report_ms + 1,
+            Some(ConnectionMode::Active),
+        );
+
+        assert!(first_tick.reconnect);
+        assert!(!first_tick.stream_stale);
+        assert!(first_tick.source_stale);
+        assert!(first_tick.source_reconnect);
+        assert!(!first_tick.transport_dead);
+        assert_eq!(supervisor_state.attempted_reconnects, 1);
+        assert_eq!(supervisor_state.last_budget_reset_report_ms, btc_report_ms);
+        assert!(
+            supervisor_state
+                .source_reconnect_attempted
+                .contains(&eth_key)
+        );
+        {
+            let missing_sources = input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available");
+            assert!(!missing_sources.contains(&btc_key));
+            assert!(missing_sources.contains(&eth_key));
+        }
+        {
+            let recorded = transitions
+                .lock()
+                .expect("transition recorder should be available");
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(recorded[0].0, CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE);
+            assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ETH_ASSET);
+        }
+
+        let reconnected_epoch_ms = btc_report_ms;
+        let second_tick = chainlink_reference_liveness_supervisor_tick(
+            &config,
+            &client.subscriptions,
+            &report_liveness,
+            &input_health_missing_sources,
+            last_report.as_ref(),
+            reconnected_epoch_ms,
+            &mut supervisor_state,
+            reconnected_epoch_ms + 1,
+            Some(ConnectionMode::Active),
+        );
+
+        assert!(!second_tick.reconnect);
+        assert!(!second_tick.stream_stale);
+        assert!(second_tick.source_stale);
+        assert!(!second_tick.source_reconnect);
+        assert_eq!(
+            supervisor_state.attempted_reconnects, 1,
+            "a successful handshake without a new matched report must not reset the budget"
+        );
+        assert!(
+            input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .contains(&eth_key),
+            "connection grace must not clear source-level missing state"
+        );
+        assert_eq!(
+            transitions
+                .lock()
+                .expect("transition recorder should be available")
+                .len(),
+            1,
+            "a persistent stale source must not trigger repeated missing transitions"
+        );
+
+        std::thread::sleep(Duration::from_millis(2));
+        handler(WireMessage::text(chainlink_report_frame_json_for_feed(
+            TEST_ETH_FEED_ID,
+        )));
+
+        let eth_report_ms = last_report.load(Ordering::SeqCst);
+        assert!(
+            eth_report_ms > reconnected_epoch_ms,
+            "ETH report must postdate the simulated reconnect epoch"
+        );
+        {
+            let report_liveness = report_liveness
+                .lock()
+                .expect("report liveness should be available");
+            assert_eq!(report_liveness.get(&btc_key).copied(), Some(btc_report_ms));
+            assert_eq!(report_liveness.get(&eth_key).copied(), Some(eth_report_ms));
+        }
+        let _ = data_receiver
+            .try_recv()
+            .expect("ETH report should emit a data event");
+        {
+            let recorded = transitions
+                .lock()
+                .expect("transition recorder should be available");
+            assert_eq!(recorded.len(), 2);
+            assert_eq!(
+                recorded[1].0,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED
+            );
+            assert_eq!(recorded[1].1.source.asset.as_str(), TEST_ETH_ASSET);
+        }
+        assert!(
+            input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty()
+        );
+
+        let recovered_tick = chainlink_reference_liveness_supervisor_tick(
+            &config,
+            &client.subscriptions,
+            &report_liveness,
+            &input_health_missing_sources,
+            last_report.as_ref(),
+            reconnected_epoch_ms,
+            &mut supervisor_state,
+            eth_report_ms + 1,
+            Some(ConnectionMode::Active),
+        );
+
+        assert!(!recovered_tick.reconnect);
+        assert!(!recovered_tick.stream_stale);
+        assert!(!recovered_tick.source_stale);
+        assert_eq!(
+            supervisor_state.attempted_reconnects, 0,
+            "a matched report after the reconnect epoch is the only reconnect-budget reset"
+        );
+        assert_eq!(supervisor_state.last_budget_reset_report_ms, eth_report_ms);
+        assert!(
+            supervisor_state.source_reconnect_attempted.is_empty(),
+            "source reconnect edge state should clear after the source becomes healthy"
+        );
+    }
+
+    #[test]
     fn binary_report_frame_through_text_only_handler_emits_no_custom_data() {
         let (mut client, mut data_receiver) = fixture_client();
         client
@@ -2931,8 +3241,12 @@ mod tests {
     }
 
     fn chainlink_report_frame_json() -> String {
+        chainlink_report_frame_json_for_feed(TEST_FEED_ID)
+    }
+
+    fn chainlink_report_frame_json_for_feed(feed_id: &str) -> String {
         let report_source = report_source_json(
-            TEST_FEED_ID,
+            feed_id,
             TEST_VALID_FROM_SECONDS,
             TEST_OBSERVATIONS_SECONDS,
             abi_i192_word(scaled_price(TEST_BENCHMARK_PRICE, TEST_DECIMAL_SCALE)),

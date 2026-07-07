@@ -15461,9 +15461,9 @@ reason = "Chainlink reference-price provider reconnect validation sentinel; oper
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "number"
 literal = '''0'''
-context = '''attempted_reconnects = 0;'''
+context = '''state.attempted_reconnects = 0;'''
 classification = "chainlink_reference_provider_contract"
-reason = "Chainlink reference-price provider reconnect supervisor counter reset after a healthy observation or successful reconnect; operator reconnect budgets remain TOML-owned."
+reason = "Chainlink reference-price provider reconnect supervisor counter reset after a report-proven healthy observation; operator reconnect budgets remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
@@ -15484,16 +15484,8 @@ reason = "Chainlink reference-price provider report-liveness timestamp identity 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "number"
-literal = '''0_u32'''
-context = '''let mut attempted_reconnects = 0_u32;'''
-classification = "chainlink_reference_provider_contract"
-reason = "Chainlink reference-price provider reconnect supervisor counter identity; operator reconnect budgets remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/chainlink_reference.rs"
-kind = "number"
 literal = '''1'''
-context = '''attempted_reconnects = attempted_reconnects.saturating_add(1);'''
+context = '''state.attempted_reconnects = state.attempted_reconnects.saturating_add(1);'''
 classification = "chainlink_reference_provider_contract"
 reason = "Chainlink reference-price provider reconnect supervisor unit counter increment per attempted provider reconnect; operator reconnect budgets remain TOML-owned."
 

@@ -269,10 +269,15 @@ use risk_admission_loss::{
     submit_reservation_recovery_config_from_loaded, sync_nt_trading_state_for_kill_switch,
     venue_truth_runtime_config_from_loaded, wire_bolt_v3_loss_protection_runtime,
 };
+#[cfg(test)]
+pub(crate) use secrets_builders::build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary;
 pub use secrets_builders::{
     build_bolt_v3_live_node_with_resolved, build_bolt_v3_strategy_free_data_client_probe_live_node,
-    build_bolt_v3_strategy_free_live_node, build_bolt_v3_strategy_free_live_node_with_resolved,
+    build_bolt_v3_strategy_free_live_node, build_bolt_v3_strategy_free_live_node_for_data_clients,
+    build_bolt_v3_strategy_free_live_node_with_resolved,
+    build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
     build_bolt_v3_strategy_free_live_node_with_summary,
+    check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with,
 };
 use secrets_builders::{
     current_unix_nanos, live_node_adapter_bundle_with_provider_live_submit_approvals,
@@ -1324,6 +1329,10 @@ impl BoltV3LiveNodeRuntime {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
     }
 
+    pub fn kill_switch_loss_protection_configured(&self) -> bool {
+        self.loss_protection.is_some()
+    }
+
     pub fn order_reject_observer_feed_configured(&self) -> bool {
         self.order_reject_observer_feed.is_some()
             && self.order_reject_observer_feed_subscription.is_some()
@@ -1441,6 +1450,14 @@ impl BoltV3LiveNodeRuntime {
     pub fn capital_admission_runtime_feed_configured(&self) -> bool {
         self.capital_admission_runtime_feed.is_some()
             && self.capital_admission_runtime_feed_subscription.is_some()
+    }
+
+    pub fn capital_admission_venue_spendability_source_configured(&self) -> bool {
+        self.capital_admission_venue_spendability_source.is_some()
+    }
+
+    pub fn submit_reservation_recovery_configured(&self) -> bool {
+        self.submit_reservation_recovery.is_some()
     }
 
     pub fn refresh_capital_admission_venue_spendability_from_configured_source(

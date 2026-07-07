@@ -3287,8 +3287,10 @@ def validate_git_remote_name(remote: str, key: str) -> None:
 def sandbox_safe_push_remote(repo: pathlib.Path) -> tuple[str | None, str | None]:
     try:
         policy = load_policy(repo)
-    except (FileNotFoundError, PolicyError):
+    except FileNotFoundError:
         return None, None
+    except PolicyError as exc:
+        return None, str(exc)
     push_config = policy.get("sandbox_safe_push")
     if push_config is None:
         return None, None
@@ -3305,6 +3307,10 @@ def sandbox_safe_push_remote(repo: pathlib.Path) -> tuple[str | None, str | None
 
 
 def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tuple[str | None, str | None]:
+    try:
+        validate_git_remote_name(remote, "git remote name")
+    except PolicyError as exc:
+        return None, str(exc)
     urls, error = git_output(repo, "remote", "get-url", "--push", "--all", remote)
     if error is not None:
         return None, error
@@ -3485,6 +3491,8 @@ def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, An
         return None, "gh pr view returned an unexpected payload"
     if payload.get("state") != "OPEN":
         return None, f"PR for this branch is {payload.get('state') or 'not open'}; start from main instead of stale branch"
+    if payload.get("headRefName") != branch:
+        return None, f"verify-remote resolved PR for branch {payload.get('headRefName')}, expected {branch}"
     return payload, None
 
 

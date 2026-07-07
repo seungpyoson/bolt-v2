@@ -577,6 +577,35 @@ def assert_verify_remote_rejects_multiple_push_urls() -> None:
         raise AssertionError(calls)
 
 
+def assert_sandbox_push_remote_policy_errors_fail_closed() -> None:
+    owner = load_owner_module()
+    original_load_policy = owner.load_policy
+    try:
+        owner.load_policy = lambda _repo: (_ for _ in ()).throw(owner.PolicyError("policy is invalid"))
+        remote, error = owner.sandbox_safe_push_remote(REPO_ROOT)
+    finally:
+        owner.load_policy = original_load_policy
+
+    if remote is not None or error != "policy is invalid":
+        raise AssertionError((remote, error))
+
+
+def assert_single_push_url_rejects_unsafe_remote_names() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[str, ...]] = []
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = lambda _repo, *args: calls.append(args) or ("unused", None)
+        url, error = owner.single_push_url(REPO_ROOT, "-evil", command_name="verify-remote")
+    finally:
+        owner.git_output = original_git_output
+
+    if url is not None or error != "git remote name must be a safe git remote name":
+        raise AssertionError((url, error))
+    if calls:
+        raise AssertionError(calls)
+
+
 def assert_verify_remote_pr_errors() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -633,6 +662,14 @@ def assert_pr_lookup_preserves_gh_errors() -> None:
         _pr, merged_error = owner.pr_for_current_branch(REPO_ROOT, "feature")
         if merged_error is None or "stale branch" not in merged_error:
             raise AssertionError(merged_error)
+
+        owner.load_json_command = lambda _argv, repo: (
+            {"headRefOid": "abc", "headRefName": "123", "state": "OPEN"},
+            None,
+        )
+        _pr, wrong_branch_error = owner.pr_for_current_branch(REPO_ROOT, "feature")
+        if wrong_branch_error is None or "resolved PR for branch 123, expected feature" not in wrong_branch_error:
+            raise AssertionError(wrong_branch_error)
     finally:
         owner.load_json_command = original_load_json_command
 
@@ -1667,6 +1704,8 @@ def main() -> int:
     assert_verify_remote_uses_push_url_for_configured_upstream()
     assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push()
     assert_verify_remote_rejects_multiple_push_urls()
+    assert_sandbox_push_remote_policy_errors_fail_closed()
+    assert_single_push_url_rejects_unsafe_remote_names()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()

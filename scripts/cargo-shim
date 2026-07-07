@@ -87,23 +87,6 @@ def load_policy(policy_path: Path) -> dict[str, object] | None:
     return policy
 
 
-def load_target_namespace(policy_path: Path) -> str:
-    if tomllib is None:
-        namespace = load_target_namespace_fallback(policy_path)
-        if namespace is None:
-            raise ValueError("target_namespace is required")
-        return namespace
-    try:
-        with policy_path.open("rb") as f:
-            data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(str(exc)) from exc
-    namespace = data.get("target_namespace")
-    if not isinstance(namespace, str) or not namespace:
-        raise ValueError("target_namespace is required")
-    return namespace
-
-
 def load_target_namespace_fallback(policy_path: Path) -> str | None:
     for raw_line in policy_path.read_text(encoding="utf-8").splitlines():
         line = strip_toml_comment(raw_line).strip()
@@ -272,16 +255,20 @@ def resolve_real_cargo() -> Path | None:
 
 
 def managed_exec_env(root: Path, policy_path: Path) -> dict[str, str]:
-    if tomllib is not None:
-        try:
-            with policy_path.open("rb") as f:
-                data = tomllib.load(f)
-            if isinstance(data.get("target_namespace"), str):
-                return rust_verification.managed_env(root, data)
-        except (OSError, tomllib.TOMLDecodeError):
-            pass
-    namespace = load_target_namespace(policy_path)
-    return rust_verification.managed_env(root, {"target_namespace": namespace})
+    if tomllib is None:
+        namespace = load_target_namespace_fallback(policy_path)
+        if namespace is None:
+            raise ValueError("target_namespace is required")
+        return rust_verification.managed_env(root, {"target_namespace": namespace})
+    try:
+        with policy_path.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(str(exc)) from exc
+    namespace = data.get("target_namespace")
+    if not isinstance(namespace, str) or not namespace:
+        raise ValueError("target_namespace is required")
+    return rust_verification.managed_env(root, data)
 
 
 def exec_real_cargo(args: list[str], *, root: Path | None = None, policy_path: Path | None = None) -> int:

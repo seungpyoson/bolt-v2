@@ -3247,9 +3247,19 @@ def verify_remote_fail(message: str) -> int:
 
 
 def git_output(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
-    argv = ["git", *args]
+    argv = ["git", "--no-optional-locks", *args]
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
-        result = run_capture(argv, repo=repo)
+        result = subprocess.run(
+            argv,
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
     except FileNotFoundError:
         return None, "git is required for remote verification"
     if result.returncode != 0:
@@ -3495,7 +3505,11 @@ def pr_for_exact_head(
                 f"PR branch advanced during watch: headRefOid {pr.get('headRefOid')} no longer matches "
                 f"local HEAD {head}; fetch the branch and rerun verify-remote",
             )
-        return None, f"PR headRefOid {pr.get('headRefOid')} does not match local HEAD {head}; push the current branch"
+        return (
+            None,
+            f"PR headRefOid {pr.get('headRefOid')} does not match local HEAD {head}; "
+            f"run: just sandbox-safe-push --branch {shlex.quote(branch)}",
+        )
     return pr, None
 
 

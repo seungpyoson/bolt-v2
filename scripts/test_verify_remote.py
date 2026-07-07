@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -106,6 +107,37 @@ def run_cmd_verify_remote(owner: object, repo: pathlib.Path) -> tuple[int, str]:
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         result = owner.cmd_verify_remote(types.SimpleNamespace(repo=str(repo)))
     return result, stdout.getvalue() + stderr.getvalue()
+
+
+def assert_git_output_is_noninteractive() -> None:
+    owner = load_owner_module()
+    captured: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(argv, 0, "ok\n", "")
+
+    original_run = owner.subprocess.run
+    original_prompt = os.environ.get("GIT_TERMINAL_PROMPT")
+    try:
+        os.environ["GIT_TERMINAL_PROMPT"] = "1"
+        owner.subprocess.run = fake_run
+        output, error = owner.git_output(REPO_ROOT, "status")
+    finally:
+        owner.subprocess.run = original_run
+        if original_prompt is None:
+            os.environ.pop("GIT_TERMINAL_PROMPT", None)
+        else:
+            os.environ["GIT_TERMINAL_PROMPT"] = original_prompt
+
+    if (output, error) != ("ok", None):
+        raise AssertionError((output, error))
+    if captured.get("argv") != ["git", "--no-optional-locks", "status"]:
+        raise AssertionError(captured.get("argv"))
+    env = captured.get("env")
+    if not isinstance(env, dict) or env.get("GIT_TERMINAL_PROMPT") != "0":
+        raise AssertionError(env)
 
 
 def assert_verify_remote_dispatch_config_rejects_unsafe_gate_names() -> None:
@@ -378,6 +410,29 @@ def assert_remote_fallback_helpers_handle_empty_outputs() -> None:
         owner.git_output = original_git_output
 
 
+def assert_verify_remote_redacts_push_url_errors() -> None:
+    owner = load_owner_module()
+    secret_url = "https://token@example.invalid/private.git"
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = lambda _repo, *args: {
+            ("ls-remote", "--heads", secret_url, "feature"): (None, f"fatal: authentication failed for {secret_url}")
+        }[args]
+        head, error = owner.live_remote_branch_head(
+            REPO_ROOT,
+            remote=secret_url,
+            branch="feature",
+            redact_value=secret_url,
+        )
+    finally:
+        owner.git_output = original_git_output
+
+    if head is not None or error is None:
+        raise AssertionError((head, error))
+    if secret_url in error or "<remote-url>" not in error:
+        raise AssertionError(error)
+
+
 def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> None:
     owner = load_owner_module()
     calls: list[tuple[str, ...]] = []
@@ -488,6 +543,40 @@ def assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push(
         raise AssertionError(calls)
 
 
+def assert_verify_remote_rejects_multiple_push_urls() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+        calls.append(args)
+        outputs = {
+            ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+            ("rev-parse", "HEAD"): ("abc", None),
+            ("branch", "--show-current"): ("feature", None),
+            ("config", "branch.feature.remote"): ("origin", None),
+            ("config", "branch.feature.merge"): ("refs/heads/feature", None),
+            ("remote", "get-url", "--push", "--all", "origin"): (
+                "https://example.invalid/one.git\nhttps://example.invalid/two.git",
+                None,
+            ),
+        }
+        if args not in outputs:
+            raise AssertionError(f"unexpected git call: {args}")
+        return outputs[args]
+
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        head, branch, error = owner.ensure_verify_remote_preconditions(REPO_ROOT)
+    finally:
+        owner.git_output = original_git_output
+
+    if head is not None or branch is not None or error != "verify-remote requires remote origin to have exactly one push URL":
+        raise AssertionError((head, branch, error))
+    if any(call[0] == "ls-remote" for call in calls):
+        raise AssertionError(calls)
+
+
 def assert_verify_remote_pr_errors() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -508,7 +597,12 @@ def assert_verify_remote_pr_errors() -> None:
                 None,
             )
             result, output = run_cmd_verify_remote(owner, repo)
-            if result != 2 or "does not match local HEAD" not in output:
+            if (
+                result != 2
+                or "does not match local HEAD" not in output
+                or "just sandbox-safe-push" not in output
+                or "push the current branch" in output
+            ):
                 raise AssertionError((result, output))
 
         finally:
@@ -1559,6 +1653,7 @@ def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
 
 
 def main() -> int:
+    assert_git_output_is_noninteractive()
     assert_verify_remote_dispatch_config_rejects_unsafe_gate_names()
     assert_diagnostic_excerpt_is_bounded_and_masked()
     assert_secret_redaction_leaves_common_key_labels_readable()
@@ -1567,9 +1662,11 @@ def main() -> int:
     assert_job_database_id_accepts_numeric_database_id_or_id()
     assert_verify_remote_precondition_errors()
     assert_remote_fallback_helpers_handle_empty_outputs()
+    assert_verify_remote_redacts_push_url_errors()
     assert_verify_remote_accepts_same_name_remote_without_local_upstream()
     assert_verify_remote_uses_push_url_for_configured_upstream()
     assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push()
+    assert_verify_remote_rejects_multiple_push_urls()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()

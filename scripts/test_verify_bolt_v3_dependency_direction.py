@@ -116,10 +116,14 @@ def test_clean_fixture_passes() -> None:
 def test_empty_scan_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        err = expect_fail(root)
+        code, _out, err = run_with(root, allowances=None)
 
+    if code != 1:
+        raise AssertionError(f"expected FAIL (1), got {code}: {err}")
     if "Bolt-v3 dependency direction source files: enforcement set is empty" not in err:
         raise AssertionError(f"expected empty source floor finding, got: {err!r}")
+    if "stale allowance" in err:
+        raise AssertionError(f"empty source floor must not emit stale allowance noise: {err!r}")
 
 
 def test_new_back_reference_fails_with_line_number() -> None:

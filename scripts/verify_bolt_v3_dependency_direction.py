@@ -1028,6 +1028,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
 
+    floor_findings = [
+        finding
+        for finding in findings
+        if finding.line == 0 and finding.path == "."
+    ]
+    if floor_findings:
+        for finding in floor_findings:
+            print(f"FAIL: {finding.strategy_path}", file=sys.stderr)
+        return 1
+
     matched: set[tuple[str, str]] = set()
     real: list[Finding] = []
     for finding in findings:
@@ -1044,10 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = False
     for finding in real:
-        if finding.line == 0 and finding.path == ".":
-            print(f"FAIL: {finding.strategy_path}", file=sys.stderr)
-        else:
-            print(finding.render("FAIL"), file=sys.stderr)
+        print(finding.render("FAIL"), file=sys.stderr)
         failed = True
     for allowance in stale:
         print(

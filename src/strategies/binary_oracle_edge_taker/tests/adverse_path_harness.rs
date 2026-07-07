@@ -40,6 +40,8 @@ const PARTIAL_FILL_PINNED_FAILURE: &str =
 const RESTART_OPEN_EXIT_PINNED_FAILURE: &str =
     "restart replay must adopt the recovered exit before attributing fills";
 const SETTLEMENT_PINNED_FAILURE: &str = "hold-to-resolution must close exposure to Flat, book realized cash, and record settlement evidence";
+const POSITION_MARKET_LIFECYCLE_PINNED_FAILURE: &str =
+    "managed position must own its market lifecycle across active-market roll";
 const TEST_LOSS_STATE_MAX_BYTES: u64 = 65_536;
 const TEST_LOSS_ACTION_RETRY_INTERVAL_MS: u64 = 250;
 const TEST_LOSS_ACTION_RETRY_TIMEOUT_MS: u64 = 5_000;
@@ -433,6 +435,629 @@ fn feed_outage_at_resolution_records_booking_error_without_booking_settlement() 
             && !matches!(strategy.exposure, ExposureState::Flat),
         "late resolution feed after a recorded outage must remain fail-closed with no booking; exposure={:?}, events={events:?}",
         strategy.exposure
+    );
+}
+
+#[test]
+fn position_market_lifecycle_books_settlement_at_its_own_interval_end() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-ROLLED-OWN-END-SETTLES"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_resolution_update_at(&mut strategy, 3_101.0, position_interval_end_ms);
+
+    let expected = expected_hold_to_resolution_settlement(Leg::Yes, 0.45, 3_101.0);
+    let events = evidence.events();
+    assert!(
+        matches!(strategy.exposure, ExposureState::Flat)
+            && settlement_evidence_count(&events) == 1
+            && settlement_booking_error_count(&events) == 0
+            && settlement_evidence_matches(&events, expected.realized_pnl)
+            && settlement_market_ids(&events) == vec!["MKT-1".to_string()],
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: old-position resolution tick after roll must book with old strike/market; expected_realized_pnl={} exposure={:?} events={events:?}",
+        expected.realized_pnl,
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_position() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-ROLLED-NEW-END-NO-SETTLE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    let new_active_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure next interval end");
+    emit_resolution_update_at(&mut strategy, 3_201.0, new_active_interval_end_ms);
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 0
+            && matches!(
+                &strategy.exposure,
+                ExposureState::Managed(managed)
+                    if managed.position.position_id == position.position_id
+            ),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: next boundary tick must not book old position against new strike; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SAME-INSTRUMENT-SYNC"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+    let captured_position = managed_position_ref(&strategy)
+        .cloned()
+        .expect("position should be managed after materialization");
+    let captured_lifecycle = captured_position.lifecycle.clone();
+    let captured_book = captured_position.book.clone();
+
+    strategy.active.price_to_beat = Some(3_200.0);
+    strategy.active.interval_open = Some(3_200.0);
+    strategy.active.interval_end_ms = Some(position_interval_end_ms.saturating_add(60_000));
+    strategy.active.selection_published_at_ms = captured_lifecycle
+        .selection_published_at_ms()
+        .map(|published_at_ms| published_at_ms.saturating_add(1));
+    strategy.active.seconds_to_expiry_at_selection = captured_lifecycle
+        .seconds_to_expiry_at_selection()
+        .map(|seconds_to_expiry| seconds_to_expiry.saturating_add(60));
+    strategy.active.books.up.best_bid = Some(0.51);
+    strategy.active.books.up.best_ask = Some(0.52);
+    strategy.active.books.up.liquidity_available = Some(25.0);
+    strategy.sync_exposure_context_from_active();
+
+    let managed = managed_position_ref(&strategy).expect("position should remain managed");
+    assert_eq!(
+        managed.lifecycle.market_id(),
+        captured_lifecycle.market_id(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured market id"
+    );
+    assert_eq!(
+        managed.lifecycle.outcome_side(),
+        captured_lifecycle.outcome_side(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured outcome side"
+    );
+    assert_eq!(
+        managed.lifecycle.settlement_strike(),
+        captured_lifecycle.settlement_strike(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not erase captured strike"
+    );
+    assert_eq!(
+        managed.lifecycle.interval_end_ms(),
+        captured_lifecycle.interval_end_ms(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not overwrite captured interval end"
+    );
+    assert_eq!(
+        managed.lifecycle.selection_published_at_ms(),
+        captured_lifecycle.selection_published_at_ms(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured selection publish time"
+    );
+    assert_eq!(
+        managed.lifecycle.seconds_to_expiry_at_selection(),
+        captured_lifecycle.seconds_to_expiry_at_selection(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must preserve captured selection expiry"
+    );
+    assert_eq!(
+        managed.book.best_bid, captured_book.best_bid,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not refresh the held book from a mismatched interval"
+    );
+    assert_eq!(
+        managed.book.best_ask, captured_book.best_ask,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not refresh the held book from a mismatched interval"
+    );
+    assert_eq!(
+        managed.book.liquidity_available, captured_book.liquidity_available,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument active sync must not refresh held liquidity from a mismatched interval"
+    );
+
+    emit_resolution_update_at(&mut strategy, 3_101.0, position_interval_end_ms);
+
+    let expected = expected_hold_to_resolution_settlement(Leg::Yes, 0.45, 3_101.0);
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 1
+            && settlement_booking_error_count(&events) == 0
+            && settlement_evidence_matches(&events, expected.realized_pnl),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: settlement must still use captured lifecycle after same-instrument active sync; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecycle_from_mismatched_interval()
+ {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SAME-INSTRUMENT-PARTIAL-LIFECYCLE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let captured_lifecycle = managed_position_ref(&strategy)
+        .expect("position should be managed after materialization")
+        .lifecycle
+        .clone();
+    let position_interval_end_ms = captured_lifecycle
+        .interval_end_ms()
+        .expect("fixture should configure position interval end");
+    let partial_lifecycle = BoltV3PositionMarketLifecycle::from_entry_context(
+        captured_lifecycle.market_id_owned(),
+        captured_lifecycle.outcome_side(),
+        None,
+        None,
+        Some(position_interval_end_ms),
+        None,
+        None,
+    );
+    strategy
+        .exposure
+        .managed_position_mut()
+        .expect("position should remain managed")
+        .position
+        .lifecycle = partial_lifecycle;
+
+    strategy.active.price_to_beat = Some(3_200.0);
+    strategy.active.interval_open = Some(3_200.0);
+    strategy.active.interval_end_ms = Some(position_interval_end_ms.saturating_add(60_000));
+    strategy.active.selection_published_at_ms = captured_lifecycle
+        .selection_published_at_ms()
+        .map(|published_at_ms| published_at_ms.saturating_add(1));
+    strategy.active.seconds_to_expiry_at_selection = captured_lifecycle
+        .seconds_to_expiry_at_selection()
+        .map(|seconds_to_expiry| seconds_to_expiry.saturating_add(60));
+    strategy.sync_exposure_context_from_active();
+
+    let managed = managed_position_ref(&strategy).expect("position should remain managed");
+    assert_eq!(
+        managed.lifecycle.settlement_strike(),
+        None,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument sync must not repair missing strike from a mismatched interval"
+    );
+    assert_eq!(
+        managed.lifecycle.selection_published_at_ms(),
+        None,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument sync must not repair selection timing from a mismatched interval"
+    );
+    assert_eq!(
+        managed.lifecycle.seconds_to_expiry_at_selection(),
+        None,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: same-instrument sync must not repair expiry timing from a mismatched interval"
+    );
+}
+
+#[test]
+fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission,
+    );
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-ROLLED-BOOK-DELTA-NO-EXIT"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    clock.borrow_mut().set_time(UnixNanos::from(
+        position_interval_end_ms.saturating_add(1) * NANOS_PER_MILLI_U64,
+    ));
+    strategy
+        .on_book_deltas(&book_deltas(
+            instrument_id,
+            &[(BookAction::Update, OrderSide::Buy, 0.44, 500.0)],
+        ))
+        .expect("post-expiry book delta should not escape the actor loop");
+
+    assert!(
+        open_sell_exit_order_count(&cache, &position) == 0
+            && risk_messages.get_messages().is_empty()
+            && exec_messages.get_messages().is_empty()
+            && matches!(
+                &strategy.exposure,
+                ExposureState::Managed(managed)
+                    if managed.position.position_id == position.position_id
+            ),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: book deltas after position expiry must not submit exits; exposure={:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_feed_outage_records_from_later_time_event() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-ROLLED-FEED-OUTAGE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && settlement_booking_error_reasons(&events)
+                == vec![BoltV3SettlementBookingErrorReason::ResolutionFeedMissing],
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: old-position feed outage must be recorded from later interval time events; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_booking_error_after_roll()
+ {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let cache = register_test_strategy(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "expired-recovery-market",
+        "MKT-1",
+        "Up",
+        1_000,
+        position_interval_end_ms,
+    );
+    let position_id = PositionId::from("P-RECOVERED-EXPIRED-CACHE");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("RECOVERED-EXPIRED-CACHE-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let cache_position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_instrument(instrument)
+            .expect("test cache should accept expired recovery instrument");
+        cache
+            .add_position(&cache_position, NtOmsType::Netting)
+            .expect("test cache should accept expired recovery position");
+    }
+    let scope_position = OpenPositionState {
+        lifecycle: BoltV3PositionMarketLifecycle::missing(),
+        instrument_id,
+        position_id,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    let settlement_key = settlement_key_for_position(&scope_position)
+        .expect("fixture cache position should derive settlement key");
+
+    strategy.bootstrap_recovery_from_cache();
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && strategy
+                .settlement_booking_error_keys
+                .contains(&settlement_key),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error instead of silent limbo; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_recovered_position_missing_instrument_records_terminal_booking_error()
+{
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let cache = register_test_strategy(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "expired-recovery-market-missing-instrument",
+        "MKT-1",
+        "Up",
+        1_000,
+        position_interval_end_ms,
+    );
+    let position_id = PositionId::from("P-RECOVERED-MISSING-INSTRUMENT");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("RECOVERED-MISSING-INSTRUMENT-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let cache_position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_position(&cache_position, NtOmsType::Netting)
+            .expect("test cache should accept position without instrument metadata");
+    }
+    let scope_position = OpenPositionState {
+        lifecycle: BoltV3PositionMarketLifecycle::missing(),
+        instrument_id,
+        position_id,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    let settlement_key = settlement_key_for_position(&scope_position)
+        .expect("fixture cache position should derive settlement key");
+
+    strategy.bootstrap_recovery_from_cache();
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && settlement_booking_error_reasons(&events)
+                == vec![BoltV3SettlementBookingErrorReason::SettlementInputInvalid]
+            && strategy
+                .settlement_booking_error_keys
+                .contains(&settlement_key),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered cache position with missing instrument metadata must record a terminal booking-error instead of silent limbo; exposure={:?} events={events:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error_not_exit() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+
+    let instrument_id =
+        InstrumentId::from("condition-RECOVERED-BOOK-DELTA-RECOVERED-BOOK-DELTA-UP.POLYMARKET");
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "recovered-book-delta-missing-interval",
+        "RECOVERED-BOOK-DELTA",
+        "Up",
+        1_000,
+        0,
+    );
+    let position_id = PositionId::from("P-RECOVERED-MISSING-INTERVAL-BOOK-DELTA");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("RECOVERED-MISSING-INTERVAL-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let cache_position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_instrument(instrument.clone())
+            .expect("test cache should accept malformed recovered instrument");
+        cache
+            .add_position(&cache_position, NtOmsType::Netting)
+            .expect("test cache should accept recovered position");
+    }
+    let scope_position = OpenPositionState {
+        lifecycle: BoltV3PositionMarketLifecycle::recover_from_instrument(Some(&instrument)),
+        instrument_id,
+        position_id,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    let settlement_key = settlement_key_for_position(&scope_position)
+        .expect("fixture cache position should derive settlement key");
+
+    strategy.bootstrap_recovery_from_cache();
+    strategy.active.phase = SelectionPhase::Freeze;
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_200 * NANOS_PER_MILLI_U64));
+    strategy
+        .on_book_deltas(&book_deltas(
+            instrument_id,
+            &[
+                (BookAction::Add, OrderSide::Buy, 0.44, 500.0),
+                (BookAction::Add, OrderSide::Sell, 0.46, 500.0),
+            ],
+        ))
+        .expect("book delta should not escape the actor loop");
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && settlement_booking_error_reasons(&events)
+                == vec![BoltV3SettlementBookingErrorReason::SettlementInputInvalid]
+            && strategy
+                .settlement_booking_error_keys
+                .contains(&settlement_key)
+            && open_sell_exit_order_count(&cache, &scope_position) == 0
+            && risk_messages.get_messages().is_empty()
+            && exec_messages.get_messages().is_empty()
+            && matches!(
+                &strategy.exposure,
+                ExposureState::Managed(managed)
+                    if managed.position.position_id == scope_position.position_id
+            ),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered position with missing interval must record terminal booking-error and block forced-flat book-delta exit; exposure={:?} events={events:?}",
+        strategy.exposure,
     );
 }
 
@@ -916,19 +1541,15 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             .expect("test cache should accept recovery position");
     }
     let scope_position = OpenPositionState {
-        market_id: None,
+        lifecycle: BoltV3PositionMarketLifecycle::missing(),
         instrument_id,
         position_id,
-        outcome_side: None,
         outcome_fees: OutcomeFeeState::empty(),
         historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.45,
-        interval_open: None,
-        selection_published_at_ms: None,
-        seconds_to_expiry_at_selection: None,
         book: OutcomeBookState::from_instrument_id(instrument_id),
     };
     let settlement_key = settlement_key_for_position(&scope_position)
@@ -1057,7 +1678,11 @@ fn hold_to_resolution_case(
 }
 
 fn emit_resolution_update(strategy: &mut BinaryOracleEdgeTaker, reference_close_price: f64) {
-    try_emit_resolution_update(strategy, reference_close_price)
+    let close_report_ts_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure the interval close boundary");
+    try_emit_resolution_update_at(strategy, reference_close_price, close_report_ts_ms)
         .expect("resolution index price should route through the strategy handler");
 }
 
@@ -1069,6 +1694,23 @@ fn try_emit_resolution_update(
         .active
         .interval_end_ms
         .expect("fixture should configure the interval close boundary");
+    try_emit_resolution_update_at(strategy, reference_close_price, close_report_ts_ms)
+}
+
+fn emit_resolution_update_at(
+    strategy: &mut BinaryOracleEdgeTaker,
+    reference_close_price: f64,
+    close_report_ts_ms: u64,
+) {
+    try_emit_resolution_update_at(strategy, reference_close_price, close_report_ts_ms)
+        .expect("resolution index price should route through the strategy handler");
+}
+
+fn try_emit_resolution_update_at(
+    strategy: &mut BinaryOracleEdgeTaker,
+    reference_close_price: f64,
+    close_report_ts_ms: u64,
+) -> Result<()> {
     let resolution_update = IndexPriceUpdate::new(
         strategy
             .resolution_instrument_id()
@@ -1078,6 +1720,34 @@ fn try_emit_resolution_update(
         UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
     );
     DataActor::on_index_price(strategy, &resolution_update)
+}
+
+fn emit_time_event_at(strategy: &mut BinaryOracleEdgeTaker, event_ts_ms: u64) {
+    let event = TimeEvent::new(
+        ustr::Ustr::from("position-market-lifecycle-test"),
+        nautilus_core::UUID4::new(),
+        UnixNanos::from(event_ts_ms * NANOS_PER_MILLI_U64),
+        UnixNanos::from(event_ts_ms * NANOS_PER_MILLI_U64),
+    );
+    DataActor::on_time_event(strategy, &event)
+        .expect("time event should route through the strategy handler");
+}
+
+fn roll_active_to_next_interval(
+    strategy: &mut BinaryOracleEdgeTaker,
+    next_interval_start_ms: u64,
+    next_strike_price: f64,
+) {
+    strategy.apply_selection_snapshot(active_snapshot_with_start(
+        "MKT-NEXT",
+        next_interval_start_ms,
+    ));
+    strategy.active.price_to_beat = Some(next_strike_price);
+    strategy.active.interval_open = Some(next_strike_price);
+    strategy.active.warmup_count = strategy.config.warmup_tick_count;
+    strategy.active.last_reference_ts_ms = Some(next_interval_start_ms.saturating_add(1));
+    strategy.active.outcome_fees.up_ready = true;
+    strategy.active.outcome_fees.down_ready = true;
 }
 
 fn partial_fill_residual_is_managed_or_fresh_reexit(
@@ -1206,7 +1876,7 @@ fn set_exit_pending_with_filled_quantity(
     strategy.exposure = ExposureState::ExitPending(ExitPendingState {
         pending_exit: PendingExitState {
             client_order_id,
-            market_id: position.market_id.clone(),
+            market_id: position.lifecycle.market_id_owned(),
             position_id: Some(position.position_id),
             fill_received: true,
             filled_quantity: Some(filled_quantity),
@@ -1281,6 +1951,16 @@ fn settlement_evidence_count(events: &[RecordedDecisionEvidenceEvent]) -> usize 
         .count()
 }
 
+fn settlement_market_ids(events: &[RecordedDecisionEvidenceEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::Settlement(evidence) => Some(evidence.market_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn settlement_booking_error_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
     events
         .iter()
@@ -1291,6 +1971,20 @@ fn settlement_booking_error_count(events: &[RecordedDecisionEvidenceEvent]) -> u
             )
         })
         .count()
+}
+
+fn settlement_booking_error_reasons(
+    events: &[RecordedDecisionEvidenceEvent],
+) -> Vec<BoltV3SettlementBookingErrorReason> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::SettlementBookingError(evidence) => {
+                Some(evidence.reason)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn settlement_evidence_matches(

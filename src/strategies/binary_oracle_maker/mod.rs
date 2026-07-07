@@ -1044,17 +1044,20 @@ mod tests {
             BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_maker_mu_estimator::{MuHealthReason, UsableMu},
+        bolt_v3_market_families::OutcomeSide,
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
+        bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
         strategies::registry::FeeProvider,
     };
     use futures_util::{FutureExt, future::BoxFuture};
-    use nautilus_core::UnixNanos;
+    use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
-        enums::AggressorSide,
-        identifiers::{InstrumentId, TradeId, Venue},
-        types::{Price, Quantity},
+        enums::{AggressorSide, AssetClass},
+        identifiers::{InstrumentId, Symbol, TradeId, Venue},
+        instruments::{BinaryOption, InstrumentAny},
+        types::{Currency, Price, Quantity},
     };
     use std::sync::Arc;
 
@@ -1062,6 +1065,26 @@ mod tests {
     fn builder_kind_is_archetype_key() {
         assert_eq!(BinaryOracleMakerBuilder::kind(), "binary_oracle_maker");
         assert_eq!(BinaryOracleMakerBuilder::kind(), KEY);
+    }
+
+    #[test]
+    fn maker_can_construct_shared_position_market_lifecycle_from_updown_instrument() {
+        let lifecycle =
+            BoltV3PositionMarketLifecycle::recover_from_instrument(Some(&maker_binary_option(
+                "maker-condition-DOWN.POLYMARKET",
+                "configuredasset-updown-5m-600",
+                "maker-market-1",
+                "maker-condition-1",
+                "maker-question-1",
+                "Down",
+                600_000,
+                900_000,
+            )));
+
+        assert_eq!(lifecycle.market_id(), Some("maker-market-1"));
+        assert_eq!(lifecycle.outcome_side(), Some(OutcomeSide::Down));
+        assert_eq!(lifecycle.interval_end_ms(), Some(900_000));
+        assert!(lifecycle.matches_resolution_tick_ms(900_000));
     }
 
     const QUERY_NOW_MS: u64 = 50_000;
@@ -1072,6 +1095,64 @@ mod tests {
 
     #[derive(Debug)]
     struct NoopFeeProvider;
+
+    #[allow(clippy::too_many_arguments)]
+    fn maker_binary_option(
+        instrument_id: &str,
+        market_slug: &str,
+        market_id: &str,
+        condition_id: &str,
+        question_id: &str,
+        outcome: &str,
+        activation_ms: u64,
+        expiration_ms: u64,
+    ) -> InstrumentAny {
+        let mut info = Params::new();
+        info.insert(
+            "market_slug".to_string(),
+            serde_json::Value::String(market_slug.to_string()),
+        );
+        info.insert(
+            "market_id".to_string(),
+            serde_json::Value::String(market_id.to_string()),
+        );
+        info.insert(
+            "condition_id".to_string(),
+            serde_json::Value::String(condition_id.to_string()),
+        );
+        info.insert(
+            "question_id".to_string(),
+            serde_json::Value::String(question_id.to_string()),
+        );
+        InstrumentAny::BinaryOption(BinaryOption::new(
+            InstrumentId::from(instrument_id),
+            Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
+            AssetClass::Alternative,
+            Currency::USDC(),
+            (activation_ms.saturating_mul(NANOS_PER_MILLI_U64)).into(),
+            (expiration_ms.saturating_mul(NANOS_PER_MILLI_U64)).into(),
+            3,
+            2,
+            Price::from("0.001"),
+            Quantity::from("0.01"),
+            Some(ustr::Ustr::from(outcome)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(info),
+            1.into(),
+            1.into(),
+        ))
+    }
 
     impl FeeProvider for NoopFeeProvider {
         fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {

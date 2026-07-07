@@ -22,7 +22,8 @@ use super::{
     EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID, EXIT_BLOCK_REASON_EXIT_PRICE_MISSING,
     EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE,
     EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED, EXIT_BLOCK_REASON_NO_OPEN_POSITION,
-    EXIT_BLOCK_REASON_OPEN_POSITION_MISSING, entry_decision::ForcedFlatEvidenceInputs,
+    EXIT_BLOCK_REASON_OPEN_POSITION_MISSING, EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED,
+    EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN, entry_decision::ForcedFlatEvidenceInputs,
     forced_flat_reason_to_evidence, option_evidence_number, orders::ConfiguredNtOrderTemplate,
     orders::ExitOrderExecutionConfig, outcome_side_to_evidence, selection::SelectionPhase,
 };
@@ -300,6 +301,10 @@ fn exit_block_reason_to_evidence(reason: &str) -> BoltV3ExitBlockedReason {
             BoltV3ExitBlockedReason::ExitDecisionUnavailable
         }
         EXIT_BLOCK_REASON_EXIT_HOLD => BoltV3ExitBlockedReason::ExitHold,
+        EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED => BoltV3ExitBlockedReason::PositionIntervalEnded,
+        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN => {
+            BoltV3ExitBlockedReason::PositionIntervalUnknown
+        }
         EXIT_BLOCK_REASON_OPEN_POSITION_MISSING => BoltV3ExitBlockedReason::OpenPositionMissing,
         EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID => {
             BoltV3ExitBlockedReason::ExitOrderConfigInvalid

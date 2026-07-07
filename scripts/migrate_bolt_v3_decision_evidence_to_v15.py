@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Migrate Bolt-v3 decision-evidence JSONL files from schema v13 to v14."""
+"""Migrate Bolt-v3 decision-evidence JSONL files from schema v13/v14 to current."""
 
 from __future__ import annotations
 
@@ -16,7 +16,13 @@ from typing import Sequence
 
 
 SUPPORTED_OLD_SCHEMA_VERSION = 13
-SUPPORTED_CURRENT_SCHEMA_VERSION = 14
+SUPPORTED_INTERMEDIATE_SCHEMA_VERSION = 14
+SUPPORTED_CURRENT_SCHEMA_VERSION = 15
+SUPPORTED_INPUT_SCHEMA_VERSIONS = {
+    SUPPORTED_OLD_SCHEMA_VERSION,
+    SUPPORTED_INTERMEDIATE_SCHEMA_VERSION,
+    SUPPORTED_CURRENT_SCHEMA_VERSION,
+}
 VERSION_RE = re.compile(rb'("schema_version"\s*:\s*)(?P<version>-?\d+)\b')
 
 KEY_STRING_REPLACEMENTS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
@@ -79,7 +85,7 @@ def schema_version_for_line(path: Path, line_number: int, line: bytes) -> int | 
             f"{path}:{line_number}: expected exactly one schema_version field, found {len(matches)}"
         )
     version = int(matches[0].group("version"))
-    if version not in {SUPPORTED_OLD_SCHEMA_VERSION, SUPPORTED_CURRENT_SCHEMA_VERSION}:
+    if version not in SUPPORTED_INPUT_SCHEMA_VERSIONS:
         raise MigrationError(f"{path}:{line_number}: unsupported schema_version={version}")
     return version
 
@@ -88,8 +94,16 @@ def replace_key_string(line: bytes, pattern: re.Pattern[bytes], new_value: bytes
     return pattern.sub(lambda match: match.group(1) + b'"' + new_value + b'"', line)
 
 
+def stamp_current_schema_version(line: bytes) -> bytes:
+    return VERSION_RE.sub(
+        lambda match: match.group(1) + str(SUPPORTED_CURRENT_SCHEMA_VERSION).encode("ascii"),
+        line,
+        count=1,
+    )
+
+
 def migrate_v13_line(line: bytes) -> bytes:
-    migrated = VERSION_RE.sub(lambda match: match.group(1) + b"14", line, count=1)
+    migrated = stamp_current_schema_version(line)
     for pattern, new_value in KEY_STRING_REPLACEMENTS:
         migrated = replace_key_string(migrated, pattern, new_value)
     return migrated
@@ -103,6 +117,8 @@ def migrate_file_bytes(path: Path, payload: bytes) -> bytes:
         version = schema_version_for_line(path, line_number, content)
         if version == SUPPORTED_OLD_SCHEMA_VERSION:
             migrated_lines.append(migrate_v13_line(content) + suffix)
+        elif version == SUPPORTED_INTERMEDIATE_SCHEMA_VERSION:
+            migrated_lines.append(stamp_current_schema_version(content) + suffix)
         else:
             migrated_lines.append(line)
     return b"".join(migrated_lines)

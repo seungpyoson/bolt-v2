@@ -36,6 +36,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
     sync::Arc,
     time::Duration,
 };
@@ -588,6 +589,14 @@ pub struct SelectedUpdownMarket {
     pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
     pub source_identity: SelectedMarketSourceIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdownPositionInstrumentContext {
+    pub(crate) market_id: String,
+    pub(crate) side: OutcomeSide,
+    pub(crate) activation_milliseconds: u64,
+    pub(crate) expiration_milliseconds: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1473,6 +1482,23 @@ fn updown_outcome_instrument(
             Duration::from_nanos(binary.expiration_ns.as_u64()).as_millis(),
         )
         .ok()?,
+    })
+}
+
+pub(crate) fn updown_position_instrument_context(
+    instrument: &InstrumentAny,
+) -> Option<UpdownPositionInstrumentContext> {
+    let InstrumentAny::BinaryOption(binary) = instrument else {
+        return None;
+    };
+    let market_slug = binary.info.as_ref()?.get_str(METADATA_MARKET_SLUG_FIELD)?;
+    let outcome = updown_outcome_instrument(instrument, market_slug)?;
+    Some(UpdownPositionInstrumentContext {
+        market_id: outcome.market_id,
+        side: outcome.side,
+        activation_milliseconds: outcome.activation_milliseconds,
+        expiration_milliseconds: NonZeroU64::new(outcome.expiration_milliseconds)
+            .map(NonZeroU64::get),
     })
 }
 

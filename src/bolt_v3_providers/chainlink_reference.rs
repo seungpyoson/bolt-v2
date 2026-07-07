@@ -627,17 +627,12 @@ fn spawn_chainlink_reference_liveness_supervisor(
                         );
                         continue;
                     }
-                    let subscription_count = match subscriptions.lock() {
-                        Ok(subscriptions) => subscriptions.len(),
-                        Err(error) => {
-                            log::error!(
-                                "Chainlink reference reconnect could not read subscription count for client_id={client_id}: {error}"
-                            );
-                            continue;
-                        }
-                    };
+                    let subscription_count = chainlink_reference_replayed_subscription_count(
+                        &subscriptions,
+                        client_id,
+                    );
                     log::warn!(
-                        "Chainlink reference DataClient reconnect completed for client_id={client_id}; transport_mode={mode:?} replayed_subscription_count={subscription_count}"
+                        "Chainlink reference DataClient reconnect completed for client_id={client_id}; transport_mode={mode:?} replayed_subscription_count={subscription_count:?}"
                     );
                     attempted_reconnects = 0;
                     last_logged_mode = Some(mode);
@@ -650,6 +645,23 @@ fn spawn_chainlink_reference_liveness_supervisor(
             }
         }
     })
+}
+
+fn chainlink_reference_replayed_subscription_count(
+    subscriptions: &Arc<
+        Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+    >,
+    client_id: ClientId,
+) -> Option<usize> {
+    match subscriptions.lock() {
+        Ok(subscriptions) => Some(subscriptions.len()),
+        Err(error) => {
+            log::error!(
+                "Chainlink reference reconnect could not read subscription count for client_id={client_id}: {error}"
+            );
+            None
+        }
+    }
 }
 
 fn chainlink_reference_emit_input_health_transition(
@@ -1808,6 +1820,26 @@ mod tests {
         assert!(ChainlinkReferenceReconnectMaxAttempts::Limited(2).permits_attempt(1));
         assert!(!ChainlinkReferenceReconnectMaxAttempts::Limited(2).permits_attempt(2));
         assert!(!ChainlinkReferenceReconnectMaxAttempts::Limited(0).permits_attempt(0));
+    }
+
+    #[test]
+    fn replayed_subscription_count_returns_none_for_poisoned_state() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
+        let poisoned = Arc::clone(&subscriptions);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoned
+                .lock()
+                .expect("subscription state should be lockable before poisoning");
+            panic!("poison Chainlink subscription state for reconnect logging test");
+        });
+
+        assert_eq!(
+            chainlink_reference_replayed_subscription_count(
+                &subscriptions,
+                ClientId::from("chainlink_reference"),
+            ),
+            None
+        );
     }
 
     #[test]

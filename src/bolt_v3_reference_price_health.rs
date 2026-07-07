@@ -239,6 +239,9 @@ pub async fn run_prepared_reference_current_price_health(
             registered_strategy_ids.join(", ")
         ));
     }
+    validate_reference_current_price_health_registered_execution_clients(
+        registered_exec_client_ids.clone(),
+    )?;
 
     validate_reference_current_price_health_registered_data_clients(
         &health_run.plan,
@@ -310,6 +313,18 @@ pub async fn run_prepared_reference_current_price_health(
         clients,
         source_update_observations,
     })
+}
+
+fn validate_reference_current_price_health_registered_execution_clients(
+    registered_exec_client_ids: Vec<String>,
+) -> Result<()> {
+    if !registered_exec_client_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health registered execution client(s): {}",
+            registered_exec_client_ids.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn validate_reference_current_price_health_registered_data_clients(
@@ -1256,6 +1271,20 @@ configured_source_param = "configured-value"
         let message = error.to_string();
         assert!(
             message.contains("registered out-of-plan data client(s): polyresearch_reference"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_registered_client_guard_rejects_execution_clients() {
+        let error = validate_reference_current_price_health_registered_execution_clients(vec![
+            "polymarket_main".to_string(),
+        ])
+        .expect_err("registered execution clients must fail closed");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("registered execution client(s): polymarket_main"),
             "{message}"
         );
     }

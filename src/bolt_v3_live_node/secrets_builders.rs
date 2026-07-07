@@ -295,13 +295,9 @@ fn strategy_free_data_client_adapter_configs(
     mut adapters: BoltV3AdapterConfigs,
     data_client_keys: &[String],
 ) -> BoltV3AdapterConfigs {
-    let data_client_key_set = data_client_keys
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
     adapters.clients.retain(|client_key, client_config| {
         client_config.execution = None;
-        data_client_key_set.contains(client_key.as_str()) && client_config.data.is_some()
+        data_client_keys.iter().any(|key| key == client_key) && client_config.data.is_some()
     });
     adapters
 }

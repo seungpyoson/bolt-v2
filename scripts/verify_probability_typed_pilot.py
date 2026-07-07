@@ -8,6 +8,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import rust_source_scanner
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,7 +21,36 @@ class PatternCheck:
     description: str
 
 
+@dataclass(frozen=True)
+class FinancialValueRegistration:
+    path: str
+    type_name: str
+
+
+REGISTERED_FINANCIAL_VALUES = (
+    FinancialValueRegistration("src/bolt_v3_numeric.rs", "Probability"),
+    FinancialValueRegistration("src/bolt_v3_maker_mu_estimator.rs", "UsableMu"),
+    FinancialValueRegistration("src/bolt_v3_realized_volatility.rs", "ValidRealizedVol"),
+    FinancialValueRegistration("src/bolt_v3_realized_volatility.rs", "ReadyRealizedVol"),
+)
+
+RUST_PATH_SEGMENT = r"(?:crate|self|super|[A-Za-z_][A-Za-z0-9_]*)"
+RUST_TYPE_PATH = rf"(?:{RUST_PATH_SEGMENT}::)*([A-Za-z_][A-Za-z0-9_]*)"
+FINANCIAL_VALUE_TRAIT_PATH = rf"(?:{RUST_PATH_SEGMENT}::)*FinancialValue"
+SEALED_TRAIT_PATH = rf"(?:{RUST_PATH_SEGMENT}::)*financial_value_private::Sealed"
+
+
 REQUIRED_PATTERNS = [
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"pub\(crate\)\s+mod\s+financial_value_private\s*\{[^}]*pub\s+trait\s+Sealed\s*\{\s*\}",
+        "FinancialValue sealing boundary module is crate-private",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"pub\s+trait\s+FinancialValue\s*:\s*financial_value_private::Sealed\s*\{\s*\}",
+        "FinancialValue sealing boundary requires the private Sealed supertrait",
+    ),
     PatternCheck(
         "src/bolt_v3_numeric.rs",
         r"#\[derive\(\s*Debug\s*,\s*Clone\s*,\s*Copy\s*,\s*PartialEq\s*,\s*PartialOrd\s*\)\]\s*pub struct Probability",
@@ -29,6 +60,21 @@ REQUIRED_PATTERNS = [
         "src/bolt_v3_numeric.rs",
         r"pub struct Probability\s*\{\s*value:\s*f64,?\s*\}",
         "Probability has a private named f64 field",
+    ),
+    PatternCheck(
+        "src/bolt_v3_maker_mu_estimator.rs",
+        r"pub struct UsableMu\s*\(\s*f64\s*\)\s*;",
+        "UsableMu has a private f64 field",
+    ),
+    PatternCheck(
+        "src/bolt_v3_realized_volatility.rs",
+        r"pub struct ValidRealizedVol\s*\(\s*f64\s*\)\s*;",
+        "ValidRealizedVol has a private f64 field",
+    ),
+    PatternCheck(
+        "src/bolt_v3_realized_volatility.rs",
+        r"pub struct ReadyRealizedVol\s*\(\s*ValidRealizedVol\s*\)\s*;",
+        "ReadyRealizedVol has a private ValidRealizedVol field",
     ),
     PatternCheck(
         "src/bolt_v3_numeric.rs",
@@ -180,6 +226,18 @@ def read_source(root: Path, relative_path: str) -> str:
     return (root / relative_path).read_text(encoding="utf-8")
 
 
+def rust_sources(root: Path) -> list[tuple[str, str]]:
+    sources = []
+    src_root = root / "src"
+    if not src_root.exists():
+        return sources
+    for path in src_root.rglob("*.rs"):
+        relative_path = path.relative_to(root).as_posix()
+        raw_source = path.read_text(encoding="utf-8")
+        sources.append((relative_path, rust_source_scanner.strip_rust_comments_and_literals(raw_source)))
+    return sources
+
+
 def missing_required(root: Path, checks: list[PatternCheck]) -> list[str]:
     findings = []
     for check in checks:
@@ -198,11 +256,95 @@ def present_forbidden(root: Path, checks: list[PatternCheck]) -> list[str]:
     return findings
 
 
+def financial_value_impl_set(root: Path) -> set[tuple[str, str]]:
+    impls = set()
+    for relative_path, source in rust_sources(root):
+        for match in re.finditer(
+            rf"\bimpl\s+{FINANCIAL_VALUE_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b", source
+        ):
+            impls.add((relative_path, match.group(1)))
+    return impls
+
+
+def financial_value_sealed_impl_set(root: Path) -> set[tuple[str, str]]:
+    impls = set()
+    for relative_path, source in rust_sources(root):
+        for match in re.finditer(
+            rf"\bimpl\s+{SEALED_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b",
+            source,
+        ):
+            impls.add((relative_path, match.group(1)))
+    return impls
+
+
+def verify_financial_value_implementors(root: Path) -> list[str]:
+    expected = {(registration.path, registration.type_name) for registration in REGISTERED_FINANCIAL_VALUES}
+    actual = financial_value_impl_set(root)
+    if actual == expected:
+        return []
+
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    details = []
+    if missing:
+        details.append(f"missing {missing!r}")
+    if extra:
+        details.append(f"extra {extra!r}")
+    return [f"src/: FinancialValue implementor set mismatch: {', '.join(details)}"]
+
+
+def verify_financial_value_sealing(root: Path) -> list[str]:
+    findings = []
+    sealed_impls = financial_value_sealed_impl_set(root)
+    for registration in REGISTERED_FINANCIAL_VALUES:
+        expected = (registration.path, registration.type_name)
+        if expected not in sealed_impls:
+            findings.append(
+                f"{registration.path}: missing FinancialValue sealing boundary for {registration.type_name}"
+            )
+    numeric_source = rust_source_scanner.strip_rust_comments_and_literals(
+        read_source(root, "src/bolt_v3_numeric.rs")
+    )
+    if re.search(r"\bpub\s+mod\s+financial_value_private\b", numeric_source):
+        findings.append("src/bolt_v3_numeric.rs: forbidden public FinancialValue sealing boundary")
+    return findings
+
+
+def financial_value_type_pattern(type_name: str) -> str:
+    return rf"(?:[A-Za-z_][A-Za-z0-9_]*::)*{re.escape(type_name)}\b"
+
+
+def verify_financial_value_defaults(root: Path) -> list[str]:
+    findings = []
+    sources = rust_sources(root)
+    for registration in REGISTERED_FINANCIAL_VALUES:
+        type_pattern = financial_value_type_pattern(registration.type_name)
+        impl_pattern = re.compile(rf"\bimpl\s+Default\s+for\s+{type_pattern}", re.DOTALL)
+        derive_pattern = re.compile(
+            rf"#\s*\[\s*derive\s*\([^\]]*\bDefault\b[^\]]*\)\s*\]\s*"
+            rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{re.escape(registration.type_name)}\b",
+            re.DOTALL,
+        )
+        for relative_path, source in sources:
+            if impl_pattern.search(source):
+                findings.append(
+                    f"{relative_path}: forbidden Default impl for FinancialValue {registration.type_name}"
+                )
+            if derive_pattern.search(source):
+                findings.append(
+                    f"{relative_path}: forbidden Default derive for FinancialValue {registration.type_name}"
+                )
+    return findings
+
+
 def verify(root: Path) -> list[str]:
     findings = []
     findings.extend(missing_required(root, REQUIRED_PATTERNS))
     findings.extend(missing_required(root, BOUNDARY_PATTERNS))
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
+    findings.extend(verify_financial_value_implementors(root))
+    findings.extend(verify_financial_value_defaults(root))
+    findings.extend(verify_financial_value_sealing(root))
     return findings
 
 

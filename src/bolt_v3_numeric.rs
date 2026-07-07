@@ -54,6 +54,13 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
     reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
 }
 
+pub(crate) mod financial_value_private {
+    pub trait Sealed {}
+}
+
+#[allow(private_bounds)]
+pub trait FinancialValue: financial_value_private::Sealed {}
+
 /// Closed-interval probability value for Bolt-v3 compute-layer math.
 ///
 /// ```compile_fail
@@ -76,6 +83,9 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
 pub struct Probability {
     value: f64,
 }
+
+impl financial_value_private::Sealed for Probability {}
+impl FinancialValue for Probability {}
 
 impl Probability {
     pub fn new(value: f64) -> Option<Self> {
@@ -234,6 +244,16 @@ mod tests {
         assert_eq!(probability.complement().value(), 0.25);
         assert_eq!(probability.widened(band).value(), UNIT_F64);
         assert_eq!(probability.narrowed(band).value(), 0.25);
+    }
+
+    #[test]
+    fn financial_value_marker_is_implemented_for_registered_types() {
+        fn assert_financial_value<T: FinancialValue>() {}
+
+        assert_financial_value::<Probability>();
+        assert_financial_value::<crate::bolt_v3_maker_mu_estimator::UsableMu>();
+        assert_financial_value::<crate::bolt_v3_realized_volatility::ReadyRealizedVol>();
+        assert_financial_value::<crate::bolt_v3_realized_volatility::ValidRealizedVol>();
     }
 
     #[test]

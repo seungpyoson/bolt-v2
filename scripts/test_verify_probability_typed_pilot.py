@@ -21,11 +21,52 @@ SPEC.loader.exec_module(VERIFIER)
 def write_sources(root: Path, overrides: dict[str, str] | None = None) -> None:
     sources = {
         "src/bolt_v3_numeric.rs": """
+pub(crate) mod financial_value_private {
+    pub trait Sealed {}
+}
+
+#[allow(private_bounds)]
+pub trait FinancialValue: financial_value_private::Sealed {}
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Probability { value: f64 }
+impl financial_value_private::Sealed for Probability {}
+impl FinancialValue for Probability {}
 impl Probability {
     pub fn new(value: f64) -> Option<Self> { sanitize_probability(value).map(|value| Self { value }) }
     pub fn clamped(value: f64) -> Option<Self> { Some(Self { value }) }
+}
+""",
+        "src/bolt_v3_maker_mu_estimator.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(f64);
+impl financial_value_private::Sealed for UsableMu {}
+impl FinancialValue for UsableMu {}
+impl UsableMu {
+    fn new(value: f64) -> Self { Self(value) }
+    pub fn get(self) -> f64 { self.0 }
+}
+""",
+        "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl financial_value_private::Sealed for ValidRealizedVol {}
+impl FinancialValue for ValidRealizedVol {}
+impl ValidRealizedVol {
+    pub fn new(value: f64) -> Option<Self> { Some(Self(value)) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+impl financial_value_private::Sealed for ReadyRealizedVol {}
+impl FinancialValue for ReadyRealizedVol {}
+impl ReadyRealizedVol {
+    pub fn get(self) -> f64 { self.0.get() }
 }
 """,
         "src/bolt_v3_market_families/mod.rs": """
@@ -122,6 +163,176 @@ struct EntryEvaluationLogFields {
         findings = VERIFIER.verify(root)
         if not any("EntryEvaluation" in finding for finding in findings):
             raise AssertionError(f"expected EntryEvaluation finding, got {findings!r}")
+
+
+def test_verify_rejects_missing_financial_value_implementor() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl financial_value_private::Sealed for ValidRealizedVol {}
+impl FinancialValue for ValidRealizedVol {}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+impl financial_value_private::Sealed for ReadyRealizedVol {}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("FinancialValue implementor set" in finding for finding in findings):
+            raise AssertionError(f"expected FinancialValue implementor finding, got {findings!r}")
+
+
+def test_verify_rejects_unregistered_financial_value_implementor() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_sizing.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+pub struct SizingScale(f64);
+impl crate::bolt_v3_numeric::financial_value_private::Sealed for SizingScale {}
+impl crate::bolt_v3_numeric::FinancialValue for SizingScale {}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("FinancialValue implementor set" in finding for finding in findings):
+            raise AssertionError(f"expected extra FinancialValue implementor finding, got {findings!r}")
+
+
+def test_verify_rejects_default_impl_for_registered_financial_value() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_maker_mu_estimator.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(f64);
+impl financial_value_private::Sealed for UsableMu {}
+impl FinancialValue for UsableMu {}
+impl Default for UsableMu {
+    fn default() -> Self { Self(0.0) }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("Default impl for FinancialValue" in finding for finding in findings):
+            raise AssertionError(f"expected Default impl finding, got {findings!r}")
+
+
+def test_verify_rejects_default_derive_for_registered_financial_value() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl financial_value_private::Sealed for ValidRealizedVol {}
+impl FinancialValue for ValidRealizedVol {}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+impl financial_value_private::Sealed for ReadyRealizedVol {}
+impl FinancialValue for ReadyRealizedVol {}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("Default derive for FinancialValue" in finding for finding in findings):
+            raise AssertionError(f"expected Default derive finding, got {findings!r}")
+
+
+def test_verify_rejects_public_financial_value_field() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_maker_mu_estimator.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(pub f64);
+impl financial_value_private::Sealed for UsableMu {}
+impl FinancialValue for UsableMu {}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("UsableMu has a private f64 field" in finding for finding in findings):
+            raise AssertionError(f"expected private-field finding, got {findings!r}")
+
+
+def test_verify_rejects_unsealed_financial_value_trait() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_numeric.rs": """
+pub trait FinancialValue {}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Probability { value: f64 }
+impl FinancialValue for Probability {}
+impl Probability {
+    pub fn new(value: f64) -> Option<Self> { sanitize_probability(value).map(|value| Self { value }) }
+    pub fn clamped(value: f64) -> Option<Self> { Some(Self { value }) }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("FinancialValue sealing boundary" in finding for finding in findings):
+            raise AssertionError(f"expected sealing-boundary finding, got {findings!r}")
+
+
+def test_verify_rejects_public_financial_value_sealing_module() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_numeric.rs": """
+pub mod financial_value_private {
+    pub trait Sealed {}
+}
+
+#[allow(private_bounds)]
+pub trait FinancialValue: financial_value_private::Sealed {}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Probability { value: f64 }
+impl financial_value_private::Sealed for Probability {}
+impl FinancialValue for Probability {}
+impl Probability {
+    pub fn new(value: f64) -> Option<Self> { sanitize_probability(value).map(|value| Self { value }) }
+    pub fn clamped(value: f64) -> Option<Self> { Some(Self { value }) }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("FinancialValue sealing boundary" in finding for finding in findings):
+            raise AssertionError(f"expected public sealing-module finding, got {findings!r}")
 
 
 def test_verify_rejects_raw_taker_jitter_penalty_probability() -> None:
@@ -238,6 +449,13 @@ def main() -> int:
     tests = [
         test_verify_accepts_expected_typed_surface,
         test_verify_rejects_raw_entry_evaluation_probability,
+        test_verify_rejects_missing_financial_value_implementor,
+        test_verify_rejects_unregistered_financial_value_implementor,
+        test_verify_rejects_default_impl_for_registered_financial_value,
+        test_verify_rejects_default_derive_for_registered_financial_value,
+        test_verify_rejects_public_financial_value_field,
+        test_verify_rejects_unsealed_financial_value_trait,
+        test_verify_rejects_public_financial_value_sealing_module,
         test_verify_rejects_raw_taker_jitter_penalty_probability,
         test_verify_rejects_typed_evidence_boundary,
         test_verify_rejects_probability_tuple_construction,

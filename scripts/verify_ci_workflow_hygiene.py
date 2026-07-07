@@ -538,9 +538,25 @@ NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
     "id": "reuse",
     "shell": "bash",
     "env": "",
-    "run": ">",
+    "run": "|",
 }
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
+NEXTEST_FINGERPRINT_REUSE_BASE_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "if", "shell", "env", "run")
+)
+NEXTEST_FINGERPRINT_REUSE_BASE_STEP_SCALARS = {
+    "id": "reuse_provenance_base",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    "shell": "bash",
+    "env": "",
+    "run": "|",
+}
+NEXTEST_FINGERPRINT_REUSE_BASE_ENV = {
+    "EVENT_NAME": "${{ github.event_name }}",
+    "PR_NUMBER": "${{ github.event.pull_request.number || github.run_id }}",
+    "PR_BASE_REF": "${{ github.event.pull_request.base.ref || '' }}",
+    "MERGE_GROUP_BASE_REF": "${{ github.event.merge_group.base_ref || '' }}",
+}
 DETECTOR_REFS_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
   base_branch="$PR_BASE_REF"
   base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
@@ -649,10 +665,45 @@ python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-gove
   --repo "$GITHUB_WORKSPACE" \\
   --base "$base_ref" \\
   --head "$head_ref\""""
-NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
---current-run-id "${{ github.run_id }}"
---current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
-| tee -a "$GITHUB_OUTPUT\""""
+NEXTEST_FINGERPRINT_REUSE_BASE_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  base_branch="$PR_BASE_REF"
+  base_ref="refs/remotes/origin/ci-provenance-reuse-base-${PR_NUMBER}"
+elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+  merge_group_base="$MERGE_GROUP_BASE_REF"
+  if [[ "$merge_group_base" == refs/heads/* ]]; then
+    base_branch="${merge_group_base#refs/heads/}"
+  elif [[ "$merge_group_base" == refs/* ]]; then
+    echo "unsupported merge_group base_ref: $merge_group_base" >&2
+    exit 1
+  else
+    base_branch="$merge_group_base"
+  fi
+  base_ref="refs/remotes/origin/ci-provenance-reuse-base-merge-group-${GITHUB_RUN_ID}"
+else
+  echo "unsupported trusted base event: $EVENT_NAME" >&2
+  exit 1
+fi
+git check-ref-format "refs/heads/$base_branch"
+git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+base_tree="$RUNNER_TEMP/ci-provenance-reuse-base-tree"
+mkdir -p "$base_tree"
+git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+provenance_script="$base_tree/scripts/ci_provenance.py"
+if [[ ! -f "$provenance_script" || -L "$provenance_script" ]]; then
+  echo "trusted base provenance script is missing or not a regular file: $provenance_script" >&2
+  exit 1
+fi
+echo "script=$provenance_script" >> "$GITHUB_OUTPUT"'''
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """inherited_emitter_args=()
+trusted_base_emitter="${{ steps.reuse_provenance_base.outputs.script }}"
+if [[ -n "$trusted_base_emitter" ]]; then
+  inherited_emitter_args+=(--require-inherited-emitter "$trusted_base_emitter")
+fi
+python3 scripts/ci_provenance.py resolve-fingerprint \\
+  --current-run-id "${{ github.run_id }}" \\
+  --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" \\
+  "${inherited_emitter_args[@]}" \\
+  | tee -a "$GITHUB_OUTPUT\""""
 GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
   echo "nextest fingerprint reuse resolver did not succeed"
   exit 1
@@ -9673,6 +9724,20 @@ def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) 
     )
 
 
+def fingerprint_reuse_base_step_is_canonical(job_lines: list[str]) -> bool:
+    base_step = unique_step_with_id(job_lines, "reuse_provenance_base")
+    return (
+        base_step is not None
+        and block_has_canonical_step_envelope(
+            base_step,
+            NEXTEST_FINGERPRINT_REUSE_BASE_STEP_ALLOWED_KEYS,
+            NEXTEST_FINGERPRINT_REUSE_BASE_STEP_SCALARS,
+            {"env": NEXTEST_FINGERPRINT_REUSE_BASE_ENV},
+        )
+        and block_run_body_matches(base_step, NEXTEST_FINGERPRINT_REUSE_BASE_RUN)
+    )
+
+
 def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
     reuse_step = unique_step_with_id(job_lines, "reuse")
     if reuse_step is None:
@@ -11863,6 +11928,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed")
         if not fingerprint_reuse_job_has_outputs(reuse_lines):
             errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
+        if not fingerprint_reuse_base_step_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must probe trusted base inherited emitter support")
         if not fingerprint_reuse_resolver_envelope_is_canonical(reuse_lines):
             errors.append("nextest-fingerprint-reuse resolver step must match canonical envelope")
         if not fingerprint_reuse_resolver_is_canonical(reuse_lines):

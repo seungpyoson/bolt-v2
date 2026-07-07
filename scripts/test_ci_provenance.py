@@ -1210,6 +1210,7 @@ def resolve_fingerprint_with_fake(
     current_fingerprint: str = NEXTEST_FINGERPRINT,
     current_run_id: int = RUN_ID + 999,
     now: str = "2026-06-13T00:30:00Z",
+    inherited_emitter_script: pathlib.Path | None = None,
 ):
     return module.resolve_fingerprint_reuse(
         repo="seungpyoson/bolt-v2",
@@ -1221,6 +1222,7 @@ def resolve_fingerprint_with_fake(
         api_json=fake.json,
         api_bytes=fake.bytes,
         now=module.parse_timestamp(now),
+        inherited_emitter_script=inherited_emitter_script,
     )
 
 
@@ -1254,6 +1256,39 @@ def assert_fingerprint_reuse_prior_green_returns_reuse() -> None:
         if "matched" not in result.reason:
             raise AssertionError(result)
         if not fake.queries or fake.queries[0][0] != "actions/workflows/ci.yml/runs":
+            raise AssertionError(fake.queries)
+
+
+def assert_fingerprint_reuse_old_base_emitter_returns_cache_miss() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        old_base_script = tmp_path / "old_ci_provenance.py"
+        old_base_script.write_text(
+            "\n".join(
+                [
+                    "import sys",
+                    "if sys.argv[1:3] == ['emit-inherited-ci', '--help']:",
+                    "    raise SystemExit(2)",
+                    "raise SystemExit(0)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake = FakeGitHub(runs_pages=[[run_payload()]])
+        result = resolve_fingerprint_with_fake(
+            module,
+            config,
+            fake,
+            inherited_emitter_script=old_base_script,
+        )
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if result.reason != "trusted base provenance emitter does not support inherited CI records":
+            raise AssertionError(result)
+        if fake.queries:
             raise AssertionError(fake.queries)
 
 
@@ -2210,6 +2245,50 @@ def assert_missing_current_fingerprint_arg_fails_closed() -> None:
             "reason=missing current fingerprint",
         }
         if set(stdout.splitlines()) != expected:
+            raise AssertionError(stdout)
+
+
+def assert_cli_old_base_emitter_returns_cache_miss() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        old_base_script = tmp_path / "old_ci_provenance.py"
+        old_base_script.write_text(
+            "\n".join(
+                [
+                    "import sys",
+                    "if sys.argv[1:3] == ['emit-inherited-ci', '--help']:",
+                    "    raise SystemExit(2)",
+                    "raise SystemExit(0)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        code, stdout, stderr = run_cli(
+            [
+                "resolve-fingerprint",
+                "--config",
+                str(config),
+                "--repo",
+                "seungpyoson/bolt-v2",
+                "--token",
+                "token",
+                "--current-run-id",
+                str(RUN_ID),
+                "--current-fingerprint",
+                NEXTEST_FINGERPRINT,
+                "--require-inherited-emitter",
+                str(old_base_script),
+            ]
+        )
+        if code != 0:
+            raise AssertionError((code, stdout, stderr))
+        if stderr:
+            raise AssertionError(stderr)
+        if "reuse_found=false" not in stdout:
+            raise AssertionError(stdout)
+        if "reason=trusted base provenance emitter does not support inherited CI records" not in stdout:
             raise AssertionError(stdout)
 
 
@@ -5769,6 +5848,7 @@ def main() -> int:
     assert_emit_inherited_ci_record_rejects_malformed_current_run_payload()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
+    assert_fingerprint_reuse_old_base_emitter_returns_cache_miss()
     assert_fingerprint_reuse_inherited_record_returns_root_pointer()
     assert_fingerprint_reuse_inherited_record_rejects_root_digest_mismatch()
     assert_fingerprint_reuse_inherited_record_rejects_expired_root()
@@ -5800,6 +5880,7 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()
     assert_fingerprint_reuse_source_run_must_be_trusted_main_push()
     assert_missing_current_fingerprint_arg_fails_closed()
+    assert_cli_old_base_emitter_returns_cache_miss()
     assert_nextest_fingerprint_path_args_are_rejected()
     assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()

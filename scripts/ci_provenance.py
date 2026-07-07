@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -2811,6 +2812,21 @@ def no_fingerprint_reuse(reason: str) -> FingerprintReuseResolution:
     )
 
 
+def inherited_ci_emitter_supported(script_path: pathlib.Path) -> bool:
+    if not script_path.is_file():
+        raise ProvenanceError(f"inherited CI emitter script is missing: {script_path}")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script_path), "emit-inherited-ci", "--help"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise ProvenanceError(f"inherited CI emitter probe failed: {exc}") from exc
+    return completed.returncode == 0
+
+
 def matching_artifacts(
     artifacts: list[object],
     *,
@@ -2983,6 +2999,7 @@ def resolve_fingerprint_reuse(
     api_json=github_api_json,
     api_bytes=github_api_bytes,
     now: datetime.datetime | None = None,
+    inherited_emitter_script: pathlib.Path | None = None,
 ) -> FingerprintReuseResolution:
     if current_fingerprint is None:
         return no_fingerprint_reuse("missing current fingerprint")
@@ -2990,6 +3007,14 @@ def resolve_fingerprint_reuse(
         parsed_current = parse_nextest_fingerprint(current_fingerprint, label="current")
     except ProvenanceError:
         return no_fingerprint_reuse("malformed current fingerprint")
+    if inherited_emitter_script is not None:
+        try:
+            if not inherited_ci_emitter_supported(inherited_emitter_script):
+                return no_fingerprint_reuse(
+                    "trusted base provenance emitter does not support inherited CI records"
+                )
+        except ProvenanceError as exc:
+            return no_fingerprint_reuse(f"trusted base provenance emitter check failed: {exc}")
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
     cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
@@ -3411,6 +3436,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--token")
         parser.add_argument("--current-run-id")
         parser.add_argument("--current-fingerprint")
+        parser.add_argument("--require-inherited-emitter", type=pathlib.Path)
     return parser
 
 
@@ -3557,6 +3583,7 @@ def main(argv: list[str] | None = None) -> int:
                 current_run_id=args.current_run_id or require_env("GITHUB_RUN_ID"),
                 config=config,
                 config_path=args.config,
+                inherited_emitter_script=args.require_inherited_emitter,
             )
             print(output_resolution_lines(result), end="")
         return 0

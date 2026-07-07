@@ -162,10 +162,31 @@ def no_mistakes_launch_agents(home: Path) -> list[Path]:
     return sorted(launch_agents_dir(home).glob(NO_MISTAKES_LAUNCH_AGENT_GLOB))
 
 
+def daily_maintenance_install_root(root: Path) -> Path:
+    main_root = clean_merged_artifacts._main_worktree_root(root)
+    try:
+        main_config = clean_merged_artifacts.load_config(main_root, use_main_worktree=False)
+    except clean_merged_artifacts.ConfigError:
+        if main_root == root:
+            raise
+        current_config = clean_merged_artifacts.load_config(root, use_main_worktree=False)
+        if current_config.daily_maintenance_launch_agent is None:
+            return main_root
+        return root
+    if main_config.daily_maintenance_launch_agent is not None:
+        return main_root
+    if main_root != root:
+        current_config = clean_merged_artifacts.load_config(root, use_main_worktree=False)
+        if current_config.daily_maintenance_launch_agent is not None:
+            return root
+    return main_root
+
+
 def load_daily_maintenance_launch_agent_config(
     root: Path,
 ) -> clean_merged_artifacts.DailyMaintenanceLaunchAgentConfig:
-    config = clean_merged_artifacts.load_config(root, use_main_worktree=False)
+    config_root = daily_maintenance_install_root(root)
+    config = clean_merged_artifacts.load_config(config_root, use_main_worktree=False)
     if config.daily_maintenance_launch_agent is None:
         raise ValueError("missing config: clean-merged.daily_maintenance_launch_agent")
     return config.daily_maintenance_launch_agent
@@ -255,7 +276,7 @@ def update_no_mistakes_launch_agents(home: Path, install_dir: Path) -> list[Path
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]
+    root = daily_maintenance_install_root(Path(__file__).resolve().parents[1])
     source = root / "scripts" / "cargo-shim"
     install_dir = Path(os.environ.get("BOLT_CARGO_SHIM_DIR", "~/.local/bin/bolt-cargo-shim")).expanduser()
     try:

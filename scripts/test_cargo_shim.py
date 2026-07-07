@@ -883,6 +883,84 @@ prune_after_days = 30
     assert payload["StartCalendarInterval"] == {"Hour": 4, "Minute": 15}
 
 
+def test_daily_maintenance_launch_agent_prefers_main_worktree_config_from_linked_worktree(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    def write_daily_config(target: Path, label: str) -> None:
+        config_dir = target / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "clean-merged.toml").write_text(
+            f"""\
+schema_version = 1
+[clean-merged]
+enabled = true
+trunk_branch = "main"
+remote_name = "origin"
+origin_owner = "t"
+[clean-merged.lane_r]
+gh_timeout_s = 5
+cache_ttl_s = 300
+gh_limit = 100
+[clean-merged.lane_w]
+quarantine_dir = "<git-common-dir>/clean-merged-quarantine"
+quarantine_grace_days = 30
+discard_ignored = false
+remove_nested_repos = false
+discard_hidden_index_bits = false
+archive_timeout_s = 120
+archive_verify_timeout_s = 30
+[clean-merged.daily_maintenance_launch_agent]
+label = "{label}"
+program_arguments = ["/bin/sh", "-lc", "echo configured"]
+environment_path = "<shim-dir>:/usr/bin:/bin"
+standard_out_path = "<git-common-dir>/{label}.out.log"
+standard_error_path = "<git-common-dir>/{label}.err.log"
+start_calendar_interval = {{ Hour = 4, Minute = 15 }}
+[clean-merged.logging]
+audit_format = "jsonl"
+audit_path = "<git-common-dir>/clean-merged.log"
+max_log_bytes = 1048576
+rotated_log_retention_days = 30
+report_error_max_chars = 200
+heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
+heartbeat_stale_days = 7
+lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
+[clean-merged.backups]
+prune_after_days = 30
+""",
+            encoding="utf-8",
+        )
+
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    write_daily_config(root, "com.example.main-daily-maintenance")
+    subprocess.run(["git", "add", "config/clean-merged.toml"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "add main config",
+        ],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(["git", "branch", "feature"], cwd=root, check=True)
+    linked = tmp_path / "linked"
+    subprocess.run(["git", "worktree", "add", "-q", str(linked), "feature"], cwd=root, check=True)
+    write_daily_config(linked, "com.example.linked-daily-maintenance")
+    installer = _load_installer_module()
+
+    config = installer.load_daily_maintenance_launch_agent_config(linked)
+
+    assert config.label == "com.example.main-daily-maintenance"
+
+
 @pytest.mark.parametrize(
     ("env_vars", "expected_env_vars"),
     [

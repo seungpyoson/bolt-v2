@@ -20005,14 +20005,6 @@ reason = "Stable source label for lifecycle evidence emitted when venue position
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"exit_terminal"'''
-context = '''const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";'''
-classification = "order_lifecycle_evidence_source_label"
-reason = "Stable source label for lifecycle evidence emitted when an exit terminal event reclassifies residual or terminal order state; it classifies evidence and does not configure strategy behavior."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
 literal = '''"restart_bootstrap"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";'''
 classification = "order_lifecycle_evidence_source_label"

@@ -218,7 +218,6 @@ struct ExecutableEntryProbe {
 const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: &str = "selection_boundary";
 const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: &str = "entry_fill";
 const ORDER_LIFECYCLE_SOURCE_POSITION_EVENT: &str = "position_event";
-const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";
 const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";
 const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";
 const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";

@@ -20,16 +20,50 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifact_index::LifecycleState,
+    artifact_store::validate_artifact_root,
     hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
+    reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
     result_contract::BacktestResultContract,
     source_proof::SourceProofFidelityClass,
 };
 
+const RUN_POINTER_INDEX_REFERENCE_ARTIFACT_ROLE: &str = "run-pointer-index.v1";
 const RESEARCH_ANALYTICS_KIND_PATH: &str = "research-analytics";
 const RESEARCH_ANALYTICS_SCHEMA_VERSION: &str = "v1";
 const RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY: &str = "experiment-results";
+const RUN_POINTER_BACKTESTS_SUBPATH: &str = "backtests";
 const RUN_POINTER_INDEX_SCHEMA_VERSION: u64 = 1;
+
+#[derive(Debug, Clone)]
+pub struct BacktestSweepSourcePair {
+    pub run_spec_path: PathBuf,
+    pub object_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct BacktestSweepPublicationPlan {
+    pub input_dir: PathBuf,
+    pub run_spec_dir: PathBuf,
+    pub run_output_dir: PathBuf,
+    pub artifact_root: String,
+    pub index_path: PathBuf,
+    pub sources: Vec<BacktestSweepSourcePair>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BacktestSweepIndexArtifact {
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BacktestSweepPublicationReport {
+    pub sweep_report: BacktestSweepReport,
+    pub index: RunPointerIndex,
+    pub index_artifact: BacktestSweepIndexArtifact,
+}
 
 #[derive(Debug, Clone)]
 pub struct BacktestSweepPlan {
@@ -276,6 +310,69 @@ pub fn run_backtest_sweep(plan: &BacktestSweepPlan) -> Result<BacktestSweepRepor
 
 /// # Errors
 ///
+/// Returns an error if a source pair cannot be loaded and verified, any sweep run
+/// fails, the result contracts cannot form a valid run-pointer index, or the
+/// index reference artifact cannot be written with `FailOnDirty` semantics.
+pub fn run_backtest_sweep_publication(
+    plan: &BacktestSweepPublicationPlan,
+) -> Result<BacktestSweepPublicationReport> {
+    run_backtest_sweep_publication_with_executor(plan, |spec, accepted_object_bytes, output_dir| {
+        run_operator_from_run_spec(spec, accepted_object_bytes, output_dir).map(|_| ())
+    })
+}
+
+/// # Errors
+///
+/// Returns an error if a source pair cannot be loaded and verified, the injected
+/// executor fails, the result contracts cannot form a valid run-pointer index,
+/// or the index reference artifact cannot be written with `FailOnDirty`
+/// semantics.
+pub fn run_backtest_sweep_publication_with_executor<F>(
+    plan: &BacktestSweepPublicationPlan,
+    executor: F,
+) -> Result<BacktestSweepPublicationReport>
+where
+    F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
+{
+    validate_run_pointer_artifact_root(&plan.artifact_root)?;
+    let loaded_runs = load_backtest_sweep_source_pairs(plan)?;
+    let (runs, loaded_sources): (Vec<_>, Vec<_>) = loaded_runs
+        .into_iter()
+        .map(|loaded| (loaded.run, loaded.source))
+        .unzip();
+    let sweep_plan = BacktestSweepPlan {
+        run_spec_dir: plan.run_spec_dir.clone(),
+        run_output_dir: plan.run_output_dir.clone(),
+        runs,
+    };
+    let sweep_report = run_backtest_sweep_with_executor(&sweep_plan, executor)?;
+    let records = run_pointer_records_from_sweep(&sweep_report, &loaded_sources)?;
+    let catalog_run_ids = sweep_report
+        .runs
+        .iter()
+        .map(|run| run.run_id.clone())
+        .collect::<Vec<_>>();
+    let index =
+        build_run_pointer_index_from_catalog_list(catalog_run_ids, &plan.artifact_root, records)?;
+    let index_artifact_write = write_reference_artifact_with_len(
+        &plan.index_path,
+        RUN_POINTER_INDEX_REFERENCE_ARTIFACT_ROLE,
+        &index,
+        ReferenceArtifactRewrite::FailOnDirty,
+    )?;
+    Ok(BacktestSweepPublicationReport {
+        sweep_report,
+        index,
+        index_artifact: BacktestSweepIndexArtifact {
+            path: index_artifact_write.pin.path,
+            content_hash: index_artifact_write.pin.sha256,
+            bytes: index_artifact_write.bytes,
+        },
+    })
+}
+
+/// # Errors
+///
 /// Returns an error if a run-spec cannot be materialized, the provided BTE
 /// executor fails, or the persisted result contract is missing/invalid.
 pub fn run_backtest_sweep_with_executor<F>(
@@ -377,6 +474,369 @@ where
     Ok(BacktestSweepReport { runs: reports })
 }
 
+#[derive(Debug, Clone)]
+struct LoadedBacktestSweepRun {
+    run: BacktestSweepRun,
+    source: LoadedBacktestSweepSource,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedBacktestSweepSource {
+    run_id: String,
+    params: BTreeMap<String, serde_json::Value>,
+}
+
+/// # Errors
+///
+/// Returns an error if the run-spec TOML cannot be read or parsed.
+pub fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
+    let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
+    let hash = sha256_hex(&bytes);
+    let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
+    let mut spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
+    if spec.source_bindings_path.is_relative() {
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let sibling_relative = base_dir.join(&spec.source_bindings_path);
+        if sibling_relative.exists() {
+            spec.source_bindings_path = sibling_relative;
+        }
+    }
+    Ok((spec, hash))
+}
+
+/// # Errors
+///
+/// Returns an error if the object file cannot be read, does not match the
+/// run-spec byte count, exceeds the raw payload read limit, or has the wrong
+/// SHA-256.
+pub fn read_accepted_object_for_run_spec(path: &Path, spec: &RunSpec) -> Result<Vec<u8>> {
+    ensure_object_read_within_raw_payload_limit(spec)?;
+    let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
+    let actual_bytes = metadata.len();
+    ensure!(
+        actual_bytes == spec.accepted_object.bytes,
+        "object byte length {actual_bytes} does not match run-spec {}",
+        spec.accepted_object.bytes
+    );
+    let bytes = fs::read(path).with_context(|| format!("read object {}", path.display()))?;
+    let actual_sha256 = sha256_hex(&bytes);
+    ensure!(
+        actual_sha256 == spec.accepted_object.sha256,
+        "object SHA-256 {actual_sha256} does not match run-spec {}",
+        spec.accepted_object.sha256
+    );
+    Ok(bytes)
+}
+
+/// # Errors
+///
+/// Returns an error when the run-spec accepted object byte count exceeds the
+/// configured raw-payload read limit.
+pub fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
+    ensure!(
+        spec.accepted_object.bytes <= spec.converter.raw_payload.max_object_bytes,
+        "accepted_object.bytes {} exceeds converter.raw_payload.max_object_bytes {}",
+        spec.accepted_object.bytes,
+        spec.converter.raw_payload.max_object_bytes
+    );
+    Ok(())
+}
+
+fn load_backtest_sweep_source_pairs(
+    plan: &BacktestSweepPublicationPlan,
+) -> Result<Vec<LoadedBacktestSweepRun>> {
+    ensure_publication_input_dir(&plan.input_dir)?;
+    let mut input_entries = fs::read_dir(&plan.input_dir)
+        .with_context(|| format!("read input_dir {}", plan.input_dir.display()))?;
+    ensure!(
+        input_entries
+            .next()
+            .transpose()
+            .with_context(|| format!("read input_dir {}", plan.input_dir.display()))?
+            .is_some(),
+        "input_dir must not be empty: {}",
+        plan.input_dir.display()
+    );
+    ensure!(
+        !plan.sources.is_empty(),
+        "sweep source pairs must not be empty"
+    );
+
+    let mut loaded_runs = Vec::with_capacity(plan.sources.len());
+    let mut seen_output_dir_names = BTreeSet::new();
+    let mut seen_output_prefixes = BTreeSet::new();
+    for source in &plan.sources {
+        let (run_spec_path, source_run_spec_path) =
+            resolve_source_path("run-spec", &plan.input_dir, &source.run_spec_path)?;
+        let (object_path, source_object_path) =
+            resolve_source_path("object", &plan.input_dir, &source.object_path)?;
+        let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
+        let output_prefix =
+            validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
+        ensure!(
+            seen_output_dir_names.insert(run_spec.manifest.run_id.clone()),
+            "duplicate output_dir_name {:?}",
+            run_spec.manifest.run_id
+        );
+        // The current run-id-scoped prefix rule makes this redundant, but keep
+        // the remote-prefix uniqueness invariant explicit if that scope changes.
+        ensure!(
+            seen_output_prefixes.insert(output_prefix.clone()),
+            "duplicate manifest.output_prefix {output_prefix:?}"
+        );
+        let params = run_pointer_params(
+            &run_spec,
+            source_run_spec_path,
+            source_object_path,
+            source_run_spec_sha256,
+        )?;
+        let accepted_object_bytes = read_accepted_object_for_run_spec(&object_path, &run_spec)?;
+        let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
+        let run_id = run_spec.manifest.run_id.clone();
+        loaded_runs.push(LoadedBacktestSweepRun {
+            run: BacktestSweepRun {
+                run_spec_file_name,
+                output_dir_name: run_id.clone(),
+                run_spec,
+                accepted_object_bytes,
+            },
+            source: LoadedBacktestSweepSource { run_id, params },
+        });
+    }
+    Ok(loaded_runs)
+}
+
+fn ensure_publication_input_dir(input_dir: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(input_dir)
+        .with_context(|| format!("stat input_dir {}", input_dir.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "input_dir must not be a symlink: {}",
+        input_dir.display()
+    );
+    ensure!(
+        metadata.file_type().is_dir(),
+        "input_dir must be an existing directory: {}",
+        input_dir.display()
+    );
+    Ok(())
+}
+
+fn resolve_source_path(
+    label: &'static str,
+    input_dir: &Path,
+    path: &Path,
+) -> Result<(PathBuf, String)> {
+    let input_relative_path = input_relative_source_path(label, path)?;
+    ensure_source_path_has_no_symlink_components(label, input_dir, path)?;
+    Ok((input_dir.join(path), input_relative_path))
+}
+
+fn ensure_source_path_has_no_symlink_components(
+    label: &'static str,
+    input_dir: &Path,
+    path: &Path,
+) -> Result<()> {
+    let mut current = input_dir.to_path_buf();
+    let mut final_metadata = None;
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                let metadata = fs::symlink_metadata(&current)
+                    .with_context(|| format!("stat {label} source path {}", current.display()))?;
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "{label} source path must not contain symlinks: {}",
+                    path.display()
+                );
+                final_metadata = Some(metadata);
+            }
+            _ => {
+                ensure!(
+                    false,
+                    "{label} source path must be relative to input_dir without parent or prefix components: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let metadata =
+        final_metadata.with_context(|| format!("{label} source path must not be empty"))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "{label} source path must be a regular file: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn input_relative_source_path(label: &'static str, path: &Path) -> Result<String> {
+    ensure!(
+        !path.as_os_str().is_empty(),
+        "{label} source path must not be empty"
+    );
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_str().with_context(|| {
+                    format!("{label} source path must be UTF-8: {}", path.display())
+                })?;
+                parts.push(part.to_string());
+            }
+            _ => {
+                ensure!(
+                    false,
+                    "{label} source path must be relative to input_dir without parent or prefix components: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    ensure!(
+        !parts.is_empty(),
+        "{label} source path must include at least one path component"
+    );
+    Ok(parts.join("/"))
+}
+
+fn validate_publication_run_spec_artifact_scope(
+    artifact_root: &str,
+    run_spec: &RunSpec,
+) -> Result<String> {
+    let artifact_root = validate_run_pointer_artifact_root(artifact_root)?;
+    let manifest_root = validate_run_pointer_artifact_root(&run_spec.manifest.artifact_root)
+        .with_context(|| {
+            format!(
+                "run spec {} manifest.artifact_root",
+                run_spec.manifest.run_id
+            )
+        })?;
+    ensure!(
+        manifest_root == artifact_root,
+        "run spec {} manifest.artifact_root {:?} must match publication artifact_root {:?}",
+        run_spec.manifest.run_id,
+        run_spec.manifest.artifact_root,
+        artifact_root
+    );
+    validate_leaf_path("manifest.run_id", &run_spec.manifest.run_id)?;
+    ensure!(
+        run_spec.manifest.output_prefix == run_spec.manifest.output_prefix.trim(),
+        "run spec {} manifest.output_prefix must not contain leading or trailing whitespace",
+        run_spec.manifest.run_id
+    );
+    let output_prefix = run_spec.manifest.output_prefix.trim_end_matches('/');
+    ensure!(
+        output_prefix == run_spec.manifest.output_prefix,
+        "run spec {} manifest.output_prefix {:?} must be normalized without a trailing slash",
+        run_spec.manifest.run_id,
+        run_spec.manifest.output_prefix
+    );
+    let expected_prefix = format!(
+        "{artifact_root}/{RUN_POINTER_BACKTESTS_SUBPATH}/{}",
+        run_spec.manifest.run_id
+    );
+    ensure!(
+        output_prefix == expected_prefix,
+        "run spec {} manifest.output_prefix {:?} must equal {:?}",
+        run_spec.manifest.run_id,
+        run_spec.manifest.output_prefix,
+        expected_prefix
+    );
+    Ok(output_prefix.to_string())
+}
+
+fn source_file_name(label: &'static str, path: &Path) -> Result<String> {
+    let file_name = path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .with_context(|| {
+            format!(
+                "{label} path must have a UTF-8 file name: {}",
+                path.display()
+            )
+        })?;
+    Ok(file_name.to_string())
+}
+
+fn run_pointer_records_from_sweep(
+    sweep_report: &BacktestSweepReport,
+    loaded_sources: &[LoadedBacktestSweepSource],
+) -> Result<Vec<RunPointerIndexRecord>> {
+    let mut reports_by_run_id = BTreeMap::new();
+    for run in &sweep_report.runs {
+        ensure!(
+            reports_by_run_id.insert(run.run_id.clone(), run).is_none(),
+            "sweep report contains duplicate run_id {:?}",
+            run.run_id
+        );
+    }
+
+    loaded_sources
+        .iter()
+        .map(|loaded| {
+            let report = reports_by_run_id
+                .get(&loaded.run_id)
+                .with_context(|| format!("sweep report missing run_id {:?}", loaded.run_id))?;
+            let result_contract_bytes =
+                fs::read(&report.result_contract_path).with_context(|| {
+                    format!(
+                        "read result contract {}",
+                        report.result_contract_path.display()
+                    )
+                })?;
+            Ok(RunPointerIndexRecord {
+                run_id: loaded.run_id.clone(),
+                params: loaded.params.clone(),
+                result: RunPointerResult {
+                    result_contract_uri: report.contract.artifact_uris.result_contract_uri.clone(),
+                    result_contract_hash: sha256_hex(&result_contract_bytes),
+                },
+            })
+        })
+        .collect()
+}
+
+fn run_pointer_params(
+    run_spec: &RunSpec,
+    source_run_spec_path: String,
+    source_object_path: String,
+    source_run_spec_sha256: String,
+) -> Result<BTreeMap<String, serde_json::Value>> {
+    let mut params = BTreeMap::new();
+    params.insert(
+        "source_run_spec_sha256".to_string(),
+        serde_json::Value::String(source_run_spec_sha256),
+    );
+    params.insert(
+        "accepted_object_sha256".to_string(),
+        serde_json::Value::String(run_spec.accepted_object.sha256.clone()),
+    );
+    params.insert(
+        "strategy_config_hash".to_string(),
+        serde_json::Value::String(run_spec.manifest.strategy_config_hash.clone()),
+    );
+    params.insert(
+        "converter_config_hash".to_string(),
+        serde_json::Value::String(
+            run_spec
+                .converter
+                .content_hash()
+                .context("hash run-spec converter config")?,
+        ),
+    );
+    params.insert(
+        "source_run_spec_path".to_string(),
+        serde_json::Value::String(source_run_spec_path),
+    );
+    params.insert(
+        "source_object_path".to_string(),
+        serde_json::Value::String(source_object_path),
+    );
+    Ok(params)
+}
+
 fn read_result_contract(path: &Path) -> Result<BacktestResultContract> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
@@ -454,20 +914,36 @@ fn validate_result_contract_matches_run(
         run.run_spec.manifest.resolved_nt_version
     );
 
+    let expected_result_contract_uri = format!(
+        "{}/{}",
+        run.run_spec.manifest.output_prefix.trim_end_matches('/'),
+        RESULT_CONTRACT_FILE
+    );
+    ensure!(
+        contract.artifact_uris.result_contract_uri == expected_result_contract_uri,
+        "{} result_contract_uri {:?} does not match expected {:?}",
+        result_contract_path.display(),
+        contract.artifact_uris.result_contract_uri,
+        expected_result_contract_uri
+    );
+
     Ok(())
 }
 
 fn validate_run_pointer_artifact_root(artifact_root: &str) -> Result<String> {
-    let artifact_root = artifact_root.trim_end_matches('/').to_string();
     ensure!(
         !artifact_root.trim().is_empty(),
         "artifact_root must not be empty"
     );
     ensure!(
-        artifact_root.starts_with("s3://"),
-        "artifact_root must be an s3:// URI"
+        artifact_root == artifact_root.trim(),
+        "artifact_root must not contain leading or trailing whitespace"
     );
-    Ok(artifact_root)
+    ensure!(
+        artifact_root == artifact_root.trim_end_matches('/'),
+        "artifact_root must be normalized without a trailing slash"
+    );
+    validate_artifact_root(artifact_root)
 }
 
 fn exact_run_id_set(
@@ -1100,6 +1576,903 @@ fn source_fidelity_supports_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use crate::{
+        result_contract::{
+            BacktestResultContract, NautilusResultPointer, RESULT_CONTRACT_VERSION,
+            ResultArtifactUris,
+        },
+        source_proof::AcceptanceMode,
+    };
+    use tempfile::TempDir;
+
+    const COMMITTED_RUN_SPEC: &str = include_str!(
+        "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+    );
+    const TEST_ARTIFACT_ROOT: &str = "s3://example-bucket/nt-research-analytics";
+
+    fn test_run_spec(run_id: &str, accepted_object_bytes: &[u8]) -> RunSpec {
+        let mut spec: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        spec.manifest.run_id = run_id.to_string();
+        spec.manifest.artifact_root = TEST_ARTIFACT_ROOT.to_string();
+        spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/{run_id}");
+        if let Some(artifact_store) = spec.artifact_store.as_mut() {
+            artifact_store.artifact_root = TEST_ARTIFACT_ROOT.to_string();
+        }
+        spec.accepted_object.sha256 = sha256_hex(accepted_object_bytes);
+        spec.accepted_object.bytes = accepted_object_bytes.len() as u64;
+        spec
+    }
+
+    fn rewrite_source_run_spec<F>(input_dir: &Path, source: &BacktestSweepSourcePair, mutate: F)
+    where
+        F: FnOnce(&mut RunSpec),
+    {
+        let path = input_dir.join(&source.run_spec_path);
+        let mut spec: RunSpec =
+            toml::from_str(&fs::read_to_string(&path).expect("read source run spec for rewrite"))
+                .expect("parse source run spec for rewrite");
+        mutate(&mut spec);
+        fs::write(
+            &path,
+            toml::to_string_pretty(&spec).expect("serialize rewritten run spec"),
+        )
+        .expect("rewrite source run spec");
+    }
+
+    fn test_contract(
+        spec: &RunSpec,
+        object_bytes: &[u8],
+        result_contract_uri: &str,
+    ) -> BacktestResultContract {
+        BacktestResultContract {
+            contract_version: RESULT_CONTRACT_VERSION.to_string(),
+            run_id: spec.manifest.run_id.clone(),
+            nt_version: spec.manifest.resolved_nt_version.clone(),
+            source_proof_id: spec.manifest.source_proof_id.clone(),
+            source_proof_version: spec.manifest.source_proof_version,
+            manifest_hash: spec.manifest.manifest_hash(),
+            acceptance_mode: AcceptanceMode::Manual,
+            accepted_by: "research-analytics-test".to_string(),
+            accepted_at: "2026-06-14T00:00:00Z".to_string(),
+            accepted_object_sha256: sha256_hex(object_bytes),
+            converter_identity: "converter".to_string(),
+            converter_version: "converter.v1".to_string(),
+            converter_config_hash: spec.converter.content_hash().expect("converter hash"),
+            conversion_manifest_hash:
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+            conversion_checkpoint_hash:
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
+            catalog_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                .to_string(),
+            catalog_metadata_hash:
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
+            event_count_ledger_hash: None,
+            selected_asset_ids_hash: None,
+            strategy_config_hash: spec.manifest.strategy_config_hash.clone(),
+            execution_model: "nt_backtest_node".to_string(),
+            venue_queue_position: Some(false),
+            catalog_data_types: vec!["TradeTick".to_string()],
+            run_purpose: "normal".to_string(),
+            market_structure_fixture: "binary option".to_string(),
+            fidelity_class: SourceProofFidelityClass::TradeReplay,
+            claim_limits: vec!["trade replay only".to_string()],
+            warnings: Vec::new(),
+            mechanical_blockers: Vec::new(),
+            config_override_report: None,
+            run_guard_report: None,
+            feed_labels: vec![],
+            nt_result: NautilusResultPointer {
+                trader_id: "TRADER-001".to_string(),
+                machine_id: "machine".to_string(),
+                instance_id: "instance".to_string(),
+                run_config_id: Some("run-config".to_string()),
+                backtest_start: Some(1),
+                backtest_end: Some(2),
+                elapsed_time_secs: 0.1,
+                iterations: 3,
+                total_events: 4,
+                total_orders: 5,
+                total_positions: 6,
+                stats_pnls: Default::default(),
+                stats_returns: Default::default(),
+            },
+            artifact_uris: ResultArtifactUris {
+                source_proof_uri: "s3://example-bucket/source-proof.json".to_string(),
+                canonical_table_uri: "s3://example-bucket/canonical.parquet".to_string(),
+                nt_catalog_uri: "s3://example-bucket/nt-catalog/".to_string(),
+                nt_catalog_manifest_uri: None,
+                catalog_metadata_uri: "s3://example-bucket/catalog-metadata.json".to_string(),
+                result_contract_uri: result_contract_uri.to_string(),
+            },
+            created_at: "2026-06-14T00:00:01Z".to_string(),
+        }
+    }
+
+    fn write_source_pair(
+        input_dir: &Path,
+        run_spec_name: &str,
+        object_name: &str,
+        run_id: &str,
+        object_bytes: &[u8],
+    ) -> BacktestSweepSourcePair {
+        let spec = test_run_spec(run_id, object_bytes);
+        fs::write(
+            input_dir.join(run_spec_name),
+            toml::to_string_pretty(&spec).expect("serialize run spec"),
+        )
+        .expect("write run spec");
+        fs::write(input_dir.join(object_name), object_bytes).expect("write object");
+        BacktestSweepSourcePair {
+            run_spec_path: PathBuf::from(run_spec_name),
+            object_path: PathBuf::from(object_name),
+        }
+    }
+
+    fn write_test_contract(
+        output_dir: &Path,
+        spec: &RunSpec,
+        object_bytes: &[u8],
+        artifact_root: &str,
+    ) {
+        let uri = format!(
+            "{artifact_root}/backtests/{}/{}",
+            spec.manifest.run_id, RESULT_CONTRACT_FILE
+        );
+        let contract = test_contract(spec, object_bytes, &uri);
+        fs::write(
+            output_dir.join(RESULT_CONTRACT_FILE),
+            serde_json::to_vec_pretty(&contract).expect("serialize contract"),
+        )
+        .expect("write result contract");
+    }
+
+    fn publication_plan(
+        temp: &TempDir,
+        input_dir: PathBuf,
+        artifact_root: &str,
+        sources: Vec<BacktestSweepSourcePair>,
+    ) -> BacktestSweepPublicationPlan {
+        BacktestSweepPublicationPlan {
+            input_dir,
+            run_spec_dir: temp.path().join("materialized-run-specs"),
+            run_output_dir: temp.path().join("run-output"),
+            artifact_root: artifact_root.to_string(),
+            index_path: temp.path().join("run-pointer-index.json"),
+            sources,
+        }
+    }
+
+    #[test]
+    fn sweep_publication_writes_index_from_source_pairs_after_all_runs_succeed() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let first = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let second = write_source_pair(
+            &input_dir,
+            "second.toml",
+            "second.object",
+            "ra-run-b",
+            b"second",
+        );
+        let artifact_root = TEST_ARTIFACT_ROOT;
+        let plan = publication_plan(&temp, input_dir, artifact_root, vec![first, second]);
+
+        let publication = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                write_test_contract(output_dir, spec, object_bytes, artifact_root);
+                Ok(())
+            },
+        )
+        .expect("sweep publication succeeds");
+
+        publication.index.validate().expect("index validates");
+        assert_eq!(publication.index.runs.len(), 2);
+        assert!(plan.index_path.exists(), "index artifact written");
+        assert_eq!(
+            publication
+                .index
+                .runs
+                .iter()
+                .map(|record| record.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ra-run-a", "ra-run-b"]
+        );
+        for record in &publication.index.runs {
+            assert!(
+                record
+                    .result
+                    .result_contract_uri
+                    .starts_with(&format!("{artifact_root}/"))
+            );
+            assert!(record.params.contains_key("source_run_spec_sha256"));
+            assert!(record.params.contains_key("accepted_object_sha256"));
+        }
+        let first_params = &publication.index.runs[0].params;
+        assert_eq!(
+            first_params
+                .get("source_run_spec_path")
+                .and_then(serde_json::Value::as_str),
+            Some("first.toml")
+        );
+        assert_eq!(
+            first_params
+                .get("source_object_path")
+                .and_then(serde_json::Value::as_str),
+            Some("first.object")
+        );
+        assert_eq!(publication.index_artifact.path, plan.index_path);
+    }
+
+    #[test]
+    fn sweep_publication_leaves_no_index_when_result_contract_missing() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let artifact_root = TEST_ARTIFACT_ROOT;
+        let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| Ok(()))
+            .expect_err("missing result contract must fail publication");
+
+        assert!(err.to_string().contains("result-contract.json"), "{err}");
+        assert!(
+            !plan.index_path.exists(),
+            "index artifact must not be left behind"
+        );
+    }
+
+    #[test]
+    fn sweep_publication_rejects_result_contract_uri_mismatch_without_index() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let artifact_root = TEST_ARTIFACT_ROOT;
+        let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
+        let wrong_result_contract_uri =
+            format!("{artifact_root}/backtests/ra-run-b/{RESULT_CONTRACT_FILE}");
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                let contract = test_contract(spec, object_bytes, &wrong_result_contract_uri);
+                fs::write(
+                    output_dir.join(RESULT_CONTRACT_FILE),
+                    serde_json::to_vec_pretty(&contract).expect("serialize contract"),
+                )
+                .expect("write result contract");
+                Ok(())
+            },
+        )
+        .expect_err("result contract URI mismatch must fail publication");
+
+        assert!(err.to_string().contains("result_contract_uri"), "{err}");
+        assert!(
+            !plan.index_path.exists(),
+            "index artifact must not be left behind"
+        );
+    }
+
+    #[test]
+    fn sweep_publication_refuses_dirty_index_without_clobbering_existing_bytes() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let artifact_root = TEST_ARTIFACT_ROOT;
+        let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
+        fs::write(&plan.index_path, b"stale index bytes").expect("write stale index");
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                write_test_contract(output_dir, spec, object_bytes, artifact_root);
+                Ok(())
+            },
+        )
+        .expect_err("dirty index must fail with FailOnDirty");
+
+        assert!(
+            err.to_string().contains("dirty reference artifact"),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read(&plan.index_path).expect("read stale index"),
+            b"stale index bytes",
+            "dirty index bytes must remain untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_publication_rejects_bad_artifact_roots_before_executor() {
+        for artifact_root in [
+            "file:///tmp/nt-research-analytics",
+            "s3://example-bucket",
+            "s3://example-bucket//bad",
+            "s3://example-bucket/nt-research-analytics/",
+        ] {
+            let temp = TempDir::new().expect("temp dir");
+            let input_dir = temp.path().join("inputs");
+            fs::create_dir_all(&input_dir).expect("create input dir");
+            let source = write_source_pair(
+                &input_dir,
+                "first.toml",
+                "first.object",
+                "ra-run-a",
+                b"first",
+            );
+            let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
+            let mut calls = 0;
+
+            let err = run_backtest_sweep_publication_with_executor(
+                &plan,
+                |spec, object_bytes, output_dir| {
+                    calls += 1;
+                    write_test_contract(output_dir, spec, object_bytes, artifact_root);
+                    Ok(())
+                },
+            )
+            .expect_err("bad artifact_root must fail");
+
+            assert_eq!(calls, 0, "executor must not run after bad artifact_root");
+            assert!(
+                err.to_string().contains("artifact_root"),
+                "artifact_root {artifact_root:?} produced {err}"
+            );
+            assert!(!plan.index_path.exists(), "index must not be written");
+        }
+    }
+
+    #[test]
+    fn sweep_publication_rejects_parent_source_paths_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let mut source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        source.run_spec_path = PathBuf::from("nested").join("..").join("first.toml");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("parent source path must fail");
+
+        assert_eq!(calls, 0, "executor must not run after bad source path");
+        assert!(err.to_string().contains("relative to input_dir"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_absolute_source_paths_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let mut source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        source.run_spec_path = input_dir.join("first.toml");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("absolute source path must fail");
+
+        assert_eq!(calls, 0, "executor must not run after bad source path");
+        assert!(err.to_string().contains("relative to input_dir"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_source_run_spec_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        fs::write(
+            outside_dir.join("outside.toml"),
+            toml::to_string_pretty(&test_run_spec("ra-run-a", b"first"))
+                .expect("serialize outside run spec"),
+        )
+        .expect("write outside run spec");
+        fs::remove_file(input_dir.join("first.toml")).expect("remove original run spec");
+        std::os::unix::fs::symlink(
+            outside_dir.join("outside.toml"),
+            input_dir.join("first.toml"),
+        )
+        .expect("symlink run spec");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked run-spec source path must fail");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after symlinked source path"
+        );
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_source_object_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        fs::write(outside_dir.join("outside.object"), b"first").expect("write outside object");
+        fs::remove_file(input_dir.join("first.object")).expect("remove original object");
+        std::os::unix::fs::symlink(
+            outside_dir.join("outside.object"),
+            input_dir.join("first.object"),
+        )
+        .expect("symlink object");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked object source path must fail");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after symlinked source path"
+        );
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_source_directory_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        let source = write_source_pair(
+            &outside_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        std::os::unix::fs::symlink(&outside_dir, input_dir.join("linked"))
+            .expect("symlink source directory");
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            TEST_ARTIFACT_ROOT,
+            vec![BacktestSweepSourcePair {
+                run_spec_path: PathBuf::from("linked").join(source.run_spec_path),
+                object_path: PathBuf::from("linked").join(source.object_path),
+            }],
+        );
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked source directory must fail");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after symlinked source path"
+        );
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_input_dir_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let real_input_dir = temp.path().join("real-inputs");
+        fs::create_dir_all(&real_input_dir).expect("create real input dir");
+        let source = write_source_pair(
+            &real_input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let linked_input_dir = temp.path().join("linked-inputs");
+        std::os::unix::fs::symlink(&real_input_dir, &linked_input_dir).expect("symlink input dir");
+        let plan = publication_plan(&temp, linked_input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked input_dir must fail");
+
+        assert_eq!(calls, 0, "executor must not run after symlinked input_dir");
+        assert!(err.to_string().contains("input_dir"), "{err}");
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_empty_input_dir_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, Vec::new());
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("empty input dir must fail");
+
+        assert_eq!(calls, 0, "executor must not run after empty input dir");
+        assert!(
+            err.to_string().contains("input_dir must not be empty"),
+            "{err}"
+        );
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_object_hash_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        fs::write(input_dir.join("first.object"), b"wrong").expect("tamper object");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("object hash mismatch must fail before executor");
+
+        assert_eq!(calls, 0, "executor must not see unverified object bytes");
+        assert!(err.to_string().contains("object SHA-256"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_object_byte_length_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        fs::write(input_dir.join("first.object"), b"longer").expect("tamper object length");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("object byte length mismatch must fail before executor");
+
+        assert_eq!(calls, 0, "executor must not see wrong-length object bytes");
+        assert!(err.to_string().contains("object byte length"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_run_spec_artifact_root_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        rewrite_source_run_spec(&input_dir, &source, |spec| {
+            spec.manifest.artifact_root = "s3://other-bucket/nt-research-analytics".to_string();
+            spec.manifest.output_prefix =
+                "s3://other-bucket/nt-research-analytics/backtests/ra-run-a".to_string();
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("run-spec artifact root mismatch must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after run-spec root mismatch"
+        );
+        assert!(err.to_string().contains("manifest.artifact_root"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_run_spec_output_prefix_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        rewrite_source_run_spec(&input_dir, &source, |spec| {
+            spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/not-backtests/ra-run-a");
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("run-spec output prefix mismatch must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after run-spec output prefix mismatch"
+        );
+        assert!(err.to_string().contains("manifest.output_prefix"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_run_spec_output_prefix_for_different_run_id_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        rewrite_source_run_spec(&input_dir, &source, |spec| {
+            spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/ra-run-b");
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("run-spec output prefix for another run must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after run-spec output prefix targets another run"
+        );
+        assert!(err.to_string().contains("manifest.output_prefix"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_duplicate_remote_output_prefixes_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let first = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let second = write_source_pair(
+            &input_dir,
+            "second.toml",
+            "second.object",
+            "ra-run-b",
+            b"second",
+        );
+        rewrite_source_run_spec(&input_dir, &second, |spec| {
+            spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/ra-run-a");
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![first, second]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("duplicate remote output prefix must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after duplicate remote output prefixes"
+        );
+        assert!(err.to_string().contains("manifest.output_prefix"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_duplicate_run_spec_names_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        let left_dir = input_dir.join("left");
+        let right_dir = input_dir.join("right");
+        fs::create_dir_all(&left_dir).expect("create left input dir");
+        fs::create_dir_all(&right_dir).expect("create right input dir");
+        let left = write_source_pair(&left_dir, "run.toml", "run.object", "ra-run-a", b"first");
+        let right = write_source_pair(&right_dir, "run.toml", "run.object", "ra-run-b", b"second");
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            TEST_ARTIFACT_ROOT,
+            vec![
+                BacktestSweepSourcePair {
+                    run_spec_path: PathBuf::from("left").join(left.run_spec_path),
+                    object_path: PathBuf::from("left").join(left.object_path),
+                },
+                BacktestSweepSourcePair {
+                    run_spec_path: PathBuf::from("right").join(right.run_spec_path),
+                    object_path: PathBuf::from("right").join(right.object_path),
+                },
+            ],
+        );
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("duplicate run-spec file names must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after duplicate run-spec names"
+        );
+        assert!(
+            err.to_string().contains("duplicate run_spec_file_name"),
+            "{err}"
+        );
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_duplicate_output_dirs_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let first = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let second = write_source_pair(
+            &input_dir,
+            "second.toml",
+            "second.object",
+            "ra-run-a",
+            b"second",
+        );
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![first, second]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("duplicate output dir names must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after duplicate output dirs"
+        );
+        assert!(
+            err.to_string().contains("duplicate output_dir_name"),
+            "{err}"
+        );
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
 
     #[test]
     fn quote_replay_supports_self_signal_and_metadata_only() {

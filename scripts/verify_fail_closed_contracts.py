@@ -483,6 +483,8 @@ def collect_findings(
     paths = selected_paths(root, config)
     path_findings: list[str] = []
     require_nonempty(paths, "fail-closed contract selected paths", path_findings)
+    if path_findings:
+        return source_fence_findings + path_findings
     raw_findings = [
         raw_finding
         for path in paths

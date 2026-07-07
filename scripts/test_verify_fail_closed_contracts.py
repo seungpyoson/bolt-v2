@@ -103,10 +103,20 @@ def test_empty_selected_paths_fail_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(
+                exception_entry(
+                    path="pkg/missing.py",
+                    reason='"Fixture proves empty selected paths suppress stale exception noise."',
+                )
+            ),
+        )
 
         findings = collect(root)
 
-    assert "fail-closed contract selected paths: enforcement set is empty" in findings
+    assert findings == ["fail-closed contract selected paths: enforcement set is empty"], findings
 
 
 def test_bad_fixtures_fail_with_stable_rule_ids() -> None:

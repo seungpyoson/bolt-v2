@@ -10,6 +10,8 @@ import stat
 import sys
 from pathlib import Path
 
+import clean_merged_artifacts
+
 
 BEGIN = "# BEGIN bolt cargo guard"
 END = "# END bolt cargo guard"
@@ -160,6 +162,85 @@ def no_mistakes_launch_agents(home: Path) -> list[Path]:
     return sorted(launch_agents_dir(home).glob(NO_MISTAKES_LAUNCH_AGENT_GLOB))
 
 
+def daily_maintenance_install_root(root: Path) -> Path:
+    main_root = clean_merged_artifacts._main_worktree_root(root)
+    try:
+        main_config = clean_merged_artifacts.load_config(main_root, use_main_worktree=False)
+    except clean_merged_artifacts.ConfigError:
+        if main_root == root:
+            raise
+        current_config = clean_merged_artifacts.load_config(root, use_main_worktree=False)
+        if current_config.daily_maintenance_launch_agent is None:
+            return main_root
+        return root
+    if main_config.daily_maintenance_launch_agent is not None:
+        return main_root
+    if main_root != root:
+        current_config = clean_merged_artifacts.load_config(root, use_main_worktree=False)
+        if current_config.daily_maintenance_launch_agent is not None:
+            return root
+    return main_root
+
+
+def load_daily_maintenance_launch_agent_config(
+    root: Path,
+) -> clean_merged_artifacts.DailyMaintenanceLaunchAgentConfig:
+    config_root = daily_maintenance_install_root(root)
+    config = clean_merged_artifacts.load_config(config_root, use_main_worktree=False)
+    if config.daily_maintenance_launch_agent is None:
+        raise ValueError("missing config: clean-merged.daily_maintenance_launch_agent")
+    return config.daily_maintenance_launch_agent
+
+
+def daily_maintenance_launch_agent_path(
+    home: Path, config: clean_merged_artifacts.DailyMaintenanceLaunchAgentConfig,
+) -> Path:
+    return launch_agents_dir(home) / f"{config.label}.plist"
+
+
+def daily_maintenance_launch_agent_payload(
+    root: Path,
+    install_dir: Path,
+    config: clean_merged_artifacts.DailyMaintenanceLaunchAgentConfig,
+) -> dict[str, object]:
+    replacements = {
+        "<git-common-dir>": str(clean_merged_artifacts.git_common_dir(root)),
+        "<repo-root>": str(root),
+        "<shim-dir>": str(install_dir),
+    }
+    environment_path = replace_launch_agent_placeholders(config.environment_path, replacements)
+    standard_out_path = replace_launch_agent_placeholders(config.standard_out_path, replacements)
+    standard_error_path = replace_launch_agent_placeholders(config.standard_error_path, replacements)
+    return {
+        "Label": config.label,
+        "ProgramArguments": list(config.program_arguments),
+        "WorkingDirectory": str(root),
+        "EnvironmentVariables": {"PATH": environment_path},
+        "StandardOutPath": standard_out_path,
+        "StandardErrorPath": standard_error_path,
+        "StartCalendarInterval": dict(config.start_calendar_interval),
+    }
+
+
+def replace_launch_agent_placeholders(value: str, replacements: dict[str, str]) -> str:
+    resolved = value
+    for placeholder, replacement in replacements.items():
+        resolved = resolved.replace(placeholder, replacement)
+    return resolved
+
+
+def install_daily_maintenance_launch_agent(
+    home: Path,
+    root: Path,
+    install_dir: Path,
+    config: clean_merged_artifacts.DailyMaintenanceLaunchAgentConfig,
+) -> Path:
+    plist_path = daily_maintenance_launch_agent_path(home, config)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(plist_path, plistlib.dumps(daily_maintenance_launch_agent_payload(root, install_dir, config)))
+    return plist_path
+
+
 def path_with_shim_first(existing_path: str, install_dir: Path) -> str:
     shim_dir = str(install_dir)
     entries = [entry for entry in existing_path.split(os.pathsep) if entry and entry != shim_dir]
@@ -195,7 +276,7 @@ def update_no_mistakes_launch_agents(home: Path, install_dir: Path) -> list[Path
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]
+    root = daily_maintenance_install_root(Path(__file__).resolve().parents[1])
     source = root / "scripts" / "cargo-shim"
     install_dir = Path(os.environ.get("BOLT_CARGO_SHIM_DIR", "~/.local/bin/bolt-cargo-shim")).expanduser()
     try:
@@ -219,10 +300,23 @@ def main() -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1
+    try:
+        daily_maintenance_config = load_daily_maintenance_launch_agent_config(root)
+    except (OSError, ValueError) as exc:
+        print(f"Failed to load daily maintenance LaunchAgent config: {exc}", file=sys.stderr)
+        return 1
+    try:
+        daily_maintenance_plist = install_daily_maintenance_launch_agent(
+            home, root, install_dir, daily_maintenance_config,
+        )
+    except OSError as exc:
+        print(f"Failed to install daily maintenance LaunchAgent: {exc}", file=sys.stderr)
+        return 1
     print(f"Installed cargo shim: {target}")
     print(f"Updated zsh startup: {zshenv}")
     for plist_path in no_mistakes_plists:
         print(f"Updated no-mistakes LaunchAgent PATH: {plist_path}")
+    print(f"Installed daily maintenance LaunchAgent: {daily_maintenance_plist}")
     print("Restart or reconfigure long-running agent daemons after install; existing processes keep their old PATH.")
     return 0
 

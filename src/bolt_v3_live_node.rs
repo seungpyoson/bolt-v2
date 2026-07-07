@@ -268,6 +268,8 @@ use risk_admission_loss::{
     submit_reservation_recovery_config_from_loaded, sync_nt_trading_state_for_kill_switch,
     venue_truth_runtime_config_from_loaded, wire_bolt_v3_loss_protection_runtime,
 };
+#[cfg(test)]
+pub(crate) use secrets_builders::build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary;
 pub use secrets_builders::{
     build_bolt_v3_live_node_with_resolved, build_bolt_v3_strategy_free_data_client_probe_live_node,
     build_bolt_v3_strategy_free_live_node, build_bolt_v3_strategy_free_live_node_for_data_clients,

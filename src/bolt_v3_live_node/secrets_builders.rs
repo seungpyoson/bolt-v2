@@ -194,14 +194,10 @@ pub fn build_bolt_v3_strategy_free_live_node_for_data_clients(
     loaded: &LoadedBoltV3Config,
     data_client_keys: &[String],
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let transport_loaded =
-        trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::NotSubscribed)?;
-    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
-    build_bolt_v3_strategy_free_live_node_from_resolved_transport_for_data_clients(
-        &transport_loaded,
-        &resolved,
-        data_client_keys,
-    )
+    let scoped_loaded =
+        strategy_free_data_client_transport_loaded_config(loaded, data_client_keys)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&scoped_loaded)?;
+    build_bolt_v3_strategy_free_live_node_from_resolved_transport(&scoped_loaded, &resolved)
 }
 
 pub fn build_bolt_v3_strategy_free_live_node_with_resolved(
@@ -220,15 +216,12 @@ pub fn build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients(
     resolved: &ResolvedBoltV3Secrets,
     data_client_keys: &[String],
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let transport_loaded =
-        trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::NotSubscribed)?;
-    check_no_forbidden_credential_env_vars(&transport_loaded.root)
+    let scoped_loaded =
+        strategy_free_data_client_transport_loaded_config(loaded, data_client_keys)?;
+    check_no_forbidden_credential_env_vars(&scoped_loaded.root)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
-    build_bolt_v3_strategy_free_live_node_from_resolved_transport_for_data_clients(
-        &transport_loaded,
-        resolved,
-        data_client_keys,
-    )
+    let scoped_resolved = resolved_secrets_for_loaded_clients(resolved, &scoped_loaded);
+    build_bolt_v3_strategy_free_live_node_from_resolved_transport(&scoped_loaded, &scoped_resolved)
 }
 
 fn build_bolt_v3_strategy_free_live_node_from_resolved_transport(
@@ -236,22 +229,6 @@ fn build_bolt_v3_strategy_free_live_node_from_resolved_transport(
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let adapters = strategy_free_transport_adapter_configs(transport_loaded, resolved)?;
-    let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
-    let (runtime, _summary) =
-        build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
-    Ok(runtime)
-}
-
-fn build_bolt_v3_strategy_free_live_node_from_resolved_transport_for_data_clients(
-    transport_loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
-    data_client_keys: &[String],
-) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let adapters = strategy_free_transport_adapter_configs_for_data_clients(
-        transport_loaded,
-        resolved,
-        data_client_keys,
-    )?;
     let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
     let (runtime, _summary) =
         build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
@@ -279,27 +256,110 @@ where
     build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)
 }
 
-fn strategy_free_transport_adapter_configs_for_data_clients(
+#[cfg(test)]
+pub(crate) fn build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary<F, R, E>(
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
+    env_is_set: F,
+    resolver: R,
     data_client_keys: &[String],
-) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
-    let adapters = strategy_free_transport_adapter_configs(loaded, resolved)?;
-    Ok(strategy_free_data_client_adapter_configs(
-        adapters,
-        data_client_keys,
-    ))
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
+    let scoped_loaded =
+        strategy_free_data_client_transport_loaded_config(loaded, data_client_keys)?;
+    check_no_forbidden_credential_env_vars_with(&scoped_loaded.root, env_is_set)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let resolved = resolve_bolt_v3_secrets_with(&scoped_loaded, resolver)
+        .map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let adapters = strategy_free_transport_adapter_configs(&scoped_loaded, &resolved)?;
+    build_live_node_with_clients(&scoped_loaded, &resolved, adapters)
 }
 
-fn strategy_free_data_client_adapter_configs(
-    mut adapters: BoltV3AdapterConfigs,
+fn strategy_free_data_client_transport_loaded_config(
+    loaded: &LoadedBoltV3Config,
     data_client_keys: &[String],
-) -> BoltV3AdapterConfigs {
-    adapters.clients.retain(|client_key, client_config| {
-        client_config.execution = None;
-        data_client_keys.iter().any(|key| key == client_key) && client_config.data.is_some()
-    });
-    adapters
+) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
+    let requested = data_client_keys.iter().cloned().collect::<BTreeSet<_>>();
+    let missing_clients = requested
+        .iter()
+        .filter(|client_key| !loaded.root.clients.contains_key(*client_key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_clients.is_empty() {
+        let reason = stringify!(strategy_free_data_client_transport_unconfigured_clients);
+        return Err(BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!("{reason}: {missing_clients:?}"),
+        });
+    }
+    let missing_data_clients = requested
+        .iter()
+        .filter(|client_key| {
+            loaded
+                .root
+                .clients
+                .get(*client_key)
+                .and_then(|client| client.data.as_ref())
+                .is_none()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_data_clients.is_empty() {
+        let reason = stringify!(strategy_free_data_client_transport_clients_without_data);
+        return Err(BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!("{reason}: {missing_data_clients:?}"),
+        });
+    }
+
+    let mut scoped_loaded = loaded.clone();
+    scoped_loaded.strategies.clear();
+    scoped_loaded
+        .root
+        .clients
+        .retain(|client_key, _| requested.contains(client_key));
+    for client in scoped_loaded.root.clients.values_mut() {
+        client.execution = None;
+        if !data_client_scope_requires_secrets(client) {
+            client.secrets = None;
+        }
+    }
+    Ok(scoped_loaded)
+}
+
+fn data_client_scope_requires_secrets(client: &ClientBlock) -> bool {
+    let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) else {
+        return client.secrets.is_some();
+    };
+    binding
+        .required_secret_blocks
+        .iter()
+        .any(|requirement| match requirement.block {
+            bolt_v3_providers::ProviderCredentialedBlock::Data => client.data.is_some(),
+            bolt_v3_providers::ProviderCredentialedBlock::Execution => client.execution.is_some(),
+        })
+}
+
+fn resolved_secrets_for_loaded_clients(
+    resolved: &ResolvedBoltV3Secrets,
+    loaded: &LoadedBoltV3Config,
+) -> ResolvedBoltV3Secrets {
+    ResolvedBoltV3Secrets {
+        clients: resolved
+            .clients
+            .iter()
+            .filter(|(client_key, _)| {
+                loaded
+                    .root
+                    .clients
+                    .get(*client_key)
+                    .and_then(|client| client.secrets.as_ref())
+                    .is_some()
+            })
+            .map(|(client_key, secrets)| (client_key.clone(), secrets.clone()))
+            .collect(),
+    }
 }
 
 pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(

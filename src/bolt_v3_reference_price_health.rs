@@ -580,6 +580,7 @@ mod tests {
     use rust_decimal::{Decimal, prelude::ToPrimitive};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+    use crate::bolt_v3_live_node::build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary;
     use crate::{
         bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     };
@@ -971,6 +972,163 @@ mod tests {
         assert!(
             health_run.runtime.registered_strategy_ids().is_empty(),
             "health must clear strategies from the prepared transport runtime"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_does_not_map_out_of_plan_execution_clients() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-reference-price-health-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let execution = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .and_then(|client| client.execution.as_mut())
+            .and_then(toml::Value::as_table_mut)
+            .expect("fixture should carry clients.polymarket_main.execution");
+        execution.insert("max_retries".to_string(), toml::Value::Integer(i64::MAX));
+
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("health build must not map execution clients outside plan.client_keys");
+
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
+            "health must prepare zero execution transport clients"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_resolves_only_plan_scoped_data_client_secrets() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-reference-price-health-secret-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let plan = reference_current_price_health_plan(&loaded)
+            .expect("reference_current_price health plan should build");
+        let mut requested_paths = Vec::new();
+
+        let (runtime, _summary) =
+            build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary(
+                &loaded,
+                |_| false,
+                |_region, path| {
+                    requested_paths.push(path.to_string());
+                    fake_bolt_v3_health_resolver(_region, path)
+                },
+                &plan.client_keys,
+            )
+            .expect("health-scoped builder should resolve only plan data-client secrets");
+
+        assert_eq!(
+            requested_paths,
+            vec![
+                "/bolt/testnet/chainlink/api-key",
+                "/bolt/testnet/chainlink/api-secret",
+                "/bolt/polyresearch/api-key",
+            ]
+        );
+        assert_eq!(
+            sorted_strings(runtime.registered_data_client_ids()),
+            plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            sorted_strings(runtime.registered_exec_client_ids()).is_empty(),
+            "health must prepare zero execution transport clients"
+        );
+    }
+
+    #[test]
+    fn strategy_free_data_client_scope_drops_execution_only_secrets_for_selected_data_clients() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-data-client-secret-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let data_client_keys = vec!["polymarket_main".to_string()];
+        let mut requested_paths = Vec::new();
+
+        let (runtime, _summary) =
+            build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary(
+                &loaded,
+                |_| false,
+                |_region, path| {
+                    requested_paths.push(path.to_string());
+                    Err("data-only Polymarket scope must not resolve execution secrets")
+                },
+                &data_client_keys,
+            )
+            .expect("data-only scope should build without execution-only secrets");
+
+        assert!(
+            requested_paths.is_empty(),
+            "data-only Polymarket scope must not request execution secrets: {requested_paths:?}"
+        );
+        assert_eq!(
+            sorted_strings(runtime.registered_data_client_ids()),
+            data_client_keys,
+            "data-only scope must register exactly the selected data client"
+        );
+        assert!(
+            sorted_strings(runtime.registered_exec_client_ids()).is_empty(),
+            "data-only scope must register zero execution clients"
+        );
+    }
+
+    #[test]
+    fn strategy_free_data_client_scope_drops_pre_resolved_execution_only_secrets() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-data-client-resolved-secret-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let data_client_keys = vec!["polymarket_main".to_string()];
+
+        let runtime = build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients(
+            &loaded,
+            &resolved,
+            &data_client_keys,
+        )
+        .expect("data-only resolved scope should build without retaining execution secrets");
+
+        assert!(
+            runtime.redaction_values().is_empty(),
+            "data-only resolved scope must not retain execution-only secret redactions"
+        );
+        assert_eq!(
+            sorted_strings(runtime.registered_data_client_ids()),
+            data_client_keys,
+            "data-only resolved scope must register exactly the selected data client"
+        );
+        assert!(
+            sorted_strings(runtime.registered_exec_client_ids()).is_empty(),
+            "data-only resolved scope must register zero execution clients"
         );
     }
 

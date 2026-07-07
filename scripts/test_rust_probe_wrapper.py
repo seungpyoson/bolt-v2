@@ -601,7 +601,7 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ("config", f"branch.{BRANCH}.remote"): ("origin", None),
         ("config", f"branch.{BRANCH}.merge"): (f"refs/heads/{BRANCH}", None),
         ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-        ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): (
+        ("ls-remote", "--heads", "--", "https://example.invalid/push.git", BRANCH): (
             f"{HEAD}\trefs/heads/{BRANCH}",
             None,
         ),
@@ -640,7 +640,7 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ("config", f"branch.{LOCAL_BRANCH}.remote"): ("origin", None),
         ("config", f"branch.{LOCAL_BRANCH}.merge"): (f"refs/heads/{UPSTREAM_BRANCH}", None),
         ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-        ("ls-remote", "--heads", "https://example.invalid/push.git", UPSTREAM_BRANCH): (
+        ("ls-remote", "--heads", "--", "https://example.invalid/push.git", UPSTREAM_BRANCH): (
             f"{HEAD}\trefs/heads/{UPSTREAM_BRANCH}",
             None,
         ),
@@ -656,7 +656,7 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ("config", f"branch.{BRANCH}.remote"): ("", None),
         ("remote",): ("origin", None),
         ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-        ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): (
+        ("ls-remote", "--heads", "--", "https://example.invalid/push.git", BRANCH): (
             f"{HEAD}\trefs/heads/{BRANCH}",
             None,
         ),
@@ -664,7 +664,7 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
     head, branch, error, calls = run_with_git_outputs(no_local_upstream_outputs)
     if (head, branch, error) != (HEAD, BRANCH, None):
         raise AssertionError((head, branch, error))
-    if ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH) not in calls:
+    if ("ls-remote", "--heads", "--", "https://example.invalid/push.git", BRANCH) not in calls:
         raise AssertionError(calls)
 
     refusal_cases = [
@@ -679,14 +679,14 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
                 ("config", f"branch.{BRANCH}.remote"): ("", None),
                 ("remote",): ("origin", None),
                 ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-                ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): ("", None),
+                ("ls-remote", "--heads", "--", "https://example.invalid/push.git", BRANCH): ("", None),
             },
             "just sandbox-safe-push",
         ),
         (
             "unpushed head",
             {
-                ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): (
+                ("ls-remote", "--heads", "--", "https://example.invalid/push.git", BRANCH): (
                     f"{'b' * 40}\trefs/heads/{BRANCH}",
                     None,
                 )

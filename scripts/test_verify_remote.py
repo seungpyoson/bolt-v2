@@ -334,7 +334,7 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("config", "branch.feature.remote"): ("origin", None),
                     ("config", "branch.feature.merge"): ("refs/heads/feature", None),
                     ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-                    ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): (
+                    ("ls-remote", "--heads", "--", "https://example.invalid/push.git", "feature"): (
                         "def\trefs/heads/feature",
                         None,
                     ),
@@ -349,8 +349,8 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("config", "branch.feature.remote"): (None, "no upstream"),
                     ("remote",): ("origin", None),
                     ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-                    ("ls-remote", "--heads", "origin", "feature"): ("", None),
-                    ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): ("", None),
+                    ("ls-remote", "--heads", "--", "origin", "feature"): ("", None),
+                    ("ls-remote", "--heads", "--", "https://example.invalid/push.git", "feature"): ("", None),
                 }[args],
                 "just sandbox-safe-push",
             ),
@@ -394,14 +394,14 @@ def assert_remote_fallback_helpers_handle_empty_outputs() -> None:
             raise AssertionError((remote, error))
 
         owner.git_output = lambda _repo, *args: {
-            ("ls-remote", "--heads", "origin", "feature"): (None, None),
+            ("ls-remote", "--heads", "--", "origin", "feature"): (None, None),
         }[args]
         head, error = owner.live_remote_branch_head(REPO_ROOT, remote="origin", branch="feature")
         if head is not None or error is not None:
             raise AssertionError((head, error))
 
         owner.git_output = lambda _repo, *args: {
-            ("ls-remote", "--heads", "origin", "feature"): ("", None),
+            ("ls-remote", "--heads", "--", "origin", "feature"): ("", None),
         }[args]
         head, error = owner.live_remote_branch_head(REPO_ROOT, remote="origin", branch="feature")
         if head is not None or error is not None:
@@ -416,7 +416,7 @@ def assert_verify_remote_redacts_push_url_errors() -> None:
     original_git_output = owner.git_output
     try:
         owner.git_output = lambda _repo, *args: {
-            ("ls-remote", "--heads", secret_url, "feature"): (None, f"fatal: authentication failed for {secret_url}")
+            ("ls-remote", "--heads", "--", secret_url, "feature"): (None, f"fatal: authentication failed for {secret_url}")
         }[args]
         head, error = owner.live_remote_branch_head(
             REPO_ROOT,
@@ -446,7 +446,7 @@ def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> No
             ("config", "branch.feature.remote"): (None, "no upstream"),
             ("remote",): ("fork\norigin", None),
             ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-            ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): (
+            ("ls-remote", "--heads", "--", "https://example.invalid/push.git", "feature"): (
                 "abc\trefs/heads/feature",
                 None,
             ),
@@ -461,7 +461,7 @@ def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> No
 
     if (head, branch, error) != ("abc", "feature", None):
         raise AssertionError((head, branch, error))
-    if ("ls-remote", "--heads", "https://example.invalid/push.git", "feature") not in calls:
+    if ("ls-remote", "--heads", "--", "https://example.invalid/push.git", "feature") not in calls:
         raise AssertionError(calls)
 
 
@@ -478,7 +478,7 @@ def assert_verify_remote_uses_push_url_for_configured_upstream() -> None:
             ("config", "branch.feature.remote"): ("origin", None),
             ("config", "branch.feature.merge"): ("refs/heads/feature", None),
             ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
-            ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): (
+            ("ls-remote", "--heads", "--", "https://example.invalid/push.git", "feature"): (
                 "abc\trefs/heads/feature",
                 None,
             ),
@@ -496,9 +496,9 @@ def assert_verify_remote_uses_push_url_for_configured_upstream() -> None:
 
     if (head, branch, error) != ("abc", "feature", None):
         raise AssertionError((head, branch, error))
-    if ("ls-remote", "--heads", "https://example.invalid/push.git", "feature") not in calls:
+    if ("ls-remote", "--heads", "--", "https://example.invalid/push.git", "feature") not in calls:
         raise AssertionError(calls)
-    if ("ls-remote", "--heads", "origin", "feature") in calls:
+    if ("ls-remote", "--heads", "--", "origin", "feature") in calls:
         raise AssertionError(calls)
 
 
@@ -520,7 +520,7 @@ def assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push(
                 ("config", "branch.feature.remote"): ("fork", None),
                 ("config", "branch.feature.merge"): ("refs/heads/feature", None),
                 ("remote", "get-url", "--push", "--all", "fork"): ("https://example.invalid/fork.git", None),
-                ("ls-remote", "--heads", "https://example.invalid/fork.git", "feature"): (
+                ("ls-remote", "--heads", "--", "https://example.invalid/fork.git", "feature"): (
                     "abc\trefs/heads/feature",
                     None,
                 ),

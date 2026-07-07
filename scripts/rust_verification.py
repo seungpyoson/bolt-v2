@@ -3348,7 +3348,7 @@ def live_remote_branch_head(
     branch: str,
     redact_value: str | None = None,
 ) -> tuple[str | None, str | None]:
-    refs, error = git_output(repo, "ls-remote", "--heads", remote, branch)
+    refs, error = git_output(repo, "ls-remote", "--heads", "--", remote, branch)
     if error is not None:
         if redact_value:
             error = error.replace(redact_value, "<remote-url>")

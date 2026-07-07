@@ -198,8 +198,8 @@ def remote_url(repo: pathlib.Path, remote: str) -> str:
 def live_remote_branch_head(repo: pathlib.Path, *, url: str, branch: str) -> str | None:
     result = run_git(
         repo,
-        ["ls-remote", "--heads", url, branch],
-        display_args=["git", "ls-remote", "--heads", "<remote-url>", branch],
+        ["ls-remote", "--heads", "--", url, branch],
+        display_args=["git", "ls-remote", "--heads", "--", "<remote-url>", branch],
         redact_values=(url,),
     )
     refs = result.stdout.strip()
@@ -217,8 +217,8 @@ def push_head(repo: pathlib.Path, *, remote: str, branch: str) -> str:
     refspec = f"HEAD:refs/heads/{branch}"
     run_git(
         repo,
-        ["push", url, refspec],
-        display_args=["git", "push", "<remote-url>", refspec],
+        ["push", "--", url, refspec],
+        display_args=["git", "push", "--", "<remote-url>", refspec],
         redact_values=(url,),
     )
     remote_head = live_remote_branch_head(repo, url=url, branch=branch)

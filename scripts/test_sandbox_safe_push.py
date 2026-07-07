@@ -188,6 +188,64 @@ def assert_push_errors_redact_remote_url() -> None:
             raise AssertionError(combined)
 
 
+def assert_git_commands_use_option_boundary_before_remote_url() -> None:
+    helper = load_helper_module()
+    url = "--receive-pack=/tmp/evil"
+    head = "a" * 40
+    refspec = f"HEAD:refs/heads/{BRANCH}"
+    calls: list[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = []
+
+    def fake_run_git(
+        _repo: pathlib.Path,
+        args: list[str],
+        *,
+        display_args: list[str] | None = None,
+        redact_values: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        args_tuple = tuple(args)
+        calls.append((args_tuple, tuple(display_args or ()), redact_values))
+        outputs = {
+            ("status", "--porcelain", "--untracked-files=normal"): "",
+            ("rev-parse", "HEAD"): head,
+            ("remote", "get-url", "--push", "--all", "origin"): url,
+            ("push", "--", url, refspec): "",
+            ("ls-remote", "--heads", "--", url, BRANCH): f"{head}\trefs/heads/{BRANCH}\n",
+        }
+        if args_tuple not in outputs:
+            raise AssertionError(f"unexpected git call without option boundary: {args_tuple}")
+        return subprocess.CompletedProcess(["git", *args], 0, outputs[args_tuple], "")
+
+    original_run_git = helper.run_git
+    try:
+        helper.run_git = fake_run_git
+        pushed_head = helper.push_head(pathlib.Path("."), remote="origin", branch=BRANCH)
+    finally:
+        helper.run_git = original_run_git
+
+    if pushed_head != head:
+        raise AssertionError(pushed_head)
+    expected_push = ("push", "--", url, refspec)
+    expected_ls_remote = ("ls-remote", "--heads", "--", url, BRANCH)
+    if expected_push not in [call[0] for call in calls]:
+        raise AssertionError(calls)
+    if expected_ls_remote not in [call[0] for call in calls]:
+        raise AssertionError(calls)
+    for args, display_args, redact_values in calls:
+        if args == expected_push and display_args != ("git", "push", "--", "<remote-url>", refspec):
+            raise AssertionError(display_args)
+        if args == expected_ls_remote and display_args != (
+            "git",
+            "ls-remote",
+            "--heads",
+            "--",
+            "<remote-url>",
+            BRANCH,
+        ):
+            raise AssertionError(display_args)
+        if args in (expected_push, expected_ls_remote) and redact_values != (url,):
+            raise AssertionError(redact_values)
+
+
 def assert_requires_clean_worktree() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
@@ -241,6 +299,7 @@ def main() -> int:
     assert_multiple_push_urls_fail_closed()
     assert_rejects_unsafe_branch_before_push()
     assert_push_errors_redact_remote_url()
+    assert_git_commands_use_option_boundary_before_remote_url()
     assert_requires_clean_worktree()
     assert_git_prompt_is_forced_off()
     print("OK: sandbox-safe push tests passed.")

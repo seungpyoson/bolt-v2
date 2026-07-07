@@ -344,12 +344,14 @@ impl BinaryOracleEdgeTaker {
                 subscription.instrument_id == resolution_instrument_id
                     && subscription.boundary_unix_seconds == boundary_unix_seconds
             });
+        let use_durable_index_subscription = report_boundary.uses_durable_index_subscription();
         if !current_subscription_matches {
             let previous_subscription = self.resolution_report_boundary_subscriptions.insert(
                 report_boundary,
                 ResolutionReportBoundarySubscriptionState {
                     instrument_id: resolution_instrument_id,
                     boundary_unix_seconds,
+                    durable_index_subscription: use_durable_index_subscription,
                     custom_subscription: None,
                 },
             );
@@ -363,8 +365,11 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = previous_custom_subscription;
 
-            let previous_index_subscription =
-                previous_subscription.map(|subscription| subscription.instrument_id);
+            let previous_index_subscription = previous_subscription.and_then(|subscription| {
+                subscription
+                    .durable_index_subscription
+                    .then_some(subscription.instrument_id)
+            });
             #[cfg(not(test))]
             if let Some(instrument_id) = previous_index_subscription {
                 self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
@@ -372,24 +377,33 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = previous_index_subscription;
 
-            #[cfg(not(test))]
-            self.subscribe_index_prices(
-                resolution_instrument_id,
-                Some(resolution_client_id),
-                Some(params.clone()),
-            );
-            #[cfg(test)]
-            let _ = (resolution_client_id, params);
-            self.record_resolution_strike_subscribe_event(
-                ResolutionStrikeSubscribeEvent::durable_index(
-                    report_boundary,
+            if use_durable_index_subscription {
+                #[cfg(not(test))]
+                self.subscribe_index_prices(
                     resolution_instrument_id,
-                    boundary_unix_seconds,
-                ),
-            );
-            return ResolutionReportSubscriptionOutcome::Dispatched;
+                    Some(resolution_client_id),
+                    Some(params.clone()),
+                );
+                #[cfg(test)]
+                let _ = (resolution_client_id, params);
+                self.record_resolution_strike_subscribe_event(
+                    ResolutionStrikeSubscribeEvent::durable_index(
+                        report_boundary,
+                        resolution_instrument_id,
+                        boundary_unix_seconds,
+                    ),
+                );
+                return ResolutionReportSubscriptionOutcome::Dispatched;
+            }
+            #[cfg(test)]
+            let _ = params;
         }
 
+        let mut params = Params::new();
+        params.insert(
+            boundary_param.to_string(),
+            serde_json::json!(boundary_unix_seconds),
+        );
         params.insert(
             STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
             serde_json::json!(resolution_instrument_id.to_string()),
@@ -441,14 +455,16 @@ impl BinaryOracleEdgeTaker {
                 #[cfg(test)]
                 let _ = data_type;
             }
-            #[cfg(not(test))]
-            self.unsubscribe_index_prices(
-                subscription.instrument_id,
-                Some(resolution_client_id),
-                None,
-            );
-            #[cfg(test)]
-            let _ = subscription.instrument_id;
+            if subscription.durable_index_subscription {
+                #[cfg(not(test))]
+                self.unsubscribe_index_prices(
+                    subscription.instrument_id,
+                    Some(resolution_client_id),
+                    None,
+                );
+                #[cfg(test)]
+                let _ = subscription.instrument_id;
+            }
         }
     }
 
@@ -670,6 +686,7 @@ pub(super) enum ResolutionReportSubscriptionOutcome {
 pub(super) struct ResolutionReportBoundarySubscriptionState {
     instrument_id: InstrumentId,
     boundary_unix_seconds: u64,
+    durable_index_subscription: bool,
     custom_subscription: Option<DataType>,
 }
 
@@ -677,6 +694,12 @@ pub(super) struct ResolutionReportBoundarySubscriptionState {
 pub(super) enum ResolutionStrikeReportBoundary {
     WindowOpen,
     WindowClose,
+}
+
+impl ResolutionStrikeReportBoundary {
+    fn uses_durable_index_subscription(self) -> bool {
+        matches!(self, Self::WindowOpen)
+    }
 }
 
 impl ResolutionStrikeSubscribeEvent {

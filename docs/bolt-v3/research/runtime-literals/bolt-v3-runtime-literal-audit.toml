@@ -15477,14 +15477,6 @@ reason = "Chainlink reference-price provider intentionally disables transport-ow
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "number"
 literal = '''0'''
-context = '''last_message_unix_ms: Arc::new(AtomicU64::new(0)),'''
-classification = "chainlink_reference_provider_contract"
-reason = "Chainlink reference-price provider liveness timestamp identity before the DataClient connects; it is internal observation state, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_providers/chainlink_reference.rs"
-kind = "number"
-literal = '''0'''
 context = '''last_report_unix_ms: Arc::new(AtomicU64::new(0)),'''
 classification = "chainlink_reference_provider_contract"
 reason = "Chainlink reference-price provider report-liveness timestamp identity before the DataClient connects; it is internal observation state, not an operator runtime value."

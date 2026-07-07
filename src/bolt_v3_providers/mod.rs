@@ -612,6 +612,7 @@ pub struct ReferencePriceProviderMetadata {
     pub client_venue_key: &'static str,
     pub identifier_kind: ReferencePriceIdentifierKind,
     pub supported_assets: &'static [&'static str],
+    pub emits_live_input_health: bool,
 }
 
 pub const REFERENCE_PRICE_PROVIDER_METADATA: &[ReferencePriceProviderMetadata] = &[
@@ -620,12 +621,14 @@ pub const REFERENCE_PRICE_PROVIDER_METADATA: &[ReferencePriceProviderMetadata] =
         client_venue_key: chainlink_reference::KEY,
         identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
         supported_assets: &[],
+        emits_live_input_health: true,
     },
     ReferencePriceProviderMetadata {
         provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
         client_venue_key: polyresearch::KEY,
         identifier_kind: ReferencePriceIdentifierKind::Symbol,
         supported_assets: &[],
+        emits_live_input_health: false,
     },
 ];
 
@@ -651,7 +654,8 @@ pub fn reference_price_provider_supports_asset(provider_key: &str, asset: &str) 
 }
 
 pub fn reference_price_provider_emits_live_input_health(provider_key: &str) -> bool {
-    provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY
+    reference_price_provider_metadata(provider_key)
+        .is_some_and(|metadata| metadata.emits_live_input_health)
 }
 
 pub fn reference_price_provider_identifier_is_configured(
@@ -1310,6 +1314,28 @@ mod tests {
             normalize_base_order_quantity_for_execution_venue(Venue::from("OKX"), quantity),
             Some(quantity)
         );
+    }
+
+    #[test]
+    fn reference_price_live_input_health_capability_is_metadata_driven() {
+        let chainlink_metadata =
+            reference_price_provider_metadata(chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY)
+                .expect("Chainlink provider metadata should be registered");
+        let polyresearch_metadata =
+            reference_price_provider_metadata(polyresearch::REFERENCE_PRICE_PROVIDER_KEY)
+                .expect("PolyResearch provider metadata should be registered");
+
+        assert!(chainlink_metadata.emits_live_input_health);
+        assert!(reference_price_provider_emits_live_input_health(
+            chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY
+        ));
+        assert!(!polyresearch_metadata.emits_live_input_health);
+        assert!(!reference_price_provider_emits_live_input_health(
+            polyresearch::REFERENCE_PRICE_PROVIDER_KEY
+        ));
+        assert!(!reference_price_provider_emits_live_input_health(
+            "unregistered_reference_provider"
+        ));
     }
 
     fn fake_secret_value(path: &str) -> String {

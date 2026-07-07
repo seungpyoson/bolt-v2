@@ -964,6 +964,7 @@ fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch
     let close_events = settlement_close_fetch_events(&strategy);
     assert!(
         close_events.len() == 1
+            && close_events[0].trigger == ResolutionStrikeFetchTrigger::CustomFetch
             && close_events[0].boundary_unix_seconds
                 == position_interval_end_ms / MILLIS_PER_SECOND_U64
             && settlement_evidence_count(&events) == 0
@@ -1016,7 +1017,7 @@ fn position_market_lifecycle_close_and_open_fetches_use_boundary_scoped_durable_
         .collect::<Vec<_>>();
     assert!(
         close_events.len() == 1
-            && close_events[0].trigger == ResolutionStrikeFetchTrigger::DurableIndex
+            && close_events[0].trigger == ResolutionStrikeFetchTrigger::CustomFetch
             && open_events.len() == 1
             && open_events[0].trigger == ResolutionStrikeFetchTrigger::DurableIndex
             && close_events[0].boundary_unix_seconds

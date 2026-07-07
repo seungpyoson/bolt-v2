@@ -242,6 +242,18 @@ fn repo_path_normalization_removes_current_directory_prefixes() {
 }
 
 #[test]
+fn repo_path_normalization_rejects_backslash_parent_traversal() {
+    assert!(normalize_repo_path(r"..\outside.json").is_err());
+    assert!(normalize_repo_path(r"repo://..\outside.json").is_err());
+    assert!(normalize_repo_path(r"repo://specs\..\outside.json").is_err());
+    assert_eq!(
+        normalize_repo_path(r"repo://specs\023-nt-research-analytics-platform\reference\source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json")
+            .expect("normalize backslash path separators"),
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    );
+}
+
+#[test]
 fn artifact_ref_collector_treats_flat_path_hash_siblings_as_pins() {
     let json = serde_json::json!({
         "object_gates_path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
@@ -364,7 +376,8 @@ fn is_source_tree_path(path: &str) -> bool {
 
 fn normalize_repo_path(path: &str) -> Result<String, String> {
     let path = path.strip_prefix("repo://").unwrap_or(path);
-    let repo_path = Path::new(path);
+    let path = path.replace('\\', "/");
+    let repo_path = Path::new(&path);
 
     if path.is_empty() {
         return Err("path is empty".to_string());

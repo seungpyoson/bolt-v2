@@ -559,6 +559,29 @@ NEXTEST_FINGERPRINT_REUSE_BASE_ENV = {
     "MERGE_GROUP_BASE_REF": "${{ github.event.merge_group.base_ref || '' }}",
     "MERGE_GROUP_BASE_SHA": "${{ github.event.merge_group.base_sha || '' }}",
 }
+TRUSTED_BASE_STEP_ALLOWED_KEYS = frozenset(("name", "id", "if", "shell", "env", "run"))
+CI_PROVENANCE_BASE_STEP_SCALARS = {
+    "id": "provenance_base",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    "shell": "bash",
+    "env": "",
+    "run": "|",
+}
+VERDICT_BASE_STEP_SCALARS = {
+    "id": "verdict_base",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    "shell": "bash",
+    "env": "",
+    "run": "|",
+}
+TRUSTED_BASE_ENV = {
+    "EVENT_NAME": "${{ github.event_name }}",
+    "PR_NUMBER": "${{ github.event.pull_request.number || github.run_id }}",
+    "PR_BASE_REF": "${{ github.event.pull_request.base.ref || '' }}",
+    "PR_BASE_SHA": "${{ github.event.pull_request.base.sha || '' }}",
+    "MERGE_GROUP_BASE_REF": "${{ github.event.merge_group.base_ref || '' }}",
+    "MERGE_GROUP_BASE_SHA": "${{ github.event.merge_group.base_sha || '' }}",
+}
 DETECTOR_REFS_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
   base_branch="$PR_BASE_REF"
   base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
@@ -712,6 +735,77 @@ python3 scripts/ci_provenance.py resolve-fingerprint \\
   --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" \\
   --require-inherited-emitter "$required_emitter" \\
   | tee -a "$GITHUB_OUTPUT\""""
+CI_PROVENANCE_BASE_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  base_branch="$PR_BASE_REF"
+  base_sha="$PR_BASE_SHA"
+  base_ref="refs/remotes/origin/ci-provenance-base-${PR_NUMBER}"
+elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+  merge_group_base="$MERGE_GROUP_BASE_REF"
+  if [[ "$merge_group_base" == refs/heads/* ]]; then
+    base_branch="${merge_group_base#refs/heads/}"
+  elif [[ "$merge_group_base" == refs/* ]]; then
+    echo "unsupported merge_group base_ref: $merge_group_base" >&2
+    exit 1
+  else
+    base_branch="$merge_group_base"
+  fi
+  base_sha="$MERGE_GROUP_BASE_SHA"
+  base_ref="refs/remotes/origin/ci-provenance-base-merge-group-${GITHUB_RUN_ID}"
+else
+  echo "unsupported trusted base event: $EVENT_NAME" >&2
+  exit 1
+fi
+git check-ref-format "refs/heads/$base_branch"
+if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "trusted base SHA is missing or malformed: $base_sha" >&2
+  exit 1
+fi
+git fetch --no-tags origin "+${base_sha}:${base_ref}"
+base_tree="$RUNNER_TEMP/ci-provenance-base-tree"
+mkdir -p "$base_tree"
+git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
+if [[ ! -f "$tested_workflow" || -L "$tested_workflow" ]]; then
+  echo "tested workflow file is missing or not a regular file: $tested_workflow" >&2
+  exit 1
+fi
+mkdir -p "$base_tree/.github/workflows"
+cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"
+{
+  echo "script=$base_tree/scripts/ci_provenance.py"
+  echo "config=$base_tree/ci/github-actions-runners.toml"
+  echo "workflow=$base_tree/.github/workflows/ci.yml"
+} >> "$GITHUB_OUTPUT"'''
+VERDICT_BASE_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  base_branch="$PR_BASE_REF"
+  base_sha="$PR_BASE_SHA"
+  base_ref="refs/remotes/origin/ci-gate-base-${PR_NUMBER}"
+elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+  merge_group_base="$MERGE_GROUP_BASE_REF"
+  if [[ "$merge_group_base" == refs/heads/* ]]; then
+    base_branch="${merge_group_base#refs/heads/}"
+  elif [[ "$merge_group_base" == refs/* ]]; then
+    echo "unsupported merge_group base_ref: $merge_group_base" >&2
+    exit 1
+  else
+    base_branch="$merge_group_base"
+  fi
+  base_sha="$MERGE_GROUP_BASE_SHA"
+  base_ref="refs/remotes/origin/ci-gate-base-merge-group-${GITHUB_RUN_ID}"
+else
+  echo "unsupported trusted base event: $EVENT_NAME" >&2
+  exit 1
+fi
+git check-ref-format "refs/heads/$base_branch"
+if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "trusted base SHA is missing or malformed: $base_sha" >&2
+  exit 1
+fi
+git fetch --no-tags origin "+${base_sha}:${base_ref}"
+base_tree="$RUNNER_TEMP/ci-gate-base-tree"
+mkdir -p "$base_tree"
+git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"'''
 GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
   echo "nextest fingerprint reuse resolver did not succeed"
   exit 1
@@ -9746,6 +9840,34 @@ def fingerprint_reuse_base_step_is_canonical(job_lines: list[str]) -> bool:
     )
 
 
+def ci_provenance_base_step_is_canonical(job_lines: list[str]) -> bool:
+    base_step = unique_step_with_id(job_lines, "provenance_base")
+    return (
+        base_step is not None
+        and block_has_canonical_step_envelope(
+            base_step,
+            TRUSTED_BASE_STEP_ALLOWED_KEYS,
+            CI_PROVENANCE_BASE_STEP_SCALARS,
+            {"env": TRUSTED_BASE_ENV},
+        )
+        and block_run_body_matches(base_step, CI_PROVENANCE_BASE_RUN)
+    )
+
+
+def gate_verdict_base_step_is_canonical(job_lines: list[str]) -> bool:
+    base_step = unique_step_with_id(job_lines, "verdict_base")
+    return (
+        base_step is not None
+        and block_has_canonical_step_envelope(
+            base_step,
+            TRUSTED_BASE_STEP_ALLOWED_KEYS,
+            VERDICT_BASE_STEP_SCALARS,
+            {"env": TRUSTED_BASE_ENV},
+        )
+        and block_run_body_matches(base_step, VERDICT_BASE_RUN)
+    )
+
+
 def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
     reuse_step = unique_step_with_id(job_lines, "reuse")
     if reuse_step is None:
@@ -9980,21 +10102,10 @@ def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
 
 
 def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
+    if not ci_provenance_base_step_is_canonical(job_lines):
+        return False
     text = uncommented_text(job_lines)
     required = (
-        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-        "PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}",
-        "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-        "MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}",
-        'base_sha="$PR_BASE_SHA"',
-        'base_sha="$MERGE_GROUP_BASE_SHA"',
-        'git check-ref-format "refs/heads/$base_branch"',
-        'trusted base SHA is missing or malformed',
-        'git fetch --no-tags origin "+${base_sha}:${base_ref}"',
-        'git archive "$base_ref" scripts/ ci/github-actions-runners.toml',
-        'tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"',
-        "tested workflow file is missing or not a regular file",
-        'cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"',
         "steps.provenance_base.outputs.script",
         "steps.provenance_base.outputs.config",
         "steps.provenance_base.outputs.workflow",
@@ -10298,10 +10409,6 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     if GATE_NAME_OUTPUT not in gate_text:
         errors.append("gate name must come from ci-policy gate_name output")
     for required in (
-        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-        "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-        'git check-ref-format "refs/heads/$base_branch"',
-        "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
         "steps.verdict_base.outputs.script",
         'python3 "$verdict_script" check-ci-gate',
     ):
@@ -12051,6 +12158,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate needs {job}")
         if "nextest-fingerprint-reuse" not in gate_needs:
             errors.append("gate needs nextest-fingerprint-reuse")
+        if not gate_verdict_base_step_is_canonical(jobs["gate"]):
+            errors.append("gate must use pinned trusted base-tree ci_provenance.py verdict")
         errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
         errors.extend(gate_checks_nextest_fingerprint_reuse(gate_text))

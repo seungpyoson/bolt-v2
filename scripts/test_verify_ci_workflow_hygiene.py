@@ -1177,19 +1177,50 @@ jobs:
       - name: Prepare trusted base provenance tree
         id: provenance_base
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
-          base_sha="$PR_BASE_SHA"
-          base_sha="$MERGE_GROUP_BASE_SHA"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-provenance-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
           git check-ref-format "refs/heads/$base_branch"
-          echo "trusted base SHA is missing or malformed"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
           git fetch --no-tags origin "+${base_sha}:${base_ref}"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          base_tree="$RUNNER_TEMP/ci-provenance-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
           tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
-          echo "tested workflow file is missing or not a regular file"
+          if [[ ! -f "$tested_workflow" || -L "$tested_workflow" ]]; then
+            echo "tested workflow file is missing or not a regular file: $tested_workflow" >&2
+            exit 1
+          fi
+          mkdir -p "$base_tree/.github/workflows"
           cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"
           {
             echo "script=$base_tree/scripts/ci_provenance.py"
@@ -1290,11 +1321,39 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
         run: |
-          base_ref="refs/remotes/origin/ci-gate-base-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_sha="$PR_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-gate-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_sha="$MERGE_GROUP_BASE_SHA"
+            base_ref="refs/remotes/origin/ci-gate-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
           git check-ref-format "refs/heads/$base_branch"
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted base SHA is missing or malformed: $base_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+${base_sha}:${base_ref}"
           base_tree="$RUNNER_TEMP/ci-gate-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
@@ -16313,13 +16372,27 @@ def main() -> int:
             "MERGE_GROUP_BASE_REF: ''",
         ),
         (
+            "MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}",
+            "MERGE_GROUP_BASE_SHA: ''",
+        ),
+        (
             'git check-ref-format "refs/heads/$base_branch"',
             "echo skip-base-ref-format-check",
+        ),
+        (
+            'git fetch --no-tags origin "+${base_sha}:${base_ref}"',
+            'git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"',
         ),
         (
             'git archive "$base_ref" scripts/ ci/github-actions-runners.toml',
             'git archive "$base_ref" scripts/',
         ),
+    ):
+        assert_error(
+            "gate must use pinned trusted base-tree ci_provenance.py verdict",
+            replace_once_after(BASE_WORKFLOW, "  gate:\n", marker, replacement),
+        )
+    for marker, replacement in (
         (
             "steps.verdict_base.outputs.script",
             "steps.verdict_base.outputs.local_script",
@@ -17691,6 +17764,15 @@ def main() -> int:
             BASE_WORKFLOW,
             'python3 "$provenance_script" emit-full-ci',
             "python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must run provenance emitter",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  ci-provenance-emit:",
+            'git fetch --no-tags origin "+${base_sha}:${base_ref}"',
+            'git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"',
         ),
     )
     assert_error(

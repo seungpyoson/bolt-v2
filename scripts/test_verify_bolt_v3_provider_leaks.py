@@ -120,12 +120,16 @@ def test_empty_provider_binding_discovery_fails_closed() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_fixture(root, {"src/bolt_v3_core.rs": "pub struct CoreOnly;\n"})
-
         findings = verifier.scan_root(root)
 
     messages = [finding.message for finding in findings]
-    assert any("bolt_v3_providers" in message and "enforcement set is empty" in message for message in messages), messages
+    expected = {
+        "Bolt-v3 provider-leak core files: enforcement set is empty",
+        "bolt_v3_providers: enforcement set is empty",
+        "NT provider crate stems: enforcement set is empty",
+    }
+    missing = expected - set(messages)
+    assert not missing, f"missing provider discovery floors {sorted(missing)} from {messages!r}"
 
 
 def test_shared_market_data_provider_module_name_is_not_concrete_provider() -> None:

@@ -260,12 +260,11 @@ def floor_finding(message: str) -> Finding:
     return Finding(path=".", line=0, message=message, excerpt="")
 
 
-def rules_for_root(root: Path, floor_errors: list[str] | None = None) -> list[Rule]:
+def rules_for_root(root: Path, floor_errors: list[str]) -> list[Rule]:
     core_files = discovered_core_files(root)
     provider_names = discovered_binding_names(root, "bolt_v3_providers")
-    if floor_errors is not None:
-        require_nonempty(core_files, "Bolt-v3 provider-leak core files", floor_errors)
-        require_nonempty(provider_names, "bolt_v3_providers", floor_errors)
+    require_nonempty(core_files, "Bolt-v3 provider-leak core files", floor_errors)
+    require_nonempty(provider_names, "bolt_v3_providers", floor_errors)
     family_names = tuple(
         name
         for name in discovered_binding_names(root, "bolt_v3_market_families")
@@ -279,8 +278,7 @@ def rules_for_root(root: Path, floor_errors: list[str] | None = None) -> list[Ru
     # Denylist of NT venue/provider crate stems (Cargo deps minus infra),
     # so unregistered adapter crates are caught alongside registered ones.
     nt_provider_crate_stems = discovered_nt_provider_crate_stems(root)
-    if floor_errors is not None:
-        require_nonempty(nt_provider_crate_stems, "NT provider crate stems", floor_errors)
+    require_nonempty(nt_provider_crate_stems, "NT provider crate stems", floor_errors)
     nt_provider_crate_alt = alternation(nt_provider_crate_stems)
     # End the crate name on a non-identifier char so `nautilus_binance` does not
     # also need to match a longer crate like `nautilus_binancex`.

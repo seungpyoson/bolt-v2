@@ -16277,6 +16277,7 @@ def main() -> int:
         runners_config_text = DEFAULT_RUNNERS_CONFIG.read_text(encoding="utf-8")
         errors.extend(verify_storage_cleanup_alert_workflow(workflow_texts, runners_config_text))
         errors.extend(mergify_proof_prefix_alignment_errors(load_config(DEFAULT_RUNNERS_CONFIG)))
+    errors = list(dict.fromkeys(errors))
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

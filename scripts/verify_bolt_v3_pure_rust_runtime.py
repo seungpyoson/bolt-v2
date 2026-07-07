@@ -227,9 +227,10 @@ def main() -> int:
                         f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
                     )
 
-    findings.extend(
-        missing_main_rs_entrypoint_calls(MAIN_RS.read_text(encoding="utf-8"))
-    )
+    if MAIN_RS.exists():
+        findings.extend(
+            missing_main_rs_entrypoint_calls(MAIN_RS.read_text(encoding="utf-8"))
+        )
 
     if findings:
         for finding in findings:

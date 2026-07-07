@@ -197,7 +197,9 @@ def collect_visibility_violations() -> list[Violation]:
 
 def main() -> int:
     violations = collect_violations()
-    visibility = collect_visibility_violations()
+    visibility = []
+    if not any(violation.kind == "source-floor" for violation in violations):
+        visibility = collect_visibility_violations()
     if violations or visibility:
         for violation in violations:
             if violation.kind == "source-floor":

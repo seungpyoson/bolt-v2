@@ -868,6 +868,33 @@ model = "{current_claude}"
                         "--github-notice",
                     ]
                 ) == 1
+            globals()["live_latest_models"] = lambda sources, *, provider=PROVIDER_ALL: (
+                current_kimi,
+                current_glm,
+                current_claude,
+                ["provider warning"],
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                assert (
+                    main(
+                        [
+                            "--config-file",
+                            str(config_path),
+                            "--live",
+                            "--advisory",
+                            "--github-notice",
+                        ]
+                    )
+                    == 1
+                )
+            assert "provider warning" in stderr.getvalue(), stderr.getvalue()
+            globals()["live_latest_models"] = lambda sources, *, provider=PROVIDER_ALL: (
+                current_kimi,
+                current_glm,
+                current_claude,
+                [],
+            )
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 assert main(["--config-file", str(config_path), "--live", "--advisory", "--provider", PROVIDER_GLM]) == 0
@@ -1246,7 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"warning: {sanitize_detail(finding)}", file=sys.stderr)
                 return 1 if args.github_notice else 0
             if advisory.state is FreshnessState.UNKNOWN:
-                return 0
+                return 1 if args.github_notice else 0
         if findings:
             for finding in findings:
                 print(f"ERROR: {sanitize_detail(finding)}", file=sys.stderr)

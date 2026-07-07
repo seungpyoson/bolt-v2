@@ -99,6 +99,16 @@ def collect(root: Path) -> list[str]:
     return verifier.collect_findings(root, root / "ci" / "fail-closed-contracts.toml")
 
 
+def test_empty_selected_paths_fail_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+
+        findings = collect(root)
+
+    assert "fail-closed contract selected paths: enforcement set is empty" in findings
+
+
 def test_bad_fixtures_fail_with_stable_rule_ids() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1107,6 +1117,7 @@ def test_cli_fails_with_actionable_output() -> None:
 
 def main() -> int:
     tests = [
+        test_empty_selected_paths_fail_closed,
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
         test_project_exception_named_exception_is_not_broad,

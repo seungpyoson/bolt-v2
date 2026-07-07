@@ -149,6 +149,45 @@ def test_main_fails_closed_when_runtime_sources_are_empty() -> None:
         raise AssertionError(f"expected empty runtime floors, got code={code}, stderr={stderr!r}")
 
 
+def test_main_reports_source_floor_without_main_rs_crash() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "Cargo.toml").write_text("[package]\nname = \"probe\"\n", encoding="utf-8")
+        (root / "Cargo.lock").write_text("", encoding="utf-8")
+        code, stderr = run_main_with_temp_root(
+            root,
+            root / "src" / "main.rs",
+            runtime_source_paths=(),
+        )
+
+    expected = (
+        "Rust source files under src: enforcement set is empty",
+        "Bolt-v3 runtime source paths: enforcement set is empty",
+    )
+    if code != 1 or any(text not in stderr for text in expected):
+        raise AssertionError(f"expected empty runtime floors, got code={code}, stderr={stderr!r}")
+
+
+def test_main_reports_missing_listed_runtime_source() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "Cargo.toml").write_text("[package]\nname = \"probe\"\n", encoding="utf-8")
+        (root / "Cargo.lock").write_text("", encoding="utf-8")
+        src = root / "src"
+        src.mkdir(parents=True)
+        (src / "clean.rs").write_text("pub struct Clean;\n", encoding="utf-8")
+        main_rs = root / "main.rs"
+        main_rs.write_text(entrypoint_text(), encoding="utf-8")
+        code, stderr = run_main_with_temp_root(
+            root,
+            main_rs,
+            runtime_source_paths=("src/missing.rs",),
+        )
+
+    if code != 1 or "src/missing.rs: runtime source file is missing" not in stderr:
+        raise AssertionError(f"expected missing runtime source finding, got code={code}, stderr={stderr!r}")
+
+
 def test_cargo_manifest_paths_matches_rglob_reference_with_pruned_subtrees() -> None:
     original_root = VERIFIER.REPO_ROOT
     with tempfile.TemporaryDirectory() as tmp:
@@ -465,6 +504,8 @@ def main() -> int:
         test_collect_dependency_names_covers_workspace_and_target_tables,
         test_main_fails_closed_when_manifest_discovery_is_empty,
         test_main_fails_closed_when_runtime_sources_are_empty,
+        test_main_reports_source_floor_without_main_rs_crash,
+        test_main_reports_missing_listed_runtime_source,
         test_cargo_manifest_paths_matches_rglob_reference_with_pruned_subtrees,
         test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs,
         test_forbidden_rust_patterns_detect_python_bridge_shapes,

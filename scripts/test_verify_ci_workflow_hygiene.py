@@ -7590,6 +7590,13 @@ def assert_runner_config_floor_handles_missing_and_empty_inputs() -> None:
                         "main must report the runner config enforcement floor, "
                         f"got result={result}, stderr={stderr.getvalue()!r}"
                     )
+                expected_error = f"ERROR: {verifier.RUNNERS_CONFIG_LABEL}: enforcement set is empty"
+                error_lines = stderr.getvalue().splitlines()
+                if error_lines.count(expected_error) != 1:
+                    raise AssertionError(
+                        "main must deduplicate the shared runner config floor, "
+                        f"got {error_lines.count(expected_error)} copies in {error_lines!r}"
+                    )
             finally:
                 verifier.DEFAULT_RUNNERS_CONFIG = original_config
 

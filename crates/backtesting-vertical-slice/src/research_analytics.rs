@@ -334,16 +334,17 @@ where
 {
     validate_run_pointer_artifact_root(&plan.artifact_root)?;
     let loaded_runs = load_backtest_sweep_source_pairs(plan)?;
+    let (runs, loaded_sources): (Vec<_>, Vec<_>) = loaded_runs
+        .into_iter()
+        .map(|loaded| (loaded.run, loaded.source))
+        .unzip();
     let sweep_plan = BacktestSweepPlan {
         run_spec_dir: plan.run_spec_dir.clone(),
         run_output_dir: plan.run_output_dir.clone(),
-        runs: loaded_runs
-            .iter()
-            .map(|loaded| loaded.run.clone())
-            .collect(),
+        runs,
     };
     let sweep_report = run_backtest_sweep_with_executor(&sweep_plan, executor)?;
-    let records = run_pointer_records_from_sweep(&sweep_report, &loaded_runs)?;
+    let records = run_pointer_records_from_sweep(&sweep_report, &loaded_sources)?;
     let catalog_run_ids = sweep_report
         .runs
         .iter()
@@ -474,9 +475,13 @@ where
 #[derive(Debug, Clone)]
 struct LoadedBacktestSweepRun {
     run: BacktestSweepRun,
-    source_run_spec_path: String,
-    source_object_path: String,
-    source_run_spec_sha256: String,
+    source: LoadedBacktestSweepSource,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedBacktestSweepSource {
+    run_id: String,
+    params: BTreeMap<String, serde_json::Value>,
 }
 
 /// # Errors
@@ -559,31 +564,40 @@ fn load_backtest_sweep_source_pairs(
         "sweep source pairs must not be empty"
     );
 
-    plan.sources
-        .iter()
-        .map(|source| {
-            let (run_spec_path, source_run_spec_path) =
-                resolve_source_path("run-spec", &plan.input_dir, &source.run_spec_path)?;
-            let (object_path, source_object_path) =
-                resolve_source_path("object", &plan.input_dir, &source.object_path)?;
-            let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
+    let mut loaded_runs = Vec::with_capacity(plan.sources.len());
+    let mut seen_output_prefixes = BTreeSet::new();
+    for source in &plan.sources {
+        let (run_spec_path, source_run_spec_path) =
+            resolve_source_path("run-spec", &plan.input_dir, &source.run_spec_path)?;
+        let (object_path, source_object_path) =
+            resolve_source_path("object", &plan.input_dir, &source.object_path)?;
+        let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
+        let output_prefix =
             validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
-            let accepted_object_bytes = read_accepted_object_for_run_spec(&object_path, &run_spec)?;
-            let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
-            let output_dir_name = run_spec.manifest.run_id.clone();
-            Ok(LoadedBacktestSweepRun {
-                run: BacktestSweepRun {
-                    run_spec_file_name,
-                    output_dir_name,
-                    run_spec,
-                    accepted_object_bytes,
-                },
-                source_run_spec_path,
-                source_object_path,
-                source_run_spec_sha256,
-            })
-        })
-        .collect()
+        ensure!(
+            seen_output_prefixes.insert(output_prefix.clone()),
+            "duplicate manifest.output_prefix {output_prefix:?}"
+        );
+        let params = run_pointer_params(
+            &run_spec,
+            source_run_spec_path,
+            source_object_path,
+            source_run_spec_sha256,
+        )?;
+        let accepted_object_bytes = read_accepted_object_for_run_spec(&object_path, &run_spec)?;
+        let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
+        let run_id = run_spec.manifest.run_id.clone();
+        loaded_runs.push(LoadedBacktestSweepRun {
+            run: BacktestSweepRun {
+                run_spec_file_name,
+                output_dir_name: run_id.clone(),
+                run_spec,
+                accepted_object_bytes,
+            },
+            source: LoadedBacktestSweepSource { run_id, params },
+        });
+    }
+    Ok(loaded_runs)
 }
 
 fn resolve_source_path(
@@ -630,7 +644,7 @@ fn input_relative_source_path(label: &'static str, path: &Path) -> Result<String
 fn validate_publication_run_spec_artifact_scope(
     artifact_root: &str,
     run_spec: &RunSpec,
-) -> Result<()> {
+) -> Result<String> {
     let artifact_root = validate_run_pointer_artifact_root(artifact_root)?;
     let manifest_root = validate_run_pointer_artifact_root(&run_spec.manifest.artifact_root)
         .with_context(|| {
@@ -646,16 +660,28 @@ fn validate_publication_run_spec_artifact_scope(
         run_spec.manifest.artifact_root,
         artifact_root
     );
-    let required_prefix = format!("{artifact_root}/backtests/");
-    let output_prefix = format!("{}/", run_spec.manifest.output_prefix.trim_end_matches('/'));
+    validate_leaf_path("manifest.run_id", &run_spec.manifest.run_id)?;
     ensure!(
-        output_prefix.starts_with(&required_prefix),
-        "run spec {} manifest.output_prefix {:?} must live under {:?}",
+        run_spec.manifest.output_prefix == run_spec.manifest.output_prefix.trim(),
+        "run spec {} manifest.output_prefix must not contain leading or trailing whitespace",
+        run_spec.manifest.run_id
+    );
+    let output_prefix = run_spec.manifest.output_prefix.trim_end_matches('/');
+    ensure!(
+        output_prefix == run_spec.manifest.output_prefix,
+        "run spec {} manifest.output_prefix {:?} must be normalized without a trailing slash",
+        run_spec.manifest.run_id,
+        run_spec.manifest.output_prefix
+    );
+    let expected_prefix = format!("{artifact_root}/backtests/{}", run_spec.manifest.run_id);
+    ensure!(
+        output_prefix == expected_prefix,
+        "run spec {} manifest.output_prefix {:?} must equal {:?}",
         run_spec.manifest.run_id,
         run_spec.manifest.output_prefix,
-        required_prefix
+        expected_prefix
     );
-    Ok(())
+    Ok(output_prefix.to_string())
 }
 
 fn source_file_name(label: &'static str, path: &Path) -> Result<String> {
@@ -673,7 +699,7 @@ fn source_file_name(label: &'static str, path: &Path) -> Result<String> {
 
 fn run_pointer_records_from_sweep(
     sweep_report: &BacktestSweepReport,
-    loaded_runs: &[LoadedBacktestSweepRun],
+    loaded_sources: &[LoadedBacktestSweepSource],
 ) -> Result<Vec<RunPointerIndexRecord>> {
     let mut reports_by_run_id = BTreeMap::new();
     for run in &sweep_report.runs {
@@ -684,13 +710,12 @@ fn run_pointer_records_from_sweep(
         );
     }
 
-    loaded_runs
+    loaded_sources
         .iter()
         .map(|loaded| {
-            let run_id = loaded.run.run_spec.manifest.run_id.clone();
             let report = reports_by_run_id
-                .get(&run_id)
-                .with_context(|| format!("sweep report missing run_id {run_id:?}"))?;
+                .get(&loaded.run_id)
+                .with_context(|| format!("sweep report missing run_id {:?}", loaded.run_id))?;
             let result_contract_bytes =
                 fs::read(&report.result_contract_path).with_context(|| {
                     format!(
@@ -699,8 +724,8 @@ fn run_pointer_records_from_sweep(
                     )
                 })?;
             Ok(RunPointerIndexRecord {
-                run_id,
-                params: run_pointer_params(loaded)?,
+                run_id: loaded.run_id.clone(),
+                params: loaded.params.clone(),
                 result: RunPointerResult {
                     result_contract_uri: report.contract.artifact_uris.result_contract_uri.clone(),
                     result_contract_hash: sha256_hex(&result_contract_bytes),
@@ -711,27 +736,28 @@ fn run_pointer_records_from_sweep(
 }
 
 fn run_pointer_params(
-    loaded: &LoadedBacktestSweepRun,
+    run_spec: &RunSpec,
+    source_run_spec_path: String,
+    source_object_path: String,
+    source_run_spec_sha256: String,
 ) -> Result<BTreeMap<String, serde_json::Value>> {
     let mut params = BTreeMap::new();
     params.insert(
         "source_run_spec_sha256".to_string(),
-        serde_json::Value::String(loaded.source_run_spec_sha256.clone()),
+        serde_json::Value::String(source_run_spec_sha256),
     );
     params.insert(
         "accepted_object_sha256".to_string(),
-        serde_json::Value::String(loaded.run.run_spec.accepted_object.sha256.clone()),
+        serde_json::Value::String(run_spec.accepted_object.sha256.clone()),
     );
     params.insert(
         "strategy_config_hash".to_string(),
-        serde_json::Value::String(loaded.run.run_spec.manifest.strategy_config_hash.clone()),
+        serde_json::Value::String(run_spec.manifest.strategy_config_hash.clone()),
     );
     params.insert(
         "converter_config_hash".to_string(),
         serde_json::Value::String(
-            loaded
-                .run
-                .run_spec
+            run_spec
                 .converter
                 .content_hash()
                 .context("hash run-spec converter config")?,
@@ -739,11 +765,11 @@ fn run_pointer_params(
     );
     params.insert(
         "source_run_spec_path".to_string(),
-        serde_json::Value::String(loaded.source_run_spec_path.clone()),
+        serde_json::Value::String(source_run_spec_path),
     );
     params.insert(
         "source_object_path".to_string(),
-        serde_json::Value::String(loaded.source_object_path.clone()),
+        serde_json::Value::String(source_object_path),
     );
     Ok(params)
 }

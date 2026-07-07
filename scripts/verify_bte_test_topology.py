@@ -8,6 +8,8 @@ import re
 import sys
 import tomllib
 
+from verifier_io import require_nonempty
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 BVS_CRATE = pathlib.Path("crates/backtesting-vertical-slice")
 BVS_CARGO_TOML = BVS_CRATE / "Cargo.toml"
@@ -84,11 +86,14 @@ def verify_cargo_manifest(root: pathlib.Path) -> list[str]:
 
 def verify_harness(root: pathlib.Path) -> list[str]:
     tests = integration_test_files(root)
+    errors: list[str] = []
+    if not require_nonempty(tests, "backtester integration test files", errors):
+        return errors
+
     harness_path = root / BVS_HARNESS_PATH
     if not harness_path.exists():
         return [f"{repo_relative(BVS_HARNESS_PATH)} must exist"]
 
-    errors: list[str] = []
     harness_text = harness_path.read_text()
     if '#![recursion_limit = "256"]' not in harness_text:
         errors.append("backtester integration harness must carry the shared recursion_limit")
@@ -155,9 +160,13 @@ def verify_accepted_dataset_public_api(root: pathlib.Path) -> list[str]:
 
 
 def verify_root(root: pathlib.Path) -> list[str]:
+    harness_errors = verify_harness(root)
+    if harness_errors == ["backtester integration test files: enforcement set is empty"]:
+        return harness_errors
+
     errors: list[str] = []
     errors.extend(verify_cargo_manifest(root))
-    errors.extend(verify_harness(root))
+    errors.extend(harness_errors)
     errors.extend(verify_accepted_dataset_public_api(root))
     return errors
 

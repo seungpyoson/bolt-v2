@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from collections.abc import Iterable
 from pathlib import Path
 
+from verifier_io import require_nonempty
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST: frozenset[str] = frozenset()
@@ -51,8 +53,15 @@ def src_rust_paths() -> tuple[str, ...]:
 
 
 def collect_violations(paths: Iterable[str] | None = None) -> list[Violation]:
+    target_paths = tuple(src_rust_paths() if paths is None else paths)
+    floor_errors: list[str] = []
+    if not require_nonempty(target_paths, "Rust source files under src", floor_errors):
+        return [
+            Violation(path=".", line=0, text=error)
+            for error in floor_errors
+        ]
     violations: list[Violation] = []
-    for relative_path in paths or src_rust_paths():
+    for relative_path in target_paths:
         path = REPO_ROOT / relative_path
         if not path.is_file():
             violations.append(

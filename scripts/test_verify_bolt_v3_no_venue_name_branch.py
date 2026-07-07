@@ -190,8 +190,9 @@ class FenceTests(unittest.TestCase):
     # --- structural ---
 
     def test_empty_source_set_fails_closed(self):
-        with self.assertRaises(RuntimeError):
-            VERIFIER.collect_violations_from_files([])
+        violations = VERIFIER.collect_violations_from_files([])
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].label, "Rust source files under src: enforcement set is empty")
 
     def test_current_bolt_src_is_clean(self):
         # Preventive fence: there are zero venue-name compares in src today.

@@ -12,6 +12,7 @@ from typing import Any
 from bolt_v3_source_roots import OUTCOME_GROUP_SOURCE_ROOTS, source_set_files
 from verify_bolt_v3_provider_leaks import production_text
 from verify_bolt_v3_pure_rust_runtime import strip_rust_comments_and_literals
+from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -199,7 +200,10 @@ def validate_ledger(root: Path) -> list[str]:
 
 
 def outcome_group_source_files(root: Path) -> list[Path]:
-    return source_set_files(OUTCOME_GROUP_SOURCE_ROOTS, repo_root=root)
+    try:
+        return source_set_files(OUTCOME_GROUP_SOURCE_ROOTS, repo_root=root)
+    except FileNotFoundError:
+        return []
 
 
 def scan_text(source: str) -> str:
@@ -345,7 +349,10 @@ def validate_source_file(root: Path, path: Path) -> list[str]:
 
 def validate_outcome_sources(root: Path) -> list[str]:
     findings: list[str] = []
-    for path in outcome_group_source_files(root):
+    paths = outcome_group_source_files(root)
+    if not require_nonempty(paths, "outcome-group source files", findings):
+        return findings
+    for path in paths:
         findings.extend(validate_source_file(root, path))
     return findings
 
@@ -398,9 +405,13 @@ def validate_just_wiring(root: Path) -> list[str]:
 
 
 def collect_findings(root: Path = REPO_ROOT) -> list[str]:
+    source_findings = validate_outcome_sources(root)
+    if source_findings == ["outcome-group source files: enforcement set is empty"]:
+        return source_findings
+
     findings: list[str] = []
     findings.extend(validate_ledger(root))
-    findings.extend(validate_outcome_sources(root))
+    findings.extend(source_findings)
     findings.extend(validate_just_wiring(root))
     return findings
 

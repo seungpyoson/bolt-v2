@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
@@ -114,8 +116,24 @@ class RequoteConstructionFenceTests(unittest.TestCase):
         self.assertEqual(VERIFIER.collect_violations_from_files([bridge]), [])
 
     def test_empty_source_file_set_fails_closed(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "no Rust source files"):
-            VERIFIER.collect_violations_from_files([])
+        violations = VERIFIER.collect_violations_from_files([])
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].kind, "source-floor")
+        self.assertEqual(violations[0].excerpt, "Rust source files under src: enforcement set is empty")
+
+    def test_main_reports_empty_source_floor_without_defining_module_crash(self) -> None:
+        original_root = VERIFIER.REPO_ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                VERIFIER.REPO_ROOT = Path(temp_dir)
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    code = VERIFIER.main()
+            finally:
+                VERIFIER.REPO_ROOT = original_root
+
+        self.assertEqual(code, 1)
+        self.assertIn("Rust source files under src: enforcement set is empty", stderr.getvalue())
 
     def test_current_bolt_src_constructs_only_via_bridge(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

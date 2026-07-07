@@ -54,6 +54,13 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
     reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
 }
 
+mod financial_value_private {
+    pub trait Sealed {}
+}
+
+#[allow(private_bounds)]
+pub trait FinancialValue: financial_value_private::Sealed {}
+
 /// Closed-interval probability value for Bolt-v3 compute-layer math.
 ///
 /// ```compile_fail
@@ -76,6 +83,15 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
 pub struct Probability {
     value: f64,
 }
+
+impl financial_value_private::Sealed for Probability {}
+impl FinancialValue for Probability {}
+impl financial_value_private::Sealed for crate::bolt_v3_maker_mu_estimator::UsableMu {}
+impl FinancialValue for crate::bolt_v3_maker_mu_estimator::UsableMu {}
+impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ValidRealizedVol {}
+impl FinancialValue for crate::bolt_v3_realized_volatility::ValidRealizedVol {}
+impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}
+impl FinancialValue for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}
 
 impl Probability {
     pub fn new(value: f64) -> Option<Self> {
@@ -150,6 +166,21 @@ pub(crate) fn sanitize_non_negative(value: f64) -> f64 {
     } else {
         ZERO_F64
     }
+}
+
+#[allow(dead_code)]
+fn financial_values_do_not_implement_default() {
+    trait AmbiguousIfDefault<A> {
+        fn _check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+    struct Invalid;
+    impl<T: Default> AmbiguousIfDefault<Invalid> for T {}
+
+    let _ = <Probability as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
 }
 
 #[cfg(test)]
@@ -234,6 +265,16 @@ mod tests {
         assert_eq!(probability.complement().value(), 0.25);
         assert_eq!(probability.widened(band).value(), UNIT_F64);
         assert_eq!(probability.narrowed(band).value(), 0.25);
+    }
+
+    #[test]
+    fn financial_value_marker_is_implemented_for_registered_types() {
+        fn assert_financial_value<T: FinancialValue>() {}
+
+        assert_financial_value::<Probability>();
+        assert_financial_value::<crate::bolt_v3_maker_mu_estimator::UsableMu>();
+        assert_financial_value::<crate::bolt_v3_realized_volatility::ReadyRealizedVol>();
+        assert_financial_value::<crate::bolt_v3_realized_volatility::ValidRealizedVol>();
     }
 
     #[test]

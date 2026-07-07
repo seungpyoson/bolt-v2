@@ -19,6 +19,7 @@ from rust_source_scanner import (
 from verify_bolt_v3_provider_leaks import (
     production_text as production_source_text,
 )
+from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -180,6 +181,18 @@ def missing_main_rs_entrypoint_calls(text: str) -> list[str]:
 def main() -> int:
     findings: list[str] = []
 
+    manifests = cargo_manifest_paths()
+    rust_source_paths = sorted((REPO_ROOT / "src").glob("**/*.rs"))
+    floor_findings: list[str] = []
+    require_nonempty(manifests, "Cargo manifests", floor_findings)
+    require_nonempty(rust_source_paths, "Rust source files under src", floor_findings)
+    require_nonempty(RUNTIME_SOURCE_PATHS, "Bolt-v3 runtime source paths", floor_findings)
+    if floor_findings:
+        findings.extend(floor_findings)
+        for finding in findings:
+            print(f"FAIL: {finding}", file=sys.stderr)
+        return 1
+
     cargo_dependencies = cargo_dependency_names(CARGO_TOML)
     if "aws-sdk-ssm" not in cargo_dependencies:
         findings.append("Cargo.toml does not include aws-sdk-ssm")
@@ -191,7 +204,7 @@ def main() -> int:
         if path.exists():
             findings.append(f"{rel}: Python package/build metadata is not allowed for the Rust runtime")
 
-    for manifest in cargo_manifest_paths():
+    for manifest in manifests:
         dependency_names = cargo_dependency_names(manifest)
         rel = manifest.relative_to(REPO_ROOT).as_posix()
         for name in sorted(dependency_names & FORBIDDEN_PACKAGE_NAMES):
@@ -201,7 +214,7 @@ def main() -> int:
     for name in sorted(lock_names & FORBIDDEN_PACKAGE_NAMES):
         findings.append(f"Cargo.lock references forbidden Python bridge package {name!r}")
 
-    for path in sorted((REPO_ROOT / "src").glob("**/*.rs")):
+    for path in rust_source_paths:
         rel = path.relative_to(REPO_ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
         scan_text = strip_rust_comments_and_literals(strip_cfg_test_items(text))
@@ -212,6 +225,7 @@ def main() -> int:
     for rel in RUNTIME_SOURCE_PATHS:
         path = REPO_ROOT / rel
         if not path.exists():
+            findings.append(f"{rel}: runtime source file is missing")
             continue
         text = production_text(path)
         for pattern, label in FORBIDDEN_RUNTIME_SOURCE_PATTERNS:
@@ -220,9 +234,10 @@ def main() -> int:
                     f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
                 )
 
-    findings.extend(
-        missing_main_rs_entrypoint_calls(MAIN_RS.read_text(encoding="utf-8"))
-    )
+    if MAIN_RS.exists():
+        findings.extend(
+            missing_main_rs_entrypoint_calls(MAIN_RS.read_text(encoding="utf-8"))
+        )
 
     if findings:
         for finding in findings:

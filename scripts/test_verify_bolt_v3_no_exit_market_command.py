@@ -231,8 +231,9 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
         self.assertEqual({violation.line for violation in violations}, {10})
 
     def test_empty_source_file_set_fails_closed(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "no Rust source files"):
-            VERIFIER.collect_violations_from_files([])
+        violations = VERIFIER.collect_violations_from_files([])
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].label, "Rust source files under src: enforcement set is empty")
 
     def test_current_bolt_src_has_no_exit_market_command_senders(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

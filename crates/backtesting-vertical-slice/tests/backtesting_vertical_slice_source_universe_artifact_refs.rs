@@ -93,8 +93,12 @@ fn artifact_ref_from_object(
 ) -> Option<ArtifactRefCandidate> {
     let role = string_field(object, "role").map(str::to_string);
     let path = string_field(object, "path")?;
-    if role.is_none() && normalize_repo_path(path).is_err() {
-        return None;
+    if role.is_none() {
+        match normalize_repo_path(path) {
+            Ok(_) => {}
+            Err(err) if should_report_invalid_artifact_ref_path(path, &err) => {}
+            Err(_) => return None,
+        }
     }
 
     Some(ArtifactRefCandidate {
@@ -120,9 +124,6 @@ fn collect_flat_sibling_hash_refs(
         let Some(path) = path.as_str() else {
             continue;
         };
-        if normalize_repo_path(path).is_err() {
-            continue;
-        }
         let sha256_key = format!("{role}_sha256");
         let hash_key = format!("{role}_hash");
         let Some((hash_key, sha256)) = string_field(object, &sha256_key)
@@ -131,6 +132,11 @@ fn collect_flat_sibling_hash_refs(
         else {
             continue;
         };
+        match normalize_repo_path(path) {
+            Ok(_) => {}
+            Err(err) if should_report_invalid_artifact_ref_path(path, &err) => {}
+            Err(_) => continue,
+        }
         artifact_refs.push(ArtifactRefCandidate {
             role: role.to_string(),
             path: path.to_string(),
@@ -156,6 +162,10 @@ fn inferred_role_from_location(location: &str) -> String {
 
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     object.get(key)?.as_str()
+}
+
+fn should_report_invalid_artifact_ref_path(path: &str, error: &str) -> bool {
+    path.starts_with("repo://") || error == "path escapes repository root"
 }
 
 #[test]
@@ -255,6 +265,66 @@ fn repo_path_normalization_rejects_backslash_parent_traversal() {
 }
 
 #[test]
+fn invalid_named_path_sha256_pins_are_reported_not_dropped() {
+    let json = serde_json::json!({
+        "unsafe_contract": {
+            "path": r"repo://..\outside.json",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    });
+
+    let mismatches = check_synthetic_artifact_refs(&json);
+
+    assert!(
+        mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_contract")
+                && mismatch.contains(r"path repo://..\outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }),
+        "invalid named path/sha256 pin should be reported: {mismatches:?}"
+    );
+}
+
+#[test]
+fn invalid_flat_path_hash_pins_are_reported_not_dropped() {
+    let json = serde_json::json!({
+        "unsafe_path": r"repo://..\outside.json",
+        "unsafe_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    });
+
+    let mismatches = check_synthetic_artifact_refs(&json);
+
+    assert!(
+        mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_sha256")
+                && mismatch.contains(r"path repo://..\outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }),
+        "invalid flat path/hash pin should be reported: {mismatches:?}"
+    );
+}
+
+#[test]
+fn local_scratch_path_hash_metadata_is_not_collected_as_artifact_pins() {
+    let json = serde_json::json!({
+        "local_sample": {
+            "path": "/private/tmp/polymarket-may20-one.parquet",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "scratch_report_path": "/private/tmp/source-proof-report.json",
+        "scratch_report_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    });
+    let mut artifact_refs = Vec::new();
+
+    collect_artifact_refs(&json, "$", &mut artifact_refs);
+
+    assert!(
+        artifact_refs.is_empty(),
+        "local scratch evidence hashes are not repo artifact pins: {artifact_refs:?}"
+    );
+}
+
+#[test]
 fn artifact_ref_collector_treats_flat_path_hash_siblings_as_pins() {
     let json = serde_json::json!({
         "object_gates_path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
@@ -288,6 +358,35 @@ fn artifact_ref_collector_treats_flat_path_hash_siblings_as_pins() {
         }),
         "collector should include flat sibling path/sha256 pins: {artifact_refs:?}"
     );
+}
+
+fn check_synthetic_artifact_refs(json: &Value) -> Vec<String> {
+    let repo_root = Path::new(".");
+    let owner_path = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/synthetic-status.2026-06-16.json",
+    );
+    let evicted_index = EvictedFixtureIndex {
+        schema_version: EvictedFixtureIndex::CURRENT_SCHEMA_VERSION,
+        issue: String::new(),
+        description: String::new(),
+        s3_artifact_root: "s3://bolt-reference-fixtures".to_string(),
+        content_addressed: true,
+        entries: Vec::new(),
+    };
+    let mut artifact_refs = Vec::new();
+    collect_artifact_refs(json, "$", &mut artifact_refs);
+
+    let mut mismatches = Vec::new();
+    for artifact_ref in artifact_refs {
+        check_artifact_ref(
+            repo_root,
+            &evicted_index,
+            owner_path,
+            &artifact_ref,
+            &mut mismatches,
+        );
+    }
+    mismatches
 }
 
 fn check_artifact_ref(

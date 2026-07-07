@@ -254,8 +254,22 @@ def resolve_real_cargo() -> Path | None:
     return Path(found) if found else None
 
 
+def nearest_helper_root(root: Path) -> Path | None:
+    try:
+        current = root.resolve(strict=False)
+    except OSError:
+        current = root.absolute()
+    for candidate in (current, *current.parents):
+        if (candidate / "scripts" / "rust_verification.py").is_file():
+            return candidate
+    return None
+
+
 def load_rust_verification(root: Path) -> ModuleType:
-    helper = root / "scripts" / "rust_verification.py"
+    helper_root = nearest_helper_root(root)
+    if helper_root is None:
+        raise ValueError("scripts/rust_verification.py is required in policy root or ancestor")
+    helper = helper_root / "scripts" / "rust_verification.py"
     if not helper.is_file():
         raise ValueError("scripts/rust_verification.py is required")
     spec = importlib.util.spec_from_file_location("bolt_policy_rust_verification", helper)

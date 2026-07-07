@@ -378,7 +378,6 @@ def test_allowed_cargo_resolves_nearest_policy_root_for_nested_workspace(tmp_pat
     nested = repo / "crates" / "backtesting-vertical-slice"
     nested.mkdir(parents=True)
     write_policy(nested, target_namespace="bvs", write_justfile=False)
-    write_rust_verification_helpers(nested)
     root_base = tmp_path / "rust-root"
     real = _fake_env_cargo(tmp_path)
 
@@ -811,8 +810,13 @@ def test_installer_creates_idempotent_daily_clean_merged_launch_agent(tmp_path):
     assert payload["ProgramArguments"] == [
         "/bin/sh",
         "-lc",
-        "just clean-merged --include-target-dirs --apply >/dev/null 2>&1 || true",
+        "set -e; just clean-merged --include-target-dirs --apply; just cache-prune --apply",
     ]
+    path_entries = payload["EnvironmentVariables"]["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(install_dir)
+    assert "/opt/homebrew/bin" in path_entries
+    assert payload["StandardOutPath"].endswith("daily-maintenance.out.log")
+    assert payload["StandardErrorPath"].endswith("daily-maintenance.err.log")
     assert payload["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
     assert payload.get("KeepAlive") in (None, False)
 
@@ -821,26 +825,61 @@ def test_daily_maintenance_launch_agent_values_load_from_clean_merged_toml(tmp_p
     root = tmp_path / "repo"
     config_dir = root / "config"
     config_dir.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     (config_dir / "clean-merged.toml").write_text(
         """\
 schema_version = 1
+[clean-merged]
+enabled = true
+trunk_branch = "main"
+remote_name = "origin"
+origin_owner = "t"
+[clean-merged.lane_r]
+gh_timeout_s = 5
+cache_ttl_s = 300
+gh_limit = 100
+[clean-merged.lane_w]
+quarantine_dir = "<git-common-dir>/clean-merged-quarantine"
+quarantine_grace_days = 30
+discard_ignored = false
+remove_nested_repos = false
+discard_hidden_index_bits = false
+archive_timeout_s = 120
+archive_verify_timeout_s = 30
 [clean-merged.daily_maintenance_launch_agent]
 label = "com.example.daily-maintenance"
 program_arguments = ["/bin/sh", "-lc", "echo configured"]
+environment_path = "<shim-dir>:/usr/bin:/bin"
+standard_out_path = "<git-common-dir>/example.out.log"
+standard_error_path = "<git-common-dir>/example.err.log"
 start_calendar_interval = { Hour = 4, Minute = 15 }
+[clean-merged.logging]
+audit_format = "jsonl"
+audit_path = "<git-common-dir>/clean-merged.log"
+max_log_bytes = 1048576
+rotated_log_retention_days = 30
+report_error_max_chars = 200
+heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
+heartbeat_stale_days = 7
+lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
+[clean-merged.backups]
+prune_after_days = 30
 """,
         encoding="utf-8",
     )
     installer = _load_installer_module()
 
     config = installer.load_daily_maintenance_launch_agent_config(root)
-    payload = installer.daily_maintenance_launch_agent_payload(root, config)
+    payload = installer.daily_maintenance_launch_agent_payload(root, tmp_path, config)
 
     assert installer.daily_maintenance_launch_agent_path(tmp_path, config) == (
         tmp_path / "Library" / "LaunchAgents" / "com.example.daily-maintenance.plist"
     )
     assert payload["Label"] == "com.example.daily-maintenance"
     assert payload["ProgramArguments"] == ["/bin/sh", "-lc", "echo configured"]
+    assert payload["EnvironmentVariables"] == {"PATH": f"{tmp_path}{os.pathsep}/usr/bin:/bin"}
+    assert payload["StandardOutPath"].endswith("example.out.log")
+    assert payload["StandardErrorPath"].endswith("example.err.log")
     assert payload["StartCalendarInterval"] == {"Hour": 4, "Minute": 15}
 
 

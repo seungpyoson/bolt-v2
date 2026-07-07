@@ -22,9 +22,27 @@ class PatternCheck:
     description: str
 
 
+FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
 FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
     r"\b(?:FinancialValue|financial_value_private|Sealed)\b"
 )
+FINANCIAL_VALUE_OWNER_MACRO_INVOCATION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*!\s*[\(\[\{]"
+)
+FINANCIAL_VALUE_OWNER_ALLOWED_MACROS = frozenset(("assert", "assert_eq", "matches"))
+FINANCIAL_VALUE_OWNER_BANG_OPERATOR_KEYWORDS = frozenset(("if", "while"))
+FINANCIAL_VALUE_OWNER_ATTRIBUTE_PATTERN = re.compile(r"^\s*#\s*\[[^\]]+\]\s*$")
+FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES = frozenset(
+    (
+        "#[allow(dead_code)]",
+        "#[allow(private_bounds)]",
+        "#[cfg(test)]",
+        "#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+        "#[test]",
+    )
+)
+FINANCIAL_VALUE_OWNER_USE_PATTERN = re.compile(r"^\s*use\b.*$")
+FINANCIAL_VALUE_OWNER_ALLOWED_USES = frozenset(("use super::*;",))
 FINANCIAL_VALUE_MARKER_ALLOWLIST = (
     ("src/bolt_v3_numeric.rs", "mod financial_value_private {"),
     ("src/bolt_v3_numeric.rs", "pub trait Sealed {}"),
@@ -107,8 +125,8 @@ REQUIRED_PATTERNS = [
     ),
     PatternCheck(
         "src/bolt_v3_numeric.rs",
-        r"fn\s+financial_values_do_not_implement_default\(\)",
-        "FinancialValue registered types have a compile-time !Default guard",
+        r"fn\s+financial_values_do_not_implement_default\(\)[\s\S]*#\[cfg\(test\)]\s*mod\s+tests",
+        "FinancialValue registered types have an always-compiled !Default guard",
     ),
     PatternCheck(
         "src/bolt_v3_numeric.rs",
@@ -259,6 +277,11 @@ FORBIDDEN_PATTERNS = [
         "path-loaded module in FinancialValue owner module",
     ),
     PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"#\s*\[\s*(?:cfg\s*\(\s*test\s*\)|test)\s*\]\s*fn\s+financial_values_do_not_implement_default",
+        "test-only FinancialValue !Default guard",
+    ),
+    PatternCheck(
         "src/bolt_v3_decision_evidence.rs",
         r"pub\s+[A-Za-z0-9_]+:\s*(?:Option\s*<\s*)?Probability",
         "Probability in decision-evidence serde fields",
@@ -352,12 +375,56 @@ def verify_financial_value_marker_allowlist(root: Path) -> list[str]:
     return [f"src/: FinancialValue marker allowlist mismatch: {', '.join(details)}"]
 
 
+def verify_financial_value_owner_macro_allowlist(root: Path) -> list[str]:
+    source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
+    macro_extras = sorted(
+        {
+            match.group(1)
+            for match in FINANCIAL_VALUE_OWNER_MACRO_INVOCATION_PATTERN.finditer(source)
+            if match.group(1) not in FINANCIAL_VALUE_OWNER_ALLOWED_MACROS
+            and match.group(1) not in FINANCIAL_VALUE_OWNER_BANG_OPERATOR_KEYWORDS
+        }
+    )
+    attribute_extras = sorted(
+        {
+            normalize_source_line(line)
+            for line in source.splitlines()
+            if FINANCIAL_VALUE_OWNER_ATTRIBUTE_PATTERN.fullmatch(line)
+            and normalize_source_line(line) not in FINANCIAL_VALUE_OWNER_ALLOWED_ATTRIBUTES
+        }
+    )
+    use_extras = sorted(
+        {
+            normalize_source_line(line)
+            for line in source.splitlines()
+            if FINANCIAL_VALUE_OWNER_USE_PATTERN.fullmatch(line)
+            and normalize_source_line(line) not in FINANCIAL_VALUE_OWNER_ALLOWED_USES
+        }
+    )
+
+    findings = []
+    if macro_extras:
+        findings.append(
+            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden macro invocation in FinancialValue owner module: {macro_extras!r}"
+        )
+    if attribute_extras:
+        findings.append(
+            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden attribute in FinancialValue owner module: {attribute_extras!r}"
+        )
+    if use_extras:
+        findings.append(
+            f"{FINANCIAL_VALUE_OWNER_MODULE}: forbidden use import in FinancialValue owner module: {use_extras!r}"
+        )
+    return findings
+
+
 def verify(root: Path) -> list[str]:
     findings = []
     findings.extend(missing_required(root, REQUIRED_PATTERNS))
     findings.extend(missing_required(root, BOUNDARY_PATTERNS))
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
     findings.extend(verify_financial_value_marker_allowlist(root))
+    findings.extend(verify_financial_value_owner_macro_allowlist(root))
     return findings
 
 

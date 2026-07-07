@@ -168,6 +168,21 @@ pub(crate) fn sanitize_non_negative(value: f64) -> f64 {
     }
 }
 
+#[allow(dead_code)]
+fn financial_values_do_not_implement_default() {
+    trait AmbiguousIfDefault<A> {
+        fn _check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+    struct Invalid;
+    impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
+
+    let _ = <Probability as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,23 +275,6 @@ mod tests {
         assert_financial_value::<crate::bolt_v3_maker_mu_estimator::UsableMu>();
         assert_financial_value::<crate::bolt_v3_realized_volatility::ReadyRealizedVol>();
         assert_financial_value::<crate::bolt_v3_realized_volatility::ValidRealizedVol>();
-    }
-
-    #[test]
-    fn financial_values_do_not_implement_default() {
-        trait AmbiguousIfDefault<A> {
-            fn _check() {}
-        }
-        impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
-        struct Invalid;
-        impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
-
-        let _ = <Probability as AmbiguousIfDefault<_>>::_check;
-        let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
-        let _ =
-            <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
-        let _ =
-            <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
     }
 
     #[test]

@@ -42,6 +42,22 @@ impl Probability {
     pub fn new(value: f64) -> Option<Self> { sanitize_probability(value).map(|value| Self { value }) }
     pub fn clamped(value: f64) -> Option<Self> { Some(Self { value }) }
 }
+fn financial_values_do_not_implement_default() {
+    trait AmbiguousIfDefault<A> {
+        fn _check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+    struct Invalid;
+    impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
+
+    let _ = <Probability as AmbiguousIfDefault<_>>::_check;
+    let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
+    let _ =
+        <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
+    let _ =
+        <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,26 +70,6 @@ mod tests {
         assert_financial_value::<crate::bolt_v3_maker_mu_estimator::UsableMu>();
         assert_financial_value::<crate::bolt_v3_realized_volatility::ReadyRealizedVol>();
         assert_financial_value::<crate::bolt_v3_realized_volatility::ValidRealizedVol>();
-    }
-
-    #[test]
-    fn financial_values_do_not_implement_default() {
-        trait AmbiguousIfDefault<A> {
-            fn _check() {}
-        }
-        impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
-        struct Invalid;
-        impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
-
-        let _ = <super::Probability as AmbiguousIfDefault<_>>::_check;
-        let _ =
-            <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
-        let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<
-            _,
-        >>::_check;
-        let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<
-            _,
-        >>::_check;
     }
 }
 """,
@@ -299,6 +295,76 @@ def test_verify_rejects_missing_financial_value_default_compile_guard() -> None:
             raise AssertionError(f"expected missing !Default guard finding, got {findings!r}")
 
 
+def test_verify_rejects_test_only_financial_value_default_compile_guard() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8").replace(
+                "fn financial_values_do_not_implement_default()",
+                "#[test]\n    fn financial_values_do_not_implement_default()",
+            ),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("test-only FinancialValue !Default guard" in finding for finding in findings):
+            raise AssertionError(f"expected test-only !Default guard finding, got {findings!r}")
+
+
+def test_verify_rejects_unapproved_financial_value_owner_macro_invocation() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_sizing.rs": """
+pub struct SizingScale(f64);
+""",
+            },
+        )
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8")
+            + "\nmake_value_marker!(crate::bolt_v3_sizing::SizingScale);\n",
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("macro invocation in FinancialValue owner module" in finding for finding in findings):
+            raise AssertionError(f"expected owner macro finding, got {findings!r}")
+
+
+def test_verify_rejects_unapproved_financial_value_owner_attribute() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8").replace(
+                "#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+                "#[make_value_marker]\n#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]",
+            ),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("attribute in FinancialValue owner module" in finding for finding in findings):
+            raise AssertionError(f"expected owner attribute finding, got {findings!r}")
+
+
+def test_verify_rejects_unapproved_financial_value_owner_use() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            "use crate::evil::matches;\n" + numeric_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify(root)
+        if not any("use import in FinancialValue owner module" in finding for finding in findings):
+            raise AssertionError(f"expected owner use finding, got {findings!r}")
+
+
 def test_verify_rejects_public_financial_value_field() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -515,6 +581,10 @@ def main() -> int:
         test_verify_rejects_aliased_financial_value_implementor,
         test_verify_rejects_generic_financial_value_implementor,
         test_verify_rejects_missing_financial_value_default_compile_guard,
+        test_verify_rejects_test_only_financial_value_default_compile_guard,
+        test_verify_rejects_unapproved_financial_value_owner_macro_invocation,
+        test_verify_rejects_unapproved_financial_value_owner_attribute,
+        test_verify_rejects_unapproved_financial_value_owner_use,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

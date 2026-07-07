@@ -125,7 +125,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["docs", "full", "tag_reuse"]
+fresh = ["docs", "full", "noop_fresh", "tag_reuse"]
 carry_forward = ["noop"]
 
 [ci_provenance.required_checks.backtester-gate]
@@ -139,7 +139,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["docs", "full", "noop", "tag_reuse"]
+fresh = ["docs", "full", "noop", "noop_fresh", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.host-health]
@@ -153,7 +153,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = []
 
 [ci_provenance.required_checks.actionlint]
@@ -167,7 +167,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = []
 
 [ci_provenance.required_checks.coverage-enforcer]
@@ -181,7 +181,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = []
 
 [ci_provenance.docs]
@@ -221,10 +221,10 @@ draft_pr_opened = "iteration"
 draft_pr_reopened = "iteration"
 draft_pr_edited = "iteration"
 converted_to_draft = "iteration"
-ready_pr = "noop"
+ready_pr = "noop_fresh"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
-ready_for_review = "noop"
+ready_for_review = "noop_fresh"
 docs = "docs"
 workflow_dispatch = "iteration"
 main_push = "full"
@@ -266,10 +266,10 @@ merge_group = "full"
 main_push = "full"
 workflow_dispatch = "iteration"
 docs = "docs"
-ready_for_review = "noop"
+ready_for_review = "noop_fresh"
 ready_pr_reopened = "noop"
 ready_pr_edited_no_base = "noop"
-ready_pr = "noop"
+ready_pr = "noop_fresh"
 converted_to_draft = "iteration"
 draft_pr_edited = "iteration"
 draft_pr_reopened = "iteration"
@@ -303,7 +303,7 @@ gate_required = "gate"
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
 carry_forward = []
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 
 [ci_provenance.required_checks.coverage-enforcer]
 arrivals = ["pull_request", "merge_group"]
@@ -317,7 +317,7 @@ context = "coverage-enforcer"
 
 [ci_provenance.required_checks.actionlint.proof_rule]
 carry_forward = []
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 
 [ci_provenance.required_checks.actionlint]
 arrivals = ["pull_request", "merge_group"]
@@ -331,7 +331,7 @@ context = "actionlint"
 
 [ci_provenance.required_checks.host-health.proof_rule]
 carry_forward = []
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 
 [ci_provenance.required_checks.host-health]
 arrivals = ["pull_request", "merge_group"]
@@ -345,7 +345,7 @@ context = "host-health"
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
 carry_forward = []
-fresh = ["docs", "full", "noop", "tag_reuse"]
+fresh = ["docs", "full", "noop", "noop_fresh", "tag_reuse"]
 
 [ci_provenance.required_checks.backtester-gate]
 arrivals = ["pull_request", "merge_group"]
@@ -359,7 +359,7 @@ context = "backtester-gate"
 
 [ci_provenance.required_checks.gate.proof_rule]
 carry_forward = ["noop"]
-fresh = ["docs", "full", "tag_reuse"]
+fresh = ["docs", "full", "noop_fresh", "tag_reuse"]
 
 [ci_provenance.required_checks.gate]
 arrivals = ["pull_request", "merge_group"]
@@ -2007,10 +2007,10 @@ def assert_ci_policy_outputs_matrix() -> None:
             "draft_pr_reopened": "iteration",
             "draft_pr_edited": "iteration",
             "converted_to_draft": "iteration",
-            "ready_pr": "noop",
+            "ready_pr": "noop_fresh",
             "ready_pr_edited_no_base": "noop",
             "ready_pr_reopened": "noop",
-            "ready_for_review": "noop",
+            "ready_for_review": "noop_fresh",
             "docs": "docs",
             "workflow_dispatch": "iteration",
             "main_push": "full",
@@ -2026,10 +2026,11 @@ def assert_ci_policy_outputs_matrix() -> None:
             "defer": ("gate", "backtester-gate"),
             "iteration": ("gate-iteration", "backtester-gate-iteration"),
             "noop": ("gate", "backtester-gate"),
+            "noop_fresh": ("gate", "backtester-gate"),
         }
         # Draft pull_request and workflow_dispatch events stay cheap iteration.
-        # Ready pull_request events publish full proof on the required gate; ready
-        # no-code transitions use the noop carry-forward path.
+        # Fresh ready pull_request events publish required-context noop_fresh
+        # proof; metadata-only ready transitions carry forward same-SHA proof.
         cases = [
             ("push", "", "false", "false", "refs/heads/main", "false", "full", "main_push"),
             ("push", "", "false", "false", "refs/tags/v1.2.3", "false", "tag_reuse", "tag"),
@@ -2038,7 +2039,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "reopened", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_reopened"),
             ("pull_request", "edited", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_edited"),
             ("pull_request", "converted_to_draft", "true", "false", "refs/pull/1/merge", "false", "iteration", "converted_to_draft"),
-            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "false", "noop", "ready_pr"),
+            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "false", "noop_fresh", "ready_pr"),
             ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "true", "docs", "docs"),
             ("pull_request", "edited", "false", "false", "refs/pull/1/merge", "true", "noop", "ready_pr_edited_no_base"),
             ("pull_request", "edited", "false", "true", "refs/pull/1/merge", "true", "docs", "docs"),
@@ -2535,11 +2536,11 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             or tmp_non_draft.get("reason") != "ready_pr"
             or tmp_non_draft.get("gate_name") != "gate"
             or tmp_non_draft.get("backtester_gate_name") != "backtester-gate"
-            or tmp_non_draft.get("ci_policy_path") != "noop"
+            or tmp_non_draft.get("ci_policy_path") != "noop_fresh"
             or tmp_non_draft.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"non-draft tmp mergify ref must fall back to normal ready PR noop proof: {tmp_non_draft}"
+                f"non-draft tmp mergify ref must fall back to normal ready PR fresh noop proof: {tmp_non_draft}"
             )
 
         code, stdout, stderr = run_with_event_sender(tmp_args, "12345")
@@ -2614,11 +2615,11 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
             or spoof.get("reason") != "ready_for_review"
             or spoof.get("gate_name") != "gate"
             or spoof.get("backtester_gate_name") != "backtester-gate"
-            or spoof.get("ci_policy_path") != "noop"
+            or spoof.get("ci_policy_path") != "noop_fresh"
             or spoof.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"non-Mergify-authored proof-shaped PR must fall back to normal ready noop proof: {spoof}"
+                f"non-Mergify-authored proof-shaped PR must fall back to normal ready fresh noop proof: {spoof}"
             )
 
         half_spoof_args = list(base_args)
@@ -2632,11 +2633,11 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
             or half_spoof.get("reason") != "ready_for_review"
             or half_spoof.get("gate_name") != "gate"
             or half_spoof.get("backtester_gate_name") != "backtester-gate"
-            or half_spoof.get("ci_policy_path") != "noop"
+            or half_spoof.get("ci_policy_path") != "noop_fresh"
             or half_spoof.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"Mergify sender with non-Mergify author must fall back to normal ready noop proof: {half_spoof}"
+                f"Mergify sender with non-Mergify author must fall back to normal ready fresh noop proof: {half_spoof}"
             )
 
 
@@ -2678,11 +2679,11 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
             or result.get("reason") != "ready_pr"
             or result.get("gate_name") != "gate"
             or result.get("backtester_gate_name") != "backtester-gate"
-            or result.get("ci_policy_path") != "noop"
+            or result.get("ci_policy_path") != "noop_fresh"
             or result.get("full_ci_required") != "false"
         ):
             raise AssertionError(
-                f"human-sync Mergify proof PR must fall back to normal ready PR noop proof: {result}"
+                f"human-sync Mergify proof PR must fall back to normal ready PR fresh noop proof: {result}"
             )
 
 
@@ -2834,7 +2835,7 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
     # GAP-1 canary across the WHOLE full-CI action set (imported, never re-listed): a
     # spoofed mergify head ref from a non-actor sender must NEVER earn reason
     # mergify_temp_pr. Draft fallback actions stay on gate-iteration; non-draft
-    # ready_for_review falls back to the normal ready-PR noop gate.
+    # ready_for_review falls back to the normal ready-PR fresh noop gate.
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -2864,7 +2865,7 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
         if action == "ready_for_review":
             if (
                 result.reason != "ready_for_review"
-                or result.ci_policy_path != "noop"
+                or result.ci_policy_path != "noop_fresh"
                 or result.full_ci_required
                 or result.gate_name != gate_required
                 or result.backtester_gate_name != backtester_required
@@ -2890,15 +2891,17 @@ def assert_ready_pr_uses_required_noop_signal_without_dispatch_full() -> None:
     backtester_required = config.gate_names["backtester_required"]
     backtester_iteration = config.gate_names["backtester_iteration"]
 
-    # (A) ready PR opened/synchronize/ready_for_review and metadata-only ready
-    # transitions publish required-context noop proof, without burning full lanes.
-    for action, reason in (
-        ("opened", "ready_pr"),
-        ("synchronize", "ready_pr"),
-        ("ready_for_review", "ready_for_review"),
-        ("edited", "ready_pr_edited_no_base"),
-        ("reopened", "ready_pr_reopened"),
+    # (A) ready PR opened/synchronize/ready_for_review publish fresh required
+    # noop proof, while metadata-only ready transitions carry forward the
+    # previous same-SHA proof. Neither path burns full lanes.
+    for action, reason, path in (
+        ("opened", "ready_pr", "noop_fresh"),
+        ("synchronize", "ready_pr", "noop_fresh"),
+        ("ready_for_review", "ready_for_review", "noop_fresh"),
+        ("edited", "ready_pr_edited_no_base", "noop"),
+        ("reopened", "ready_pr_reopened", "noop"),
     ):
+        expected_event_class = path
         noop = module.evaluate_ci_policy(
             config,
             event_name="pull_request",
@@ -2911,14 +2914,63 @@ def assert_ready_pr_uses_required_noop_signal_without_dispatch_full() -> None:
         )
         if (
             noop.reason != reason
-            or noop.ci_policy_path != "noop"
-            or noop.expected_event_class != "noop"
+            or noop.ci_policy_path != path
+            or noop.expected_event_class != expected_event_class
             or noop.full_ci_required
             or noop.full_ci_deferred
             or noop.gate_name != gate_required
             or noop.backtester_gate_name != backtester_required
         ):
-            raise AssertionError(f"{action} ready PR must publish required noop proof: {noop}")
+            raise AssertionError(f"{action} ready PR must publish required {path} proof: {noop}")
+    base_changed = module.evaluate_ci_policy(
+        config,
+        event_name="pull_request",
+        event_action="edited",
+        pull_request_draft=False,
+        pull_request_head_ref="",
+        pull_request_base_changed=True,
+        event_sender_id=4242,
+        ref="refs/pull/1/merge",
+    )
+    if base_changed.reason != "ready_pr" or base_changed.ci_policy_path != "noop_fresh":
+        raise AssertionError(f"base-changed ready PR edit must publish fresh noop proof: {base_changed}")
+    fresh_noop_jobs = base_ci_gate_jobs(
+        deny="skipped",
+        clippy="skipped",
+        **{
+            "check-aarch64": "skipped",
+            "source-fence": "skipped",
+            "nextest-fingerprint": "skipped",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "skipped",
+            "test": "skipped",
+            "build": "skipped",
+            "ci-provenance-emit": "skipped",
+        },
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="noop_fresh",
+        expected_event_class="noop_fresh",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
+        job_results=fresh_noop_jobs,
+        build_required=False,
+    )
+    assert_raises(
+        "noop CI policy outside resolver-permitted event class 'noop_fresh'",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop_fresh",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=fresh_noop_jobs,
+            build_required=False,
+        ),
+    )
     if "source-fence-static" in module.CI_HEAVY_JOBS:
         raise AssertionError("source-fence-static must stay out of CI_HEAVY_JOBS")
 
@@ -3115,31 +3167,31 @@ EXPECTED_REQUIRED_CHECK_PROOF_RULES = {
     "gate": {
         "runs_on_tags": True,
         "supports_carry_forward": True,
-        "fresh": ("docs", "full", "tag_reuse"),
+        "fresh": ("docs", "full", "noop_fresh", "tag_reuse"),
         "carry_forward": ("noop",),
     },
     "backtester-gate": {
         "runs_on_tags": True,
         "supports_carry_forward": False,
-        "fresh": ("docs", "full", "noop", "tag_reuse"),
+        "fresh": ("docs", "full", "noop", "noop_fresh", "tag_reuse"),
         "carry_forward": (),
     },
     "host-health": {
         "runs_on_tags": False,
         "supports_carry_forward": False,
-        "fresh": ("docs", "full", "iteration", "noop"),
+        "fresh": ("docs", "full", "iteration", "noop", "noop_fresh"),
         "carry_forward": (),
     },
     "actionlint": {
         "runs_on_tags": False,
         "supports_carry_forward": False,
-        "fresh": ("docs", "full", "iteration", "noop"),
+        "fresh": ("docs", "full", "iteration", "noop", "noop_fresh"),
         "carry_forward": (),
     },
     "coverage-enforcer": {
         "runs_on_tags": False,
         "supports_carry_forward": False,
-        "fresh": ("docs", "full", "iteration", "noop"),
+        "fresh": ("docs", "full", "iteration", "noop", "noop_fresh"),
         "carry_forward": (),
     },
 }
@@ -3172,34 +3224,34 @@ def assert_required_checks_registry_rejects_unreachable_proof_rules() -> None:
     mutations = {
         "supports_carry_forward=false": replace_once(
             CONFIG_TOML,
-            """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+"""[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration"]
+fresh = ["docs", "full", "iteration", "noop_fresh"]
 carry_forward = ["noop"]
 """,
         ),
         "carry_forward must be": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = ["tag_reuse"]
 """,
         ),
         "runs_on_tags=false": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop", "tag_reuse"]
+fresh = ["docs", "full", "iteration", "noop", "noop_fresh", "tag_reuse"]
 carry_forward = []
 """,
         ),
@@ -3299,8 +3351,8 @@ required = false
         ),
         "proof_rule.fresh must be": replace_once(
             CONFIG_TOML,
-            """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["docs", "full", "tag_reuse"]
+"""[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["docs", "full", "noop_fresh", "tag_reuse"]
 carry_forward = ["noop"]
 """,
             """[ci_provenance.required_checks.gate.proof_rule]
@@ -3310,12 +3362,12 @@ carry_forward = ["noop"]
         ),
         "fresh must be": replace_once(
             CONFIG_TOML,
-            """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["docs", "full", "tag_reuse"]
+"""[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["docs", "full", "noop_fresh", "tag_reuse"]
 carry_forward = ["noop"]
 """,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["docs", "full", "iteration", "tag_reuse"]
+fresh = ["docs", "full", "iteration", "noop_fresh", "tag_reuse"]
 carry_forward = ["noop"]
 """,
         ),
@@ -3357,12 +3409,12 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'converted_to_draft = "iteration"',
             'converted_to_draft = "full"',
         ),
-        "ci_provenance.policy.ready_pr must be noop": CONFIG_TOML.replace(
-            'ready_pr = "noop"',
+        "ci_provenance.policy.ready_pr must be noop_fresh": CONFIG_TOML.replace(
+            'ready_pr = "noop_fresh"',
             'ready_pr = "full"',
         ),
-        "ci_provenance.policy.ready_for_review must be noop": CONFIG_TOML.replace(
-            'ready_for_review = "noop"',
+        "ci_provenance.policy.ready_for_review must be noop_fresh": CONFIG_TOML.replace(
+            'ready_for_review = "noop_fresh"',
             'ready_for_review = "full"',
         ),
         "ci_provenance.policy.ready_pr_edited_no_base must be noop": CONFIG_TOML.replace(
@@ -4946,6 +4998,16 @@ def assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof() -> None:
         ignore_emit_failure=False,
         reuse_found=False,
         carry_forward_verified=True,
+        job_results={**skipped_heavy, "ci-provenance-emit": "skipped"},
+        build_required=False,
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="noop_fresh",
+        expected_event_class="noop_fresh",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
         job_results={**skipped_heavy, "ci-provenance-emit": "skipped"},
         build_required=False,
     )

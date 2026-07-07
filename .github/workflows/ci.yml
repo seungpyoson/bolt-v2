@@ -737,7 +737,11 @@ jobs:
       - name: Install source-fence Python dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt'
 
-      - run: just source-fence-static
+      - name: source-fence-static
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: just source-fence-static
 
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than

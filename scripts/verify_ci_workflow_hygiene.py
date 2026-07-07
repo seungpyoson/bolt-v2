@@ -360,10 +360,10 @@ CI_POLICY_ROW_SEMANTICS = {
 }
 NOOP_PROOF_ALLOWED_POLICY_ROWS = frozenset({"ready_pr", "ready_for_review"})
 PROOF_AFFECTING_POLICY_REQUIRED_VALUES = frozenset({"full"})
-NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES = frozenset({"full", "noop"})
+NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES = frozenset({"full", "noop", "noop_fresh"})
 PROOF_AFFECTING_POLICY_ERROR_ALLOWED_TEXT = {
     PROOF_AFFECTING_POLICY_REQUIRED_VALUES: "full or queue-covered iteration",
-    NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES: "full, noop, or queue-covered iteration",
+    NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES: "full, noop, noop_fresh, or queue-covered iteration",
 }
 PROOF_AFFECTING_POLICY_ERROR_TEMPLATE = (
     "ci_provenance.policy.{row} is proof-affecting and must be {allowed_text}"
@@ -9649,6 +9649,17 @@ def source_fence_static_runs_only_on_pull_request(job_lines: list[str]) -> bool:
     return job_if_value(job_lines) == SOURCE_FENCE_STATIC_JOB_IF_VALUE
 
 
+def source_fence_static_has_provenance_env(job_lines: list[str]) -> bool:
+    for block in step_blocks(job_lines):
+        if not block_has_raw_top_level_scalar(block, "run", "just source-fence-static"):
+            continue
+        return block_nested_mapping_items(block, "env") == {
+            "GITHUB_TOKEN": "${{ github.token }}",
+            "GITHUB_REPOSITORY": "${{ github.repository }}",
+        }
+    return False
+
+
 def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
@@ -11429,6 +11440,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("source-fence-static needs ci-policy")
         if not source_fence_static_runs_only_on_pull_request(jobs["source-fence-static"]):
             errors.append("source-fence-static must run only for pull_request")
+        if not source_fence_static_has_provenance_env(jobs["source-fence-static"]):
+            errors.append("source-fence-static must pass GitHub provenance env")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):

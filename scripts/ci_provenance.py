@@ -41,12 +41,12 @@ SUPPORTED_MODES = {
     "resolve-fingerprint",
     "validate-record",
 }
-POLICY_VALUES = {"full", "docs", "defer", "iteration", "noop", "tag_reuse"}
+POLICY_VALUES = {"full", "docs", "defer", "iteration", "noop", "noop_fresh", "tag_reuse"}
 # The event classes for which gate_name_suffix_for() publishes the REQUIRED gate /
 # backtester-gate context. Draft pull_request and workflow_dispatch iteration paths
 # are feedback-only; ready pull_request, docs/noop carry-forward, merge-boundary,
 # push, tag, and actor-verified Mergify proof paths publish required contexts.
-REQUIRED_GATE_PROOF_EVENT_CLASSES = {"full", "docs", "noop", "tag_reuse"}
+REQUIRED_GATE_PROOF_EVENT_CLASSES = {"full", "docs", "noop", "noop_fresh", "tag_reuse"}
 LEGACY_DIGEST_ONLY_POLICY_ROWS = frozenset({"workflow_dispatch_full_ci"})
 GATE_NAME_KEYS = (
     "gate_required",
@@ -81,10 +81,10 @@ POLICY_REQUIRED_VALUES = {
     "draft_pr_reopened": "iteration",
     "draft_pr_edited": "iteration",
     "converted_to_draft": "iteration",
-    "ready_pr": "noop",
+    "ready_pr": "noop_fresh",
     "ready_pr_edited_no_base": "noop",
     "ready_pr_reopened": "noop",
-    "ready_for_review": "noop",
+    "ready_for_review": "noop_fresh",
     "docs": "docs",
     "workflow_dispatch": "iteration",
     "main_push": "full",
@@ -764,7 +764,7 @@ def load_config(
         value = policy_table.get(row)
         if value not in POLICY_VALUES:
             raise ProvenanceError(
-                f"ci_provenance.policy.{row} must be full, docs, defer, iteration, noop, or tag_reuse"
+                f"ci_provenance.policy.{row} must be full, docs, defer, iteration, noop, noop_fresh, or tag_reuse"
             )
         policy[row] = value
     if require_workflows:
@@ -1055,6 +1055,12 @@ def evaluate_ci_gate_verdict(
         require_verified_carry_forward(carry_forward_verified)
         return "no-code CI policy carried forward prior same-SHA gate proof"
 
+    if policy_path == "noop_fresh":
+        if expected_event_class != "noop_fresh":
+            raise ProvenanceError(f"fresh noop CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "fresh noop")
+        return "fresh no-code CI proof passed"
+
     if policy_path == "docs":
         if expected_event_class != "docs":
             raise ProvenanceError(f"docs CI policy outside resolver-permitted event class {expected_event_class!r}")
@@ -1139,7 +1145,7 @@ def evaluate_backtester_gate_verdict(
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
-        allowed_no_crate_paths = frozenset({"full", "docs", "noop", "defer"})
+        allowed_no_crate_paths = frozenset({"full", "docs", "noop", "noop_fresh", "defer"})
         if policy_path not in allowed_no_crate_paths:
             raise ProvenanceError(f"backtester no-crate path does not support policy_path {policy_path!r}")
         if expected_event_class != policy_path:
@@ -1151,9 +1157,11 @@ def evaluate_backtester_gate_verdict(
         require_jobs_skipped(job_results, ("clippy", "test-archive"), "backtester no-crate")
         return "backtester no-crate proof passed"
 
-    if policy_path == "noop":
-        if expected_event_class != "noop":
-            raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
+    if policy_path in {"noop", "noop_fresh"}:
+        if expected_event_class != policy_path:
+            raise ProvenanceError(
+                f"backtester {policy_path} CI policy outside resolver-permitted event class {expected_event_class!r}"
+            )
         for job, label in (
             ("fmt", "bvs-fmt"),
             ("clippy", "bvs-clippy"),
@@ -1201,6 +1209,11 @@ def expected_event_class_for(reason: str, path: str) -> str:
         "converted_to_draft",
     }:
         return "defer"
+    if reason in {
+        "ready_pr",
+        "ready_for_review",
+    } and path == "noop_fresh":
+        return "noop_fresh"
     if reason in {
         "ready_pr",
         "ready_for_review",
@@ -1380,7 +1393,7 @@ def evaluate_ci_policy(
         path = config.policy["unknown_event"]
         reason = "unknown_event"
 
-    if event_name == "pull_request" and docs_only and path in {"full", "noop"} and reason not in {
+    if event_name == "pull_request" and docs_only and path in {"full", "noop", "noop_fresh"} and reason not in {
         "force_full_ci",
         "mergify_temp_pr",
         "ready_pr_edited_no_base",

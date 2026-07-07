@@ -636,7 +636,11 @@ jobs:
       - uses: actions/setup-python@example
         with:
           python-version: "3.12"
-      - run: just source-fence-static
+      - name: source-fence-static
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: just source-fence-static
 
   nextest-fingerprint:
     name: nextest fingerprint
@@ -3196,11 +3200,11 @@ check_name = "test"
         ),
         (
             "ci_provenance.policy.ready_pr is proof-affecting",
-            valid.replace('ready_pr = "noop"', 'ready_pr = "defer"'),
+            valid.replace('ready_pr = "noop_fresh"', 'ready_pr = "defer"'),
         ),
         (
             "ci_provenance.policy.ready_for_review is proof-affecting",
-            valid.replace('ready_for_review = "noop"', 'ready_for_review = "defer"'),
+            valid.replace('ready_for_review = "noop_fresh"', 'ready_for_review = "defer"'),
         ),
         (
             "ci_provenance.policy.main_push is proof-affecting",
@@ -3250,12 +3254,12 @@ check_name = "test"
             valid.replace('converted_to_draft = "iteration"', 'converted_to_draft = "full"'),
         ),
         (
-            "ci_provenance.policy.ready_pr must be noop",
-            valid.replace('ready_pr = "noop"', 'ready_pr = "iteration"'),
+            "ci_provenance.policy.ready_pr must be noop_fresh",
+            valid.replace('ready_pr = "noop_fresh"', 'ready_pr = "iteration"'),
         ),
         (
-            "ci_provenance.policy.ready_for_review must be noop",
-            valid.replace('ready_for_review = "noop"', 'ready_for_review = "iteration"'),
+            "ci_provenance.policy.ready_for_review must be noop_fresh",
+            valid.replace('ready_for_review = "noop_fresh"', 'ready_for_review = "iteration"'),
         ),
         (
             "ci_provenance.policy.ready_pr_edited_no_base must be noop",
@@ -3286,10 +3290,10 @@ check_name = "test"
         "draft_pr_reopened": "defer",
         "draft_pr_edited": "defer",
         "converted_to_draft": "defer",
-        "ready_pr": "noop",
+        "ready_pr": "noop_fresh",
         "ready_pr_edited_no_base": "noop",
         "ready_pr_reopened": "noop",
-        "ready_for_review": "noop",
+        "ready_for_review": "noop_fresh",
         "docs": "docs",
         "workflow_dispatch": "iteration",
         "main_push": "full",
@@ -3335,8 +3339,9 @@ def assert_ci_policy_matrix() -> None:
     gate_names = config["gate_names"]
     mergify_prefix = str(config["mergify"]["temp_pr_head_ref_prefix"])
     actor_id = int(config["mergify"]["mergify_temp_pr_actor_id"])
-    # Draft pull_request rows are the cheap iteration loop. Ready PR opened,
-    # synchronize, ready_for_review, and base edits publish required noop proof.
+    # Draft pull_request rows are the cheap iteration loop. Fresh ready PR
+    # opened/synchronize/ready_for_review and base edits publish required
+    # noop_fresh proof; metadata-only ready transitions carry forward noop.
     # The actor-bound mergify temp PR is covered separately below because it
     # depends on the event sender id.
     cases = [
@@ -3347,12 +3352,12 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "reopened", True, False, "refs/pull/1/merge", "iteration"),
         ("pull_request", "edited", True, False, "refs/pull/1/merge", "iteration"),
         ("pull_request", "converted_to_draft", True, False, "refs/pull/1/merge", "iteration"),
-        ("pull_request", "opened", False, False, "refs/pull/1/merge", "noop"),
-        ("pull_request", "synchronize", False, False, "refs/pull/1/merge", "noop"),
+        ("pull_request", "opened", False, False, "refs/pull/1/merge", "noop_fresh"),
+        ("pull_request", "synchronize", False, False, "refs/pull/1/merge", "noop_fresh"),
         ("pull_request", "edited", False, False, "refs/pull/1/merge", "noop"),
-        ("pull_request", "edited", False, True, "refs/pull/1/merge", "noop"),
+        ("pull_request", "edited", False, True, "refs/pull/1/merge", "noop_fresh"),
         ("pull_request", "reopened", False, False, "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", False, False, "refs/pull/1/merge", "noop"),
+        ("pull_request", "ready_for_review", False, False, "refs/pull/1/merge", "noop_fresh"),
         ("workflow_dispatch", "", True, False, "refs/heads/codex/branch", "iteration"),
         ("merge_group", "checks_requested", False, False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
         ("unknown_event", "", True, False, "refs/heads/codex/branch", "full"),
@@ -3483,11 +3488,11 @@ def assert_ci_policy_matrix() -> None:
     if (
         ready_spoof_result.reason == "mergify_temp_pr"
         or ready_spoof_result.gate_name != "gate"
-        or ready_spoof_result.ci_policy_path != "noop"
+        or ready_spoof_result.ci_policy_path != "noop_fresh"
         or ready_spoof_result.reason != "ready_for_review"
     ):
         raise AssertionError(
-            f"non-Mergify-authored ready spoof must fall back to normal ready PR noop proof: {ready_spoof_result}"
+            f"non-Mergify-authored ready spoof must fall back to normal ready PR fresh noop proof: {ready_spoof_result}"
         )
 
     ready_split_identity_result = verifier.evaluate_ci_policy(
@@ -3507,12 +3512,12 @@ def assert_ci_policy_matrix() -> None:
     if (
         ready_split_identity_result.reason == "mergify_temp_pr"
         or ready_split_identity_result.gate_name != "gate"
-        or ready_split_identity_result.ci_policy_path != "noop"
+        or ready_split_identity_result.ci_policy_path != "noop_fresh"
         or ready_split_identity_result.reason != "ready_for_review"
     ):
         raise AssertionError(
             "Mergify-sender ready event with non-Mergify author must fall back to "
-            f"normal ready PR noop proof: {ready_split_identity_result}"
+            f"normal ready PR fresh noop proof: {ready_split_identity_result}"
         )
 
     human_sync_result = verifier.evaluate_ci_policy(
@@ -3532,11 +3537,11 @@ def assert_ci_policy_matrix() -> None:
     if (
         human_sync_result.reason == "mergify_temp_pr"
         or human_sync_result.gate_name != "gate"
-        or human_sync_result.ci_policy_path != "noop"
+        or human_sync_result.ci_policy_path != "noop_fresh"
         or human_sync_result.reason != "ready_pr"
     ):
         raise AssertionError(
-            f"human-sender Mergify sync must fall back to normal ready PR noop proof: {human_sync_result}"
+            f"human-sender Mergify sync must fall back to normal ready PR fresh noop proof: {human_sync_result}"
         )
 
     # Mergify title/body edits arrive as draft metadata edits without a base
@@ -4165,7 +4170,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.reason,
         )
         if expected_reason == "ready_pr":
-            expected = ("noop", False, False, "gate", "backtester-gate", "noop", expected_reason)
+            expected = ("noop_fresh", False, False, "gate", "backtester-gate", "noop_fresh", expected_reason)
         elif expected_reason == "ready_pr_reopened":
             expected = ("noop", False, False, "gate", "backtester-gate", "noop", expected_reason)
         else:
@@ -6092,7 +6097,19 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
         ),
         (
             "source-fence-static must run just source-fence-static",
-            replace_once(workflow, "      - run: just source-fence-static", "      - run: echo skip source-fence-static"),
+            replace_once(workflow, "        run: just source-fence-static", "        run: echo skip source-fence-static"),
+        ),
+        (
+            "source-fence-static must pass GitHub provenance env",
+            replace_once(
+                workflow,
+                """      - name: source-fence-static
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: just source-fence-static""",
+                "      - run: just source-fence-static",
+            ),
         ),
         (
             "gate must not need source-fence-static",

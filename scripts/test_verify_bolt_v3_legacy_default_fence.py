@@ -511,6 +511,16 @@ class LegacyDefaultFenceTests(unittest.TestCase):
     def test_current_bolt_src_has_no_legacy_default_violations(self) -> None:
         self.assertEqual(fence.collect_violations(), [])
 
+    def test_empty_runtime_source_set_fails_closed(self) -> None:
+        violations = fence.collect_violations(paths=())
+        self.assertTrue(
+            any(
+                violation.label == "runtime source paths: enforcement set is empty"
+                for violation in violations
+            ),
+            violations,
+        )
+
     def test_missing_runtime_source_fails_closed(self) -> None:
         violations = fence.collect_violations(
             paths=fence.RUNTIME_SOURCE_PATHS + ("src/__nonexistent_runtime_source__.rs",)

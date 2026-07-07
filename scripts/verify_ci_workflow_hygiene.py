@@ -65,6 +65,7 @@ from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_man
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 import ci_storage_tripwire
 import ci_input_sets
+from verifier_io import require_nonempty
 
 
 COMMAND_UNDERSTANDING_PARITY_EXPORTS = (
@@ -89,6 +90,7 @@ DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
 DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+RUNNERS_CONFIG_LABEL = "ci/github-actions-runners.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
 CONFIG_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE = re.compile(r"\.github/workflows/[^/]+\.ya?ml")
@@ -2675,17 +2677,10 @@ def verify_artifact_retention_policy(
     workflows: dict[str, str],
     composite_actions: dict[str, str],
 ) -> list[str]:
-    if not DEFAULT_RUNNERS_CONFIG.exists():
-        if texts_have_upload_artifact_action((*workflows.values(), *composite_actions.values())):
-            return [
-                "github-actions runner config invalid: "
-                f"managed runner config missing: {DEFAULT_RUNNERS_CONFIG}"
-            ]
-        return []
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return config_errors
+    assert config is not None
 
     policy = config["artifact_retention"]
     if not isinstance(policy, ArtifactRetentionPolicy):
@@ -11052,10 +11047,10 @@ def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
 
 
 def configured_ci_provenance_dispatch_names() -> tuple[dict[str, str] | None, list[str]]:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return None, [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return None, config_errors
+    assert config is not None
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
         return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]
@@ -14948,6 +14943,29 @@ def validate_jules_advisory_config(data: dict[str, object]) -> dict[str, object]
     }
 
 
+def github_actions_runners_config_floor_errors() -> list[str]:
+    findings: list[str] = []
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        require_nonempty((), RUNNERS_CONFIG_LABEL, findings)
+        return findings
+    try:
+        text = DEFAULT_RUNNERS_CONFIG.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+    require_nonempty(text.strip(), RUNNERS_CONFIG_LABEL, findings)
+    return findings
+
+
+def load_required_github_actions_runners_config() -> tuple[dict[str, object] | None, list[str]]:
+    floor_errors = github_actions_runners_config_floor_errors()
+    if floor_errors:
+        return None, floor_errors
+    try:
+        return load_github_actions_runners_config(), []
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return None, [f"github-actions runner config invalid: {exc}"]
+
+
 def load_github_actions_runners_config(
     path: pathlib.Path | None = None,
 ) -> dict[str, object]:
@@ -15055,7 +15073,9 @@ def workflow_trigger_keys(workflow_text: str) -> set[str]:
     return set()
 
 
-def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> dict[str, str]:
+def load_ci_runner_debug_config(path: pathlib.Path | None = None) -> dict[str, str]:
+    if path is None:
+        path = DEFAULT_RUNNERS_CONFIG
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     section = data.get("ci_runner_debug")
     if not isinstance(section, dict):
@@ -15098,8 +15118,9 @@ def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
     workflow_name = ".github/workflows/ci-runner-debug.yml"
     if workflow_name not in workflows:
         return []
-    if not DEFAULT_RUNNERS_CONFIG.exists():
-        return []
+    floor_errors = github_actions_runners_config_floor_errors()
+    if floor_errors:
+        return floor_errors
     try:
         debug_config = load_ci_runner_debug_config()
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
@@ -15272,12 +15293,10 @@ def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
     workflow_text = workflows.get(workflow_name)
     if workflow_text is None:
         return [f"{workflow_name} must exist to cancel stale branch workflow_dispatch CI runs"]
-    if not DEFAULT_RUNNERS_CONFIG.exists():
-        return []
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return config_errors
+    assert config is not None
 
     ci_provenance = config["ci_provenance"]
     workflow_event = config["dispatch_cancel"]["workflow_event"]
@@ -15381,12 +15400,10 @@ def verify_merge_readiness_finalizer_workflow(workflows: dict[str, str]) -> list
     workflow_text = workflows.get(workflow_name)
     if workflow_text is None:
         return [f"{workflow_name} must exist to mark stale merge-readiness comments stalled"]
-    if not DEFAULT_RUNNERS_CONFIG.exists():
-        return []
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return config_errors
+    assert config is not None
 
     ci_provenance = config["ci_provenance"]
     expected_ci_name = str(ci_provenance["workflow_name"])
@@ -15967,12 +15984,10 @@ def has_storage_tripwire_workflow(workflows: Mapping[str, str]) -> bool:
 
 
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
-    if not DEFAULT_RUNNERS_CONFIG.exists():
-        return []
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return config_errors
+    assert config is not None
 
     tier_to_var = config["tier_to_var"]
     meter_included_workflows = set(config["meter_included_workflows"])
@@ -16126,12 +16141,10 @@ def verify_actionlint_runner_contract(
     workflows: dict[str, str],
     actionlint_path: pathlib.Path = DEFAULT_ACTIONLINT_CONFIG,
 ) -> list[str]:
-    if not DEFAULT_RUNNERS_CONFIG.exists():
-        return []
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return config_errors
+    assert config is not None
     if not actionlint_path.exists():
         return [f"actionlint config missing: {actionlint_path}"]
 
@@ -16255,12 +16268,16 @@ def main() -> int:
         errors.extend(verify_mergify_config(DEFAULT_MERGIFY_CONFIG.read_text()))
     else:
         errors.append(".mergify.yml is required for Mergify queue governance")
-    # Mirror verify_github_actions_runner_contract's gating: the runners config drives
-    # this check, so a partial repo (or test harness) without it is tolerated, not failed.
-    if DEFAULT_RUNNERS_CONFIG.exists():
+    runners_config_floor_errors = github_actions_runners_config_floor_errors()
+    if runners_config_floor_errors:
+        errors.extend(
+            error for error in runners_config_floor_errors if error not in errors
+        )
+    else:
         runners_config_text = DEFAULT_RUNNERS_CONFIG.read_text(encoding="utf-8")
         errors.extend(verify_storage_cleanup_alert_workflow(workflow_texts, runners_config_text))
         errors.extend(mergify_proof_prefix_alignment_errors(load_config(DEFAULT_RUNNERS_CONFIG)))
+    errors = list(dict.fromkeys(errors))
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

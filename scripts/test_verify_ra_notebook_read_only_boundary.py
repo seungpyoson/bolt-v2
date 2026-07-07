@@ -66,6 +66,14 @@ def test_clean_research_surfaces_have_no_findings() -> None:
         assert verifier.scan_root(root) == []
 
 
+def test_empty_research_code_set_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        findings = verifier.scan_root(Path(tmp))
+
+    assert any("enforcement set is empty" in finding for finding in findings), findings
+
+
 def test_live_runtime_imports_are_findings() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -151,6 +159,7 @@ def test_specs_and_docs_are_not_research_code_surfaces() -> None:
                     "Notebook code must not call submit_order.\n"
                 ),
                 "docs/research/note.md": "Historical note: cancel_order is forbidden.\n",
+                "research/clean.py": "def read_only_feature(row):\n    return row\n",
             },
         )
 
@@ -172,6 +181,7 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_clean_research_surfaces_have_no_findings,
+        test_empty_research_code_set_fails_closed,
         test_live_runtime_imports_are_findings,
         test_production_mutation_calls_are_findings,
         test_notebook_code_cells_are_scanned_for_mutation,

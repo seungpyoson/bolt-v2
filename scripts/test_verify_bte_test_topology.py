@@ -86,6 +86,7 @@ def test_missing_harness_shape_is_reported() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         write(root / "crates/backtesting-vertical-slice/Cargo.toml", "[package]\nname = \"x\"\n")
+        write(root / "crates/backtesting-vertical-slice/tests/a_contract.rs", "#[test]\nfn a() {}\n")
         errors = verifier.verify_root(root)
         assert "backtester Cargo.toml must set package.autotests = false" in errors
         assert any("explicit integration test harness" in error for error in errors)
@@ -101,6 +102,32 @@ def test_missing_module_is_reported() -> None:
         harness.write_text(harness.read_text().replace('#[path = "b_contract.rs"]\nmod b_contract;\n', ""))
         errors = verifier.verify_root(root)
         assert any("missing b_contract.rs" in error for error in errors), errors
+
+
+def test_empty_integration_test_set_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        write(
+            root / "crates/backtesting-vertical-slice/Cargo.toml",
+            """[package]
+name = "backtesting-vertical-slice"
+version = "0.0.0"
+edition = "2024"
+autotests = false
+
+[[test]]
+name = "backtesting_vertical_slice_tests"
+path = "tests/backtesting_vertical_slice_tests.rs"
+""",
+        )
+        write(
+            root / "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_tests.rs",
+            "#![recursion_limit = \"256\"]\n",
+        )
+        errors = verifier.verify_root(root)
+
+    assert errors == ["backtester integration test files: enforcement set is empty"], errors
 
 
 def test_inner_attrs_must_move_to_harness() -> None:
@@ -145,6 +172,7 @@ def main() -> int:
         test_good_fixture_is_clean,
         test_missing_harness_shape_is_reported,
         test_missing_module_is_reported,
+        test_empty_integration_test_set_fails_closed,
         test_inner_attrs_must_move_to_harness,
         test_accepted_dataset_fields_must_not_be_public,
         test_accepted_dataset_impl_must_not_expose_public_constructors,

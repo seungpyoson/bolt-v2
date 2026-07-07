@@ -89,6 +89,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from git_remote_utils import fetchable_remote_url, github_actions_git_auth_env  # noqa: E402
+from verifier_io import require_nonempty
 
 REPO_ROOT = SCRIPT_DIR.parent
 MAX_SCAN_FILE_BYTES = 1024 * 1024
@@ -789,7 +790,14 @@ def find_violations(root: Path) -> list[Finding]:
     # Key by (file, absolute strategy path); keep the earliest line so output is
     # deterministic and a reference imported AND used inline is reported once.
     earliest: dict[tuple[str, str], int] = {}
-    for path in scan_files(root):
+    files = scan_files(root)
+    floor_errors: list[str] = []
+    if not require_nonempty(files, "Bolt-v3 dependency direction source files", floor_errors):
+        return [
+            Finding(path=".", line=0, strategy_path=error)
+            for error in floor_errors
+        ]
+    for path in files:
         rel = path.relative_to(root).as_posix()
         module_parts = module_parts_for(rel)
         text = read_policy_source(path, rel)
@@ -1018,6 +1026,16 @@ def main(argv: list[str] | None = None) -> int:
         findings = find_violations(REPO_ROOT)
     except PolicyError as error:
         print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+
+    floor_findings = [
+        finding
+        for finding in findings
+        if finding.line == 0 and finding.path == "."
+    ]
+    if floor_findings:
+        for finding in floor_findings:
+            print(f"FAIL: {finding.strategy_path}", file=sys.stderr)
         return 1
 
     matched: set[tuple[str, str]] = set()

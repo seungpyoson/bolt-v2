@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from verifier_io import require_nonempty
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RA_CODE_DIRS = ("notebooks", "research", "analytics")
@@ -159,8 +161,12 @@ def file_findings(path: Path) -> list[Finding]:
 
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
+    paths = research_code_files(root)
+    findings_text: list[str] = []
+    if not require_nonempty(paths, "RA notebook read-only code files", findings_text):
+        return findings_text
     findings: list[Finding] = []
-    for path in research_code_files(root):
+    for path in paths:
         findings.extend(file_findings(path))
     return [finding.message(root) for finding in sorted(findings, key=lambda item: item.message(root))]
 

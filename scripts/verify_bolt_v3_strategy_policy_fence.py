@@ -31,6 +31,7 @@ from verify_bolt_v3_pure_rust_runtime import (
     production_text,
     strip_rust_comments_and_literals,
 )
+from verifier_io import require_nonempty
 
 
 @dataclass(frozen=True)
@@ -388,12 +389,23 @@ def production_rust_files_under(relative_root: str) -> list:
     return files
 
 
-def source_files_for_strategy_policy_fence() -> list:
-    files = {
+def configured_strategy_policy_source_files() -> list:
+    try:
+        source_set = source_set_files(STRATEGY_SOURCE_ROOTS, repo_root=REPO_ROOT)
+    except FileNotFoundError:
+        return []
+    return sorted(
         path
-        for path in source_set_files(STRATEGY_SOURCE_ROOTS)
+        for path in source_set
         if not is_test_source_file(path)
-    }
+    )
+
+
+def source_files_for_strategy_policy_fence() -> list:
+    configured_files = configured_strategy_policy_source_files()
+    if not configured_files:
+        return []
+    files = set(configured_files)
     files.update(production_rust_files_under("src/strategies"))
     return sorted(
         files, key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8")
@@ -520,18 +532,30 @@ def find_violations_in_text(
 
 
 def collect_violations() -> list[Violation]:
-    violations: list[Violation] = collect_strategy_source_root_violations()
-    for path in source_files_for_strategy_policy_fence():
+    violations: list[Violation] = []
+    floor_errors: list[str] = []
+    strategy_files = source_files_for_strategy_policy_fence()
+    mutation_files = source_files_for_mutation_fence()
+    require_nonempty(strategy_files, "strategy policy source files", floor_errors)
+    require_nonempty(mutation_files, "mutation policy source files", floor_errors)
+    violations.extend(
+        Violation(path=".", line=0, label=error, excerpt="")
+        for error in floor_errors
+    )
+    if floor_errors:
+        return violations
+    violations.extend(collect_strategy_source_root_violations())
+    for path in strategy_files:
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(
             find_violations_in_text(rel, production_text(path), STRATEGY_POLICY_RULES)
         )
-    for path in source_files_for_mutation_fence():
+    for path in mutation_files:
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(
             find_violations_in_text(rel, production_text(path), EXECUTION_POLICY_RULES)
         )
-    for path in source_files_for_mutation_fence():
+    for path in mutation_files:
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(
             find_violations_in_text(

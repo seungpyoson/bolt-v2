@@ -6,7 +6,10 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+
+from verifier_io import require_nonempty
 
 try:
     import yaml
@@ -96,14 +99,53 @@ LEGITIMATE_SIZER_LINE_PATTERNS = [
 ]
 
 
+class AuditConfigError(ValueError):
+    pass
+
+
 def word_re(term: str) -> re.Pattern[str]:
     prefix = r"(?<![A-Za-z0-9_])" if term[:1].isalnum() or term[:1] == "_" else ""
     suffix = r"(?![A-Za-z0-9_])" if term[-1:].isalnum() or term[-1:] == "_" else ""
     return re.compile(f"{prefix}{re.escape(term)}{suffix}")
 
 
-def load_audit() -> dict:
+def load_audit() -> object:
     return yaml.safe_load(AUDIT_PATH.read_text(encoding="utf-8")) or {}
+
+
+def audit_row_list(audit: Mapping[object, object], field_name: str) -> list[dict[object, object]]:
+    value = audit.get(field_name, [])
+    if not isinstance(value, list):
+        raise AuditConfigError(f"{field_name} must be a list")
+
+    rows: list[dict[object, object]] = []
+    for index, row in enumerate(value):
+        if not isinstance(row, Mapping):
+            raise AuditConfigError(f"{field_name}[{index}] must be a mapping")
+        normalized_row = dict(row)
+        for string_field in ("from", "to", "reason"):
+            if string_field in normalized_row and not isinstance(normalized_row[string_field], str):
+                raise AuditConfigError(f"{field_name}[{index}].{string_field} must be a string")
+        include_globs = normalized_row.get("include_globs")
+        if include_globs is not None and (
+            not isinstance(include_globs, list)
+            or any(not isinstance(pattern, str) for pattern in include_globs)
+        ):
+            raise AuditConfigError(f"{field_name}[{index}].include_globs must be a list of strings")
+        rows.append(normalized_row)
+    return rows
+
+
+def normalized_audit_rows(
+    audit: object,
+) -> tuple[list[dict[object, object]], list[dict[object, object]], list[dict[object, object]]]:
+    if not isinstance(audit, Mapping):
+        raise AuditConfigError(f"expected a mapping, got {type(audit).__name__}")
+    return (
+        audit_row_list(audit, "renamed_in_current_audit"),
+        audit_row_list(audit, "defensive_forbidden"),
+        audit_row_list(audit, "path_scoped_forbidden"),
+    )
 
 
 def scan_paths_for_globs(
@@ -236,13 +278,18 @@ def misnomer_labels(line: str) -> list[str]:
     return [label for label, pattern in MISNOMER_PATTERNS if pattern.search(line)]
 
 
-def verify_capital_admission_misnomers() -> list[str]:
-    allowlist, findings = load_misnomer_allowlist()
-    if findings:
+def verify_capital_admission_misnomers(paths: list[Path] | None = None) -> list[str]:
+    findings: list[str] = []
+    paths = scan_misnomer_paths() if paths is None else paths
+    if not require_nonempty(paths, "capital-admission misnomer scan paths", findings):
         return findings
 
+    allowlist, allowlist_findings = load_misnomer_allowlist()
+    if allowlist_findings:
+        return allowlist_findings
+
     used_allowlist: set[tuple[str, int]] = set()
-    for path in scan_misnomer_paths():
+    for path in paths:
         rel = path.relative_to(REPO_ROOT).as_posix()
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(),
@@ -278,10 +325,25 @@ def verify_capital_admission_misnomers() -> list[str]:
 
 
 def main() -> int:
-    audit = load_audit()
-    rename_rows = audit.get("renamed_in_current_audit", [])
-    defensive_rows = audit.get("defensive_forbidden", [])
-    scoped_rows = audit.get("path_scoped_forbidden", [])
+    try:
+        audit = load_audit()
+    except FileNotFoundError:
+        print(f"FAIL: missing Bolt-v3 naming audit file: {AUDIT_PATH}", file=sys.stderr)
+        return 1
+    except UnicodeDecodeError:
+        print(f"FAIL: invalid Bolt-v3 naming audit file: {AUDIT_PATH} is not valid UTF-8", file=sys.stderr)
+        return 1
+    except OSError:
+        print(f"FAIL: unreadable Bolt-v3 naming audit file: {AUDIT_PATH}", file=sys.stderr)
+        return 1
+    except yaml.YAMLError as error:
+        print(f"FAIL: invalid Bolt-v3 naming audit file: {error}", file=sys.stderr)
+        return 1
+    try:
+        rename_rows, defensive_rows, scoped_rows = normalized_audit_rows(audit)
+    except AuditConfigError as error:
+        print(f"FAIL: invalid Bolt-v3 naming audit file: {error}", file=sys.stderr)
+        return 1
     forbidden = {
         row["from"]: f"use {row['to']}"
         for row in [*rename_rows, *defensive_rows]
@@ -289,7 +351,25 @@ def main() -> int:
     }
 
     findings: list[str] = []
-    for path in scan_paths():
+    require_nonempty(
+        tuple(row for row in [*rename_rows, *defensive_rows, *scoped_rows] if row),
+        "Bolt-v3 naming audit rule rows",
+        findings,
+    )
+    paths = scan_paths()
+    require_nonempty(paths, "Bolt-v3 naming scan paths", findings)
+    misnomer_paths = scan_misnomer_paths()
+    require_nonempty(
+        misnomer_paths,
+        "capital-admission misnomer scan paths",
+        findings,
+    )
+    if findings:
+        for finding in findings:
+            print(f"FAIL: {finding}", file=sys.stderr)
+        return 1
+
+    for path in paths:
         text = path.read_text(encoding="utf-8")
         for forbidden_name, replacement in forbidden.items():
             if word_re(forbidden_name).search(text):
@@ -309,7 +389,7 @@ def main() -> int:
                     f"use {replacement} ({row.get('reason', 'path-scoped rule')})"
                 )
 
-    findings.extend(verify_capital_admission_misnomers())
+    findings.extend(verify_capital_admission_misnomers(misnomer_paths))
 
     if findings:
         for finding in findings:

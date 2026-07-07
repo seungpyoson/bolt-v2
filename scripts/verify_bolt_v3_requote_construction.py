@@ -61,6 +61,7 @@ from verify_bolt_v3_pure_rust_runtime import (
     production_text,
     strip_rust_comments_and_literals,
 )
+from verifier_io import require_nonempty
 
 # The single production module permitted to construct the budget primitives: the
 # config bridge that sources every cap/window from TOML + venue capability facts.
@@ -165,8 +166,12 @@ def find_visibility_violations_in_text(rel: str, text: str) -> list[Violation]:
 
 
 def collect_violations_from_files(files: list[Path]) -> list[Violation]:
-    if not files:
-        raise RuntimeError("no Rust source files found under src")
+    floor_errors: list[str] = []
+    if not require_nonempty(files, "Rust source files under src", floor_errors):
+        return [
+            Violation(path=".", line=0, excerpt=error, kind="source-floor")
+            for error in floor_errors
+        ]
 
     violations: list[Violation] = []
     for path in files:
@@ -192,10 +197,18 @@ def collect_visibility_violations() -> list[Violation]:
 
 def main() -> int:
     violations = collect_violations()
-    visibility = collect_visibility_violations()
+    visibility = []
+    if not any(violation.kind == "source-floor" for violation in violations):
+        visibility = collect_visibility_violations()
     if violations or visibility:
         for violation in violations:
-            if violation.kind == "alias":
+            if violation.kind == "source-floor":
+                print(
+                    "FAIL: Bolt-v3 requote-budget construction fence: "
+                    f"{violation.excerpt}",
+                    file=sys.stderr,
+                )
+            elif violation.kind == "alias":
                 print(
                     "FAIL: Bolt-v3 requote-budget construction fence: "
                     f"{violation.path}:{violation.line} aliases the requote governor "

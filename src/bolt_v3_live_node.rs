@@ -276,6 +276,7 @@ pub use secrets_builders::{
     build_bolt_v3_strategy_free_live_node_with_resolved,
     build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
     build_bolt_v3_strategy_free_live_node_with_summary,
+    check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with,
 };
 use secrets_builders::{
     current_unix_nanos, live_node_adapter_bundle_with_provider_live_submit_approvals,

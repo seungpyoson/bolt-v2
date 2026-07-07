@@ -200,6 +200,20 @@ pub fn build_bolt_v3_strategy_free_live_node_for_data_clients(
     build_bolt_v3_strategy_free_live_node_from_resolved_transport(&scoped_loaded, &resolved)
 }
 
+pub fn check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with<F>(
+    loaded: &LoadedBoltV3Config,
+    data_client_keys: &[String],
+    env_is_set: F,
+) -> Result<(), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+{
+    let scoped_loaded =
+        strategy_free_data_client_transport_loaded_config(loaded, data_client_keys)?;
+    check_no_forbidden_credential_env_vars_with(&scoped_loaded.root, env_is_set)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)
+}
+
 pub fn build_bolt_v3_strategy_free_live_node_with_resolved(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -325,7 +339,23 @@ fn strategy_free_data_client_transport_loaded_config(
             client.secrets = None;
         }
     }
+    disable_strategy_free_data_client_live_subsystems(&mut scoped_loaded);
     Ok(scoped_loaded)
+}
+
+fn disable_strategy_free_data_client_live_subsystems(loaded: &mut LoadedBoltV3Config) {
+    loaded.root.iv = None;
+    loaded.root.risk.live_submit_governance = None;
+    loaded.root.risk.loss_governor = None;
+    loaded.root.risk.capital_pools = None;
+    loaded.root.risk.risk_reservation_substrate = None;
+    loaded.root.risk.kill_switch = None;
+    loaded.root.risk.basket_execution = None;
+    loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes = None;
 }
 
 fn data_client_scope_requires_secrets(client: &ClientBlock) -> bool {

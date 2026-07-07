@@ -23,6 +23,7 @@ use crate::{
     bolt_v3_live_node::{
         BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node_for_data_clients,
         build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
+        check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with,
     },
     bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
     bolt_v3_reference_price::{
@@ -198,6 +199,30 @@ pub fn prepare_reference_current_price_health_run_with_resolved(
         runtime,
         loaded: loaded.clone(),
     })
+}
+
+pub fn check_reference_current_price_health_forbidden_env_vars(
+    loaded: &LoadedBoltV3Config,
+) -> Result<()> {
+    check_reference_current_price_health_forbidden_env_vars_with(loaded, |env_var| {
+        std::env::var_os(env_var).is_some()
+    })
+}
+
+pub fn check_reference_current_price_health_forbidden_env_vars_with<F>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+) -> Result<()>
+where
+    F: FnMut(&str) -> bool,
+{
+    let plan = reference_current_price_health_plan(loaded)?;
+    check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with(
+        loaded,
+        &plan.client_keys,
+        env_is_set,
+    )?;
+    Ok(())
 }
 
 pub async fn run_prepared_reference_current_price_health(
@@ -600,6 +625,84 @@ mod tests {
         }
     }
 
+    fn set_unique_reference_health_catalog(loaded: &mut LoadedBoltV3Config, suffix: &str) {
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-reference-price-health-{suffix}-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+    }
+
+    fn out_of_plan_iv_root() -> crate::bolt_v3_iv::config::IvRootConfig {
+        crate::bolt_v3_iv::config::load_iv_config_from_toml(
+            r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "okx_data"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+        )
+        .expect("out-of-plan IV root should parse and validate")
+    }
+
     fn reference_health_target(
         source_id: &str,
         provider: &str,
@@ -979,12 +1082,7 @@ mod tests {
     fn reference_current_price_health_does_not_map_out_of_plan_execution_clients() {
         let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
-        let catalog_directory = std::env::temp_dir().join(format!(
-            "bolt-v3-reference-price-health-scope-{}",
-            std::process::id()
-        ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        set_unique_reference_health_catalog(&mut loaded, "scope");
         let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
             .expect("fixture secrets should resolve through the fake SSM resolver");
         let execution = loaded
@@ -1008,6 +1106,73 @@ mod tests {
         assert!(
             sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
             "health must prepare zero execution transport clients"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_ignores_out_of_plan_iv_runtime_scope() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        set_unique_reference_health_catalog(&mut loaded, "iv-scope");
+        loaded.root.iv = Some(out_of_plan_iv_root());
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("reference health must ignore out-of-plan IV runtime config");
+
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            !health_run.runtime.has_iv_runtime(),
+            "reference health must not configure IV runtime"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_ignores_out_of_plan_capital_admission_scope() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        set_unique_reference_health_catalog(&mut loaded, "capital-scope");
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture should configure capital pools")[0]
+            .enforce_submit_admission = true;
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("reference health must ignore out-of-plan capital admission config");
+
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            !health_run.runtime.capital_admission_configured(),
+            "reference health must not configure capital admission"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_env_check_ignores_out_of_plan_execution_provider_env_vars() {
+        let loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+
+        check_reference_current_price_health_forbidden_env_vars_with(&loaded, |env_var| {
+            env_var == "POLYMARKET_PK"
+        })
+        .expect(
+            "reference health env preflight must ignore out-of-plan execution provider env vars",
         );
     }
 

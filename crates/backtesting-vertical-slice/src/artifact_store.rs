@@ -2066,6 +2066,14 @@ fn is_object_store_create_only_conflict(err: &object_store::Error) -> bool {
     )
 }
 
+/// # Errors
+///
+/// Returns an error when `value` is not a canonical s3 artifact root with a
+/// bucket and prefix.
+pub fn validate_artifact_root(value: &str) -> Result<String> {
+    normalize_artifact_root(value)
+}
+
 fn normalize_artifact_root(value: &str) -> Result<String> {
     let root = value.trim().trim_end_matches('/');
     ensure!(

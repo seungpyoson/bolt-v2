@@ -211,7 +211,8 @@ fn contract_for_run_spec(
 fn write_contract(output_dir: &Path, spec: &RunSpec, object_bytes: &[u8]) {
     fs::create_dir_all(output_dir).expect("create run output dir");
     let path = output_dir.join(RESULT_CONTRACT_FILE);
-    let artifact = contract_for_run_spec(spec, object_bytes, &path.to_string_lossy());
+    let result_contract_uri = format!("{}/{}", spec.manifest.output_prefix, RESULT_CONTRACT_FILE);
+    let artifact = contract_for_run_spec(spec, object_bytes, &result_contract_uri);
     fs::write(
         &path,
         serde_json::to_vec_pretty(&artifact).expect("serialize contract"),

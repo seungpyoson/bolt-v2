@@ -15450,6 +15450,54 @@ classification = "chainlink_reference_provider_contract"
 reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
 
 [[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''0'''
+context = '''ChainlinkReferenceReconnectMaxAttempts::Limited(0)'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider reconnect validation sentinel; operator reconnect budgets remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''0'''
+context = '''state.attempted_reconnects = 0;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider reconnect supervisor counter reset after a report-proven healthy observation; operator reconnect budgets remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''0'''
+context = '''const CHAINLINK_REFERENCE_TRANSPORT_RECONNECT_MAX_ATTEMPTS: u32 = 0;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider intentionally disables transport-owned reconnects so provider-supervised reconnects regenerate Data Streams auth headers."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''0'''
+context = '''last_report_unix_ms: Arc::new(AtomicU64::new(0)),'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider report-liveness timestamp identity before the DataClient connects; it is internal observation state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''1'''
+context = '''state.attempted_reconnects = state.attempted_reconnects.saturating_add(1);'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider reconnect supervisor unit counter increment per attempted provider reconnect; operator reconnect budgets remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"unlimited"'''
+context = '''Wire::Text(value) if value == "unlimited" => Ok(Self::Unlimited),'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider reconnect-budget schema token matching the PRR reference provider; operator reconnect budgets remain TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "number"
 literal = '''0'''
@@ -19981,14 +20029,6 @@ reason = "Stable source label for lifecycle evidence emitted when venue position
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"exit_terminal"'''
-context = '''const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";'''
-classification = "order_lifecycle_evidence_source_label"
-reason = "Stable source label for lifecycle evidence emitted when an exit terminal event reclassifies residual or terminal order state; it classifies evidence and does not configure strategy behavior."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
 literal = '''"restart_bootstrap"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";'''
 classification = "order_lifecycle_evidence_source_label"
@@ -20037,6 +20077,14 @@ reason = "Stable source label for lifecycle evidence emitted when settlement evi
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"reconcile_pass"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: &str = "reconcile_pass";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted by the runtime venue reconciliation pass; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"position_interval_ended"'''
 context = '''const EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED: &str = "position_interval_ended";'''
 classification = "exit_submission_block_reason_label"
@@ -20081,6 +20129,46 @@ literal = '''"unattributed_open_exit_order"'''
 context = '''raw_reason_text: Some("unattributed_open_exit_order".to_string()),'''
 classification = "order_lifecycle_recovery_reason_label"
 reason = "Stable recovery evidence reason for restart open exit orders that cannot be attributed to the recovered position; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"terminal order status {:?} with filled quantity from NT cache"'''
+context = '''"terminal order status {:?} with filled quantity from NT cache",'''
+classification = "order_lifecycle_reconcile_reason_label"
+reason = "Stable reconcile-pass evidence reason template for terminal filled order state recovered from the NT cache; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"terminal order status {:?} from NT cache"'''
+context = '''"terminal order status {:?} from NT cache",'''
+classification = "order_lifecycle_reconcile_reason_label"
+reason = "Stable reconcile-pass evidence reason template for terminal zero-fill order state recovered from the NT cache; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"terminal order status {:?} has filled quantity but no cached position"'''
+context = '''"terminal order status {:?} has filled quantity but no cached position",'''
+classification = "order_lifecycle_reconcile_reason_label"
+reason = "Stable reconcile-pass evidence reason template for fail-closed entry reconciliation when NT cache reports a filled order but no matching position; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"observed position present in NT closed-position cache"'''
+context = '''"observed position present in NT closed-position cache".to_string(),'''
+classification = "order_lifecycle_reconcile_reason_label"
+reason = "Stable reconcile-pass evidence reason for closing unsupported-observed exposure after the NT closed-position cache positively reports the observed position closed; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"cached position materialized during runtime reconcile"'''
+context = '''"cached position materialized during runtime reconcile".to_string(),'''
+classification = "order_lifecycle_reconcile_reason_label"
+reason = "Stable reconcile-pass evidence reason for materializing managed exposure from an NT cached position; it classifies evidence and does not configure strategy behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
@@ -20609,3 +20697,51 @@ literal = '''false'''
 context = '''submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),'''
 classification = "kill_switch_flatten_no_replace_lifecycle_policy"
 reason = "Emergency kill-switch flatten creates fresh risk-reducing submits only; replacement lifecycle is structurally disabled for the submit-only flatten executor, not configured as an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"no live input-health transition observed for reference_current_price source"'''
+context = '''"no live input-health transition observed for reference_current_price source";'''
+classification = "operator_health_input_source_observation_reason"
+reason = "Operator-health surface reason for a configured reference_current_price source that has not emitted a live health transition; it reports observation state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"chainlink reference stream stale before provider reconnect"'''
+context = '''"chainlink reference stream stale before provider reconnect";'''
+classification = "operator_health_input_source_observation_reason"
+reason = "Operator-health surface reason emitted when the Chainlink reference provider detects stale transport before its provider-owned reconnect path; it reports observation state and does not configure reconnect policy."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"chainlink reference provider reconnect attempts exhausted"'''
+context = '''"chainlink reference provider reconnect attempts exhausted";'''
+classification = "operator_health_input_source_observation_reason"
+reason = "Operator-health surface reason emitted when the configured Chainlink provider-level reconnect budget is exhausted; the budget itself comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"chainlink reference stream recovered after provider reconnect"'''
+context = '''"chainlink reference stream recovered after provider reconnect";'''
+classification = "operator_health_input_source_observation_reason"
+reason = "Operator-health surface reason emitted after Chainlink reference provider-owned reconnect succeeds with fresh auth headers; it reports transition state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"chainlink reference subscription state unavailable during liveness transition"'''
+context = '''"chainlink reference subscription state unavailable during liveness transition";'''
+classification = "operator_health_input_source_observation_reason"
+reason = "Operator-health surface reason used if subscription state cannot be read while emitting a Chainlink liveness transition; it reports read failure state and does not configure provider behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"input_health_transition_emitter_configured"'''
+context = '''"input_health_transition_emitter_configured",'''
+classification = "chainlink_reference_config_debug_field"
+reason = "Debug output field name that reports whether live input-health transition emission was attached before NT registration; it is not an operator runtime value."

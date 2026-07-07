@@ -1025,6 +1025,79 @@ fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_voc
 }
 
 #[test]
+fn binary_oracle_resolution_retry_interval_accepts_chainlink_http_timeout_below_retry_interval() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let strategy_raw = format!(
+        "{}\n\n[resolution_data]\ndata_client_id = \"chainlink_strike\"\ninstrument_id = \"CONFIGURED_ASSET-USD.CHAINLINK\"\n",
+        std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml"
+        ))
+        .expect("strategy fixture should be readable"),
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_raw).expect("strategy fixture should parse with resolution_data");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&root, &loaded);
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("http_timeout_secs")),
+        "Chainlink strike timeout below retry interval should not fail timeout validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_resolution_retry_interval_rejects_chainlink_http_timeout_at_retry_interval() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(
+        "http_timeout_secs = 4",
+        "http_timeout_secs = 5",
+    ))
+    .expect("root fixture with equal Chainlink timeout should parse");
+    let strategy_raw = format!(
+        "{}\n\n[resolution_data]\ndata_client_id = \"chainlink_strike\"\ninstrument_id = \"CONFIGURED_ASSET-USD.CHAINLINK\"\n",
+        std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml"
+        ))
+        .expect("strategy fixture should be readable"),
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_raw).expect("strategy fixture should parse with resolution_data");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&root, &loaded);
+    let rendered = messages.join("\n");
+    assert!(
+        rendered.contains("target.retry_interval_secs `5`")
+            && rendered.contains("clients.chainlink_strike.data.http_timeout_secs `5`")
+            && rendered.contains("same-boundary in-flight fetch dedupe"),
+        "Chainlink strike timeout at retry interval must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vocabulary() {
     // Bug class: a config can split a Polymarket venue across two
     // `clients.<id>` blocks (one execution-only, one data-only). The
@@ -4190,7 +4263,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -4275,7 +4348,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 unowned_connection_field = "must-fail"
@@ -4317,7 +4390,7 @@ max_clock_skew_ms = 5000
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
 endpoint_id = "testnet-data-streams"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -4403,7 +4476,7 @@ fn chainlink_client_http_timeout_diverging_from_gate_provider_fails_single_sourc
     // provider's matching value untouched.
     let mutated = replace_in_fixture_section(
         "[clients.chainlink_strike.data]",
-        &[("http_timeout_secs = 10", "http_timeout_secs = 11")],
+        &[("http_timeout_secs = 4", "http_timeout_secs = 6")],
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
@@ -4550,7 +4623,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -7737,7 +7810,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 {bindings_toml}

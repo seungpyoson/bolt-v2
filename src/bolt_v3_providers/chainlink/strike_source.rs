@@ -71,7 +71,7 @@ const STRIKE_FETCH_REQUEST_DATA_TYPE: &str = "BoltV3ChainlinkStrikeFetchRequest"
 pub(crate) const STRIKE_FETCH_INSTRUMENT_ID_PARAM: &str = "instrument_id";
 const STRIKE_FETCH_REQUEST_SEQUENCE_PARAM: &str = "request_sequence";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ChainlinkReportBoundaryKind {
     WindowOpenStrike,
     WindowCloseSettlement,
@@ -100,7 +100,7 @@ impl ChainlinkReportBoundaryKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ChainlinkReportBoundary {
     kind: ChainlinkReportBoundaryKind,
     unix_seconds: u64,
@@ -109,6 +109,21 @@ struct ChainlinkReportBoundary {
 impl ChainlinkReportBoundary {
     fn new(kind: ChainlinkReportBoundaryKind, unix_seconds: u64) -> Self {
         Self { kind, unix_seconds }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChainlinkStrikeFetchKey {
+    instrument_id: InstrumentId,
+    report_boundary: ChainlinkReportBoundary,
+}
+
+impl ChainlinkStrikeFetchKey {
+    fn new(instrument_id: InstrumentId, report_boundary: ChainlinkReportBoundary) -> Self {
+        Self {
+            instrument_id,
+            report_boundary,
+        }
     }
 }
 
@@ -230,14 +245,16 @@ struct ChainlinkStrikeSourceClient {
     config: ChainlinkStrikeSourceConfig,
     connected: bool,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
-    /// Resolution instruments whose strike fetch is currently in flight. The
+    /// Boundary-specific strike fetches currently in flight. The
     /// strategy re-issues the strike subscribe on every selection-retry tick
-    /// (unsubscribe-then-resubscribe to defeat NT's per-instrument index-price
-    /// dedup), so without this guard a stalled REST call would let those retries
+    /// (custom fetches use unique data types to defeat NT subscription dedup),
+    /// so without this guard a stalled REST call would let same-boundary retries
     /// stack concurrent fetches against the live endpoint. At most one fetch per
-    /// instrument runs until it finishes; the spawned task clears its entry on
-    /// completion. Shared across the spawned task, hence `Arc<Mutex<..>>`.
-    in_flight: Arc<Mutex<HashSet<InstrumentId>>>,
+    /// instrument + boundary kind + boundary timestamp runs until it finishes;
+    /// distinct boundaries must not block each other because settlement-close
+    /// can share the same resolution instrument as the next window's strike.
+    /// Shared across the spawned task, hence `Arc<Mutex<..>>`.
+    in_flight: Arc<Mutex<HashSet<ChainlinkStrikeFetchKey>>>,
 }
 
 impl ChainlinkStrikeSourceClient {
@@ -258,29 +275,29 @@ impl ChainlinkStrikeSourceClient {
             .find(|binding| binding.instrument_id == instrument_id)
     }
 
-    /// Admits a strike fetch for `instrument_id` only when none is already in
-    /// flight, recording it as in flight. Returns `true` when the caller may
-    /// spawn the fetch, `false` when one is already running (skip — the bounded
-    /// selection-retry cadence re-issues after it finishes). Fails closed
-    /// (returns `false`, no fetch) if the shared guard lock is poisoned.
+    /// Admits `fetch_key` only when that exact boundary fetch is not already in
+    /// flight. Returns `true` when the caller may spawn the fetch, `false` when
+    /// one is already running (skip — the bounded selection-retry cadence
+    /// re-issues after it finishes). Fails closed (returns `false`, no fetch) if
+    /// the shared guard lock is poisoned.
     fn begin_strike_fetch_if_idle(
-        in_flight: &Arc<Mutex<HashSet<InstrumentId>>>,
-        instrument_id: InstrumentId,
+        in_flight: &Arc<Mutex<HashSet<ChainlinkStrikeFetchKey>>>,
+        fetch_key: ChainlinkStrikeFetchKey,
     ) -> bool {
         match in_flight.lock() {
-            Ok(mut in_flight) => in_flight.insert(instrument_id),
+            Ok(mut in_flight) => in_flight.insert(fetch_key),
             Err(_) => false,
         }
     }
 
-    /// Clears the in-flight marker for `instrument_id` once its fetch completes
+    /// Clears the in-flight marker for `fetch_key` once its fetch completes
     /// (success or failure), so the next retry tick may re-issue.
     fn finish_strike_fetch(
-        in_flight: &Arc<Mutex<HashSet<InstrumentId>>>,
-        instrument_id: InstrumentId,
+        in_flight: &Arc<Mutex<HashSet<ChainlinkStrikeFetchKey>>>,
+        fetch_key: ChainlinkStrikeFetchKey,
     ) {
         if let Ok(mut in_flight) = in_flight.lock() {
-            in_flight.remove(&instrument_id);
+            in_flight.remove(&fetch_key);
         }
     }
 
@@ -317,10 +334,12 @@ impl ChainlinkStrikeSourceClient {
             price_precision: binding.price_precision,
             report_boundary,
         };
-        // Admit at most one in-flight fetch per resolution instrument: the
-        // strategy re-issues this fetch on every retry tick while the strike is
-        // unbound, so a stalled REST call must not stack concurrent requests.
-        if !Self::begin_strike_fetch_if_idle(&self.in_flight, binding.instrument_id) {
+        let fetch_key = ChainlinkStrikeFetchKey::new(binding.instrument_id, report_boundary);
+        // Admit at most one in-flight fetch per resolution instrument and
+        // report boundary. The strategy re-issues this fetch on every retry tick
+        // while the strike is unbound, so a stalled REST call must not stack
+        // same-boundary requests.
+        if !Self::begin_strike_fetch_if_idle(&self.in_flight, fetch_key) {
             log::debug!(
                 "Chainlink strike source {} skipping {} fetch for {} at {}={}: a fetch is already in flight",
                 self.client_id,
@@ -342,7 +361,6 @@ impl ChainlinkStrikeSourceClient {
         let sender = self.data_sender.clone();
         let client_id = self.client_id;
         let in_flight = Arc::clone(&self.in_flight);
-        let fetch_instrument_id = binding.instrument_id;
 
         get_runtime().spawn(async move {
             match fetch_chainlink_report_index_price(&request).await {
@@ -385,7 +403,7 @@ impl ChainlinkStrikeSourceClient {
                     );
                 }
             }
-            ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, fetch_instrument_id);
+            ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, fetch_key);
             log::debug!(
                 "Chainlink strike source {client_id} cleared in-flight {} fetch for {} at {}={}",
                 request.report_boundary.kind.label(),
@@ -1386,26 +1404,95 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_guard_admits_one_fetch_per_instrument_until_finished() {
+    fn in_flight_guard_admits_one_fetch_per_boundary_until_finished() {
         // Strategy retry ticks can trigger custom one-shot fetch commands faster
         // than a stalled REST call returns. The in-flight guard admits at most
-        // one fetch per resolution instrument until the prior one finishes.
-        let in_flight: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<InstrumentId>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        // one fetch per resolution instrument + report boundary until the prior
+        // one finishes.
+        let in_flight: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashSet<ChainlinkStrikeFetchKey>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let instrument_id =
             InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
-        assert!(
-            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, instrument_id),
-            "the first fetch for an idle resolution instrument must be admitted",
+        let fetch_key = ChainlinkStrikeFetchKey::new(
+            instrument_id,
+            ChainlinkReportBoundary::new(ChainlinkReportBoundaryKind::WindowOpenStrike, 1_700),
         );
         assert!(
-            !ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, instrument_id),
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, fetch_key),
+            "the first fetch for an idle resolution boundary must be admitted",
+        );
+        assert!(
+            !ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, fetch_key),
             "a second fetch must be skipped while one is already in flight",
         );
-        ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, instrument_id);
+        ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, fetch_key);
         assert!(
-            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, instrument_id),
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, fetch_key),
             "after the in-flight fetch finishes, a new fetch may be admitted",
+        );
+    }
+
+    #[test]
+    fn in_flight_guard_admits_distinct_boundaries_for_same_instrument() {
+        let in_flight: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashSet<ChainlinkStrikeFetchKey>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let instrument_id =
+            InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
+        let boundary_unix_seconds = 1_700;
+        let open_key = ChainlinkStrikeFetchKey::new(
+            instrument_id,
+            ChainlinkReportBoundary::new(
+                ChainlinkReportBoundaryKind::WindowOpenStrike,
+                boundary_unix_seconds,
+            ),
+        );
+        let close_key = ChainlinkStrikeFetchKey::new(
+            instrument_id,
+            ChainlinkReportBoundary::new(
+                ChainlinkReportBoundaryKind::WindowCloseSettlement,
+                boundary_unix_seconds,
+            ),
+        );
+
+        assert!(
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, open_key),
+            "window-open strike fetch must be admitted",
+        );
+        assert!(
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, close_key),
+            "window-close settlement fetch for the same instrument must not be swallowed by the open fetch",
+        );
+        assert!(
+            !ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, close_key),
+            "a duplicate close fetch for the same boundary must still be suppressed",
+        );
+    }
+
+    #[test]
+    fn in_flight_guard_admits_distinct_timestamps_for_same_boundary_kind() {
+        let in_flight: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashSet<ChainlinkStrikeFetchKey>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let instrument_id =
+            InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
+        let first_close_key = ChainlinkStrikeFetchKey::new(
+            instrument_id,
+            ChainlinkReportBoundary::new(ChainlinkReportBoundaryKind::WindowCloseSettlement, 1_700),
+        );
+        let next_close_key = ChainlinkStrikeFetchKey::new(
+            instrument_id,
+            ChainlinkReportBoundary::new(ChainlinkReportBoundaryKind::WindowCloseSettlement, 1_760),
+        );
+
+        assert!(
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, first_close_key),
+            "first close-boundary settlement fetch must be admitted",
+        );
+        assert!(
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, next_close_key),
+            "a different close timestamp must not be blocked by a stale prior close fetch",
         );
     }
 }

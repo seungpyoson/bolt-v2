@@ -32,6 +32,7 @@ pub(super) struct OpenPositionState {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingEntryState {
     pub(super) client_order_id: ClientOrderId,
+    pub(super) submitted_at_ms: Option<u64>,
     pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
     pub(super) outcome_fees: OutcomeFeeState,
@@ -52,6 +53,7 @@ pub(super) struct PositionMaterializationSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingExitState {
     pub(super) client_order_id: ClientOrderId,
+    pub(super) submitted_at_ms: Option<u64>,
     pub(super) market_id: Option<String>,
     pub(super) position_id: Option<PositionId>,
     pub(super) fill_received: bool,

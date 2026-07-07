@@ -1039,7 +1039,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             signal_venue: Some("signal_data_client".to_string()),
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
-            resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
+            resolution_instrument_id: Some("CONFIGURED_ASSET-USD.CHAINLINK".to_string()),
             realized_volatility_surface_id: "<surface_id>".to_string(),
             static_condition_id: None,
             static_yes_outcome: None,
@@ -1566,6 +1566,7 @@ pub(super) fn pending_entry_state(
     let book = probe.book;
     PendingEntryState {
         client_order_id,
+        submitted_at_ms: Some(1_000),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(outcome_side),
@@ -1711,6 +1712,7 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
     let book = configured_book_for_instrument(strategy, instrument_id);
     let pending = PendingEntryState {
         client_order_id,
+        submitted_at_ms: Some(1_000),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             None,
@@ -1753,6 +1755,7 @@ pub(super) fn set_exit_pending(
     strategy.exposure = ExposureState::ExitPending(ExitPendingState {
         pending_exit: PendingExitState {
             client_order_id,
+            submitted_at_ms: Some(1_000),
             market_id: position.lifecycle.market_id_owned(),
             position_id: Some(position.position_id),
             fill_received,

@@ -36,7 +36,8 @@ pub mod reference_live_probe;
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
 pub(crate) use chainlink::{
-    STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+    SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM, STRIKE_FETCH_INSTRUMENT_ID_PARAM,
+    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
     strike_fetch_request_data_type as resolution_strike_fetch_request_data_type,
 };
 pub use chainlink_reference::KEY as REFERENCE_CATALOG_VENUE_KEY;
@@ -53,10 +54,14 @@ const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
 const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
+    bolt_v3_adapters::{
+        BoltV3AdapterConfigs, BoltV3AdapterMappingError, BoltV3ClientAdapterConfig,
+        BoltV3MarketClockFn,
+    },
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
+    bolt_v3_operator_health::{BoltV3InputHealthTransitionEmitter, BoltV3MissingInputSource},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_venue_truth::{VenueTruthOrderEventMapper, VenueTruthSnapshotSource},
     strategies::registry::FeeProvider,
@@ -77,6 +82,18 @@ pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
 }
 
 pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
+
+pub(crate) fn attach_live_input_health_transition_emitters(
+    adapters: &mut BoltV3AdapterConfigs,
+    input_health_transition_emitter: BoltV3InputHealthTransitionEmitter,
+    input_health_sources_by_client: &BTreeMap<String, Vec<BoltV3MissingInputSource>>,
+) {
+    chainlink_reference::attach_live_input_health_transition_emitter(
+        adapters,
+        input_health_transition_emitter,
+        input_health_sources_by_client,
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderExclusiveSignerOwner {
@@ -596,6 +613,7 @@ pub struct ReferencePriceProviderMetadata {
     pub client_venue_key: &'static str,
     pub identifier_kind: ReferencePriceIdentifierKind,
     pub supported_assets: &'static [&'static str],
+    pub emits_live_input_health: bool,
 }
 
 pub const REFERENCE_PRICE_PROVIDER_METADATA: &[ReferencePriceProviderMetadata] = &[
@@ -604,12 +622,14 @@ pub const REFERENCE_PRICE_PROVIDER_METADATA: &[ReferencePriceProviderMetadata] =
         client_venue_key: chainlink_reference::KEY,
         identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
         supported_assets: &[],
+        emits_live_input_health: true,
     },
     ReferencePriceProviderMetadata {
         provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
         client_venue_key: polyresearch::KEY,
         identifier_kind: ReferencePriceIdentifierKind::Symbol,
         supported_assets: &[],
+        emits_live_input_health: false,
     },
 ];
 
@@ -632,6 +652,11 @@ pub fn reference_price_provider_supports_asset(provider_key: &str, asset: &str) 
         return false;
     };
     metadata.supported_assets.is_empty() || metadata.supported_assets.contains(&asset)
+}
+
+pub fn reference_price_provider_emits_live_input_health(provider_key: &str) -> bool {
+    reference_price_provider_metadata(provider_key)
+        .is_some_and(|metadata| metadata.emits_live_input_health)
 }
 
 pub fn reference_price_provider_identifier_is_configured(
@@ -1084,6 +1109,13 @@ pub fn validate_resolution_oracle_client_consistency(root: &BoltV3RootConfig) ->
     chainlink::validate_client_gate_provider_consistency(root)
 }
 
+pub(crate) fn resolution_oracle_client_http_timeout_secs(
+    root: &BoltV3RootConfig,
+    client_key: &str,
+) -> Result<Option<u64>, String> {
+    chainlink::resolution_oracle_client_http_timeout_secs(root, client_key)
+}
+
 /// Family-agnostic surface read by core startup validation. Routes
 /// each client block to its per-provider validator based on provider
 /// key. Returns the full error list for the client block.
@@ -1289,6 +1321,38 @@ mod tests {
         assert_eq!(
             normalize_base_order_quantity_for_execution_venue(Venue::from("OKX"), quantity),
             Some(quantity)
+        );
+    }
+
+    #[test]
+    fn reference_price_live_input_health_capability_is_metadata_driven() {
+        let chainlink_metadata =
+            reference_price_provider_metadata(chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY)
+                .expect("Chainlink provider metadata should be registered");
+        let polyresearch_metadata =
+            reference_price_provider_metadata(polyresearch::REFERENCE_PRICE_PROVIDER_KEY)
+                .expect("PolyResearch provider metadata should be registered");
+
+        assert!(chainlink_metadata.emits_live_input_health);
+        assert!(reference_price_provider_emits_live_input_health(
+            chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY
+        ));
+        assert!(!polyresearch_metadata.emits_live_input_health);
+        assert!(!reference_price_provider_emits_live_input_health(
+            polyresearch::REFERENCE_PRICE_PROVIDER_KEY
+        ));
+        assert!(!reference_price_provider_emits_live_input_health(
+            "unregistered_reference_provider"
+        ));
+        let emitting_provider_keys = reference_price_provider_metadata_entries()
+            .iter()
+            .filter(|metadata| metadata.emits_live_input_health)
+            .map(|metadata| metadata.provider_key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            emitting_provider_keys,
+            vec![chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY],
+            "attach_live_input_health_transition_emitters currently attaches Chainlink live input-health emitters; add a provider attach path when adding another emitting provider"
         );
     }
 

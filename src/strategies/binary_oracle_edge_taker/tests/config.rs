@@ -4,6 +4,8 @@ use super::*;
 
 const ZERO_INTEGER_CONFIG_VALUE: i64 = 0;
 const POSITIVE_REQUIRED_INTEGER_FIELDS: &[&str] = &[
+    stringify!(retry_interval_seconds),
+    stringify!(market_exit_max_attempts),
     stringify!(trade_flow_max_samples),
     stringify!(trade_flow_window_secs),
     stringify!(spike_guard_cooldown_secs),

@@ -114,7 +114,9 @@ where
         &spec.accepted_object.sha256,
     )
     .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
-    ensure_object_read_within_raw_payload_limit(&spec)?;
+    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
+        &spec,
+    )?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
     let artifact_store = spec.required_artifact_store()?;
     let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
@@ -188,7 +190,9 @@ where
         &spec.accepted_object.sha256,
     )
     .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
-    ensure_object_read_within_raw_payload_limit(&spec)?;
+    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
+        &spec,
+    )?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
 
     if cli.publish_output {
@@ -540,16 +544,6 @@ fn validate_execution_plan_for_run_spec(
     );
     Ok(())
 }
-fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
-    ensure!(
-        spec.accepted_object.bytes <= spec.converter.raw_payload.max_object_bytes,
-        "accepted_object.bytes {} exceeds converter.raw_payload.max_object_bytes {}",
-        spec.accepted_object.bytes,
-        spec.converter.raw_payload.max_object_bytes
-    );
-    Ok(())
-}
-
 fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
     let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
     let actual_bytes = metadata.len();

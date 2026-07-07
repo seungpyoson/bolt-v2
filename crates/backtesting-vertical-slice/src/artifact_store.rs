@@ -2066,7 +2066,7 @@ fn is_object_store_create_only_conflict(err: &object_store::Error) -> bool {
     )
 }
 
-fn normalize_artifact_root(value: &str) -> Result<String> {
+pub(crate) fn normalize_artifact_root(value: &str) -> Result<String> {
     let root = value.trim().trim_end_matches('/');
     ensure!(
         root.starts_with("s3://"),

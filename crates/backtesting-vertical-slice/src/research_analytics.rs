@@ -351,7 +351,6 @@ where
         .collect::<Vec<_>>();
     let index =
         build_run_pointer_index_from_catalog_list(catalog_run_ids, &plan.artifact_root, records)?;
-    index.validate()?;
     let index_artifact_write = write_reference_artifact_with_len(
         &plan.index_path,
         RUN_POINTER_INDEX_REFERENCE_ARTIFACT_ROLE,
@@ -522,7 +521,11 @@ pub fn read_accepted_object_for_run_spec(path: &Path, spec: &RunSpec) -> Result<
     Ok(bytes)
 }
 
-fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
+/// # Errors
+///
+/// Returns an error when the run-spec accepted object byte count exceeds the
+/// configured raw-payload read limit.
+pub fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
     ensure!(
         spec.accepted_object.bytes <= spec.converter.raw_payload.max_object_bytes,
         "accepted_object.bytes {} exceeds converter.raw_payload.max_object_bytes {}",
@@ -564,6 +567,7 @@ fn load_backtest_sweep_source_pairs(
             let (object_path, source_object_path) =
                 resolve_source_path("object", &plan.input_dir, &source.object_path)?;
             let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
+            validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
             let accepted_object_bytes = read_accepted_object_for_run_spec(&object_path, &run_spec)?;
             let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
             let output_dir_name = run_spec.manifest.run_id.clone();
@@ -621,6 +625,37 @@ fn input_relative_source_path(label: &'static str, path: &Path) -> Result<String
         "{label} source path must include at least one path component"
     );
     Ok(parts.join("/"))
+}
+
+fn validate_publication_run_spec_artifact_scope(
+    artifact_root: &str,
+    run_spec: &RunSpec,
+) -> Result<()> {
+    let artifact_root = validate_run_pointer_artifact_root(artifact_root)?;
+    let manifest_root = validate_run_pointer_artifact_root(&run_spec.manifest.artifact_root)
+        .with_context(|| {
+            format!(
+                "run spec {} manifest.artifact_root",
+                run_spec.manifest.run_id
+            )
+        })?;
+    ensure!(
+        manifest_root == artifact_root,
+        "run spec {} manifest.artifact_root {:?} must match publication artifact_root {:?}",
+        run_spec.manifest.run_id,
+        run_spec.manifest.artifact_root,
+        artifact_root
+    );
+    let required_prefix = format!("{artifact_root}/backtests/");
+    let output_prefix = format!("{}/", run_spec.manifest.output_prefix.trim_end_matches('/'));
+    ensure!(
+        output_prefix.starts_with(&required_prefix),
+        "run spec {} manifest.output_prefix {:?} must live under {:?}",
+        run_spec.manifest.run_id,
+        run_spec.manifest.output_prefix,
+        required_prefix
+    );
+    Ok(())
 }
 
 fn source_file_name(label: &'static str, path: &Path) -> Result<String> {
@@ -799,14 +834,14 @@ fn validate_run_pointer_artifact_root(artifact_root: &str) -> Result<String> {
         "artifact_root must not be empty"
     );
     ensure!(
-        artifact_root.starts_with("s3://"),
-        "artifact_root must be an s3:// URI"
+        artifact_root == artifact_root.trim(),
+        "artifact_root must not contain leading or trailing whitespace"
     );
     ensure!(
         artifact_root == artifact_root.trim_end_matches('/'),
         "artifact_root must be normalized without a trailing slash"
     );
-    Ok(artifact_root.to_string())
+    crate::artifact_store::normalize_artifact_root(artifact_root)
 }
 
 fn exact_run_id_set(
@@ -1453,14 +1488,36 @@ mod tests {
     const COMMITTED_RUN_SPEC: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
     );
+    const TEST_ARTIFACT_ROOT: &str = "s3://example-bucket/nt-research-analytics";
 
     fn test_run_spec(run_id: &str, accepted_object_bytes: &[u8]) -> RunSpec {
         let mut spec: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
         spec.manifest.run_id = run_id.to_string();
+        spec.manifest.artifact_root = TEST_ARTIFACT_ROOT.to_string();
+        spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/{run_id}");
+        if let Some(artifact_store) = spec.artifact_store.as_mut() {
+            artifact_store.artifact_root = TEST_ARTIFACT_ROOT.to_string();
+        }
         spec.accepted_object.sha256 = sha256_hex(accepted_object_bytes);
         spec.accepted_object.bytes = accepted_object_bytes.len() as u64;
         spec
+    }
+
+    fn rewrite_source_run_spec<F>(input_dir: &Path, source: &BacktestSweepSourcePair, mutate: F)
+    where
+        F: FnOnce(&mut RunSpec),
+    {
+        let path = input_dir.join(&source.run_spec_path);
+        let mut spec: RunSpec =
+            toml::from_str(&fs::read_to_string(&path).expect("read source run spec for rewrite"))
+                .expect("parse source run spec for rewrite");
+        mutate(&mut spec);
+        fs::write(
+            &path,
+            toml::to_string_pretty(&spec).expect("serialize rewritten run spec"),
+        )
+        .expect("rewrite source run spec");
     }
 
     fn test_contract(
@@ -1605,7 +1662,7 @@ mod tests {
             "ra-run-b",
             b"second",
         );
-        let artifact_root = "s3://example-bucket/nt-research-analytics";
+        let artifact_root = TEST_ARTIFACT_ROOT;
         let plan = publication_plan(&temp, input_dir, artifact_root, vec![first, second]);
 
         let publication = run_backtest_sweep_publication_with_executor(
@@ -1667,7 +1724,7 @@ mod tests {
             "ra-run-a",
             b"first",
         );
-        let artifact_root = "s3://example-bucket/nt-research-analytics";
+        let artifact_root = TEST_ARTIFACT_ROOT;
         let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
 
         let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| Ok(()))
@@ -1692,7 +1749,7 @@ mod tests {
             "ra-run-a",
             b"first",
         );
-        let artifact_root = "s3://example-bucket/nt-research-analytics";
+        let artifact_root = TEST_ARTIFACT_ROOT;
         let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
         fs::write(&plan.index_path, b"stale index bytes").expect("write stale index");
 
@@ -1720,6 +1777,8 @@ mod tests {
     fn sweep_publication_rejects_bad_artifact_roots_before_executor() {
         for artifact_root in [
             "file:///tmp/nt-research-analytics",
+            "s3://example-bucket",
+            "s3://example-bucket//bad",
             "s3://example-bucket/nt-research-analytics/",
         ] {
             let temp = TempDir::new().expect("temp dir");
@@ -1755,6 +1814,33 @@ mod tests {
     }
 
     #[test]
+    fn sweep_publication_rejects_parent_source_paths_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let mut source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        source.run_spec_path = PathBuf::from("nested").join("..").join("first.toml");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("parent source path must fail");
+
+        assert_eq!(calls, 0, "executor must not run after bad source path");
+        assert!(err.to_string().contains("relative to input_dir"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
     fn sweep_publication_rejects_absolute_source_paths_before_executor() {
         let temp = TempDir::new().expect("temp dir");
         let input_dir = temp.path().join("inputs");
@@ -1767,12 +1853,7 @@ mod tests {
             b"first",
         );
         source.run_spec_path = input_dir.join("first.toml");
-        let plan = publication_plan(
-            &temp,
-            input_dir,
-            "s3://example-bucket/nt-research-analytics",
-            vec![source],
-        );
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
         let mut calls = 0;
 
         let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
@@ -1791,12 +1872,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let input_dir = temp.path().join("inputs");
         fs::create_dir_all(&input_dir).expect("create input dir");
-        let plan = publication_plan(
-            &temp,
-            input_dir,
-            "s3://example-bucket/nt-research-analytics",
-            Vec::new(),
-        );
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, Vec::new());
         let mut calls = 0;
 
         let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
@@ -1826,12 +1902,7 @@ mod tests {
             b"first",
         );
         fs::write(input_dir.join("first.object"), b"wrong").expect("tamper object");
-        let plan = publication_plan(
-            &temp,
-            input_dir,
-            "s3://example-bucket/nt-research-analytics",
-            vec![source],
-        );
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
         let mut calls = 0;
 
         let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
@@ -1842,6 +1913,99 @@ mod tests {
 
         assert_eq!(calls, 0, "executor must not see unverified object bytes");
         assert!(err.to_string().contains("object SHA-256"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_object_byte_length_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        fs::write(input_dir.join("first.object"), b"longer").expect("tamper object length");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("object byte length mismatch must fail before executor");
+
+        assert_eq!(calls, 0, "executor must not see wrong-length object bytes");
+        assert!(err.to_string().contains("object byte length"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_run_spec_artifact_root_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        rewrite_source_run_spec(&input_dir, &source, |spec| {
+            spec.manifest.artifact_root = "s3://other-bucket/nt-research-analytics".to_string();
+            spec.manifest.output_prefix =
+                "s3://other-bucket/nt-research-analytics/backtests/ra-run-a".to_string();
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("run-spec artifact root mismatch must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after run-spec root mismatch"
+        );
+        assert!(err.to_string().contains("manifest.artifact_root"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_run_spec_output_prefix_mismatch_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        rewrite_source_run_spec(&input_dir, &source, |spec| {
+            spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/not-backtests/ra-run-a");
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("run-spec output prefix mismatch must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after run-spec output prefix mismatch"
+        );
+        assert!(err.to_string().contains("manifest.output_prefix"), "{err}");
         assert!(!plan.index_path.exists(), "index must not be written");
     }
 
@@ -1858,7 +2022,7 @@ mod tests {
         let plan = publication_plan(
             &temp,
             input_dir,
-            "s3://example-bucket/nt-research-analytics",
+            TEST_ARTIFACT_ROOT,
             vec![
                 BacktestSweepSourcePair {
                     run_spec_path: PathBuf::from("left").join(left.run_spec_path),
@@ -1908,12 +2072,7 @@ mod tests {
             "ra-run-a",
             b"second",
         );
-        let plan = publication_plan(
-            &temp,
-            input_dir,
-            "s3://example-bucket/nt-research-analytics",
-            vec![first, second],
-        );
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![first, second]);
         let mut calls = 0;
 
         let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {

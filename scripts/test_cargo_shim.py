@@ -384,6 +384,7 @@ def test_allowed_cargo_exec_gets_managed_target_dir_env(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"target={root_base / 'bolt-v2' / 'target'}"
+    assert "overriding CARGO_TARGET_DIR with managed target dir" in result.stderr
 
 
 def test_allowed_cargo_resolves_nearest_policy_root_for_nested_workspace(tmp_path):

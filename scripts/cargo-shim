@@ -295,6 +295,12 @@ def exec_real_cargo(args: list[str], *, root: Path | None = None, policy_path: P
                 file=sys.stderr,
             )
             return 101
+        existing_target_dir = os.environ.get("CARGO_TARGET_DIR")
+        if existing_target_dir is not None and existing_target_dir != str(target_dir):
+            print(
+                f"cargo shim: overriding CARGO_TARGET_DIR with managed target dir: {existing_target_dir} -> {target_dir}",
+                file=sys.stderr,
+            )
         os.environ["CARGO_TARGET_DIR"] = str(target_dir)
     try:
         os.execv(str(real), [str(real), *args])

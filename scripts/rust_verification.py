@@ -3261,7 +3261,7 @@ def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
     return git_output(repo, "branch", "--show-current")
 
 
-def single_configured_remote(
+def fallback_push_remote(
     repo: pathlib.Path,
     *,
     command_name: str,
@@ -3270,6 +3270,8 @@ def single_configured_remote(
     if error is not None:
         return None, error
     names = [line.strip() for line in remotes.splitlines() if line.strip()]
+    if "origin" in names:
+        return "origin", None
     if len(names) == 1:
         return names[0], None
     if not names:
@@ -3302,7 +3304,7 @@ def live_upstream_head(
 ) -> tuple[str | None, str | None, str | None, str | None]:
     remote, error = git_output(repo, "config", f"branch.{branch}.remote")
     if error is not None or not remote:
-        fallback_remote, remote_error = single_configured_remote(repo, command_name=command_name)
+        fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
         if remote_error is not None or fallback_remote is None:
             return None, None, None, remote_error
         upstream, upstream_error = live_remote_branch_head(
@@ -3315,7 +3317,7 @@ def live_upstream_head(
     if error is not None:
         return None, None, None, error
     if not merge_ref:
-        fallback_remote, remote_error = single_configured_remote(repo, command_name=command_name)
+        fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
         if remote_error is not None or fallback_remote is None:
             return None, None, None, remote_error
         upstream, upstream_error = live_remote_branch_head(

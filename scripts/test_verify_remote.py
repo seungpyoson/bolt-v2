@@ -322,7 +322,7 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("rev-parse", "HEAD"): ("abc", None),
                     ("branch", "--show-current"): ("feature", None),
                     ("config", "branch.feature.remote"): (None, "no upstream"),
-                    ("remote",): ("fork\norigin", None),
+                    ("remote",): ("fork\nupstream", None),
                 }[args],
                 "requires local upstream metadata when multiple remotes are configured",
             ),
@@ -348,7 +348,7 @@ def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> No
             ("rev-parse", "HEAD"): ("abc", None),
             ("branch", "--show-current"): ("feature", None),
             ("config", "branch.feature.remote"): (None, "no upstream"),
-            ("remote",): ("origin", None),
+            ("remote",): ("fork\norigin", None),
             ("ls-remote", "--heads", "origin", "feature"): ("abc\trefs/heads/feature", None),
         }[args]
 

@@ -309,6 +309,14 @@ impl BinaryOracleEdgeTakerBuilder {
                 Some(config.spike_guard_cooldown_secs),
             ),
             (
+                stringify!(retry_interval_seconds),
+                Some(config.retry_interval_seconds),
+            ),
+            (
+                stringify!(market_exit_max_attempts),
+                Some(config.market_exit_max_attempts),
+            ),
+            (
                 stringify!(sizing_ev_reference_bps),
                 Some(config.sizing_ev_reference_bps),
             ),
@@ -487,6 +495,18 @@ impl BinaryOracleEdgeTakerBuilder {
         ] {
             Self::validate_bps_runtime_knob_upper_bound(table, field_prefix, field_name, errors);
         }
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(retry_interval_seconds),
+            errors,
+        );
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(market_exit_max_attempts),
+            errors,
+        );
         Self::validate_positive_u64_field(
             table,
             field_prefix,

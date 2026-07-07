@@ -14,8 +14,8 @@ use crate::{
     bolt_v3_book_sizing::OutcomeBookSubscriptions,
     bolt_v3_numeric::MILLIS_PER_SECOND_U64,
     bolt_v3_providers::{
-        STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
-        resolution_strike_fetch_request_data_type,
+        SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM, STRIKE_FETCH_INSTRUMENT_ID_PARAM,
+        STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, resolution_strike_fetch_request_data_type,
     },
     bolt_v3_reference_price::{
         ReferencePriceSubscriptionRequest,
@@ -287,12 +287,37 @@ impl BinaryOracleEdgeTaker {
     /// Later retry ticks use provider-owned custom fetch commands with unique
     /// data types, avoiding NT's per-instrument index subscribe dedup.
     pub(super) fn subscribe_resolution_strike(&mut self) {
-        let (Some(resolution_instrument_id), Some(resolution_client_id), Some(interval_start_ms)) = (
-            self.resolution_instrument_id(),
-            self.resolution_client_id(),
-            self.active.interval_start_ms,
-        ) else {
+        let Some(interval_start_ms) = self.active.interval_start_ms else {
             return;
+        };
+        let _ = self.subscribe_resolution_report_boundary(
+            ResolutionStrikeReportBoundary::WindowOpen,
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+            interval_start_ms / MILLIS_PER_SECOND_U64,
+        );
+    }
+
+    pub(super) fn subscribe_resolution_settlement_close(
+        &mut self,
+        interval_end_ms: u64,
+    ) -> ResolutionReportSubscriptionOutcome {
+        self.subscribe_resolution_report_boundary(
+            ResolutionStrikeReportBoundary::WindowClose,
+            SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM,
+            interval_end_ms / MILLIS_PER_SECOND_U64,
+        )
+    }
+
+    fn subscribe_resolution_report_boundary(
+        &mut self,
+        report_boundary: ResolutionStrikeReportBoundary,
+        boundary_param: &'static str,
+        boundary_unix_seconds: u64,
+    ) -> ResolutionReportSubscriptionOutcome {
+        let (Some(resolution_instrument_id), Some(resolution_client_id)) =
+            (self.resolution_instrument_id(), self.resolution_client_id())
+        else {
+            return ResolutionReportSubscriptionOutcome::MissingRoute;
         };
         // Fail-closed asset binding: refuse to subscribe a resolution instrument
         // that does not resolve this instance's underlying asset, so a
@@ -305,16 +330,34 @@ impl BinaryOracleEdgeTaker {
                 self.config.underlying_asset,
                 self.config.strategy_id,
             );
-            return;
+            return ResolutionReportSubscriptionOutcome::AssetBindingRejected;
         }
-        let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
         let mut params = Params::new();
         params.insert(
-            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
-            serde_json::json!(window_open_unix_seconds),
+            boundary_param.to_string(),
+            serde_json::json!(boundary_unix_seconds),
         );
-        if self.resolution_strike_index_subscription.as_ref() != Some(&resolution_instrument_id) {
-            let previous_custom_subscription = self.resolution_strike_custom_subscription.take();
+        let current_subscription_matches = self
+            .resolution_report_boundary_subscriptions
+            .get(&report_boundary)
+            .is_some_and(|subscription| {
+                subscription.instrument_id == resolution_instrument_id
+                    && subscription.boundary_unix_seconds == boundary_unix_seconds
+            });
+        let use_durable_index_subscription = report_boundary.uses_durable_index_subscription();
+        if !current_subscription_matches {
+            let previous_subscription = self.resolution_report_boundary_subscriptions.insert(
+                report_boundary,
+                ResolutionReportBoundarySubscriptionState {
+                    instrument_id: resolution_instrument_id,
+                    boundary_unix_seconds,
+                    durable_index_subscription: use_durable_index_subscription,
+                    custom_subscription: None,
+                },
+            );
+            let previous_custom_subscription = previous_subscription
+                .as_ref()
+                .and_then(|subscription| subscription.custom_subscription.clone());
             #[cfg(not(test))]
             if let Some(data_type) = previous_custom_subscription {
                 self.unsubscribe_data(data_type, Some(resolution_client_id), None);
@@ -322,9 +365,11 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = previous_custom_subscription;
 
-            let previous_index_subscription = self
-                .resolution_strike_index_subscription
-                .replace(resolution_instrument_id);
+            let previous_index_subscription = previous_subscription.and_then(|subscription| {
+                subscription
+                    .durable_index_subscription
+                    .then_some(subscription.instrument_id)
+            });
             #[cfg(not(test))]
             if let Some(instrument_id) = previous_index_subscription {
                 self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
@@ -332,23 +377,33 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = previous_index_subscription;
 
-            #[cfg(not(test))]
-            self.subscribe_index_prices(
-                resolution_instrument_id,
-                Some(resolution_client_id),
-                Some(params.clone()),
-            );
-            #[cfg(test)]
-            let _ = (resolution_client_id, params);
-            self.record_resolution_strike_subscribe_event(
-                ResolutionStrikeSubscribeEvent::durable_index(
+            if use_durable_index_subscription {
+                #[cfg(not(test))]
+                self.subscribe_index_prices(
                     resolution_instrument_id,
-                    window_open_unix_seconds,
-                ),
-            );
-            return;
+                    Some(resolution_client_id),
+                    Some(params.clone()),
+                );
+                #[cfg(test)]
+                let _ = (resolution_client_id, params);
+                self.record_resolution_strike_subscribe_event(
+                    ResolutionStrikeSubscribeEvent::durable_index(
+                        report_boundary,
+                        resolution_instrument_id,
+                        boundary_unix_seconds,
+                    ),
+                );
+                return ResolutionReportSubscriptionOutcome::Dispatched;
+            }
+            #[cfg(test)]
+            let _ = params;
         }
 
+        let mut params = Params::new();
+        params.insert(
+            boundary_param.to_string(),
+            serde_json::json!(boundary_unix_seconds),
+        );
         params.insert(
             STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
             serde_json::json!(resolution_instrument_id.to_string()),
@@ -361,8 +416,9 @@ impl BinaryOracleEdgeTaker {
             self.resolution_strike_fetch_sequence,
         );
         let previous_custom_subscription = self
-            .resolution_strike_custom_subscription
-            .replace(data_type.clone());
+            .resolution_report_boundary_subscriptions
+            .get_mut(&report_boundary)
+            .and_then(|subscription| subscription.custom_subscription.replace(data_type.clone()));
         #[cfg(not(test))]
         {
             if let Some(previous_data_type) = previous_custom_subscription {
@@ -374,33 +430,41 @@ impl BinaryOracleEdgeTaker {
         let _ = (resolution_client_id, previous_custom_subscription, params);
         self.record_resolution_strike_subscribe_event(
             ResolutionStrikeSubscribeEvent::custom_fetch(
+                report_boundary,
                 resolution_instrument_id,
-                window_open_unix_seconds,
+                boundary_unix_seconds,
                 self.resolution_strike_fetch_sequence,
                 data_type,
             ),
         );
+        ResolutionReportSubscriptionOutcome::Dispatched
     }
 
     pub(super) fn unsubscribe_resolution_strike(&mut self) {
         let Some(resolution_client_id) = self.resolution_client_id() else {
-            self.resolution_strike_index_subscription = None;
-            self.resolution_strike_custom_subscription = None;
+            self.resolution_report_boundary_subscriptions.clear();
             return;
         };
         #[cfg(test)]
         let _ = resolution_client_id;
-        if let Some(data_type) = self.resolution_strike_custom_subscription.take() {
-            #[cfg(not(test))]
-            self.unsubscribe_data(data_type, Some(resolution_client_id), None);
-            #[cfg(test)]
-            let _ = data_type;
-        }
-        if let Some(instrument_id) = self.resolution_strike_index_subscription.take() {
-            #[cfg(not(test))]
-            self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
-            #[cfg(test)]
-            let _ = instrument_id;
+        let subscriptions = std::mem::take(&mut self.resolution_report_boundary_subscriptions);
+        for subscription in subscriptions.into_values() {
+            if let Some(data_type) = subscription.custom_subscription {
+                #[cfg(not(test))]
+                self.unsubscribe_data(data_type, Some(resolution_client_id), None);
+                #[cfg(test)]
+                let _ = data_type;
+            }
+            if subscription.durable_index_subscription {
+                #[cfg(not(test))]
+                self.unsubscribe_index_prices(
+                    subscription.instrument_id,
+                    Some(resolution_client_id),
+                    None,
+                );
+                #[cfg(test)]
+                let _ = subscription.instrument_id;
+            }
         }
     }
 
@@ -595,9 +659,10 @@ impl BinaryOracleEdgeTaker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolutionStrikeSubscribeEvent {
     pub(super) action: &'static str,
+    pub(super) report_boundary: ResolutionStrikeReportBoundary,
     pub(super) trigger: ResolutionStrikeFetchTrigger,
     pub(super) instrument_id: InstrumentId,
-    pub(super) window_open_unix_seconds: u64,
+    pub(super) boundary_unix_seconds: u64,
     pub(super) request_sequence: Option<u64>,
     pub(super) custom_data_type: Option<DataType>,
 }
@@ -610,29 +675,63 @@ pub(super) enum ResolutionStrikeFetchTrigger {
     CustomFetch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResolutionReportSubscriptionOutcome {
+    Dispatched,
+    MissingRoute,
+    AssetBindingRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResolutionReportBoundarySubscriptionState {
+    instrument_id: InstrumentId,
+    boundary_unix_seconds: u64,
+    durable_index_subscription: bool,
+    custom_subscription: Option<DataType>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ResolutionStrikeReportBoundary {
+    WindowOpen,
+    WindowClose,
+}
+
+impl ResolutionStrikeReportBoundary {
+    fn uses_durable_index_subscription(self) -> bool {
+        matches!(self, Self::WindowOpen)
+    }
+}
+
 impl ResolutionStrikeSubscribeEvent {
-    fn durable_index(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
+    fn durable_index(
+        report_boundary: ResolutionStrikeReportBoundary,
+        instrument_id: InstrumentId,
+        boundary_unix_seconds: u64,
+    ) -> Self {
         Self {
             action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
+            report_boundary,
             trigger: ResolutionStrikeFetchTrigger::DurableIndex,
             instrument_id,
-            window_open_unix_seconds,
+            boundary_unix_seconds,
             request_sequence: None,
             custom_data_type: None,
         }
     }
 
     fn custom_fetch(
+        report_boundary: ResolutionStrikeReportBoundary,
         instrument_id: InstrumentId,
-        window_open_unix_seconds: u64,
+        boundary_unix_seconds: u64,
         request_sequence: u64,
         custom_data_type: DataType,
     ) -> Self {
         Self {
             action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
+            report_boundary,
             trigger: ResolutionStrikeFetchTrigger::CustomFetch,
             instrument_id,
-            window_open_unix_seconds,
+            boundary_unix_seconds,
             request_sequence: Some(request_sequence),
             custom_data_type: Some(custom_data_type),
         }

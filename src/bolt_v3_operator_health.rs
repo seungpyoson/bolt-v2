@@ -18,6 +18,8 @@ use crate::{
 };
 
 pub type BoltV3OperatorHealthTransitionEmitter = Arc<dyn Fn(&'static str) + Send + Sync + 'static>;
+pub type BoltV3InputHealthTransitionEmitter =
+    Arc<dyn Fn(&'static str, BoltV3InputHealthSourceTransition) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +202,12 @@ pub struct BoltV3MissingInputSource {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3InputHealthSourceTransition {
+    pub source: BoltV3MissingInputSource,
+    pub missing: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3InputHealth {
     pub status: BoltV3OperatorHealthStatus,
@@ -224,6 +232,27 @@ impl BoltV3InputHealth {
             configured_source_count,
             observed_source_count: 0,
             missing_sources: Vec::new(),
+        }
+    }
+
+    pub fn from_live_missing_sources(
+        configured_source_count: usize,
+        missing_sources: Vec<BoltV3MissingInputSource>,
+    ) -> Self {
+        if configured_source_count == 0 {
+            return Self::not_configured();
+        }
+        let observed_source_count = configured_source_count.saturating_sub(missing_sources.len());
+        let status = if missing_sources.is_empty() {
+            BoltV3OperatorHealthStatus::Nominal
+        } else {
+            BoltV3OperatorHealthStatus::MissingInput
+        };
+        Self {
+            status,
+            configured_source_count,
+            observed_source_count,
+            missing_sources,
         }
     }
 

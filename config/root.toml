@@ -207,7 +207,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -575,7 +575,7 @@ venue = "CHAINLINK_DATA_STREAMS"
 [clients.chainlink_strike.data]
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 
 [clients.chainlink_strike.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
@@ -596,7 +596,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
-reconnect_max_attempts = 0
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [clients.chainlink_reference.secrets]

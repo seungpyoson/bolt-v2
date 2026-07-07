@@ -103,6 +103,32 @@ def test_missing_module_is_reported() -> None:
         assert any("missing b_contract.rs" in error for error in errors), errors
 
 
+def test_empty_integration_test_set_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        write(
+            root / "crates/backtesting-vertical-slice/Cargo.toml",
+            """[package]
+name = "backtesting-vertical-slice"
+version = "0.0.0"
+edition = "2024"
+autotests = false
+
+[[test]]
+name = "backtesting_vertical_slice_tests"
+path = "tests/backtesting_vertical_slice_tests.rs"
+""",
+        )
+        write(
+            root / "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_tests.rs",
+            "#![recursion_limit = \"256\"]\n",
+        )
+        errors = verifier.verify_root(root)
+
+    assert any("backtester integration test files: enforcement set is empty" in error for error in errors), errors
+
+
 def test_inner_attrs_must_move_to_harness() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -145,6 +171,7 @@ def main() -> int:
         test_good_fixture_is_clean,
         test_missing_harness_shape_is_reported,
         test_missing_module_is_reported,
+        test_empty_integration_test_set_fails_closed,
         test_inner_attrs_must_move_to_harness,
         test_accepted_dataset_fields_must_not_be_public,
         test_accepted_dataset_impl_must_not_expose_public_constructors,

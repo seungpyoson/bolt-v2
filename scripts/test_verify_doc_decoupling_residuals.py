@@ -228,6 +228,19 @@ def test_stale_ledger_snippet_fails() -> None:
     assert_finding(findings, "stale residual ledger snippet")
 
 
+def test_empty_scanned_source_set_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "ci").mkdir(parents=True)
+        (root / "ci" / "doc-decoupling-residuals.toml").write_text(
+            textwrap.dedent(LEDGER_TEXT).lstrip(),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.collect_findings(root)
+
+    assert_finding(findings, "doc-decoupling scanned source paths: enforcement set is empty")
+
+
 def test_doc_sync_exception_requires_owner_issue() -> None:
     findings = collect(ledger_text=LEDGER_TEXT.replace('owner_issue = "#559"\n', "", 1))
     assert_finding(findings, "doc_sync_exception must declare owner_issue #559")
@@ -266,6 +279,7 @@ def main() -> int:
         test_split_suffix_helper_markdown_reference_fails,
         test_exact_line_matching_does_not_allow_other_md_suffix_line,
         test_stale_ledger_snippet_fails,
+        test_empty_scanned_source_set_fails_closed,
         test_doc_sync_exception_requires_owner_issue,
         test_deliberate_guard_requires_owner_issue,
         test_deliberate_guard_requires_rename_guard_purpose,

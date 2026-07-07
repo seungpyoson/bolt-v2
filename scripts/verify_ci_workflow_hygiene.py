@@ -11047,10 +11047,10 @@ def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
 
 
 def configured_ci_provenance_dispatch_names() -> tuple[dict[str, str] | None, list[str]]:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        return None, [f"github-actions runner config invalid: {exc}"]
+    config, config_errors = load_required_github_actions_runners_config()
+    if config_errors:
+        return None, config_errors
+    assert config is not None
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
         return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]

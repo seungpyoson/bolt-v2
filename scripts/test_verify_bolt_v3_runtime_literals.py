@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -109,6 +111,22 @@ def test_scan_universe() -> None:
     missing = required - scanned
     if missing:
         raise AssertionError(f"scan universe missing {sorted(missing)}")
+
+
+def test_main_fails_closed_when_scan_paths_are_empty() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as scratch:
+        try:
+            VERIFIER.REPO_ROOT = Path(scratch)
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+    output = stderr.getvalue()
+    if code != 1 or "Bolt-v3 runtime literal scan paths: enforcement set is empty" not in output:
+        raise AssertionError(f"expected empty scan floor, got code={code}, stderr={output!r}")
 
 
 def test_cfg_test_module_ranges() -> None:
@@ -455,6 +473,7 @@ reason = "invalid probe"
 def main() -> int:
     tests = [
         test_scan_universe,
+        test_main_fails_closed_when_scan_paths_are_empty,
         test_cfg_test_module_ranges,
         test_cfg_test_item_stripping_keeps_following_production_literals,
         test_bypass_shapes_emit,

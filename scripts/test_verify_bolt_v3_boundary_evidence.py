@@ -492,6 +492,24 @@ def test_capture_config_without_workflows_passes_boundary_scan() -> None:
     assert scan_temp(assert_no_workflows_table) == []
 
 
+def test_empty_wire_boundary_source_set_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write(
+            root,
+            "Cargo.toml",
+            (
+                'nautilus-network = { git = "https://github.com/nautechsystems/nautilus_trader.git", '
+                f'rev = "{verifier.EXPECTED_NT_REV}" }}\n'
+            ),
+        )
+        findings: list[str] = []
+        verifier.scan_wire_boundary(root, findings)
+
+    assert_finding(findings, "Bolt-v3 boundary Rust source files: enforcement set is empty")
+
+
 def test_planted_unregistered_any_class_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/boundary_registry.rs"

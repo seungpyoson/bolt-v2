@@ -7562,6 +7562,14 @@ def assert_runner_config_floor_handles_missing_and_empty_inputs() -> None:
             "actionlint runner contract",
             lambda: verifier.verify_actionlint_runner_contract(real_workflows),
         ),
+        (
+            "ci provenance dispatch names",
+            lambda: verifier.configured_ci_provenance_dispatch_names()[1],
+        ),
+        (
+            "workflow run name",
+            lambda: verifier.workflow_run_name_errors(real_workflows[".github/workflows/ci.yml"]),
+        ),
     )
 
     original_config = verifier.DEFAULT_RUNNERS_CONFIG

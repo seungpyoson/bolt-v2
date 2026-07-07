@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -43,6 +45,33 @@ def assert_production_source_detected(source: str, label: str) -> None:
         path = Path(tmp) / "source.rs"
         path.write_text(source, encoding="utf-8")
         assert_forbidden_runtime_source_detected(VERIFIER.production_text(path), label)
+
+
+def run_main_with_temp_root(
+    root: Path,
+    main_rs: Path,
+    runtime_source_paths: tuple[str, ...] | None = None,
+) -> tuple[int, str]:
+    original_root = VERIFIER.REPO_ROOT
+    original_main_rs = VERIFIER.MAIN_RS
+    original_runtime_source_paths = VERIFIER.RUNTIME_SOURCE_PATHS
+    stderr = io.StringIO()
+    try:
+        VERIFIER.REPO_ROOT = root
+        VERIFIER.MAIN_RS = main_rs
+        if runtime_source_paths is not None:
+            VERIFIER.RUNTIME_SOURCE_PATHS = runtime_source_paths
+        with contextlib.redirect_stderr(stderr):
+            code = VERIFIER.main()
+    finally:
+        VERIFIER.REPO_ROOT = original_root
+        VERIFIER.MAIN_RS = original_main_rs
+        VERIFIER.RUNTIME_SOURCE_PATHS = original_runtime_source_paths
+    return code, stderr.getvalue()
+
+
+def entrypoint_text() -> str:
+    return "\n".join(f"{call}();" for call in VERIFIER.MAIN_RS_ENTRYPOINT_CALLS)
 
 
 def test_collect_dependency_names_covers_workspace_and_target_tables() -> None:
@@ -88,6 +117,36 @@ def test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs() -> N
     expected = {"Cargo.toml", "crates/probe/Cargo.toml"}
     if paths != expected:
         raise AssertionError(f"unexpected manifest paths: expected {sorted(expected)}, got {sorted(paths)}")
+
+
+def test_main_fails_closed_when_manifest_discovery_is_empty() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "src" / "main.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text(entrypoint_text(), encoding="utf-8")
+        (root / "Cargo.lock").write_text("", encoding="utf-8")
+        code, stderr = run_main_with_temp_root(root, source)
+
+    if code != 1 or "Cargo manifests: enforcement set is empty" not in stderr:
+        raise AssertionError(f"expected empty manifest floor, got code={code}, stderr={stderr!r}")
+
+
+def test_main_fails_closed_when_runtime_sources_are_empty() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "Cargo.toml").write_text("[package]\nname = \"probe\"\n", encoding="utf-8")
+        (root / "Cargo.lock").write_text("", encoding="utf-8")
+        main_rs = root / "main.rs"
+        main_rs.write_text(entrypoint_text(), encoding="utf-8")
+        code, stderr = run_main_with_temp_root(root, main_rs, runtime_source_paths=())
+
+    expected = (
+        "Rust source files under src: enforcement set is empty",
+        "Bolt-v3 runtime source paths: enforcement set is empty",
+    )
+    if code != 1 or any(text not in stderr for text in expected):
+        raise AssertionError(f"expected empty runtime floors, got code={code}, stderr={stderr!r}")
 
 
 def test_cargo_manifest_paths_matches_rglob_reference_with_pruned_subtrees() -> None:
@@ -404,6 +463,8 @@ def test_main_rs_entrypoint_calls_ignore_comments_and_literals() -> None:
 def main() -> int:
     tests = [
         test_collect_dependency_names_covers_workspace_and_target_tables,
+        test_main_fails_closed_when_manifest_discovery_is_empty,
+        test_main_fails_closed_when_runtime_sources_are_empty,
         test_cargo_manifest_paths_matches_rglob_reference_with_pruned_subtrees,
         test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs,
         test_forbidden_rust_patterns_detect_python_bridge_shapes,

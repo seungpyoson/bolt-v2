@@ -12,8 +12,10 @@ REQUIRED_DISCOVERY_FLOOR_INVARIANT = (
     "Required discovery floors are preflight-terminal: when an enforced "
     "discovery set is empty or missing, the verifier emits only the relevant "
     "floor finding before scan work, stale checks, allowlist validation, "
-    "ledger validation, source-fence wiring, missing-file checks, and "
-    "supplemental broad scans."
+    "downstream config validation, ledger validation, source-fence wiring, "
+    "missing-file checks, and supplemental broad scans. Required discovery "
+    "configuration needed to compute the set must fail as a normal finding, "
+    "not a traceback."
 )
 
 
@@ -55,7 +57,7 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "Bolt-v3 naming audit rule rows",
         "aggregate-then-terminal",
         "main",
-        "main aggregates naming floors and returns before forbidden-name and misnomer scans.",
+        "main reports missing/invalid audit config as a normal finding, then aggregates naming floors and returns before forbidden-name and misnomer scans.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_bolt_v3_naming.py",
@@ -147,7 +149,7 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "Bolt-v3 runtime literal scan paths",
         "entrypoint-terminal",
         "main",
-        "main prints the floor and returns before literal scanning and stale allowlist checks.",
+        "main prints the floor and returns before runtime literal audit config validation, literal scanning, and stale allowlist checks.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_bolt_v3_strategy_policy_fence.py",
@@ -197,7 +199,7 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "fail-closed contract selected paths",
         "entrypoint-terminal",
         "collect_findings",
-        "collect_findings returns the selected-paths floor before source-fence wiring, raw scans, and stale exceptions.",
+        "collect_findings returns the selected-paths floor before exception config validation, source-fence wiring, raw scans, and stale exceptions.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_outcome_group_nt_reuse.py",

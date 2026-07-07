@@ -68,6 +68,7 @@ def test_required_discovery_floor_invariant_is_marked_next_to_helper() -> None:
         "scan work",
         "stale",
         "allowlist",
+        "config validation",
         "ledger",
         "source-fence wiring",
         "missing-file",

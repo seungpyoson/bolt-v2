@@ -560,18 +560,18 @@ def scan_literals(paths: list[Path] | None = None) -> list[Literal]:
 
 
 def main() -> int:
-    try:
-        allowed = load_allowed()
-    except Exception as error:
-        print(f"ERROR: failed to load runtime literal audit: {error}", file=sys.stderr)
-        return 2
-
     paths = scan_paths()
     path_findings: list[str] = []
     if not require_nonempty(paths, "Bolt-v3 runtime literal scan paths", path_findings):
         for finding in path_findings:
             print(f"FAIL: {finding}", file=sys.stderr)
         return 1
+
+    try:
+        allowed = load_allowed()
+    except Exception as error:
+        print(f"ERROR: failed to load runtime literal audit: {error}", file=sys.stderr)
+        return 2
 
     scanned_literals = scan_literals(paths)
     unclassified = [literal for literal in scanned_literals if literal.key() not in allowed]

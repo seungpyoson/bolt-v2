@@ -475,15 +475,15 @@ def collect_findings(
 ) -> list[str]:
     root = root.resolve()
     config = load_config(config_path)
-    exceptions = load_exceptions(
-        exceptions_path or config_path.with_name(DEFAULT_EXCEPTIONS_CONFIG.name),
-        frozenset(config.rule_ids.values()),
-    )
     paths = selected_paths(root, config)
     path_findings: list[str] = []
     require_nonempty(paths, "fail-closed contract selected paths", path_findings)
     if path_findings:
         return path_findings
+    exceptions = load_exceptions(
+        exceptions_path or config_path.with_name(DEFAULT_EXCEPTIONS_CONFIG.name),
+        frozenset(config.rule_ids.values()),
+    )
     source_fence_findings = source_fence_wiring_findings(root)
     raw_findings = [
         raw_finding

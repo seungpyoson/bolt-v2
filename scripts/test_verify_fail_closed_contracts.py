@@ -129,6 +129,21 @@ def test_empty_selected_paths_suppresses_source_fence_wiring_noise() -> None:
     assert findings == ["fail-closed contract selected paths: enforcement set is empty"], findings
 
 
+def test_empty_selected_paths_suppresses_invalid_exception_config_noise() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(exception_entry(path="pkg/missing.py"), version="2"),
+        )
+
+        findings = collect(root)
+
+    assert findings == ["fail-closed contract selected paths: enforcement set is empty"], findings
+
+
 def test_bad_fixtures_fail_with_stable_rule_ids() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -871,6 +886,7 @@ def test_exception_config_rejects_invalid_shapes() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_config(root)
+            write_file(root, "pkg/degraded.py", "def load_contract():\n    return parse()\n")
             write_file(root, "ci/fail-closed-exceptions.toml", exceptions_config)
 
             try:
@@ -941,6 +957,7 @@ def test_cli_reports_exception_config_errors_without_traceback() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
+        write_file(root, "pkg/clean.py", "def load_contract():\n    return parse()\n")
         write_file(
             root,
             "ci/fail-closed-exceptions.toml",
@@ -1031,6 +1048,7 @@ def test_exception_config_rejects_bad_rule_id() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
+        write_file(root, "pkg/degraded.py", "def load_contract():\n    return parse()\n")
         write_file(
             root,
             "ci/fail-closed-exceptions.toml",
@@ -1139,6 +1157,7 @@ def main() -> int:
     tests = [
         test_empty_selected_paths_fail_closed,
         test_empty_selected_paths_suppresses_source_fence_wiring_noise,
+        test_empty_selected_paths_suppresses_invalid_exception_config_noise,
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
         test_project_exception_named_exception_is_not_broad,

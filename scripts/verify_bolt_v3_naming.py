@@ -285,7 +285,14 @@ def verify_capital_admission_misnomers(paths: list[Path] | None = None) -> list[
 
 
 def main() -> int:
-    audit = load_audit()
+    try:
+        audit = load_audit()
+    except FileNotFoundError:
+        print(f"FAIL: missing Bolt-v3 naming audit file: {AUDIT_PATH}", file=sys.stderr)
+        return 1
+    except yaml.YAMLError as error:
+        print(f"FAIL: invalid Bolt-v3 naming audit file: {error}", file=sys.stderr)
+        return 1
     rename_rows = audit.get("renamed_in_current_audit", [])
     defensive_rows = audit.get("defensive_forbidden", [])
     scoped_rows = audit.get("path_scoped_forbidden", [])

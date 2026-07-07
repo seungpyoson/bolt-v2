@@ -234,6 +234,31 @@ def test_main_reports_forbidden_names() -> None:
         raise AssertionError(f"expected forbidden naming finding, got code={code}, stderr={output!r}")
 
 
+def test_main_reports_missing_audit_without_traceback() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "missing-audit.yaml"
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    code = VERIFIER.main()
+                except FileNotFoundError as exc:
+                    raise AssertionError("missing naming audit should be reported normally") from exc
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = f"FAIL: missing Bolt-v3 naming audit file: {audit_path}\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected missing audit finding, got code={code}, stderr={output!r}")
+
+
 def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
@@ -554,6 +579,7 @@ def main() -> int:
         test_scan_paths_excludes_audit_target_git_and_reviews,
         test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_names,
+        test_main_reports_missing_audit_without_traceback,
         test_main_reports_path_scoped_forbidden_table_prefix,
         test_main_fails_closed_when_scan_paths_are_empty,
         test_main_fails_closed_when_misnomer_scan_paths_are_empty_before_naming_scan,

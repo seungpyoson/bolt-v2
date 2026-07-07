@@ -130,6 +130,29 @@ def test_main_fails_closed_when_scan_paths_are_empty() -> None:
         raise AssertionError(f"expected empty scan floor, got code={code}, stderr={output!r}")
 
 
+def test_empty_scan_floor_precedes_missing_audit_load() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = root / "missing-runtime-literal-audit.toml"
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = "FAIL: Bolt-v3 runtime literal scan paths: enforcement set is empty\n"
+    if code != 1 or output != expected:
+        raise AssertionError(
+            f"expected empty scan floor before audit load, got code={code}, stderr={output!r}"
+        )
+
+
 def test_cfg_test_module_ranges() -> None:
     cases = {
         '#[cfg(test)]\nmod tests { const X: &str = "skip"; }\nconst Y: &str = "keep";':
@@ -475,6 +498,7 @@ def main() -> int:
     tests = [
         test_scan_universe,
         test_main_fails_closed_when_scan_paths_are_empty,
+        test_empty_scan_floor_precedes_missing_audit_load,
         test_cfg_test_module_ranges,
         test_cfg_test_item_stripping_keeps_following_production_literals,
         test_bypass_shapes_emit,

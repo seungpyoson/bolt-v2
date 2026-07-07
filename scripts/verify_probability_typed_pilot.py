@@ -60,7 +60,7 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
     "#[allow(dead_code)]",
     "trait AmbiguousIfDefault<A> {",
     "impl<T: ?Sized> AmbiguousIfDefault<()> for T {}",
-    "impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}",
+    "impl<T: Default> AmbiguousIfDefault<Invalid> for T {}",
     "let _ = <Probability as AmbiguousIfDefault<_>>::_check;",
     "let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;",
     "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
@@ -77,7 +77,7 @@ FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
     ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
     ("src/bolt_v3_numeric.rs", "trait AmbiguousIfDefault<A> {"),
     ("src/bolt_v3_numeric.rs", "impl<T: ?Sized> AmbiguousIfDefault<()> for T {}"),
-    ("src/bolt_v3_numeric.rs", "impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}"),
+    ("src/bolt_v3_numeric.rs", "impl<T: Default> AmbiguousIfDefault<Invalid> for T {}"),
     ("src/bolt_v3_numeric.rs", "let _ = <Probability as AmbiguousIfDefault<_>>::_check;"),
     (
         "src/bolt_v3_numeric.rs",
@@ -218,7 +218,7 @@ REQUIRED_PATTERNS = [
     ),
     PatternCheck(
         "src/bolt_v3_numeric.rs",
-        r"impl<T:\s*\?Sized\s*\+\s*Default>\s+AmbiguousIfDefault<Invalid>\s+for\s+T\s*\{\}",
+        r"impl<T:\s*Default>\s+AmbiguousIfDefault<Invalid>\s+for\s+T\s*\{\}",
         "FinancialValue !Default guard fails if any registered type implements Default",
     ),
     PatternCheck(

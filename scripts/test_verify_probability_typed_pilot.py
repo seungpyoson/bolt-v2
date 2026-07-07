@@ -64,7 +64,7 @@ fn financial_values_do_not_implement_default() {
     }
     impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
     struct Invalid;
-    impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
+    impl<T: Default> AmbiguousIfDefault<Invalid> for T {}
 
     let _ = <Probability as AmbiguousIfDefault<_>>::_check;
     let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;

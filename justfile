@@ -329,6 +329,9 @@ check-aarch64: check-workspace require-rust-verification-owner
 verify-remote: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
 
+sandbox-safe-push *args: check-workspace
+    python3 scripts/sandbox_safe_push.py --repo "{{repo_root}}" {{args}}
+
 merge-queue *args: check-workspace
     python3 scripts/merge_queue_operator.py {{args}}
 

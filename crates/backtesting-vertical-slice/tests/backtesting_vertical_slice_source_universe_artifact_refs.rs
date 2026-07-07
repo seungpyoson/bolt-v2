@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -16,11 +16,35 @@ struct ArtifactRefCandidate {
     location: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoPathError {
+    Empty,
+    NotRepoRelative,
+    Absolute,
+    EscapesRoot,
+}
+
+impl fmt::Display for RepoPathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "path is empty"),
+            Self::NotRepoRelative => write!(f, "path is not repo-relative"),
+            Self::Absolute => write!(f, "path is absolute"),
+            Self::EscapesRoot => write!(f, "path escapes repository root"),
+        }
+    }
+}
+
+const DATED_SOURCE_ATTESTATION_OWNERS: &[&str] = &[
+    "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
+];
+
 /// Gate policy: committed reference JSON can contain both live artifact pins and
 /// historical source attestations. Reference-tree targets remain live pins
 /// checked against current bytes or the evicted-fixture index. Source-tree
-/// targets inside dated status files are point-in-time attestations and are not
-/// rewritten on every source edit.
+/// targets inside registered dated source attestations are delegated to the
+/// dedicated verifier for that attestation, so this matcher avoids duplicate
+/// enforcement instead of treating stale source pins as valid.
 #[test]
 fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
     let repo_root = repo_root_from_manifest_dir();
@@ -45,10 +69,7 @@ fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
                 &repo_root,
                 &evicted_index,
                 &json_path,
-                &artifact_ref.location,
-                &artifact_ref.role,
-                &artifact_ref.path,
-                &artifact_ref.sha256,
+                &artifact_ref,
                 &mut mismatches,
             );
         }
@@ -91,8 +112,12 @@ fn artifact_ref_from_object(
 ) -> Option<ArtifactRefCandidate> {
     let role = string_field(object, "role").map(str::to_string);
     let path = string_field(object, "path")?;
-    if role.is_none() && normalize_repo_path(path).is_err() {
-        return None;
+    if role.is_none() {
+        match normalize_repo_path(path) {
+            Ok(_) => {}
+            Err(err) if should_report_invalid_artifact_ref_path(path, &err) => {}
+            Err(_) => return None,
+        }
     }
 
     Some(ArtifactRefCandidate {
@@ -118,9 +143,6 @@ fn collect_flat_sibling_hash_refs(
         let Some(path) = path.as_str() else {
             continue;
         };
-        if normalize_repo_path(path).is_err() {
-            continue;
-        }
         let sha256_key = format!("{role}_sha256");
         let hash_key = format!("{role}_hash");
         let Some((hash_key, sha256)) = string_field(object, &sha256_key)
@@ -129,6 +151,11 @@ fn collect_flat_sibling_hash_refs(
         else {
             continue;
         };
+        match normalize_repo_path(path) {
+            Ok(_) => {}
+            Err(err) if should_report_invalid_artifact_ref_path(path, &err) => {}
+            Err(_) => continue,
+        }
         artifact_refs.push(ArtifactRefCandidate {
             role: role.to_string(),
             path: path.to_string(),
@@ -154,6 +181,10 @@ fn inferred_role_from_location(location: &str) -> String {
 
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     object.get(key)?.as_str()
+}
+
+fn should_report_invalid_artifact_ref_path(path: &str, error: &RepoPathError) -> bool {
+    path.starts_with("repo://") || matches!(error, RepoPathError::EscapesRoot)
 }
 
 #[test]
@@ -185,7 +216,7 @@ fn artifact_ref_collector_treats_named_path_sha256_objects_as_pins() {
 }
 
 #[test]
-fn dated_status_source_path_pins_are_point_in_time_attestations() {
+fn registered_dated_source_attestation_pins_are_delegated_to_dedicated_verifier() {
     let dated_status = Path::new(
         "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
     );
@@ -212,6 +243,131 @@ fn dated_status_source_path_pins_are_point_in_time_attestations() {
         ),
         "crates/backtesting-vertical-slice/src/source_proof.rs"
     ));
+}
+
+#[test]
+fn dated_source_attestation_exceptions_are_registered_by_owner_path() {
+    let renamed_date_like_status = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/renamed-status.2026-06-16.json",
+    );
+
+    assert!(should_enforce_artifact_ref(
+        renamed_date_like_status,
+        "crates/backtesting-vertical-slice/src/source_proof.rs"
+    ));
+}
+
+#[test]
+fn repo_path_normalization_removes_current_directory_prefixes() {
+    assert_eq!(
+        normalize_repo_path("./specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json")
+            .expect("normalize ./ path"),
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    );
+    assert_eq!(
+        normalize_repo_path("repo://./specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json")
+            .expect("normalize repo://./ path"),
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    );
+}
+
+#[test]
+fn repo_path_normalization_rejects_backslash_parent_traversal() {
+    assert!(normalize_repo_path(r"..\outside.json").is_err());
+    assert!(normalize_repo_path(r"repo://..\outside.json").is_err());
+    assert!(normalize_repo_path(r"repo://specs\..\outside.json").is_err());
+    assert_eq!(
+        normalize_repo_path(r"repo://specs\023-nt-research-analytics-platform\reference\source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json")
+            .expect("normalize backslash path separators"),
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    );
+}
+
+#[test]
+fn invalid_named_path_sha256_pins_are_reported_not_dropped() {
+    let json = serde_json::json!({
+        "unsafe_contract": {
+            "path": r"repo://..\outside.json",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    });
+
+    let mismatches = check_synthetic_artifact_refs(&json);
+
+    assert!(
+        mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_contract")
+                && mismatch.contains(r"path repo://..\outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }),
+        "invalid named path/sha256 pin should be reported: {mismatches:?}"
+    );
+}
+
+#[test]
+fn invalid_flat_path_hash_pins_are_reported_not_dropped() {
+    let json = serde_json::json!({
+        "unsafe_path": r"repo://..\outside.json",
+        "unsafe_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    });
+
+    let mismatches = check_synthetic_artifact_refs(&json);
+
+    assert!(
+        mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_sha256")
+                && mismatch.contains(r"path repo://..\outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }),
+        "invalid flat path/hash pin should be reported: {mismatches:?}"
+    );
+}
+
+#[test]
+fn invalid_bare_parent_traversal_pins_are_reported_not_dropped() {
+    let json = serde_json::json!({
+        "unsafe_contract": {
+            "path": "../outside.json",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "unsafe_path": "../outside.json",
+        "unsafe_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    });
+
+    let mismatches = check_synthetic_artifact_refs(&json);
+
+    assert!(
+        mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_contract")
+                && mismatch.contains("path ../outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }) && mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_sha256")
+                && mismatch.contains("path ../outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }),
+        "bare parent traversal pins should be reported: {mismatches:?}"
+    );
+}
+
+#[test]
+fn local_scratch_path_hash_metadata_is_not_collected_as_artifact_pins() {
+    let json = serde_json::json!({
+        "local_sample": {
+            "path": "/private/tmp/polymarket-may20-one.parquet",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "scratch_report_path": "/private/tmp/source-proof-report.json",
+        "scratch_report_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    });
+    let mut artifact_refs = Vec::new();
+
+    collect_artifact_refs(&json, "$", &mut artifact_refs);
+
+    assert!(
+        artifact_refs.is_empty(),
+        "local scratch evidence hashes are not repo artifact pins: {artifact_refs:?}"
+    );
 }
 
 #[test]
@@ -250,25 +406,55 @@ fn artifact_ref_collector_treats_flat_path_hash_siblings_as_pins() {
     );
 }
 
+fn check_synthetic_artifact_refs(json: &Value) -> Vec<String> {
+    let repo_root = Path::new(".");
+    let owner_path = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/synthetic-status.2026-06-16.json",
+    );
+    let evicted_index = EvictedFixtureIndex {
+        schema_version: EvictedFixtureIndex::CURRENT_SCHEMA_VERSION,
+        issue: String::new(),
+        description: String::new(),
+        s3_artifact_root: "s3://bolt-reference-fixtures".to_string(),
+        content_addressed: true,
+        entries: Vec::new(),
+    };
+    let mut artifact_refs = Vec::new();
+    collect_artifact_refs(json, "$", &mut artifact_refs);
+
+    let mut mismatches = Vec::new();
+    for artifact_ref in artifact_refs {
+        check_artifact_ref(
+            repo_root,
+            &evicted_index,
+            owner_path,
+            &artifact_ref,
+            &mut mismatches,
+        );
+    }
+    mismatches
+}
+
 fn check_artifact_ref(
     repo_root: &Path,
     evicted_index: &EvictedFixtureIndex,
     owner_path: &Path,
-    location: &str,
-    role: &str,
-    artifact_path: &str,
-    recorded_sha256: &str,
+    artifact_ref: &ArtifactRefCandidate,
     mismatches: &mut Vec<String>,
 ) {
-    let artifact_path = match normalize_repo_path(artifact_path) {
+    let artifact_path = match normalize_repo_path(&artifact_ref.path) {
         Ok(path) => path,
         Err(err) => {
             mismatches.push(format!(
-                "{} {location} role {role} path {artifact_path} recorded {recorded_sha256} actual <invalid path: {err}>",
+                "{} {} role {} path {} recorded {} actual <invalid path: {err}>",
                 owner_path
                     .strip_prefix(repo_root)
                     .unwrap_or(owner_path)
-                    .display()
+                    .display(),
+                artifact_ref.location,
+                artifact_ref.role,
+                artifact_ref.path,
+                artifact_ref.sha256
             ));
             return;
         }
@@ -280,19 +466,33 @@ fn check_artifact_ref(
 
     let actual_sha256 = actual_sha256(repo_root, evicted_index, &artifact_path);
 
-    if recorded_sha256 != actual_sha256 {
+    if artifact_ref.sha256 != actual_sha256 {
         mismatches.push(format!(
-            "{} {location} role {role} path {artifact_path} recorded {recorded_sha256} actual {actual_sha256}",
+            "{} {} role {} path {artifact_path} recorded {} actual {actual_sha256}",
             owner_path
                 .strip_prefix(repo_root)
                 .unwrap_or(owner_path)
-                .display()
+                .display(),
+            artifact_ref.location,
+            artifact_ref.role,
+            artifact_ref.sha256
         ));
     }
 }
 
 fn should_enforce_artifact_ref(owner_path: &Path, artifact_path: &str) -> bool {
-    !(is_dated_status_file(owner_path) && is_source_tree_path(artifact_path))
+    !(is_registered_dated_source_attestation(owner_path) && is_source_tree_path(artifact_path))
+}
+
+fn is_registered_dated_source_attestation(path: &Path) -> bool {
+    DATED_SOURCE_ATTESTATION_OWNERS.iter().any(|owner| {
+        is_dated_status_file(Path::new(owner)) && path_matches_repo_suffix(path, owner)
+    })
+}
+
+fn path_matches_repo_suffix(path: &Path, repo_suffix: &str) -> bool {
+    let path = path.to_string_lossy().replace('\\', "/");
+    path == repo_suffix || path.ends_with(&format!("/{repo_suffix}"))
 }
 
 fn is_dated_status_file(path: &Path) -> bool {
@@ -320,29 +520,38 @@ fn is_source_tree_path(path: &str) -> bool {
     path.starts_with("crates/") || path.starts_with("src/") || path.starts_with("scripts/")
 }
 
-fn normalize_repo_path(path: &str) -> Result<String, String> {
+fn normalize_repo_path(path: &str) -> Result<String, RepoPathError> {
     let path = path.strip_prefix("repo://").unwrap_or(path);
-    let repo_path = Path::new(path);
+    let path = path.replace('\\', "/");
+    let repo_path = Path::new(&path);
 
     if path.is_empty() {
-        return Err("path is empty".to_string());
+        return Err(RepoPathError::Empty);
     }
     if path.contains("://") {
-        return Err("path is not repo-relative".to_string());
+        return Err(RepoPathError::NotRepoRelative);
     }
     if repo_path.is_absolute() {
-        return Err("path is absolute".to_string());
+        return Err(RepoPathError::Absolute);
     }
-    if repo_path.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::ParentDir | std::path::Component::RootDir
-        )
-    }) {
-        return Err("path escapes repository root".to_string());
+    let mut normalized = PathBuf::new();
+    for component in repo_path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(RepoPathError::EscapesRoot);
+            }
+        }
+    }
+    let normalized = normalized.to_string_lossy().replace('\\', "/");
+    if normalized.is_empty() {
+        return Err(RepoPathError::Empty);
     }
 
-    Ok(path.to_string())
+    Ok(normalized)
 }
 
 fn actual_sha256(

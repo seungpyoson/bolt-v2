@@ -23,8 +23,9 @@ const DATED_SOURCE_ATTESTATION_OWNERS: &[&str] = &[
 /// Gate policy: committed reference JSON can contain both live artifact pins and
 /// historical source attestations. Reference-tree targets remain live pins
 /// checked against current bytes or the evicted-fixture index. Source-tree
-/// targets inside dated status files are point-in-time attestations and are not
-/// rewritten on every source edit.
+/// targets inside registered dated source attestations are delegated to the
+/// dedicated verifier for that attestation, so this matcher avoids duplicate
+/// enforcement instead of treating stale source pins as valid.
 #[test]
 fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
     let repo_root = repo_root_from_manifest_dir();

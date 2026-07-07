@@ -53,6 +53,7 @@ fn boundary_registry_completeness_rejects_string_literal_non_reference_provider_
         client_venue_key: "PYTH_REFERENCE_PRICE",
         identifier_kind: ReferencePriceIdentifierKind::Symbol,
         supported_assets: &[],
+        emits_live_input_health: true,
     }];
 
     let missing = missing_websocket_frame_registry_rows(&planted);

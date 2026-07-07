@@ -66,6 +66,9 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
     "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
     "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
 )
+# Intentional global tripwire: any new `Default` token under src/ must be
+# reviewed before allowlisting. Narrowing this to registered-type-adjacent
+# lines would reintroduce alias/cfg/off-file impl prediction gaps.
 FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),

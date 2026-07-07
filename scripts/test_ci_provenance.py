@@ -620,6 +620,31 @@ def record_with_fingerprint(
     return record
 
 
+def fingerprint_digest(fingerprint: str) -> str:
+    return fingerprint.rsplit("-", 1)[1]
+
+
+def inherited_record(
+    module,
+    config_path: pathlib.Path,
+    *,
+    root_run_id: int = RUN_ID,
+    root_head_sha: str = SHA,
+    root_fingerprint: str = NEXTEST_FINGERPRINT,
+    **overrides: object,
+) -> dict[str, object]:
+    record = record_with_fingerprint(module, config_path, fingerprint=root_fingerprint)
+    record["kind"] = "inherited-ci"
+    record["required_jobs"]["test-archive"] = "skipped"
+    record["provenance_root"] = {
+        "run_id": root_run_id,
+        "head_sha": root_head_sha,
+        "fingerprint_digest": fingerprint_digest(root_fingerprint),
+    }
+    record.update(overrides)
+    return record
+
+
 def run_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": RUN_ID,
@@ -695,6 +720,11 @@ def required_job_payloads(build_conclusion: object = "success") -> list[dict[str
     ]
 
 
+def inherited_job_payloads(build_conclusion: object = "success") -> list[dict[str, object]]:
+    jobs = required_job_payloads(build_conclusion=build_conclusion)
+    return with_required_job_conclusion(jobs, "nextest archive", "skipped")
+
+
 def with_required_job_conclusion(
     jobs: list[dict[str, object]], name: str, conclusion: object
 ) -> list[dict[str, object]]:
@@ -717,12 +747,14 @@ class FakeGitHub:
         self,
         *,
         runs_pages: list[list[dict[str, object]]] | object,
+        runs_by_id: dict[int, dict[str, object]] | None = None,
         jobs_by_run_id: dict[int, dict[str, object]] | None = None,
         artifacts_by_run_id: dict[int, dict[str, object]] | None = None,
         records_by_artifact_id: dict[int, dict[str, object]] | None = None,
         workflow_bytes: bytes | None = None,
     ) -> None:
         self.runs_pages = runs_pages
+        self.runs_by_id = runs_by_id or {}
         self.jobs_by_run_id = jobs_by_run_id or {}
         self.artifacts_by_run_id = artifacts_by_run_id or {}
         self.records_by_artifact_id = records_by_artifact_id or {}
@@ -743,6 +775,11 @@ class FakeGitHub:
             page = int((query or {}).get("page", "1"))
             runs = self.runs_pages[page - 1] if page <= len(self.runs_pages) else []
             return {"workflow_runs": runs}
+        if path.startswith("actions/runs/") and path.count("/") == 2:
+            run_id = int(path.split("/")[2])
+            if run_id in self.runs_by_id:
+                return self.runs_by_id[run_id]
+            raise AssertionError(f"unexpected run lookup {path} {query}")
         if path.startswith("actions/runs/") and path.endswith("/artifacts"):
             run_id = int(path.split("/")[2])
             return self.artifacts_by_run_id.get(run_id, {"artifacts": []})
@@ -1048,6 +1085,111 @@ def assert_emit_docs_ci_record_requires_skipped_heavy_jobs() -> None:
             )
 
 
+def assert_emit_inherited_ci_record_publishes_root_pointer() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload(event="pull_request", head_branch="feature", head_sha=SHA)
+            raise AssertionError((repo, token, path, query))
+
+        env = {
+            "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SHA": OTHER_SHA,
+            "GITHUB_EVENT_NAME": "pull_request",
+            "PR_NUMBER": "960",
+            "PR_BASE_SHA": "1" * 40,
+        }
+        if not hasattr(module, "emit_inherited_ci_record"):
+            raise AssertionError("emit_inherited_ci_record is required for reuse provenance emission")
+        with patched_env(env):
+            record = module.emit_inherited_ci_record(
+                config=module.load_config(config),
+                config_path=config,
+                required_job_values=[
+                    "detector=success",
+                    "deny=success",
+                    "clippy=success",
+                    "check-aarch64=success",
+                    "source-fence=success",
+                    "nextest-fingerprint=success",
+                    "test-archive=skipped",
+                    "test=success",
+                ],
+                conditional_job_values=["build.required=false", "build.result=skipped"],
+                nextest_fingerprint=NEXTEST_FINGERPRINT,
+                root_run_id=str(RUN_ID - 1),
+                root_head_sha=OTHER_SHA,
+                root_fingerprint_digest=fingerprint_digest(NEXTEST_FINGERPRINT),
+                api_json=fake_api_json,
+            )
+        if record["kind"] != "inherited-ci":
+            raise AssertionError(record)
+        if record["required_jobs"]["test-archive"] != "skipped":
+            raise AssertionError(record)
+        expected_root = {
+            "run_id": RUN_ID - 1,
+            "head_sha": OTHER_SHA,
+            "fingerprint_digest": fingerprint_digest(NEXTEST_FINGERPRINT),
+        }
+        if record.get("provenance_root") != expected_root:
+            raise AssertionError(record)
+        module.validate_record_schema(record, module.load_config(config), config_path=config)
+
+
+def assert_emit_inherited_ci_record_rejects_malformed_current_run_payload() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> object:
+            if path == f"actions/runs/{RUN_ID}":
+                return ["not", "an", "object"]
+            raise AssertionError((repo, token, path, query))
+
+        env = {
+            "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SHA": OTHER_SHA,
+            "GITHUB_EVENT_NAME": "pull_request",
+            "PR_NUMBER": "960",
+            "PR_BASE_SHA": "1" * 40,
+        }
+        with patched_env(env):
+            assert_raises(
+                "current workflow run payload is malformed",
+                lambda: module.emit_inherited_ci_record(
+                    config=module.load_config(config),
+                    config_path=config,
+                    required_job_values=[
+                        "detector=success",
+                        "deny=success",
+                        "clippy=success",
+                        "check-aarch64=success",
+                        "source-fence=success",
+                        "nextest-fingerprint=success",
+                        "test-archive=skipped",
+                        "test=success",
+                    ],
+                    conditional_job_values=["build.required=false", "build.result=skipped"],
+                    nextest_fingerprint=NEXTEST_FINGERPRINT,
+                    root_run_id=str(RUN_ID - 1),
+                    root_head_sha=OTHER_SHA,
+                    root_fingerprint_digest=fingerprint_digest(NEXTEST_FINGERPRINT),
+                    api_json=fake_api_json,
+                ),
+            )
+
+
 def assert_unknown_record_schema_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -1113,6 +1255,250 @@ def assert_fingerprint_reuse_prior_green_returns_reuse() -> None:
             raise AssertionError(result)
         if not fake.queries or fake.queries[0][0] != "actions/workflows/ci.yml/runs":
             raise AssertionError(fake.queries)
+
+
+def assert_fingerprint_reuse_inherited_record_returns_root_pointer() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_run_id = RUN_ID + 1
+        root_record = record_with_fingerprint(module, config)
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        source_run = run_payload(id=source_run_id, head_sha=OTHER_SHA, updated_at="2026-06-13T00:20:00Z")
+        root_run = run_payload(id=RUN_ID, updated_at="2026-06-13T00:10:00Z")
+        fake = FakeGitHub(
+            runs_pages=[[source_run]],
+            runs_by_id={RUN_ID: root_run},
+            jobs_by_run_id={
+                source_run_id: {"jobs": inherited_job_payloads()},
+                RUN_ID: {"jobs": required_job_payloads()},
+            },
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=11), provenance_artifact(id=12)]},
+            },
+            records_by_artifact_id={12: root_record, 22: source_record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+        if result.source_run_id != str(source_run_id) or result.source_sha != OTHER_SHA:
+            raise AssertionError(result)
+        if result.root_run_id != str(RUN_ID):
+            raise AssertionError(result)
+        if result.root_head_sha != SHA:
+            raise AssertionError(result)
+        if result.root_fingerprint_digest != fingerprint_digest(NEXTEST_FINGERPRINT):
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_inherited_record_rejects_root_digest_mismatch() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_run_id = RUN_ID + 1
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        source_record["provenance_root"]["fingerprint_digest"] = "0" * 64
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(id=source_run_id, head_sha=OTHER_SHA)]],
+            jobs_by_run_id={source_run_id: {"jobs": inherited_job_payloads()}},
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                }
+            },
+            records_by_artifact_id={22: source_record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "root fingerprint" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_inherited_record_rejects_expired_root() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_run_id = RUN_ID + 1
+        root_record = record_with_fingerprint(module, config)
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(id=source_run_id, head_sha=OTHER_SHA)]],
+            runs_by_id={RUN_ID: run_payload(id=RUN_ID, created_at="2026-05-20T00:00:00Z")},
+            jobs_by_run_id={
+                source_run_id: {"jobs": inherited_job_payloads()},
+                RUN_ID: {"jobs": required_job_payloads()},
+            },
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=11), provenance_artifact(id=12)]},
+            },
+            records_by_artifact_id={12: root_record, 22: source_record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "outside provenance lookback" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_inherited_record_rejects_malformed_root_artifacts_payload() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_run_id = RUN_ID + 1
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(id=source_run_id, head_sha=OTHER_SHA)]],
+            runs_by_id={RUN_ID: run_payload(id=RUN_ID)},
+            jobs_by_run_id={source_run_id: {"jobs": inherited_job_payloads()}},
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                },
+                RUN_ID: ["not", "an", "object"],
+            },
+            records_by_artifact_id={22: source_record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if f"root run {RUN_ID} artifacts payload is malformed" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_inherited_record_rejects_malformed_root_jobs_payload() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_run_id = RUN_ID + 1
+        root_record = record_with_fingerprint(module, config)
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(id=source_run_id, head_sha=OTHER_SHA)]],
+            runs_by_id={RUN_ID: run_payload(id=RUN_ID)},
+            jobs_by_run_id={
+                source_run_id: {"jobs": inherited_job_payloads()},
+                RUN_ID: ["not", "an", "object"],
+            },
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=11), provenance_artifact(id=12)]},
+            },
+            records_by_artifact_id={12: root_record, 22: source_record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if f"root run {RUN_ID} jobs payload is malformed" not in result.reason:
+            raise AssertionError(result)
 
 
 def assert_fingerprint_reuse_no_prior_run_returns_no_reuse() -> None:
@@ -1818,6 +2204,9 @@ def assert_missing_current_fingerprint_arg_fails_closed() -> None:
             "source_run_id=",
             "source_sha=",
             "source_artifact_id=",
+            "root_run_id=",
+            "root_head_sha=",
+            "root_fingerprint_digest=",
             "reason=missing current fingerprint",
         }
         if set(stdout.splitlines()) != expected:
@@ -4168,6 +4557,139 @@ def assert_gate_carry_forward_requires_same_base_pr_provenance() -> None:
         )
 
 
+def assert_gate_carry_forward_accepts_inherited_provenance_root() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        source_run_id = RUN_ID + 1
+        root_record = record_with_fingerprint(module, config)
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            tested_sha=SHA,
+            pull_request={"number": 960, "base_sha": "1" * 40},
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        prior_run = run_payload(
+            id=source_run_id,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+        )
+        root_run = run_payload(id=RUN_ID)
+        fake = FakeGitHub(
+            runs_pages=[[prior_run]],
+            runs_by_id={RUN_ID: root_run},
+            jobs_by_run_id={
+                source_run_id: {"jobs": [*inherited_job_payloads(), job_payload("gate")]},
+                RUN_ID: {"jobs": required_job_payloads()},
+            },
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        provenance_artifact(
+                            id=222,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "feature", "head_sha": SHA},
+                        )
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=111), provenance_artifact(id=112)]},
+            },
+            records_by_artifact_id={112: root_record, 222: source_record},
+        )
+        result = module.resolve_gate_carry_forward(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            base_sha="1" * 40,
+            current_run_id=source_run_id + 1,
+            gate_name="gate",
+            workflow_path=".github/workflows/ci.yml",
+            config=module.load_config(config),
+            config_path=config,
+            require_provenance_base=True,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.source_run_id != str(source_run_id) or not result.carry_forward_verified:
+            raise AssertionError(result)
+
+
+def assert_gate_carry_forward_refuses_expired_inherited_root() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        source_run_id = RUN_ID + 1
+        root_record = record_with_fingerprint(module, config)
+        source_record = inherited_record(
+            module,
+            config,
+            run_id=source_run_id,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            tested_sha=SHA,
+            pull_request={"number": 960, "base_sha": "1" * 40},
+            root_run_id=RUN_ID,
+            root_head_sha=SHA,
+        )
+        prior_run = run_payload(
+            id=source_run_id,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+        )
+        root_run = run_payload(id=RUN_ID, created_at="2026-05-20T00:00:00Z")
+        fake = FakeGitHub(
+            runs_pages=[[prior_run]],
+            runs_by_id={RUN_ID: root_run},
+            jobs_by_run_id={
+                source_run_id: {"jobs": [*inherited_job_payloads(), job_payload("gate")]},
+                RUN_ID: {"jobs": required_job_payloads()},
+            },
+            artifacts_by_run_id={
+                source_run_id: {
+                    "artifacts": [
+                        provenance_artifact(
+                            id=222,
+                            run_id=source_run_id,
+                            workflow_run={"id": source_run_id, "head_branch": "feature", "head_sha": SHA},
+                        )
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=111), provenance_artifact(id=112)]},
+            },
+            records_by_artifact_id={112: root_record, 222: source_record},
+        )
+        assert_raises(
+            "outside provenance lookback",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=source_run_id + 1,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
 def assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4270,7 +4792,7 @@ def assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress() -> 
         )
 
 
-def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
+def assert_gate_carry_forward_refuses_newest_success_without_provenance() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(
@@ -4317,23 +4839,24 @@ def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
             artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
             records_by_artifact_id={123: record},
         )
-        result = module.resolve_gate_carry_forward(
-            repo="seungpyoson/bolt-v2",
-            token="token",
-            requested_sha=SHA,
-            base_sha="1" * 40,
-            current_run_id=RUN_ID + 3,
-            gate_name="gate",
-            workflow_path=".github/workflows/ci.yml",
-            config=module.load_config(config),
-            config_path=config,
-            require_provenance_base=True,
-            api_json=fake.json,
-            api_bytes=fake.bytes,
-            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        assert_raises(
+            "source run 24623219990 has no provenance artifact",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 3,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
         )
-        if result.source_run_id != str(RUN_ID) or not result.carry_forward_verified:
-            raise AssertionError(result)
 
 
 def assert_gate_carry_forward_newest_failure_blocks_across_pages() -> None:
@@ -5022,7 +5545,7 @@ def assert_ci_gate_verdict_hardens_full_and_reuse_proof() -> None:
         **{
             "test-archive": "skipped",
             "nextest-fingerprint-reuse": "success",
-            "ci-provenance-emit": "skipped",
+            "ci-provenance-emit": "success",
         }
     )
     module.evaluate_ci_gate_verdict(
@@ -5058,6 +5581,19 @@ def assert_ci_gate_verdict_hardens_full_and_reuse_proof() -> None:
             reuse_found=True,
             carry_forward_verified=False,
             job_results={**reuse_jobs, "test-archive": "success"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "ci-provenance-emit did not succeed during nextest fingerprint reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            carry_forward_verified=False,
+            job_results={**reuse_jobs, "ci-provenance-emit": "skipped"},
             build_required=True,
         ),
     )
@@ -5229,8 +5765,15 @@ def main() -> int:
     assert_emit_full_ci_records_nextest_fingerprint_argument()
     assert_emit_full_ci_hashes_explicit_tested_workflow()
     assert_emit_docs_ci_record_requires_skipped_heavy_jobs()
+    assert_emit_inherited_ci_record_publishes_root_pointer()
+    assert_emit_inherited_ci_record_rejects_malformed_current_run_payload()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
+    assert_fingerprint_reuse_inherited_record_returns_root_pointer()
+    assert_fingerprint_reuse_inherited_record_rejects_root_digest_mismatch()
+    assert_fingerprint_reuse_inherited_record_rejects_expired_root()
+    assert_fingerprint_reuse_inherited_record_rejects_malformed_root_artifacts_payload()
+    assert_fingerprint_reuse_inherited_record_rejects_malformed_root_jobs_payload()
     assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
     assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
     assert_debug_test_workflow_is_not_fingerprint_reuse_source()
@@ -5313,9 +5856,11 @@ def main() -> int:
     assert_deploy_evidence_uses_deploy_artifact_lookback()
     assert_test_archive_and_build_rules()
     assert_gate_carry_forward_requires_same_base_pr_provenance()
+    assert_gate_carry_forward_accepts_inherited_provenance_root()
+    assert_gate_carry_forward_refuses_expired_inherited_root()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
-    assert_gate_carry_forward_uses_newest_success_with_provenance()
+    assert_gate_carry_forward_refuses_newest_success_without_provenance()
     assert_gate_carry_forward_newest_failure_blocks_across_pages()
     assert_gate_carry_forward_refuses_page_cap_without_natural_boundary()
     assert_gate_carry_forward_blocks_equal_updated_at_failure_tie()

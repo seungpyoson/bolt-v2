@@ -657,8 +657,8 @@ GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-
   echo "nextest fingerprint reuse resolver did not succeed"
   exit 1
 fi
-if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-  echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+  echo "ci-provenance-emit did not succeed during nextest fingerprint reuse"
   exit 1
 fi
 echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
@@ -9651,6 +9651,9 @@ def fingerprint_reuse_job_has_outputs(job_lines: list[str]) -> bool:
         "source_run_id: ${{ steps.reuse.outputs.source_run_id }}",
         "source_sha: ${{ steps.reuse.outputs.source_sha }}",
         "source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}",
+        "root_run_id: ${{ steps.reuse.outputs.root_run_id }}",
+        "root_head_sha: ${{ steps.reuse.outputs.root_head_sha }}",
+        "root_fingerprint_digest: ${{ steps.reuse.outputs.root_fingerprint_digest }}",
         "reason: ${{ steps.reuse.outputs.reason }}",
     )
     return all(item in text for item in required)
@@ -9895,6 +9898,9 @@ def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
         "nextest fingerprint reuse did not expose source_run_id",
         "nextest fingerprint reuse did not expose source_sha",
         "nextest fingerprint reuse did not expose source_artifact_id",
+        "nextest fingerprint reuse did not expose root_run_id",
+        "nextest fingerprint reuse did not expose root_head_sha",
+        "nextest fingerprint reuse did not expose root_fingerprint_digest",
         "nextest archive reused from run",
     )
     return all(item in text for item in required)
@@ -9921,6 +9927,14 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
         "workflow_args=()",
         'python3 "$provenance_script" emit-full-ci --help | grep -q -- "--workflow-file"',
         'workflow_args+=(--workflow-file "$provenance_workflow")',
+        'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
+        'if [[ "$reuse_found" == "true" ]]; then',
+        'python3 "$provenance_script" emit-inherited-ci --help',
+        "trusted base provenance emitter does not support inherited CI records",
+        'python3 "$provenance_script" emit-inherited-ci',
+        "--root-run-id \"${{ needs.nextest-fingerprint-reuse.outputs.root_run_id }}\"",
+        "--root-head-sha \"${{ needs.nextest-fingerprint-reuse.outputs.root_head_sha }}\"",
+        "--root-fingerprint-digest \"${{ needs.nextest-fingerprint-reuse.outputs.root_fingerprint_digest }}\"",
         'python3 "$provenance_script" emit-full-ci',
         '--config "$provenance_config"',
         '"${policy_args[@]}"',
@@ -9936,16 +9950,16 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
     for need in needs:
         if need == "build":
             expected = "--conditional-job build.result=${{ needs.build.result }}"
-            if expected not in text:
+            if text.count(expected) < 2:
                 errors.append("ci-provenance-emit must pass build.result from needs.build.result")
             continue
         expected = f"--required-job {need}=${{{{ needs.{need}.result }}}}"
-        if expected not in text:
+        if text.count(expected) < 2:
             errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
-    if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
+    if text.count("--conditional-job build.required=${{ needs.detector.outputs.build_required }}") < 2:
         errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
     if (
-        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' not in text
+        text.count(f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"') < 2
         or "--nextest-fingerprint-path" in text
     ):
         errors.append("ci-provenance-emit must use secure nextest fingerprint output")
@@ -9991,7 +10005,7 @@ def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
 def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return (
-        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' in text
+        text.count(f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"') >= 2
         and "--nextest-fingerprint-path" not in text
     )
 
@@ -11919,8 +11933,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("ci-provenance-emit must skip tag reuse")
         if not job_gates_on_full_ci_required(emit_lines):
             errors.append("ci-provenance-emit must gate on full_ci_required")
-        if NEXTEST_REUSE_MISS_EXPR not in uncommented_text(emit_lines):
-            errors.append("ci-provenance-emit must skip validated nextest fingerprint reuse")
+        if NEXTEST_REUSE_MISS_EXPR in uncommented_text(emit_lines):
+            errors.append("ci-provenance-emit must emit inherited provenance during nextest fingerprint reuse")
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
         errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))

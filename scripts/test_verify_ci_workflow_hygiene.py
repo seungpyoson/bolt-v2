@@ -667,6 +667,9 @@ jobs:
       source_run_id: ${{ steps.reuse.outputs.source_run_id }}
       source_sha: ${{ steps.reuse.outputs.source_sha }}
       source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      root_run_id: ${{ steps.reuse.outputs.root_run_id }}
+      root_head_sha: ${{ steps.reuse.outputs.root_head_sha }}
+      root_fingerprint_digest: ${{ steps.reuse.outputs.root_fingerprint_digest }}
       reason: ${{ steps.reuse.outputs.reason }}
     steps:
       - name: Resolve nextest fingerprint reuse
@@ -1024,6 +1027,18 @@ jobs:
               echo "nextest fingerprint reuse did not expose source_artifact_id"
               exit 1
             fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.root_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose root_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.root_head_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose root_head_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.root_fingerprint_digest }}" ]]; then
+              echo "nextest fingerprint reuse did not expose root_fingerprint_digest"
+              exit 1
+            fi
             echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
             exit 0
           fi
@@ -1102,7 +1117,7 @@ jobs:
   ci-provenance-emit:
     name: ci-provenance-emit
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
-    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') }}
     runs-on: ubuntu-latest
     steps:
       - name: Prepare trusted base provenance tree
@@ -1138,22 +1153,48 @@ jobs:
           if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--workflow-file"; then
             workflow_args+=(--workflow-file "$provenance_workflow")
           fi
-          python3 "$provenance_script" emit-full-ci \
-            --config "$provenance_config" \
-            "${policy_args[@]}" \
-            "${workflow_args[@]}" \
-            --output ci-provenance.json \
-            --required-job detector=${{ needs.detector.result }} \
-            --required-job deny=${{ needs.deny.result }} \
-            --required-job clippy=${{ needs.clippy.result }} \
-            --required-job check-aarch64=${{ needs.check-aarch64.result }} \
-            --required-job source-fence=${{ needs.source-fence.result }} \
-            --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
-            --required-job test-archive=${{ needs.test-archive.result }} \
-            --required-job test=${{ needs.test.result }} \
-            --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
-            --conditional-job build.result=${{ needs.build.result }} \
-            --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if ! python3 "$provenance_script" emit-inherited-ci --help >/dev/null; then
+              echo "trusted base provenance emitter does not support inherited CI records" >&2
+              exit 1
+            fi
+            python3 "$provenance_script" emit-inherited-ci \
+              --config "$provenance_config" \
+              "${workflow_args[@]}" \
+              --output ci-provenance.json \
+              --required-job detector=${{ needs.detector.result }} \
+              --required-job deny=${{ needs.deny.result }} \
+              --required-job clippy=${{ needs.clippy.result }} \
+              --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+              --required-job source-fence=${{ needs.source-fence.result }} \
+              --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+              --required-job test-archive=${{ needs.test-archive.result }} \
+              --required-job test=${{ needs.test.result }} \
+              --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+              --conditional-job build.result=${{ needs.build.result }} \
+              --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" \
+              --root-run-id "${{ needs.nextest-fingerprint-reuse.outputs.root_run_id }}" \
+              --root-head-sha "${{ needs.nextest-fingerprint-reuse.outputs.root_head_sha }}" \
+              --root-fingerprint-digest "${{ needs.nextest-fingerprint-reuse.outputs.root_fingerprint_digest }}"
+          else
+            python3 "$provenance_script" emit-full-ci \
+              --config "$provenance_config" \
+              "${policy_args[@]}" \
+              "${workflow_args[@]}" \
+              --output ci-provenance.json \
+              --required-job detector=${{ needs.detector.result }} \
+              --required-job deny=${{ needs.deny.result }} \
+              --required-job clippy=${{ needs.clippy.result }} \
+              --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+              --required-job source-fence=${{ needs.source-fence.result }} \
+              --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+              --required-job test-archive=${{ needs.test-archive.result }} \
+              --required-job test=${{ needs.test.result }} \
+              --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+              --conditional-job build.result=${{ needs.build.result }} \
+              --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+          fi
       - name: Upload CI provenance
         id: upload-ci-provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1897,6 +1938,8 @@ def assert_error(
 ) -> None:
     verifier = load_verifier()
     errors = verifier.verify_text(workflow, action, nextest_config)
+    if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in fragment:
+        errors = [error for error in errors if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error]
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
@@ -6098,7 +6141,7 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') }}",
                 "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
@@ -17513,7 +17556,7 @@ def main() -> int:
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') }}",
             "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )

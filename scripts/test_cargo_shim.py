@@ -3,6 +3,7 @@
 
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
@@ -15,6 +16,12 @@ from test_fixtures import rust_verification_policy_text, write_executable, write
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "scripts" / "cargo-shim"
 INSTALLER = ROOT / "scripts" / "install-cargo-shim"
+RUST_VERIFICATION_HELPER_FILES = (
+    "ci_test_manifest.py",
+    "command_understanding.py",
+    "config_validators.py",
+    "rust_verification.py",
+)
 
 POLICY = """\
 schema_version = 2
@@ -38,7 +45,15 @@ REFUSAL_LINES = [
 
 def _init_repo(path: Path, policy: str = POLICY) -> None:
     write_policy(path, policy_text=policy, write_justfile=False)
+    write_rust_verification_helpers(path)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+def write_rust_verification_helpers(path: Path) -> None:
+    scripts_dir = path / "scripts"
+    scripts_dir.mkdir(exist_ok=True)
+    for name in RUST_VERIFICATION_HELPER_FILES:
+        shutil.copy2(ROOT / "scripts" / name, scripts_dir / name)
 
 
 def _fake_real_cargo(tmp_path: Path) -> Path:
@@ -363,6 +378,7 @@ def test_allowed_cargo_resolves_nearest_policy_root_for_nested_workspace(tmp_pat
     nested = repo / "crates" / "backtesting-vertical-slice"
     nested.mkdir(parents=True)
     write_policy(nested, target_namespace="bvs", write_justfile=False)
+    write_rust_verification_helpers(nested)
     root_base = tmp_path / "rust-root"
     real = _fake_env_cargo(tmp_path)
 
@@ -673,6 +689,45 @@ def test_installer_is_idempotent_and_prepends_zshenv_path(tmp_path):
     assert "unfunction cargo" in text
     assert f'export BOLT_CARGO_SHIM_DIR="{install_dir}"' in text
     assert 'export PATH="$BOLT_CARGO_SHIM_DIR:$PATH"' in text
+
+
+def test_installed_cargo_shim_loads_policy_repo_helpers_and_routes_target_dir(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    install_dir = tmp_path / "shim-bin"
+    root_base = tmp_path / "rust-root"
+    real = _fake_env_cargo(tmp_path)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["BOLT_CARGO_SHIM_DIR"] = str(install_dir)
+
+    install = subprocess.run(
+        [sys.executable, str(INSTALLER)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert install.returncode == 0, install.stderr
+
+    env["BOLT_CARGO_SHIM_REAL_CARGO"] = str(real)
+    env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+    env["CARGO_TARGET_DIR"] = str(tmp_path / "leaked-target")
+    result = subprocess.run(
+        [str(install_dir / "cargo"), "fmt"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    namespace = _load_shim_module().load_target_namespace_fallback(ROOT / "ci" / "rust-verification.toml")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"target={root_base / namespace / 'target'}"
 
 
 def test_installer_prepends_no_mistakes_launch_agent_path(tmp_path):

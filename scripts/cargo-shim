@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import sys
 from ast import literal_eval
 from pathlib import Path
-
-import rust_verification
+from types import ModuleType
 
 try:
     import tomllib
@@ -254,7 +254,23 @@ def resolve_real_cargo() -> Path | None:
     return Path(found) if found else None
 
 
+def load_rust_verification(root: Path) -> ModuleType:
+    helper = root / "scripts" / "rust_verification.py"
+    if not helper.is_file():
+        raise ValueError("scripts/rust_verification.py is required")
+    spec = importlib.util.spec_from_file_location("bolt_policy_rust_verification", helper)
+    if spec is None or spec.loader is None:
+        raise ValueError("cannot load scripts/rust_verification.py")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except ModuleNotFoundError as exc:
+        raise ValueError("cannot import scripts/rust_verification.py") from exc
+    return module
+
+
 def managed_exec_env(root: Path, policy_path: Path) -> dict[str, str]:
+    rust_verification = load_rust_verification(root)
     if tomllib is None:
         namespace = load_target_namespace_fallback(policy_path)
         if namespace is None:

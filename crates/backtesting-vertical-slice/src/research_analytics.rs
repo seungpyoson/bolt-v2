@@ -605,10 +605,48 @@ fn resolve_source_path(
     input_dir: &Path,
     path: &Path,
 ) -> Result<(PathBuf, String)> {
-    Ok((
-        input_dir.join(path),
-        input_relative_source_path(label, path)?,
-    ))
+    let input_relative_path = input_relative_source_path(label, path)?;
+    ensure_source_path_has_no_symlink_components(label, input_dir, path)?;
+    Ok((input_dir.join(path), input_relative_path))
+}
+
+fn ensure_source_path_has_no_symlink_components(
+    label: &'static str,
+    input_dir: &Path,
+    path: &Path,
+) -> Result<()> {
+    let mut current = input_dir.to_path_buf();
+    let mut final_metadata = None;
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                let metadata = fs::symlink_metadata(&current)
+                    .with_context(|| format!("stat {label} source path {}", current.display()))?;
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "{label} source path must not contain symlinks: {}",
+                    path.display()
+                );
+                final_metadata = Some(metadata);
+            }
+            _ => {
+                ensure!(
+                    false,
+                    "{label} source path must be relative to input_dir without parent or prefix components: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let metadata =
+        final_metadata.with_context(|| format!("{label} source path must not be empty"))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "{label} source path must be a regular file: {}",
+        path.display()
+    );
+    Ok(())
 }
 
 fn input_relative_source_path(label: &'static str, path: &Path) -> Result<String> {
@@ -1941,6 +1979,143 @@ mod tests {
 
         assert_eq!(calls, 0, "executor must not run after bad source path");
         assert!(err.to_string().contains("relative to input_dir"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_source_run_spec_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        fs::write(
+            outside_dir.join("outside.toml"),
+            toml::to_string_pretty(&test_run_spec("ra-run-a", b"first"))
+                .expect("serialize outside run spec"),
+        )
+        .expect("write outside run spec");
+        fs::remove_file(input_dir.join("first.toml")).expect("remove original run spec");
+        std::os::unix::fs::symlink(
+            outside_dir.join("outside.toml"),
+            input_dir.join("first.toml"),
+        )
+        .expect("symlink run spec");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked run-spec source path must fail");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after symlinked source path"
+        );
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_source_object_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        fs::write(outside_dir.join("outside.object"), b"first").expect("write outside object");
+        fs::remove_file(input_dir.join("first.object")).expect("remove original object");
+        std::os::unix::fs::symlink(
+            outside_dir.join("outside.object"),
+            input_dir.join("first.object"),
+        )
+        .expect("symlink object");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked object source path must fail");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after symlinked source path"
+        );
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_publication_rejects_symlinked_source_directory_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        let source = write_source_pair(
+            &outside_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        std::os::unix::fs::symlink(&outside_dir, input_dir.join("linked"))
+            .expect("symlink source directory");
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            TEST_ARTIFACT_ROOT,
+            vec![BacktestSweepSourcePair {
+                run_spec_path: PathBuf::from("linked").join(source.run_spec_path),
+                object_path: PathBuf::from("linked").join(source.object_path),
+            }],
+        );
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(
+            &plan,
+            |spec, object_bytes, output_dir| {
+                calls += 1;
+                write_test_contract(output_dir, spec, object_bytes, TEST_ARTIFACT_ROOT);
+                Ok(())
+            },
+        )
+        .expect_err("symlinked source directory must fail");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after symlinked source path"
+        );
+        assert!(err.to_string().contains("symlink"), "{err}");
         assert!(!plan.index_path.exists(), "index must not be written");
     }
 

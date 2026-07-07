@@ -190,6 +190,20 @@ pub fn build_bolt_v3_strategy_free_live_node(
     build_bolt_v3_strategy_free_live_node_from_resolved_transport(&transport_loaded, &resolved)
 }
 
+pub fn build_bolt_v3_strategy_free_live_node_for_data_clients(
+    loaded: &LoadedBoltV3Config,
+    data_client_keys: &[String],
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let transport_loaded =
+        trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::NotSubscribed)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    build_bolt_v3_strategy_free_live_node_from_resolved_transport_for_data_clients(
+        &transport_loaded,
+        &resolved,
+        data_client_keys,
+    )
+}
+
 pub fn build_bolt_v3_strategy_free_live_node_with_resolved(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -201,11 +215,43 @@ pub fn build_bolt_v3_strategy_free_live_node_with_resolved(
     build_bolt_v3_strategy_free_live_node_from_resolved_transport(&transport_loaded, resolved)
 }
 
+pub fn build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    data_client_keys: &[String],
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let transport_loaded =
+        trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::NotSubscribed)?;
+    check_no_forbidden_credential_env_vars(&transport_loaded.root)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    build_bolt_v3_strategy_free_live_node_from_resolved_transport_for_data_clients(
+        &transport_loaded,
+        resolved,
+        data_client_keys,
+    )
+}
+
 fn build_bolt_v3_strategy_free_live_node_from_resolved_transport(
     transport_loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let adapters = strategy_free_transport_adapter_configs(transport_loaded, resolved)?;
+    let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
+    let (runtime, _summary) =
+        build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
+    Ok(runtime)
+}
+
+fn build_bolt_v3_strategy_free_live_node_from_resolved_transport_for_data_clients(
+    transport_loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    data_client_keys: &[String],
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let adapters = strategy_free_transport_adapter_configs_for_data_clients(
+        transport_loaded,
+        resolved,
+        data_client_keys,
+    )?;
     let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
     let (runtime, _summary) =
         build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
@@ -231,6 +277,33 @@ where
     let adapters = strategy_free_transport_adapter_configs(&transport_loaded, &resolved)?;
     let strategy_free_loaded = strategy_free_transport_loaded_config(&transport_loaded);
     build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)
+}
+
+fn strategy_free_transport_adapter_configs_for_data_clients(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    data_client_keys: &[String],
+) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
+    let adapters = strategy_free_transport_adapter_configs(loaded, resolved)?;
+    Ok(strategy_free_data_client_adapter_configs(
+        adapters,
+        data_client_keys,
+    ))
+}
+
+fn strategy_free_data_client_adapter_configs(
+    mut adapters: BoltV3AdapterConfigs,
+    data_client_keys: &[String],
+) -> BoltV3AdapterConfigs {
+    let data_client_key_set = data_client_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    adapters.clients.retain(|client_key, client_config| {
+        client_config.execution = None;
+        data_client_key_set.contains(client_key.as_str()) && client_config.data.is_some()
+    });
+    adapters
 }
 
 pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(

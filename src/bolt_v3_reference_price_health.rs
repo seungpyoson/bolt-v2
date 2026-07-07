@@ -21,8 +21,8 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_config::ReferencePriceSourceBlock,
     bolt_v3_live_node::{
-        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node,
-        build_bolt_v3_strategy_free_live_node_with_resolved,
+        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node_for_data_clients,
+        build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
     },
     bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
     bolt_v3_reference_price::{
@@ -172,7 +172,8 @@ pub fn prepare_reference_current_price_health_run(
     loaded: &LoadedBoltV3Config,
 ) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
-    let runtime = build_bolt_v3_strategy_free_live_node(loaded)?;
+    let runtime =
+        build_bolt_v3_strategy_free_live_node_for_data_clients(loaded, &plan.client_keys)?;
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,
@@ -186,7 +187,11 @@ pub fn prepare_reference_current_price_health_run_with_resolved(
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
-    let runtime = build_bolt_v3_strategy_free_live_node_with_resolved(loaded, resolved)?;
+    let runtime = build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients(
+        loaded,
+        resolved,
+        &plan.client_keys,
+    )?;
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,
@@ -576,9 +581,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
     use crate::{
-        bolt_v3_config::load_bolt_v3_config,
-        bolt_v3_live_node::build_bolt_v3_strategy_free_live_node_with_summary,
-        bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+        bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     };
 
     fn fake_bolt_v3_health_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
@@ -946,19 +949,11 @@ mod tests {
         ));
         loaded.root.persistence.catalog_directory =
             catalog_directory.to_string_lossy().into_owned();
-        let plan = reference_current_price_health_plan(&loaded)
-            .expect("reference_current_price health plan should build");
-        let (runtime, _summary) = build_bolt_v3_strategy_free_live_node_with_summary(
-            &loaded,
-            |_| false,
-            fake_bolt_v3_health_resolver,
-        )
-        .expect("strategy-free transport runtime should build with fake secrets");
-        let health_run = ReferenceCurrentPriceHealthRun {
-            plan,
-            runtime,
-            loaded,
-        };
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("strategy-free health run should build with fake secrets");
 
         assert_eq!(
             health_run.plan.client_keys,
@@ -966,18 +961,12 @@ mod tests {
         );
         assert_eq!(
             sorted_strings(health_run.runtime.registered_data_client_ids()),
-            vec![
-                "chainlink_reference",
-                "okx_data",
-                "polymarket_main",
-                "polyresearch_reference"
-            ],
-            "health must prepare all strategy-bound transport data clients"
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
         );
-        assert_eq!(
-            sorted_strings(health_run.runtime.registered_exec_client_ids()),
-            vec!["polymarket_main"],
-            "health may prepare the strategy-bound execution transport client but no order path"
+        assert!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
+            "health must prepare zero execution transport clients"
         );
         assert!(
             health_run.runtime.registered_strategy_ids().is_empty(),
@@ -1018,6 +1007,15 @@ mod tests {
         let mut health_run =
             prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
                 .expect("strategy-free health run should build with resolved secrets");
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "loopback health runtime must register exactly the plan-scoped data clients"
+        );
+        assert!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
+            "loopback health runtime must register zero execution clients"
+        );
         let server_join_timeout = reference_current_price_health_stop_timeout(&loaded)
             .expect("health stop timeout should derive from fixture config")
             + Duration::from_millis(health_run.plan.observation_timeout_ms);

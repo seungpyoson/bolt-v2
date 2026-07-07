@@ -270,7 +270,9 @@ use risk_admission_loss::{
 };
 pub use secrets_builders::{
     build_bolt_v3_live_node_with_resolved, build_bolt_v3_strategy_free_data_client_probe_live_node,
-    build_bolt_v3_strategy_free_live_node, build_bolt_v3_strategy_free_live_node_with_resolved,
+    build_bolt_v3_strategy_free_live_node, build_bolt_v3_strategy_free_live_node_for_data_clients,
+    build_bolt_v3_strategy_free_live_node_with_resolved,
+    build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
     build_bolt_v3_strategy_free_live_node_with_summary,
 };
 use secrets_builders::{

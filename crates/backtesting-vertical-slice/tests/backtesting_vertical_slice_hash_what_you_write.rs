@@ -96,9 +96,7 @@ const CANONICAL_BYTES_HASH_ALLOWLIST: &[&str] = &[
     "nt_catalog_capability",
     "pmxt_one_off_backfill_projection",
 ];
-// PR-A cannot rewrite source-fenced contracts because committed `specs/` pins
-// their source bytes and data reconciliation belongs to PR-B.
-const SOURCE_FENCED_REFERENCE_ARTIFACT_ALLOWLIST: &[&str] = &["source_proof_admissibility"];
+const SOURCE_FENCED_REFERENCE_ARTIFACT_ALLOWLIST: &[&str] = &[];
 
 struct WriterCase {
     module: &'static str,

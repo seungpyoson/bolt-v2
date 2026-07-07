@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 from ast import literal_eval
 from pathlib import Path
@@ -31,22 +30,15 @@ VALUE_TAKING_GLOBAL_FLAGS = {
 }
 
 
-def git_root(cwd: Path) -> Path | None:
+def nearest_policy_root(cwd: Path) -> Path | None:
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        current = cwd.resolve(strict=False)
     except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    root = result.stdout.strip()
-    return Path(root) if root else None
+        current = cwd.absolute()
+    for candidate in (current, *current.parents):
+        if (candidate / "ci" / "rust-verification.toml").is_file():
+            return candidate
+    return None
 
 
 def cargo_subcommand(args: list[str]) -> str | None:
@@ -91,6 +83,50 @@ def load_policy(policy_path: Path) -> dict[str, object] | None:
     if not isinstance(policy, dict):
         raise ValueError("local_compile_policy must be a table")
     return policy
+
+
+def load_target_namespace_fallback(policy_path: Path) -> str | None:
+    for raw_line in policy_path.read_text(encoding="utf-8").splitlines():
+        line = strip_toml_comment(raw_line).strip()
+        if not line or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        if key.strip() != "target_namespace":
+            continue
+        try:
+            value = literal_eval(raw_value.strip())
+        except (ValueError, SyntaxError) as exc:
+            raise ValueError("target_namespace must be a quoted string") from exc
+        if not isinstance(value, str) or not value:
+            raise ValueError("target_namespace is required")
+        return value
+    return None
+
+
+def load_target_namespace(policy_path: Path) -> str:
+    if tomllib is None:
+        namespace = load_target_namespace_fallback(policy_path)
+    else:
+        try:
+            with policy_path.open("rb") as f:
+                data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(str(exc)) from exc
+        namespace = data.get("target_namespace")
+    if not isinstance(namespace, str) or not namespace:
+        raise ValueError("target_namespace is required")
+    return namespace
+
+
+def rust_verification_root_base() -> Path:
+    raw = os.environ.get("RUST_VERIFICATION_ROOT_BASE")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".cache" / "rust-verification"
+
+
+def managed_target_dir(root: Path) -> Path:
+    return rust_verification_root_base() / load_target_namespace(root / "ci" / "rust-verification.toml") / "target"
 
 
 def strip_toml_comment(raw_line: str) -> str:
@@ -242,7 +278,7 @@ def resolve_real_cargo() -> Path | None:
     return Path(found) if found else None
 
 
-def exec_real_cargo(args: list[str]) -> int:
+def exec_real_cargo(args: list[str], *, root: Path | None = None, policy_path: Path | None = None) -> int:
     real = resolve_real_cargo()
     if real is None:
         print("cargo shim: cannot find real cargo executable", file=sys.stderr)
@@ -250,6 +286,22 @@ def exec_real_cargo(args: list[str]) -> int:
     if real.resolve() == Path(__file__).resolve():
         print("cargo shim: real cargo resolved to shim; refusing recursion", file=sys.stderr)
         return 127
+    if root is not None and policy_path is not None:
+        try:
+            target_dir = managed_target_dir(root)
+        except (ValueError, OSError) as exc:
+            print(
+                f"cargo shim: cannot prepare managed Cargo target dir from ci/rust-verification.toml: {exc}",
+                file=sys.stderr,
+            )
+            return 101
+        existing_target_dir = os.environ.get("CARGO_TARGET_DIR")
+        if existing_target_dir is not None and existing_target_dir != str(target_dir):
+            print(
+                f"cargo shim: overriding CARGO_TARGET_DIR with managed target dir: {existing_target_dir} -> {target_dir}",
+                file=sys.stderr,
+            )
+        os.environ["CARGO_TARGET_DIR"] = str(target_dir)
     try:
         os.execv(str(real), [str(real), *args])
     except OSError as exc:
@@ -258,7 +310,7 @@ def exec_real_cargo(args: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
-    root = git_root(Path.cwd())
+    root = nearest_policy_root(Path.cwd())
     if root is None:
         return exec_real_cargo(argv)
 
@@ -294,7 +346,7 @@ def main(argv: list[str]) -> int:
         print(refusal_message(policy), file=sys.stderr, end="")
         return 101
 
-    return exec_real_cargo(argv)
+    return exec_real_cargo(argv, root=root, policy_path=policy_path)
 
 
 if __name__ == "__main__":

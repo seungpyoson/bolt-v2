@@ -41,6 +41,7 @@ import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -174,6 +175,16 @@ class BackupsConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class DailyMaintenanceLaunchAgentConfig:
+    label: str
+    program_arguments: tuple[str, ...]
+    environment_path: str
+    standard_out_path: str
+    standard_error_path: str
+    start_calendar_interval: dict[str, int]
+
+
+@dataclasses.dataclass(frozen=True)
 class Config:
     enabled: bool
     trunk_branch: str
@@ -181,6 +192,7 @@ class Config:
     lane_r: LaneRConfig
     lane_w: LaneWConfig
     lane_t: LaneTConfig | None
+    daily_maintenance_launch_agent: DailyMaintenanceLaunchAgentConfig | None
     logging: LoggingConfig
     backups: BackupsConfig
     origin_owner: str
@@ -278,6 +290,13 @@ CONFIG_KEYS = frozenset({
     "clean-merged.lane_t.active_process_patterns",
     "clean-merged.lane_t.process_list_timeout_s",
     "clean-merged.lane_t.cwd_visibility_timeout_s",
+    "clean-merged.daily_maintenance_launch_agent.label",
+    "clean-merged.daily_maintenance_launch_agent.program_arguments",
+    "clean-merged.daily_maintenance_launch_agent.environment_path",
+    "clean-merged.daily_maintenance_launch_agent.standard_out_path",
+    "clean-merged.daily_maintenance_launch_agent.standard_error_path",
+    "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+    "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
     "clean-merged.logging.audit_format",
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
@@ -288,7 +307,14 @@ CONFIG_KEYS = frozenset({
     "clean-merged.logging.lane_r_log_path",
     "clean-merged.backups.prune_after_days",
 })
-REQUIRED_CONFIG_KEYS = frozenset(key for key in CONFIG_KEYS if not key.startswith("clean-merged.lane_t."))
+OPTIONAL_CONFIG_KEY_PREFIXES = (
+    "clean-merged.lane_t.",
+    "clean-merged.daily_maintenance_launch_agent.",
+)
+REQUIRED_CONFIG_KEYS = frozenset(
+    key for key in CONFIG_KEYS
+    if not any(key.startswith(prefix) for prefix in OPTIONAL_CONFIG_KEY_PREFIXES)
+)
 
 
 def _flatten_config(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -333,6 +359,13 @@ def _config_positive_int(flat: dict[str, Any], key: str) -> int:
     return value
 
 
+def _config_int_range(flat: dict[str, Any], key: str, *, minimum: int, maximum: int) -> int:
+    value = flat[key]
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+        raise ConfigError(f"invalid config: {key} must be an integer from {minimum} to {maximum}")
+    return value
+
+
 def _config_string_array(flat: dict[str, Any], key: str) -> tuple[str, ...]:
     value = flat[key]
     if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
@@ -347,14 +380,14 @@ def _config_single_path_name(flat: dict[str, Any], key: str) -> str:
     return value
 
 
-def load_config(repo_root: pathlib.Path) -> Config:
+def load_config(repo_root: pathlib.Path, *, use_main_worktree: bool = True) -> Config:
     """Load config from the MAIN worktree path (not the current worktree,
     which may be on a feature branch predating config/clean-merged.toml).
 
     Honors TOML nesting ([clean-merged.lane_r].gh_timeout_s). Every runtime
     key is required; code supplies no runtime defaults.
     """
-    main_root = _main_worktree_root(repo_root)
+    main_root = _main_worktree_root(repo_root) if use_main_worktree else repo_root
     cfg_path = main_root / "config" / "clean-merged.toml"
     if not cfg_path.is_file():
         raise ConfigError(
@@ -421,6 +454,44 @@ def load_config(repo_root: pathlib.Path) -> Config:
             cwd_visibility_timeout_s=_config_positive_float(
                 flat, "clean-merged.lane_t.cwd_visibility_timeout_s"),
         )
+    daily_maintenance_keys = {
+        "clean-merged.daily_maintenance_launch_agent.label",
+        "clean-merged.daily_maintenance_launch_agent.program_arguments",
+        "clean-merged.daily_maintenance_launch_agent.environment_path",
+        "clean-merged.daily_maintenance_launch_agent.standard_out_path",
+        "clean-merged.daily_maintenance_launch_agent.standard_error_path",
+        "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+        "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
+    }
+    present_daily_maintenance_keys = daily_maintenance_keys & set(flat)
+    if present_daily_maintenance_keys and present_daily_maintenance_keys != daily_maintenance_keys:
+        missing_daily_maintenance = sorted(
+            daily_maintenance_keys - present_daily_maintenance_keys)[0]
+        raise ConfigError(f"missing required config: {missing_daily_maintenance}")
+    daily_maintenance_launch_agent = None
+    if present_daily_maintenance_keys:
+        daily_maintenance_launch_agent = DailyMaintenanceLaunchAgentConfig(
+            label=_config_str(flat, "clean-merged.daily_maintenance_launch_agent.label"),
+            program_arguments=_config_string_array(
+                flat, "clean-merged.daily_maintenance_launch_agent.program_arguments"),
+            environment_path=_config_str(flat, "clean-merged.daily_maintenance_launch_agent.environment_path"),
+            standard_out_path=_config_str(flat, "clean-merged.daily_maintenance_launch_agent.standard_out_path"),
+            standard_error_path=_config_str(flat, "clean-merged.daily_maintenance_launch_agent.standard_error_path"),
+            start_calendar_interval={
+                "Hour": _config_int_range(
+                    flat,
+                    "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+                    minimum=0,
+                    maximum=23,
+                ),
+                "Minute": _config_int_range(
+                    flat,
+                    "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
+                    minimum=0,
+                    maximum=59,
+                ),
+            },
+        )
     logging_cfg = LoggingConfig(
         audit_format=_config_str(flat, "clean-merged.logging.audit_format"),
         audit_path=_config_str(flat, "clean-merged.logging.audit_path"),
@@ -441,6 +512,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
     return Config(
         enabled=enabled, trunk_branch=trunk_branch, remote_name=remote_name,
         lane_r=lane_r, lane_w=lane_w, lane_t=lane_t,
+        daily_maintenance_launch_agent=daily_maintenance_launch_agent,
         logging=logging_cfg, backups=backups, origin_owner=origin_owner,
     )
 
@@ -3935,6 +4007,45 @@ def command_may_reference_rust_target(command: str, patterns: tuple[str, ...]) -
     )
 
 
+def command_path_candidates(tokens: list[str]) -> list[str]:
+    candidates: list[str] = []
+    for token in tokens:
+        candidates.append(token)
+        if token.startswith(("--manifest-path=", "--target-dir=")):
+            _, _, value = token.partition("=")
+            if value:
+                candidates.append(value)
+    return candidates
+
+
+def command_mentions_path(
+    command: str, roots: set[pathlib.Path], *, relative_to: pathlib.Path | None = None,
+) -> bool:
+    root_texts = {str(root) for root in roots}
+    if any(text in command for text in root_texts):
+        return True
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for token in command_path_candidates(tokens):
+        path = pathlib.Path(token)
+        if path.is_absolute():
+            candidate = path
+        elif relative_to is not None:
+            candidate = relative_to / path
+        else:
+            continue
+        try:
+            resolved = candidate.resolve(strict=False)
+        except (OSError, RuntimeError):
+            resolved = candidate.absolute()
+        for root in roots:
+            if path_is_or_inside(resolved, root):
+                return True
+    return False
+
+
 def active_target_dir_processes(
     worktree: pathlib.Path, target: pathlib.Path, config: LaneTConfig,
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -3954,6 +4065,8 @@ def active_target_dir_processes(
     active: list[dict[str, Any]] = []
     worktree_resolved = worktree.resolve()
     target_resolved = target.resolve()
+    worktree_roots = {worktree, worktree_resolved}
+    target_roots = {target, target_resolved}
     matching_processes: list[tuple[int, str]] = []
     for line in ps.stdout.splitlines():
         stripped = line.strip()
@@ -3964,8 +4077,8 @@ def active_target_dir_processes(
             pid = int(pid_text)
         except ValueError:
             continue
-        command_mentions_target = str(target_resolved) in command
-        command_mentions_worktree = str(worktree_resolved) in command
+        command_mentions_target = command_mentions_path(command, target_roots)
+        command_mentions_worktree = command_mentions_path(command, worktree_roots)
         if (
             not command_mentions_target
             and not command_mentions_worktree
@@ -3975,11 +4088,16 @@ def active_target_dir_processes(
         matching_processes.append((pid, command))
     for pid, command in matching_processes:
         cwd, cwd_error = clean_merged_process_cwd(pid, timeout_s=config.cwd_visibility_timeout_s)
-        command_mentions_target = str(target_resolved) in command
+        command_mentions_target = command_mentions_path(
+            command, target_roots, relative_to=cwd,
+        ) if cwd is not None else command_mentions_path(command, target_roots)
+        command_mentions_worktree = command_mentions_path(
+            command, worktree_roots, relative_to=cwd,
+        ) if cwd is not None else command_mentions_path(command, worktree_roots)
         cwd_related = cwd is not None and (
             path_is_or_inside(cwd, worktree_resolved) or path_is_or_inside(cwd, target_resolved)
         )
-        if cwd_related or command_mentions_target:
+        if cwd_related or command_mentions_target or command_mentions_worktree:
             active.append({
                 "pid": pid,
                 "command": command,

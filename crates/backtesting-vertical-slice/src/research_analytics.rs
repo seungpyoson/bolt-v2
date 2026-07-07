@@ -851,6 +851,19 @@ fn validate_result_contract_matches_run(
         run.run_spec.manifest.resolved_nt_version
     );
 
+    let expected_result_contract_uri = format!(
+        "{}/{}",
+        run.run_spec.manifest.output_prefix.trim_end_matches('/'),
+        RESULT_CONTRACT_FILE
+    );
+    ensure!(
+        contract.artifact_uris.result_contract_uri == expected_result_contract_uri,
+        "{} result_contract_uri {:?} does not match expected {:?}",
+        result_contract_path.display(),
+        contract.artifact_uris.result_contract_uri,
+        expected_result_contract_uri
+    );
+
     Ok(())
 }
 

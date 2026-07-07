@@ -1706,19 +1706,23 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
 fn exit_hold_ev_does_not_require_uncertainty_band_components() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-MISSING-UNCERTAINTY"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(
@@ -1745,19 +1749,23 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
 fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-SYMMETRIC-HOLD"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(
@@ -1791,19 +1799,23 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
 fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatility() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let open_position = OpenPositionState {
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(OutcomeSide::Up),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-ZERO-RV"),
-        outcome_side: Some(OutcomeSide::Up),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: strategy.active.books.up.clone(),
     };
     set_managed_position(

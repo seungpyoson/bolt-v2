@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the Bolt-v3 decision-evidence v13 -> v14 migrator."""
+"""Tests for the Bolt-v3 decision-evidence v13/v14 -> current migrator."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import tempfile
 from pathlib import Path
 
 
-SCRIPT_PATH = Path(__file__).with_name("migrate_bolt_v3_decision_evidence_v13_to_v14.py")
-SPEC = importlib.util.spec_from_file_location("migrate_bolt_v3_decision_evidence_v13_to_v14", SCRIPT_PATH)
+SCRIPT_PATH = Path(__file__).with_name("migrate_bolt_v3_decision_evidence_to_v15.py")
+SPEC = importlib.util.spec_from_file_location("migrate_bolt_v3_decision_evidence_to_v15", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"failed to load {SCRIPT_PATH}")
 MIGRATOR = importlib.util.module_from_spec(SPEC)
@@ -49,10 +49,10 @@ def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements() -> 
 
     migrated = path.read_text(encoding="utf-8").splitlines()
     assert migrated == [
-        '{"schema_version":14,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{"source":"nt_capital_admission_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
-        '{"schema_version":14,"recorded_at_utc_ns":1700000000000000001,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{"reservation_id":"reservation-one","source":"nt_capital_admission_state","unchanged":13}}',
-        '{"schema_version":14,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_capital_admission","snapshot_source":"nt_capital_admission_state"},"note":"unchanged"}}',
-        '{"schema_version":14,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_capital_admission_state","note":"untouched-tail"}}',
+        '{"schema_version":15,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{"source":"nt_capital_admission_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
+        '{"schema_version":15,"recorded_at_utc_ns":1700000000000000001,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{"reservation_id":"reservation-one","source":"nt_capital_admission_state","unchanged":13}}',
+        '{"schema_version":15,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_capital_admission","snapshot_source":"nt_capital_admission_state"},"note":"unchanged"}}',
+        '{"schema_version":15,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_capital_admission_state","note":"untouched-tail"}}',
     ]
     try:
         assert manifest["changed_files"] == [
@@ -85,7 +85,7 @@ def test_non_corruption_guard_preserves_timestamps_and_payload_string_values() -
     assert '"strategy_id":"position_sizer_rebuild"' in migrated
     assert '"client_order_id":"nt_sizing_state"' in migrated
     assert '"sequence":13' in migrated
-    assert '"schema_version":14' in migrated
+    assert '"schema_version":15' in migrated
     assert '"source":"nt_capital_admission_state"' in migrated
     temp.cleanup()
 
@@ -111,7 +111,7 @@ def test_idempotent_second_run_is_noop() -> None:
     temp.cleanup()
 
 
-def test_existing_v14_record_is_left_untouched_while_v13_records_complete() -> None:
+def test_existing_v14_record_is_restamped_to_current_while_v13_records_complete() -> None:
     temp = tempfile.TemporaryDirectory()
     tmp_path = Path(temp.name)
     path = tmp_path / "mixed.jsonl"
@@ -122,8 +122,8 @@ def test_existing_v14_record_is_left_untouched_while_v13_records_complete() -> N
     run_migration(tmp_path)
 
     assert path.read_text(encoding="utf-8").splitlines() == [
-        v14,
-        '{"schema_version":14,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{}}',
+        '{"schema_version":15,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{"source":"nt_capital_admission_state"}}',
+        '{"schema_version":15,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{}}',
     ]
     temp.cleanup()
 
@@ -142,13 +142,13 @@ def test_dry_run_reports_manifest_without_mutating() -> None:
     temp.cleanup()
 
 
-def test_refuses_schema_versions_outside_13_and_14_without_writing() -> None:
+def test_refuses_schema_versions_outside_13_14_and_15_without_writing() -> None:
     temp = tempfile.TemporaryDirectory()
     tmp_path = Path(temp.name)
     path = tmp_path / "records.jsonl"
     path.write_text(
         '{"schema_version":12,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{}}\n'
-        '{"schema_version":15,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{}}\n',
+        '{"schema_version":16,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{}}\n',
         encoding="utf-8",
     )
     before = path.read_bytes()
@@ -158,7 +158,7 @@ def test_refuses_schema_versions_outside_13_and_14_without_writing() -> None:
     except MIGRATOR.MigrationError as error:
         message = str(error)
     else:
-        raise AssertionError("schema versions outside 13/14 must be refused")
+        raise AssertionError("schema versions outside 13/14/15 must be refused")
 
     assert "unsupported schema_version=12" in message
     assert path.read_bytes() == before

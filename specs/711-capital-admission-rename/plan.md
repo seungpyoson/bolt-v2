@@ -100,7 +100,7 @@ docs/bolt-v3/2026-04-25-bolt-v3-schema.md
 scripts/verify_bolt_v3_schema_current.py, scripts/test_verify_bolt_v3_schema_current.py
 
 # New files — Tasks 7/8/9
-scripts/migrate_bolt_v3_decision_evidence_v13_to_v14.py            (+ test_…)
+scripts/migrate_bolt_v3_decision_evidence_to_v15.py            (+ test_…)
 scripts/migrate_bolt_v3_capital_admission_config.py               (+ test_…)
 scripts/verify_bolt_v3_naming.py                                  (EXTENDED into the misnomer fence — not a new script)
 specs/711-capital-admission-rename/misnomer-allowlist.txt          (fence allowlist)
@@ -321,11 +321,11 @@ Anchor renames:
 ## Task 7: JSONL evidence migration tool + recovery-equivalence test (new code, TDD)
 
 **Files:**
-- Create: `scripts/migrate_bolt_v3_decision_evidence_v13_to_v14.py` + `scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py`
+- Create: `scripts/migrate_bolt_v3_decision_evidence_to_v15.py` + `scripts/test_migrate_bolt_v3_decision_evidence_to_v15.py`
 - Create: `tests/bolt_v3_capital_admission_recovery_equivalence.rs` + fixtures under
   `tests/fixtures/bolt_v3/capital_admission_recovery/`
 
-**Interfaces — Produces:** a CLI `migrate_bolt_v3_decision_evidence_v13_to_v14.py <dir> [--dry-run]`
+**Interfaces — Produces:** a CLI `migrate_bolt_v3_decision_evidence_to_v15.py <dir> [--dry-run]`
 that, per file, applies **key-scoped** replacements (record-kind / gate-id / outcome / source-label
 string values per FR-006/007/008/009/009b) and sets each envelope's `schema_version` to 14 —
 **including** `submit_reservation_metadata` / `submit_reservation_fill` — writing atomically (temp +
@@ -351,7 +351,7 @@ other version. Emit a changed-file manifest (path + before/after hash).
   (c) re-running on the migrated dir is a no-op (idempotent);
   (d) a dir already containing a v14 record is completed, not refused (resumable);
   (e) a schema-15 AND a schema-12 record each cause refusal (accept only 13/14).
-  Run: `python3.12 -m pytest scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py -v` → FAIL.
+  Run: `python3.12 -m pytest scripts/test_migrate_bolt_v3_decision_evidence_to_v15.py -v` → FAIL.
 - [ ] **Step 2:** Implement the migrator: **key-anchored regex** replacements (per Interfaces — never a
   bare integer replace, never JSON round-trip) + `tempfile` + `os.fsync` + `os.replace`; per-record
   version guard for idempotency; pre-scan to refuse any version other than 13/14; `--dry-run` + manifest.

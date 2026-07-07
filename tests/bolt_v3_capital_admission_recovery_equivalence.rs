@@ -29,10 +29,10 @@ fn migrated_v13_evidence_recovers_capital_admission_reservations_equivalently() 
     assert_migrated_records_preserve_reservation_payloads(&original_values, &migrated_values);
 
     let recovery = read_submit_reservation_recovery_evidence(&migrated_path, 100_000)
-        .expect("migrated v14 reservation evidence should recover");
+        .expect("migrated current-schema reservation evidence should recover");
     let actual = recovered_snapshot_json(&recovery);
     let expected: Value = serde_json::from_str(
-        &fs::read_to_string(fixture_dir.join("recovered_v14_golden.json"))
+        &fs::read_to_string(fixture_dir.join("recovered_v15_golden.json"))
             .expect("golden recovery snapshot should be readable"),
     )
     .expect("golden recovery snapshot should parse");
@@ -48,7 +48,7 @@ fn repo_root() -> PathBuf {
 
 fn run_evidence_migrator(repo: &Path, directory: &Path) {
     let output = Command::new("python3")
-        .arg(repo.join("scripts/migrate_bolt_v3_decision_evidence_v13_to_v14.py"))
+        .arg(repo.join("scripts/migrate_bolt_v3_decision_evidence_to_v15.py"))
         .arg(directory)
         .output()
         .expect("python3 migrator process should start");
@@ -96,7 +96,7 @@ fn assert_migrated_records_preserve_reservation_payloads(original: &[Value], mig
         "migration must not add or drop evidence records"
     );
     for (before, after) in original.iter().zip(migrated) {
-        assert_eq!(after["schema_version"], json!(14));
+        assert_eq!(after["schema_version"], json!(15));
         match before["kind"]
             .as_str()
             .expect("fixture record should have kind")

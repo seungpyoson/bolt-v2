@@ -53,7 +53,7 @@ use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
-const EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION: u32 = 14;
+const EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION: u32 = 15;
 
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {

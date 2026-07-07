@@ -69,11 +69,12 @@ Entry `is_quote_quantity = true` is supported by sizing the entry quantity as qu
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
-Decision-evidence JSONL records use `schema_version = 14` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `settlement_booking_error`, `venue_truth_capture_failure`, and `venue_truth_divergence` envelopes.
+Decision-evidence JSONL records use `schema_version = 15` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `settlement_booking_error`, `venue_truth_capture_failure`, and `venue_truth_divergence` envelopes.
 Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `booking_error`, `capture_failure`, or `divergence`.
 The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, `requote_throttle` for maker requote budget throttle transitions, `settlement` for successful hold-to-resolution settlement bookings, `settlement_booking_error` for accepted fail-closed settlement booking errors, `venue_truth_capture_failure` for degraded venue REST capture authority evidence, and `venue_truth_divergence` for durable venue-truth halt evidence.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 `capital_admission_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-14 reservation records.
+Schema 11 added reference-current-price provenance fields in strategy-input snapshots; schema 13 added durable state-change rationale for entry skips, exit decisions, loss-governor halts, and maker requote throttles; schema 14 renamed the rebuild audit kind to `capital_admission_rebuild`; schema 15 added position-interval exit block reasons.
 
 ### `[parameters]`
 """
@@ -120,6 +121,23 @@ def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
 
     if "schema missing decision-evidence JSONL schema v11 contract" not in findings:
         raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
+
+
+def test_validate_docs_checks_decision_evidence_migrator_schema_version_source() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        decision_evidence_source="pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;",
+        decision_evidence_migration_source="SUPPORTED_CURRENT_SCHEMA_VERSION = 14",
+    )
+
+    if (
+        "decision-evidence migrator current schema 14 does not match source 15"
+        not in findings
+    ):
+        raise AssertionError(
+            f"expected decision-evidence migrator schema drift finding, got {findings!r}"
+        )
 
 
 def test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status() -> None:
@@ -320,7 +338,7 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
 
 
 def test_validate_docs_rejects_decision_evidence_and_runtime_contract_doc_drift() -> None:
-    stale_schema = CURRENT_SCHEMA.replace("schema_version = 14", "schema_version = 13")
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 15", "schema_version = 14")
     stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
     stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
 
@@ -331,7 +349,7 @@ def test_validate_docs_rejects_decision_evidence_and_runtime_contract_doc_drift(
     )
 
     expected_fragments = [
-        "schema missing decision-evidence JSONL schema v14 contract",
+        "schema missing decision-evidence JSONL schema v15 contract",
         "runtime contracts missing order-template evidence field",
         "status map missing current phrase: Order construction uses",
     ]
@@ -425,6 +443,8 @@ def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
         test_validate_docs_accepts_current_terms,
+        test_validate_docs_checks_decision_evidence_schema_version_source,
+        test_validate_docs_checks_decision_evidence_migrator_schema_version_source,
         test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status,
         test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
         test_validate_docs_rejects_trailing_stop_market_required_default_field_claims,

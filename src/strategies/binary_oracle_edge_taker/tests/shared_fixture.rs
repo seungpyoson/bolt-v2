@@ -1453,12 +1453,46 @@ pub(super) fn configured_position_probe(
         },
         0,
     );
+    seed_managed_position_lifecycle_from_active_fixture(strategy, instrument_id);
     let position = managed_position_ref(strategy)
         .cloned()
         .expect("configured instrument should materialize through production position path");
     strategy.exposure = original_exposure;
     strategy.refresh_book_subscriptions_for_current_state();
     position
+}
+
+fn active_fixture_lifecycle_for_instrument(
+    strategy: &BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> BoltV3PositionMarketLifecycle {
+    let outcome_side = if strategy.active.books.up.instrument_id == Some(instrument_id) {
+        Some(OutcomeSide::Up)
+    } else if strategy.active.books.down.instrument_id == Some(instrument_id) {
+        Some(OutcomeSide::Down)
+    } else {
+        None
+    };
+    BoltV3PositionMarketLifecycle::from_entry_context(
+        strategy.active.market_id.clone(),
+        outcome_side,
+        strategy.active.price_to_beat,
+        strategy.active.interval_open,
+        strategy.active.interval_end_ms,
+        strategy.active.selection_published_at_ms,
+        strategy.active.seconds_to_expiry_at_selection,
+    )
+}
+
+fn seed_managed_position_lifecycle_from_active_fixture(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) {
+    let lifecycle = active_fixture_lifecycle_for_instrument(strategy, instrument_id);
+    if let Some(managed) = strategy.exposure.managed_position_mut() {
+        managed.position.lifecycle = lifecycle;
+    }
+    strategy.sync_exposure_context_from_active();
 }
 
 pub(super) fn configured_book_for_instrument(
@@ -1526,14 +1560,22 @@ pub(super) fn pending_entry_state(
     let instrument_id = selected_entry_instrument(strategy);
     let probe = configured_position_probe(strategy, instrument_id);
     let outcome_side = probe
-        .outcome_side
+        .lifecycle
+        .outcome_side()
         .expect("configured instrument should materialize with an outcome side");
     let book = probe.book;
     PendingEntryState {
         client_order_id,
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            Some(outcome_side),
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id,
-        outcome_side: Some(outcome_side),
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: strategy
             .context
@@ -1541,9 +1583,6 @@ pub(super) fn pending_entry_state(
             .fee_bps(instrument_id)
             .and_then(|value| value.to_f64())
             .or(Some(0.0)),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book,
     }
 }
@@ -1589,6 +1628,7 @@ pub(super) fn materialize_configured_position(
         },
         0,
     );
+    seed_managed_position_lifecycle_from_active_fixture(strategy, instrument_id);
     let mut position = managed_position_ref(strategy)
         .cloned()
         .expect("configured position should materialize as managed exposure");
@@ -1671,18 +1711,22 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
     let book = configured_book_for_instrument(strategy, instrument_id);
     let pending = PendingEntryState {
         client_order_id,
-        market_id: Some("MKT-1".to_string()),
+        lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
+            Some("MKT-1".to_string()),
+            None,
+            Some(3_100.0),
+            Some(3_100.0),
+            Some(301_000),
+            Some(1_000),
+            Some(300),
+        ),
         instrument_id,
-        outcome_side: None,
         outcome_fees: strategy.active.outcome_fees.clone(),
         historical_entry_fee_bps: strategy
             .context
             .fee_provider()
             .fee_bps(instrument_id)
             .and_then(|value| value.to_f64()),
-        interval_open: Some(3_100.0),
-        selection_published_at_ms: Some(1_000),
-        seconds_to_expiry_at_selection: Some(300),
         book: book.clone(),
     };
     let avg_px_open = book
@@ -1709,7 +1753,7 @@ pub(super) fn set_exit_pending(
     strategy.exposure = ExposureState::ExitPending(ExitPendingState {
         pending_exit: PendingExitState {
             client_order_id,
-            market_id: position.market_id.clone(),
+            market_id: position.lifecycle.market_id_owned(),
             position_id: Some(position.position_id),
             fill_received,
             filled_quantity: fill_received.then_some(position.quantity),

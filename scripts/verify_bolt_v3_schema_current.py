@@ -16,6 +16,9 @@ RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-con
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
+DECISION_EVIDENCE_MIGRATOR = (
+    REPO_ROOT / "scripts/migrate_bolt_v3_decision_evidence_to_v15.py"
+)
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
@@ -29,7 +32,10 @@ SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN = re.compile(
 DECISION_EVIDENCE_SCHEMA_VERSION_PATTERN = re.compile(
     r"pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = (?P<version>\d+);"
 )
-DEFAULT_DECISION_EVIDENCE_SCHEMA_VERSION = 14
+DECISION_EVIDENCE_MIGRATOR_CURRENT_VERSION_PATTERN = re.compile(
+    r"SUPPORTED_CURRENT_SCHEMA_VERSION\s*=\s*(?P<version>\d+)"
+)
+DEFAULT_DECISION_EVIDENCE_SCHEMA_VERSION = 15
 STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
     r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
     re.MULTILINE,
@@ -203,6 +209,13 @@ def extract_decision_evidence_schema_version(decision_evidence_source: str) -> i
     return int(match.group("version"))
 
 
+def extract_decision_evidence_migrator_current_version(migration_source: str) -> int | None:
+    match = DECISION_EVIDENCE_MIGRATOR_CURRENT_VERSION_PATTERN.search(migration_source)
+    if match is None:
+        return None
+    return int(match.group("version"))
+
+
 def has_rust_function(source: str, name: str) -> bool:
     return re.search(rf"(?m)^\s*(?:pub(?:\(crate\))?\s+)?fn\s+{re.escape(name)}\s*\(", source) is not None
 
@@ -261,6 +274,7 @@ def validate_docs(
     runtime_contracts: str = "",
     validate_source: str = "",
     decision_evidence_source: str = "",
+    decision_evidence_migration_source: str = "",
     archetype_source: str = "",
     strategy_source: str = "",
     position_contract_source: str = "",
@@ -292,6 +306,22 @@ def validate_docs(
                     "schema missing decision-evidence JSONL schema "
                     f"v{decision_evidence_schema_version} contract"
                 )
+            if decision_evidence_migration_source:
+                migration_schema_version = (
+                    extract_decision_evidence_migrator_current_version(
+                        decision_evidence_migration_source
+                    )
+                )
+                if migration_schema_version is None:
+                    findings.append(
+                        "decision-evidence migrator missing SUPPORTED_CURRENT_SCHEMA_VERSION"
+                    )
+                elif migration_schema_version != decision_evidence_schema_version:
+                    findings.append(
+                        "decision-evidence migrator current schema "
+                        f"{migration_schema_version} does not match source "
+                        f"{decision_evidence_schema_version}"
+                    )
 
     if not decision_evidence_source:
         decision_evidence_contract_phrase = DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
@@ -408,6 +438,9 @@ def main() -> int:
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         decision_evidence_source=DECISION_EVIDENCE_SOURCE.read_text(encoding="utf-8"),
+        decision_evidence_migration_source=DECISION_EVIDENCE_MIGRATOR.read_text(
+            encoding="utf-8"
+        ),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
         strategy_source=module_text(STRATEGY_SOURCE_ROOTS),
         position_contract_source=POSITION_CONTRACT_SOURCE.read_text(encoding="utf-8")

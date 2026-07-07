@@ -3045,7 +3045,21 @@ mod tests {
             "a persistent stale source must not trigger repeated missing transitions"
         );
 
-        std::thread::sleep(Duration::from_millis(2));
+        let mut clock_advanced = current_unix_timestamp_ms()
+            .expect("test clock should be readable")
+            > reconnected_epoch_ms;
+        for _ in u64::MIN..config.idle_timeout_ms {
+            if clock_advanced {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            clock_advanced = current_unix_timestamp_ms().expect("test clock should be readable")
+                > reconnected_epoch_ms;
+        }
+        assert!(
+            clock_advanced,
+            "test clock must advance past the simulated reconnect epoch before the recovery report"
+        );
         handler(WireMessage::text(chainlink_report_frame_json_for_feed(
             TEST_ETH_FEED_ID,
         )));

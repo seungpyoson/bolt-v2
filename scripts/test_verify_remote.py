@@ -61,6 +61,9 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
             diagnostic_log_max_bytes = 20000
             diagnostic_unavailable_notice_interval_polls = 4
 
+            [sandbox_safe_push]
+            remote = "origin"
+
             [commands]
 
             [commands.test]
@@ -312,9 +315,11 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("branch", "--show-current"): ("feature", None),
                     ("config", "branch.feature.remote"): (None, "no upstream"),
                     ("remote",): ("origin", None),
+                    ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
                     ("ls-remote", "--heads", "origin", "feature"): ("", None),
+                    ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): ("", None),
                 }[args],
-                "git push origin HEAD",
+                "just sandbox-safe-push",
             ),
             (
                 lambda _repo, *args: {
@@ -324,7 +329,7 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("config", "branch.feature.remote"): (None, "no upstream"),
                     ("remote",): ("fork\nupstream", None),
                 }[args],
-                "requires local upstream metadata when multiple remotes are configured",
+                "sandbox_safe_push.remote origin is not among configured Git remotes",
             ),
         ]
         try:
@@ -384,7 +389,11 @@ def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> No
             ("branch", "--show-current"): ("feature", None),
             ("config", "branch.feature.remote"): (None, "no upstream"),
             ("remote",): ("fork\norigin", None),
-            ("ls-remote", "--heads", "origin", "feature"): ("abc\trefs/heads/feature", None),
+            ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+            ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): (
+                "abc\trefs/heads/feature",
+                None,
+            ),
         }[args]
 
     original_git_output = owner.git_output
@@ -396,7 +405,7 @@ def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> No
 
     if (head, branch, error) != ("abc", "feature", None):
         raise AssertionError((head, branch, error))
-    if ("ls-remote", "--heads", "origin", "feature") not in calls:
+    if ("ls-remote", "--heads", "https://example.invalid/push.git", "feature") not in calls:
         raise AssertionError(calls)
 
 

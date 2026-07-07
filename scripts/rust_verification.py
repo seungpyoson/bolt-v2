@@ -3261,17 +3261,68 @@ def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
     return git_output(repo, "branch", "--show-current")
 
 
+def validate_git_remote_name(remote: str, key: str) -> None:
+    invalid = (
+        not remote
+        or remote.startswith("-")
+        or any(char.isspace() for char in remote)
+        or any(char in remote for char in "\\^:?*[]~@{}")
+        or "//" in remote
+        or ".." in remote
+    )
+    if invalid:
+        raise PolicyError(f"{key} must be a safe git remote name")
+
+
+def sandbox_safe_push_remote(repo: pathlib.Path) -> tuple[str | None, str | None]:
+    try:
+        policy = load_policy(repo)
+    except (FileNotFoundError, PolicyError):
+        return None, None
+    push_config = policy.get("sandbox_safe_push")
+    if push_config is None:
+        return None, None
+    if not isinstance(push_config, dict):
+        return None, "sandbox_safe_push table must be a table"
+    remote = push_config.get("remote")
+    if not isinstance(remote, str) or not remote:
+        return None, "sandbox_safe_push.remote must be a non-empty string"
+    try:
+        validate_git_remote_name(remote, "sandbox_safe_push.remote")
+    except PolicyError as exc:
+        return None, str(exc)
+    return remote, None
+
+
+def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tuple[str | None, str | None]:
+    urls, error = git_output(repo, "remote", "get-url", "--push", "--all", remote)
+    if error is not None:
+        return None, error
+    names = [line for line in (urls or "").splitlines() if line]
+    if len(names) != 1:
+        return None, f"{command_name} requires remote {remote} to have exactly one push URL"
+    return names[0], None
+
+
 def fallback_push_remote(
     repo: pathlib.Path,
     *,
     command_name: str,
 ) -> tuple[str | None, str | None]:
+    configured_remote, config_error = sandbox_safe_push_remote(repo)
+    if config_error is not None:
+        return None, config_error
     remotes, error = git_output(repo, "remote")
     if error is not None:
         return None, error
     if not remotes:
         return None, f"{command_name} requires a configured Git remote"
     names = [line for line in remotes.splitlines() if line]
+    if configured_remote is not None:
+        if configured_remote in names:
+            return configured_remote, None
+        joined = ", ".join(sorted(names))
+        return None, f"sandbox_safe_push.remote {configured_remote} is not among configured Git remotes: {joined}"
     if "origin" in names:
         return "origin", None
     if len(names) == 1:
@@ -3285,9 +3336,12 @@ def live_remote_branch_head(
     *,
     remote: str,
     branch: str,
+    redact_value: str | None = None,
 ) -> tuple[str | None, str | None]:
     refs, error = git_output(repo, "ls-remote", "--heads", remote, branch)
     if error is not None:
+        if redact_value:
+            error = error.replace(redact_value, "<remote-url>")
         return None, error
     if not refs:
         return None, None
@@ -3307,12 +3361,16 @@ def fallback_live_upstream_head(
     fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
     if remote_error is not None or fallback_remote is None:
         return None, None, None, remote_error
+    push_url, push_url_error = single_push_url(repo, fallback_remote, command_name=command_name)
+    if push_url_error is not None or push_url is None:
+        return None, None, None, push_url_error
     upstream, upstream_error = live_remote_branch_head(
         repo,
-        remote=fallback_remote,
+        remote=push_url,
         branch=branch,
+        redact_value=push_url,
     )
-    return upstream, branch if upstream is not None else None, fallback_remote, upstream_error
+    return upstream, branch, fallback_remote, upstream_error
 
 
 def live_upstream_head(
@@ -3333,7 +3391,13 @@ def live_upstream_head(
         return None, None, None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
     upstream_branch = merge_ref.removeprefix("refs/heads/")
     upstream, error = live_remote_branch_head(repo, remote=remote, branch=upstream_branch)
-    return upstream, upstream_branch if upstream is not None else None, remote, error
+    return upstream, upstream_branch, remote, error
+
+
+def sandbox_safe_push_hint(current_branch_name: str, target_branch: str | None) -> str:
+    if target_branch and target_branch != current_branch_name:
+        return f"just sandbox-safe-push --branch {shlex.quote(target_branch)}"
+    return "just sandbox-safe-push"
 
 
 def ensure_clean_pushed_head_preconditions(
@@ -3358,7 +3422,7 @@ def ensure_clean_pushed_head_preconditions(
     if error is not None:
         return None, None, error
     if upstream is None or upstream_branch is None:
-        hint = f"git push {shlex.quote(remote or '<remote>')} HEAD"
+        hint = sandbox_safe_push_hint(branch, upstream_branch)
         return None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: {hint}"
     if upstream != head:
         return None, None, f"{command_name} requires HEAD to be pushed to the upstream branch"

@@ -131,6 +131,30 @@ def assert_push_uses_configured_push_url() -> None:
             raise AssertionError(fetch_ref)
 
 
+def assert_multiple_push_urls_fail_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        fetch_bare = tmp / "fetch.git"
+        push_one = tmp / "push-one.git"
+        push_two = tmp / "push-two.git"
+        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(fetch_bare)])
+        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(push_one)])
+        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(push_two)])
+        repo = init_work_repo(tmp, remote_path=fetch_bare)
+        git(repo, "remote", "set-url", "--add", "--push", "origin", str(push_one))
+        git(repo, "remote", "set-url", "--add", "--push", "origin", str(push_two))
+
+        result = run_helper(repo)
+        if result.returncode != 2:
+            raise AssertionError(result)
+        if "exactly one push URL" not in result.stderr:
+            raise AssertionError(result.stderr)
+        for remote in (push_one, push_two):
+            remote_ref = run(["git", "ls-remote", "--heads", str(remote), BRANCH]).stdout.strip()
+            if remote_ref:
+                raise AssertionError(remote_ref)
+
+
 def assert_rejects_unsafe_branch_before_push() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
@@ -214,6 +238,7 @@ def assert_git_prompt_is_forced_off() -> None:
 def main() -> int:
     assert_push_uses_url_without_remote_tracking_write()
     assert_push_uses_configured_push_url()
+    assert_multiple_push_urls_fail_closed()
     assert_rejects_unsafe_branch_before_push()
     assert_push_errors_redact_remote_url()
     assert_requires_clean_worktree()

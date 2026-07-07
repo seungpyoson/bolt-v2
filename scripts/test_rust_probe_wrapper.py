@@ -647,12 +647,16 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ("branch", "--show-current"): (BRANCH, None),
         ("config", f"branch.{BRANCH}.remote"): ("", None),
         ("remote",): ("origin", None),
-        ("ls-remote", "--heads", "origin", BRANCH): (f"{HEAD}\trefs/heads/{BRANCH}", None),
+        ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+        ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): (
+            f"{HEAD}\trefs/heads/{BRANCH}",
+            None,
+        ),
     }
     head, branch, error, calls = run_with_git_outputs(no_local_upstream_outputs)
     if (head, branch, error) != (HEAD, BRANCH, None):
         raise AssertionError((head, branch, error))
-    if ("ls-remote", "--heads", "origin", BRANCH) not in calls:
+    if ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH) not in calls:
         raise AssertionError(calls)
 
     refusal_cases = [
@@ -666,9 +670,10 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
             {
                 ("config", f"branch.{BRANCH}.remote"): ("", None),
                 ("remote",): ("origin", None),
-                ("ls-remote", "--heads", "origin", BRANCH): ("", None),
+                ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+                ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): ("", None),
             },
-            "git push origin HEAD",
+            "just sandbox-safe-push",
         ),
         (
             "unpushed head",

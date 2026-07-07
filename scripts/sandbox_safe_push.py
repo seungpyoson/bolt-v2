@@ -188,11 +188,11 @@ def require_clean_worktree(repo: pathlib.Path) -> None:
 
 
 def remote_url(repo: pathlib.Path, remote: str) -> str:
-    result = run_git(repo, ["remote", "get-url", "--push", remote])
-    url = result.stdout.strip()
-    if not url:
-        raise PushError(f"remote {remote!r} has no push URL")
-    return url
+    result = run_git(repo, ["remote", "get-url", "--push", "--all", remote])
+    urls = [line for line in result.stdout.splitlines() if line]
+    if len(urls) != 1:
+        raise PushError(f"remote {remote!r} must have exactly one push URL")
+    return urls[0]
 
 
 def live_remote_branch_head(repo: pathlib.Path, *, url: str, branch: str) -> str | None:

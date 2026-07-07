@@ -21,7 +21,7 @@ SPEC.loader.exec_module(VERIFIER)
 def write_sources(root: Path, overrides: dict[str, str] | None = None) -> None:
     sources = {
         "src/bolt_v3_numeric.rs": """
-pub(crate) mod financial_value_private {
+mod financial_value_private {
     pub trait Sealed {}
 }
 
@@ -32,30 +32,66 @@ pub trait FinancialValue: financial_value_private::Sealed {}
 pub struct Probability { value: f64 }
 impl financial_value_private::Sealed for Probability {}
 impl FinancialValue for Probability {}
+impl financial_value_private::Sealed for crate::bolt_v3_maker_mu_estimator::UsableMu {}
+impl FinancialValue for crate::bolt_v3_maker_mu_estimator::UsableMu {}
+impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ValidRealizedVol {}
+impl FinancialValue for crate::bolt_v3_realized_volatility::ValidRealizedVol {}
+impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}
+impl FinancialValue for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}
 impl Probability {
     pub fn new(value: f64) -> Option<Self> { sanitize_probability(value).map(|value| Self { value }) }
     pub fn clamped(value: f64) -> Option<Self> { Some(Self { value }) }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn financial_value_marker_is_implemented_for_registered_types() {
+        fn assert_financial_value<T: FinancialValue>() {}
+
+        assert_financial_value::<Probability>();
+        assert_financial_value::<crate::bolt_v3_maker_mu_estimator::UsableMu>();
+        assert_financial_value::<crate::bolt_v3_realized_volatility::ReadyRealizedVol>();
+        assert_financial_value::<crate::bolt_v3_realized_volatility::ValidRealizedVol>();
+    }
+
+    #[test]
+    fn financial_values_do_not_implement_default() {
+        trait AmbiguousIfDefault<A> {
+            fn _check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
+
+        let _ = <super::Probability as AmbiguousIfDefault<_>>::_check;
+        let _ =
+            <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
+        let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<
+            _,
+        >>::_check;
+        let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<
+            _,
+        >>::_check;
+    }
+}
 """,
         "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+use crate::bolt_v3_numeric::{is_positive_finite, sanitize_probability};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UsableMu(f64);
-impl financial_value_private::Sealed for UsableMu {}
-impl FinancialValue for UsableMu {}
 impl UsableMu {
     fn new(value: f64) -> Self { Self(value) }
     pub fn get(self) -> f64 { self.0 }
 }
 """,
         "src/bolt_v3_realized_volatility.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+use crate::bolt_v3_numeric::{is_positive_finite, ZERO_F64};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ValidRealizedVol(f64);
-impl financial_value_private::Sealed for ValidRealizedVol {}
-impl FinancialValue for ValidRealizedVol {}
 impl ValidRealizedVol {
     pub fn new(value: f64) -> Option<Self> { Some(Self(value)) }
     pub fn get(self) -> f64 { self.0 }
@@ -63,8 +99,6 @@ impl ValidRealizedVol {
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ReadyRealizedVol(ValidRealizedVol);
-impl financial_value_private::Sealed for ReadyRealizedVol {}
-impl FinancialValue for ReadyRealizedVol {}
 impl ReadyRealizedVol {
     pub fn get(self) -> f64 { self.0.get() }
 }
@@ -186,8 +220,8 @@ impl financial_value_private::Sealed for ReadyRealizedVol {}
             },
         )
         findings = VERIFIER.verify(root)
-        if not any("FinancialValue implementor set" in finding for finding in findings):
-            raise AssertionError(f"expected FinancialValue implementor finding, got {findings!r}")
+        if not any("FinancialValue marker allowlist" in finding for finding in findings):
+            raise AssertionError(f"expected FinancialValue marker finding, got {findings!r}")
 
 
 def test_verify_rejects_unregistered_financial_value_implementor() -> None:
@@ -206,8 +240,8 @@ impl crate::bolt_v3_numeric::FinancialValue for SizingScale {}
             },
         )
         findings = VERIFIER.verify(root)
-        if not any("FinancialValue implementor set" in finding for finding in findings):
-            raise AssertionError(f"expected extra FinancialValue implementor finding, got {findings!r}")
+        if not any("FinancialValue marker allowlist" in finding for finding in findings):
+            raise AssertionError(f"expected extra FinancialValue marker finding, got {findings!r}")
 
 
 def test_verify_rejects_aliased_financial_value_implementor() -> None:
@@ -226,8 +260,8 @@ impl FV for SizingScale {}
             },
         )
         findings = VERIFIER.verify(root)
-        if not any("FinancialValue alias import" in finding for finding in findings):
-            raise AssertionError(f"expected FinancialValue alias finding, got {findings!r}")
+        if not any("FinancialValue marker allowlist" in finding for finding in findings):
+            raise AssertionError(f"expected FinancialValue marker finding, got {findings!r}")
 
 
 def test_verify_rejects_generic_financial_value_implementor() -> None:
@@ -244,289 +278,25 @@ impl<T> crate::bolt_v3_numeric::FinancialValue for SizingScale<T> {}
             },
         )
         findings = VERIFIER.verify(root)
-        if not any("FinancialValue implementor set" in finding for finding in findings):
-            raise AssertionError(f"expected generic FinancialValue finding, got {findings!r}")
+        if not any("FinancialValue marker allowlist" in finding for finding in findings):
+            raise AssertionError(f"expected generic FinancialValue marker finding, got {findings!r}")
 
 
-def test_verify_rejects_default_impl_for_registered_financial_value() -> None:
+def test_verify_rejects_missing_financial_value_default_compile_guard() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UsableMu(f64);
-impl financial_value_private::Sealed for UsableMu {}
-impl FinancialValue for UsableMu {}
-impl Default for UsableMu {
-    fn default() -> Self { Self(0.0) }
-}
-""",
-            },
+        write_sources(root)
+        numeric_path = root / "src/bolt_v3_numeric.rs"
+        numeric_path.write_text(
+            numeric_path.read_text(encoding="utf-8").replace(
+                "fn financial_values_do_not_implement_default()",
+                "fn removed_financial_values_do_not_implement_default()",
+            ),
+            encoding="utf-8",
         )
         findings = VERIFIER.verify(root)
-        if not any("Default impl for FinancialValue" in finding for finding in findings):
-            raise AssertionError(f"expected Default impl finding, got {findings!r}")
-
-
-def test_verify_rejects_path_qualified_default_impl_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UsableMu(f64);
-impl financial_value_private::Sealed for UsableMu {}
-impl FinancialValue for UsableMu {}
-impl std::default::Default for UsableMu {
-    fn default() -> Self { Self(0.0) }
-}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("Default impl for FinancialValue" in finding for finding in findings):
-            raise AssertionError(f"expected path-qualified Default impl finding, got {findings!r}")
-
-
-def test_verify_rejects_aliased_default_impl_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-use std::default::Default as D;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UsableMu(f64);
-impl financial_value_private::Sealed for UsableMu {}
-impl FinancialValue for UsableMu {}
-impl D for UsableMu {
-    fn default() -> Self { Self(0.0) }
-}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("Default alias import" in finding for finding in findings):
-            raise AssertionError(f"expected Default alias finding, got {findings!r}")
-
-
-def test_verify_rejects_absolute_path_default_impl_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_realized_volatility.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct ValidRealizedVol(f64);
-impl financial_value_private::Sealed for ValidRealizedVol {}
-impl FinancialValue for ValidRealizedVol {}
-impl ::core::default::Default for ValidRealizedVol {
-    fn default() -> Self { Self(0.0) }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct ReadyRealizedVol(ValidRealizedVol);
-impl financial_value_private::Sealed for ReadyRealizedVol {}
-impl FinancialValue for ReadyRealizedVol {}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("Default impl for FinancialValue" in finding for finding in findings):
-            raise AssertionError(f"expected absolute-path Default impl finding, got {findings!r}")
-
-
-def test_verify_rejects_cfg_attr_default_derive_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_realized_volatility.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[cfg_attr(all(), derive(Default))]
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct ValidRealizedVol(f64);
-impl financial_value_private::Sealed for ValidRealizedVol {}
-impl FinancialValue for ValidRealizedVol {}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct ReadyRealizedVol(ValidRealizedVol);
-impl financial_value_private::Sealed for ReadyRealizedVol {}
-impl FinancialValue for ReadyRealizedVol {}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("Default derive for FinancialValue" in finding for finding in findings):
-            raise AssertionError(f"expected cfg_attr Default derive finding, got {findings!r}")
-
-
-def test_verify_rejects_default_derive_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_realized_volatility.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
-pub struct ValidRealizedVol(f64);
-impl financial_value_private::Sealed for ValidRealizedVol {}
-impl FinancialValue for ValidRealizedVol {}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct ReadyRealizedVol(ValidRealizedVol);
-impl financial_value_private::Sealed for ReadyRealizedVol {}
-impl FinancialValue for ReadyRealizedVol {}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("Default derive for FinancialValue" in finding for finding in findings):
-            raise AssertionError(f"expected Default derive finding, got {findings!r}")
-
-
-def test_verify_rejects_default_derive_with_intervening_attribute() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_realized_volatility.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Default, PartialEq)]
-#[repr(transparent)]
-pub struct ValidRealizedVol(f64);
-impl financial_value_private::Sealed for ValidRealizedVol {}
-impl FinancialValue for ValidRealizedVol {}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct ReadyRealizedVol(ValidRealizedVol);
-impl financial_value_private::Sealed for ReadyRealizedVol {}
-impl FinancialValue for ReadyRealizedVol {}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("Default derive for FinancialValue" in finding for finding in findings):
-            raise AssertionError(
-                f"expected intervening-attribute Default derive finding, got {findings!r}"
-            )
-
-
-def test_verify_rejects_financial_value_type_alias() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_sizing.rs": """
-use crate::bolt_v3_maker_mu_estimator::UsableMu;
-
-pub type MuAlias = UsableMu;
-impl Default for MuAlias {
-    fn default() -> Self { unreachable!() }
-}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("FinancialValue type alias" in finding for finding in findings):
-            raise AssertionError(f"expected FinancialValue type-alias finding, got {findings!r}")
-
-
-def test_verify_rejects_financial_value_type_alias_with_where_clause() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_sizing.rs": """
-pub type MuAlias
-where
-    (): Sized
-= crate::bolt_v3_maker_mu_estimator::UsableMu;
-impl Default for MuAlias {
-    fn default() -> Self { unreachable!() }
-}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("FinancialValue type alias" in finding for finding in findings):
-            raise AssertionError(f"expected where-clause type-alias finding, got {findings!r}")
-
-
-def test_verify_rejects_macro_default_impl_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UsableMu(f64);
-impl financial_value_private::Sealed for UsableMu {}
-impl FinancialValue for UsableMu {}
-macro_rules! default_mu {
-    () => {
-        impl Default for UsableMu {
-            fn default() -> Self { Self(0.0) }
-        }
-    };
-}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("macro-generated FinancialValue impl" in finding for finding in findings):
-            raise AssertionError(f"expected macro Default impl finding, got {findings!r}")
-
-
-def test_verify_rejects_macro_trait_metavar_impl_for_registered_financial_value() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UsableMu(f64);
-impl financial_value_private::Sealed for UsableMu {}
-impl FinancialValue for UsableMu {}
-macro_rules! impl_for_mu {
-    ($trait:path) => {
-        impl $trait for UsableMu {}
-    };
-}
-""",
-            },
-        )
-        findings = VERIFIER.verify(root)
-        if not any("macro-generated FinancialValue impl" in finding for finding in findings):
-            raise AssertionError(f"expected macro trait-metavar impl finding, got {findings!r}")
+        if not any("!Default guard" in finding for finding in findings):
+            raise AssertionError(f"expected missing !Default guard finding, got {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:
@@ -744,17 +514,7 @@ def main() -> int:
         test_verify_rejects_unregistered_financial_value_implementor,
         test_verify_rejects_aliased_financial_value_implementor,
         test_verify_rejects_generic_financial_value_implementor,
-        test_verify_rejects_default_impl_for_registered_financial_value,
-        test_verify_rejects_path_qualified_default_impl_for_registered_financial_value,
-        test_verify_rejects_aliased_default_impl_for_registered_financial_value,
-        test_verify_rejects_absolute_path_default_impl_for_registered_financial_value,
-        test_verify_rejects_cfg_attr_default_derive_for_registered_financial_value,
-        test_verify_rejects_default_derive_for_registered_financial_value,
-        test_verify_rejects_default_derive_with_intervening_attribute,
-        test_verify_rejects_financial_value_type_alias,
-        test_verify_rejects_financial_value_type_alias_with_where_clause,
-        test_verify_rejects_macro_default_impl_for_registered_financial_value,
-        test_verify_rejects_macro_trait_metavar_impl_for_registered_financial_value,
+        test_verify_rejects_missing_financial_value_default_compile_guard,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

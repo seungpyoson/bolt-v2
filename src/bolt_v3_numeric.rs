@@ -54,7 +54,7 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
     reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
 }
 
-pub(crate) mod financial_value_private {
+mod financial_value_private {
     pub trait Sealed {}
 }
 
@@ -86,6 +86,12 @@ pub struct Probability {
 
 impl financial_value_private::Sealed for Probability {}
 impl FinancialValue for Probability {}
+impl financial_value_private::Sealed for crate::bolt_v3_maker_mu_estimator::UsableMu {}
+impl FinancialValue for crate::bolt_v3_maker_mu_estimator::UsableMu {}
+impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ValidRealizedVol {}
+impl FinancialValue for crate::bolt_v3_realized_volatility::ValidRealizedVol {}
+impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}
+impl FinancialValue for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}
 
 impl Probability {
     pub fn new(value: f64) -> Option<Self> {
@@ -254,6 +260,23 @@ mod tests {
         assert_financial_value::<crate::bolt_v3_maker_mu_estimator::UsableMu>();
         assert_financial_value::<crate::bolt_v3_realized_volatility::ReadyRealizedVol>();
         assert_financial_value::<crate::bolt_v3_realized_volatility::ValidRealizedVol>();
+    }
+
+    #[test]
+    fn financial_values_do_not_implement_default() {
+        trait AmbiguousIfDefault<A> {
+            fn _check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Default> AmbiguousIfDefault<Invalid> for T {}
+
+        let _ = <Probability as AmbiguousIfDefault<_>>::_check;
+        let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;
+        let _ =
+            <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;
+        let _ =
+            <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;
     }
 
     #[test]

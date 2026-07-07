@@ -9,8 +9,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_numeric::{
-    FinancialValue, HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64,
-    financial_value_private, is_positive_finite,
+    HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
 };
 use crate::bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs};
 
@@ -268,9 +267,6 @@ pub struct RealizedVolSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ValidRealizedVol(f64);
 
-impl financial_value_private::Sealed for ValidRealizedVol {}
-impl FinancialValue for ValidRealizedVol {}
-
 impl ValidRealizedVol {
     pub fn new(value: f64) -> Option<Self> {
         if value.is_finite() && value >= ZERO_F64 {
@@ -287,9 +283,6 @@ impl ValidRealizedVol {
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ReadyRealizedVol(ValidRealizedVol);
-
-impl financial_value_private::Sealed for ReadyRealizedVol {}
-impl FinancialValue for ReadyRealizedVol {}
 
 impl ReadyRealizedVol {
     pub fn get(self) -> f64 {

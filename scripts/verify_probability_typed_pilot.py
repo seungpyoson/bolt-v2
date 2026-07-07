@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,49 +22,48 @@ class PatternCheck:
     description: str
 
 
-@dataclass(frozen=True)
-class FinancialValueRegistration:
-    path: str
-    type_name: str
-
-
-REGISTERED_FINANCIAL_VALUES = (
-    FinancialValueRegistration("src/bolt_v3_numeric.rs", "Probability"),
-    FinancialValueRegistration("src/bolt_v3_maker_mu_estimator.rs", "UsableMu"),
-    FinancialValueRegistration("src/bolt_v3_realized_volatility.rs", "ValidRealizedVol"),
-    FinancialValueRegistration("src/bolt_v3_realized_volatility.rs", "ReadyRealizedVol"),
+FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
+    r"\b(?:FinancialValue|financial_value_private|Sealed)\b"
 )
-
-RUST_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
-RUST_PATH_SEGMENT = rf"(?:crate|self|super|{RUST_IDENT})"
-RUST_PATH_PREFIX = rf"(?:::\s*)?(?:{RUST_PATH_SEGMENT}\s*::\s*)*"
-RUST_TYPE_PATH = rf"{RUST_PATH_PREFIX}({RUST_IDENT})"
-FINANCIAL_VALUE_TRAIT_PATH = rf"{RUST_PATH_PREFIX}FinancialValue"
-SEALED_TRAIT_PATH = rf"{RUST_PATH_PREFIX}financial_value_private\s*::\s*Sealed"
-DEFAULT_TRAIT_PATH = rf"{RUST_PATH_PREFIX}Default"
-RUST_IMPL_PREFIX = r"\bimpl\b\s*(?:<[^{};]*>\s*)?(?:const\s+)?"
-RUST_WHERE_CLAUSE = r"(?:\s+where\b[^;]*?)?"
-RUST_DELIMITER_PAIRS = {"{": "}", "(": ")", "[": "]"}
-FINANCIAL_VALUE_ALIAS_IMPORT_PATTERN = re.compile(
-    rf"\buse\b[^;]*(?:"
-    rf"\bFinancialValue\s+as\s+{RUST_IDENT}\b"
-    rf"|\bfinancial_value_private\s+as\s+{RUST_IDENT}\b"
-    rf"|\bfinancial_value_private\s*::\s*Sealed\s+as\s+{RUST_IDENT}\b"
-    rf"|\bfinancial_value_private\s*::\s*\{{[^}}]*\bSealed\s+as\s+{RUST_IDENT}\b"
-    rf")",
-    re.DOTALL,
-)
-DEFAULT_ALIAS_IMPORT_PATTERN = re.compile(
-    rf"\buse\b[^;]*\bDefault\s+as\s+{RUST_IDENT}\b",
-    re.DOTALL,
+FINANCIAL_VALUE_MARKER_ALLOWLIST = (
+    ("src/bolt_v3_numeric.rs", "mod financial_value_private {"),
+    ("src/bolt_v3_numeric.rs", "pub trait Sealed {}"),
+    ("src/bolt_v3_numeric.rs", "pub trait FinancialValue: financial_value_private::Sealed {}"),
+    ("src/bolt_v3_numeric.rs", "impl financial_value_private::Sealed for Probability {}"),
+    ("src/bolt_v3_numeric.rs", "impl FinancialValue for Probability {}"),
+    (
+        "src/bolt_v3_numeric.rs",
+        "impl financial_value_private::Sealed for crate::bolt_v3_maker_mu_estimator::UsableMu {}",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "impl FinancialValue for crate::bolt_v3_maker_mu_estimator::UsableMu {}",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ValidRealizedVol {}",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "impl FinancialValue for crate::bolt_v3_realized_volatility::ValidRealizedVol {}",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "impl financial_value_private::Sealed for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "impl FinancialValue for crate::bolt_v3_realized_volatility::ReadyRealizedVol {}",
+    ),
+    ("src/bolt_v3_numeric.rs", "fn assert_financial_value<T: FinancialValue>() {}"),
 )
 
 
 REQUIRED_PATTERNS = [
     PatternCheck(
         "src/bolt_v3_numeric.rs",
-        r"pub\(crate\)\s+mod\s+financial_value_private\s*\{[^}]*pub\s+trait\s+Sealed\s*\{\s*\}",
-        "FinancialValue sealing boundary module is crate-private",
+        r"(?:^|\n)\s*mod\s+financial_value_private\s*\{[^}]*pub\s+trait\s+Sealed\s*\{\s*\}",
+        "FinancialValue sealing boundary module is private to bolt_v3_numeric",
     ),
     PatternCheck(
         "src/bolt_v3_numeric.rs",
@@ -104,6 +104,36 @@ REQUIRED_PATTERNS = [
         "src/bolt_v3_numeric.rs",
         r"pub fn clamped\(value:\s*f64\)\s*->\s*Option<Self>",
         "Probability::clamped is fallible",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"fn\s+financial_values_do_not_implement_default\(\)",
+        "FinancialValue registered types have a compile-time !Default guard",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"impl<T:\s*\?Sized\s*\+\s*Default>\s+AmbiguousIfDefault<Invalid>\s+for\s+T\s*\{\}",
+        "FinancialValue !Default guard fails if any registered type implements Default",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"<(?:super::)?Probability\s+as\s+AmbiguousIfDefault\s*<[^>]*>>::_check",
+        "Probability is covered by the !Default guard",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"<crate::bolt_v3_maker_mu_estimator::UsableMu\s+as\s+AmbiguousIfDefault\s*<[^>]*>>::_check",
+        "UsableMu is covered by the !Default guard",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"<crate::bolt_v3_realized_volatility::ValidRealizedVol\s+as\s+AmbiguousIfDefault\s*<[^>]*>>::_check",
+        "ValidRealizedVol is covered by the !Default guard",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"<crate::bolt_v3_realized_volatility::ReadyRealizedVol\s+as\s+AmbiguousIfDefault\s*<[^>]*>>::_check",
+        "ReadyRealizedVol is covered by the !Default guard",
     ),
     PatternCheck(
         "src/bolt_v3_market_families/mod.rs",
@@ -219,6 +249,16 @@ FORBIDDEN_PATTERNS = [
         "Eq/Hash/serde derives on Probability",
     ),
     PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"\binclude\s*!",
+        "generated include in FinancialValue owner module",
+    ),
+    PatternCheck(
+        "src/bolt_v3_numeric.rs",
+        r"#\s*\[\s*path\s*=",
+        "path-loaded module in FinancialValue owner module",
+    ),
+    PatternCheck(
         "src/bolt_v3_decision_evidence.rs",
         r"pub\s+[A-Za-z0-9_]+:\s*(?:Option\s*<\s*)?Probability",
         "Probability in decision-evidence serde fields",
@@ -257,7 +297,7 @@ def rust_sources(root: Path) -> list[tuple[str, str]]:
     src_root = root / "src"
     if not src_root.exists():
         return sources
-    for path in src_root.rglob("*.rs"):
+    for path in sorted(src_root.rglob("*.rs")):
         relative_path = path.relative_to(root).as_posix()
         raw_source = path.read_text(encoding="utf-8")
         sources.append((relative_path, rust_source_scanner.strip_rust_comments_and_literals(raw_source)))
@@ -282,195 +322,34 @@ def present_forbidden(root: Path, checks: list[PatternCheck]) -> list[str]:
     return findings
 
 
-def financial_value_impl_set(root: Path) -> set[tuple[str, str]]:
-    impls = set()
+def normalize_source_line(line: str) -> str:
+    return " ".join(line.strip().split())
+
+
+def financial_value_marker_lines(root: Path) -> Counter[tuple[str, str]]:
+    lines: Counter[tuple[str, str]] = Counter()
     for relative_path, source in rust_sources(root):
-        for match in re.finditer(
-            rf"{RUST_IMPL_PREFIX}{FINANCIAL_VALUE_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b",
-            source,
-        ):
-            impls.add((relative_path, match.group(1)))
-    return impls
+        for line in source.splitlines():
+            normalized = normalize_source_line(line)
+            if FINANCIAL_VALUE_MARKER_TOKEN_PATTERN.search(normalized):
+                lines[(relative_path, normalized)] += 1
+    return lines
 
 
-def financial_value_sealed_impl_set(root: Path) -> set[tuple[str, str]]:
-    impls = set()
-    for relative_path, source in rust_sources(root):
-        for match in re.finditer(
-            rf"{RUST_IMPL_PREFIX}{SEALED_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b",
-            source,
-        ):
-            impls.add((relative_path, match.group(1)))
-    return impls
-
-
-def verify_financial_value_implementors(root: Path) -> list[str]:
-    expected = {(registration.path, registration.type_name) for registration in REGISTERED_FINANCIAL_VALUES}
-    actual = financial_value_impl_set(root)
+def verify_financial_value_marker_allowlist(root: Path) -> list[str]:
+    expected = Counter(FINANCIAL_VALUE_MARKER_ALLOWLIST)
+    actual = financial_value_marker_lines(root)
     if actual == expected:
         return []
 
-    missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
+    missing = sorted((expected - actual).elements())
+    extra = sorted((actual - expected).elements())
     details = []
     if missing:
         details.append(f"missing {missing!r}")
     if extra:
         details.append(f"extra {extra!r}")
-    return [f"src/: FinancialValue implementor set mismatch: {', '.join(details)}"]
-
-
-def verify_financial_value_sealing(root: Path) -> list[str]:
-    findings = []
-    sealed_impls = financial_value_sealed_impl_set(root)
-    for registration in REGISTERED_FINANCIAL_VALUES:
-        expected = (registration.path, registration.type_name)
-        if expected not in sealed_impls:
-            findings.append(
-                f"{registration.path}: missing FinancialValue sealing boundary for {registration.type_name}"
-            )
-    numeric_source = rust_source_scanner.strip_rust_comments_and_literals(
-        read_source(root, "src/bolt_v3_numeric.rs")
-    )
-    if re.search(r"\bpub\s+mod\s+financial_value_private\b", numeric_source):
-        findings.append("src/bolt_v3_numeric.rs: forbidden public FinancialValue sealing boundary")
-    return findings
-
-
-def financial_value_type_pattern(type_name: str) -> str:
-    return rf"{RUST_PATH_PREFIX}{re.escape(type_name)}\b"
-
-
-def type_alias_pattern(type_name: str) -> re.Pattern[str]:
-    return re.compile(
-        rf"\b(?:pub(?:\s*\([^)]*\))?\s+)?type\s+{RUST_IDENT}"
-        rf"(?:\s*<[^;=]*>)?{RUST_WHERE_CLAUSE}\s*="
-        rf"\s*(?:\(\s*)*{financial_value_type_pattern(type_name)}"
-        rf"(?:\s*\))*{RUST_WHERE_CLAUSE}\s*;",
-        re.DOTALL,
-    )
-
-
-def use_alias_pattern(type_name: str) -> re.Pattern[str]:
-    return re.compile(
-        rf"\buse\b[^;]*\b{re.escape(type_name)}\s+as\s+{RUST_IDENT}\b",
-        re.DOTALL,
-    )
-
-
-def macro_rules_bodies(source: str) -> list[str]:
-    bodies = []
-    search_from = 0
-    while True:
-        match = re.search(rf"\bmacro_rules!\s+{RUST_IDENT}\b", source[search_from:])
-        if match is None:
-            return bodies
-
-        delimiter_start = search_from + match.end()
-        while delimiter_start < len(source) and source[delimiter_start].isspace():
-            delimiter_start += 1
-        if delimiter_start >= len(source):
-            return bodies
-
-        open_delimiter = source[delimiter_start]
-        close_delimiter = RUST_DELIMITER_PAIRS.get(open_delimiter)
-        if close_delimiter is None:
-            search_from = delimiter_start + 1
-            continue
-
-        depth = 1
-        cursor = delimiter_start + 1
-        while cursor < len(source) and depth:
-            if source[cursor] == open_delimiter:
-                depth += 1
-            elif source[cursor] == close_delimiter:
-                depth -= 1
-            cursor += 1
-
-        bodies.append(source[delimiter_start:cursor])
-        search_from = cursor
-
-
-def verify_financial_value_aliases(root: Path) -> list[str]:
-    findings = []
-    sources = rust_sources(root)
-    for relative_path, source in sources:
-        if FINANCIAL_VALUE_ALIAS_IMPORT_PATTERN.search(source):
-            findings.append(f"{relative_path}: forbidden FinancialValue alias import")
-        if DEFAULT_ALIAS_IMPORT_PATTERN.search(source):
-            findings.append(f"{relative_path}: forbidden Default alias import")
-        for registration in REGISTERED_FINANCIAL_VALUES:
-            if type_alias_pattern(registration.type_name).search(source):
-                findings.append(
-                    f"{relative_path}: forbidden FinancialValue type alias for {registration.type_name}"
-                )
-            if use_alias_pattern(registration.type_name).search(source):
-                findings.append(
-                    f"{relative_path}: forbidden FinancialValue import alias for {registration.type_name}"
-                )
-    return findings
-
-
-def verify_financial_value_macros(root: Path) -> list[str]:
-    findings = []
-    # Source-visible macro bodies may not mint or mark FinancialValue types.
-    # Fully metavariable-driven macro invocations and proc-macro expansion remain
-    # outside this text verifier's model.
-    forbidden_impl_pattern = re.compile(
-        rf"{RUST_IMPL_PREFIX}(?:{DEFAULT_TRAIT_PATH}|{FINANCIAL_VALUE_TRAIT_PATH}|"
-        rf"{SEALED_TRAIT_PATH})\s+for\b",
-        re.DOTALL,
-    )
-    registered_type_impl_patterns = [
-        re.compile(
-            rf"{RUST_IMPL_PREFIX}[^{{}};]*\s+for\s+"
-            rf"{financial_value_type_pattern(registration.type_name)}",
-            re.DOTALL,
-        )
-        for registration in REGISTERED_FINANCIAL_VALUES
-    ]
-    for relative_path, source in rust_sources(root):
-        for body in macro_rules_bodies(source):
-            if forbidden_impl_pattern.search(body) or any(
-                pattern.search(body) for pattern in registered_type_impl_patterns
-            ):
-                findings.append(f"{relative_path}: forbidden macro-generated FinancialValue impl")
-                break
-    return findings
-
-
-def verify_financial_value_defaults(root: Path) -> list[str]:
-    findings = []
-    sources = rust_sources(root)
-    for registration in REGISTERED_FINANCIAL_VALUES:
-        type_pattern = financial_value_type_pattern(registration.type_name)
-        impl_pattern = re.compile(
-            rf"{RUST_IMPL_PREFIX}{DEFAULT_TRAIT_PATH}\s+for\s+{type_pattern}",
-            re.DOTALL,
-        )
-        derive_pattern = re.compile(
-            rf"#\s*\[\s*derive\s*\([^\]]*\bDefault\b[^\]]*\)\s*\]\s*"
-            rf"(?:#\s*\[[^\]]*\]\s*)*"
-            rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{re.escape(registration.type_name)}\b",
-            re.DOTALL,
-        )
-        cfg_attr_derive_pattern = re.compile(
-            rf"#\s*\[\s*cfg_attr\s*\([^\]]*\bderive\s*\([^\]]*\bDefault\b[^\]]*\)"
-            rf"[^\]]*\)\s*\]\s*"
-            rf"(?:#\s*\[[^\]]*\]\s*)*"
-            rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{re.escape(registration.type_name)}\b",
-            re.DOTALL,
-        )
-        for relative_path, source in sources:
-            if impl_pattern.search(source):
-                findings.append(
-                    f"{relative_path}: forbidden Default impl for FinancialValue {registration.type_name}"
-                )
-            if derive_pattern.search(source) or cfg_attr_derive_pattern.search(source):
-                findings.append(
-                    f"{relative_path}: forbidden Default derive for FinancialValue {registration.type_name}"
-                )
-    return findings
+    return [f"src/: FinancialValue marker allowlist mismatch: {', '.join(details)}"]
 
 
 def verify(root: Path) -> list[str]:
@@ -478,11 +357,7 @@ def verify(root: Path) -> list[str]:
     findings.extend(missing_required(root, REQUIRED_PATTERNS))
     findings.extend(missing_required(root, BOUNDARY_PATTERNS))
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
-    findings.extend(verify_financial_value_aliases(root))
-    findings.extend(verify_financial_value_macros(root))
-    findings.extend(verify_financial_value_implementors(root))
-    findings.extend(verify_financial_value_defaults(root))
-    findings.extend(verify_financial_value_sealing(root))
+    findings.extend(verify_financial_value_marker_allowlist(root))
     return findings
 
 

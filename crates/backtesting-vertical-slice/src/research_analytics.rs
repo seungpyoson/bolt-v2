@@ -20,6 +20,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifact_index::LifecycleState,
+    artifact_store::{
+        ArtifactIndexHotLifecycleConfig, ArtifactLifecycleConfig, ArtifactQuietWindowSeconds,
+        ArtifactStorageProfile, ArtifactStoreConfig, ArtifactSubpaths, CreateOnlyProbeConfig,
+        S3ArtifactStoreConfig, S3ConditionalPutMode, S3CopyIfNotExistsMode,
+    },
     hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
@@ -930,7 +935,58 @@ fn validate_run_pointer_artifact_root(artifact_root: &str) -> Result<String> {
         artifact_root == artifact_root.trim_end_matches('/'),
         "artifact_root must be normalized without a trailing slash"
     );
-    crate::artifact_store::normalize_artifact_root(artifact_root)
+    Ok(artifact_store_config_for_root_validation(artifact_root)
+        .resolve()?
+        .artifact_root_uri()
+        .to_string())
+}
+
+fn artifact_store_config_for_root_validation(artifact_root: &str) -> ArtifactStoreConfig {
+    ArtifactStoreConfig {
+        artifact_root: artifact_root.to_string(),
+        s3: S3ArtifactStoreConfig {
+            region: "us-east-1".to_string(),
+            conditional_put: S3ConditionalPutMode::Etag,
+            copy_if_not_exists: S3CopyIfNotExistsMode::Multipart,
+        },
+        create_only_probe: CreateOnlyProbeConfig {
+            prefix: "create-only-probe".to_string(),
+            object_name: "probe.json".to_string(),
+            copy_source_object_name: "copy-source.json".to_string(),
+            copy_dest_object_name: "copy-dest.json".to_string(),
+        },
+        catalog_projection_manifest_object: "catalog-projection/manifest.json".to_string(),
+        subpaths: ArtifactSubpaths {
+            raw: "raw".to_string(),
+            nt_catalog: "nt-catalog".to_string(),
+            nt_catalog_synthetic_proof: "nt-catalog-synthetic-proof".to_string(),
+            source_proofs: "source-proofs".to_string(),
+            backtests: "backtests".to_string(),
+            artifact_index: "artifact-index".to_string(),
+            research_analytics: "research-analytics".to_string(),
+        },
+        lifecycle: ArtifactLifecycleConfig {
+            retention: "forever".to_string(),
+            default_delete_expiration: "disabled".to_string(),
+            storage_profiles: vec![
+                ArtifactStorageProfile::Active,
+                ArtifactStorageProfile::Archive,
+                ArtifactStorageProfile::DeepArchive,
+            ],
+            quiet_window_seconds: ArtifactQuietWindowSeconds {
+                raw: 1,
+                nt_catalog: 1,
+                source_proofs: 1,
+                backtests: 1,
+                artifact_index: 1,
+                research_analytics: 1,
+            },
+            hot_index: ArtifactIndexHotLifecycleConfig {
+                latest_pointer_storage_profile: ArtifactStorageProfile::Active,
+                current_snapshot_storage_profile: ArtifactStorageProfile::Active,
+            },
+        },
+    }
 }
 
 fn exact_run_id_set(

@@ -492,6 +492,15 @@ def test_capture_config_without_workflows_passes_boundary_scan() -> None:
     assert scan_temp(assert_no_workflows_table) == []
 
 
+def test_empty_wire_boundary_source_set_fails_closed() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        findings = verifier.scan_root(root)
+
+    assert findings == ["Bolt-v3 boundary Rust source files: enforcement set is empty"], findings
+
+
 def test_planted_unregistered_any_class_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/boundary_registry.rs"

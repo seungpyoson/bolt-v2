@@ -46,6 +46,7 @@ from pathlib import Path
 
 from bolt_v3_source_roots import REPO_ROOT
 from verify_bolt_v3_pure_rust_runtime import production_text
+from verifier_io import require_nonempty
 
 PROVIDERS_PREFIX = "src/bolt_v3_providers/"
 
@@ -354,8 +355,12 @@ def bolt_src_files() -> list[Path]:
 
 
 def collect_violations_from_files(files: list[Path]) -> list[Violation]:
-    if not files:
-        raise RuntimeError("no Rust source files found under src")
+    floor_errors: list[str] = []
+    if not require_nonempty(files, "Rust source files under src", floor_errors):
+        return [
+            Violation(path=".", line=0, label=error, excerpt="")
+            for error in floor_errors
+        ]
     violations: list[Violation] = []
     for path in files:
         rel = str(path.relative_to(REPO_ROOT))

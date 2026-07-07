@@ -70,6 +70,12 @@ class PoisonLockFenceTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0].path, "src/bolt_v3_live_node.rs")
 
+    def test_empty_source_set_fails_closed(self) -> None:
+        violations = FENCE.collect_violations(paths=())
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].text, "Rust source files under src: enforcement set is empty")
+
 
 if __name__ == "__main__":
     import lane_governor

@@ -234,6 +234,201 @@ def test_main_reports_forbidden_names() -> None:
         raise AssertionError(f"expected forbidden naming finding, got code={code}, stderr={output!r}")
 
 
+def test_main_reports_missing_audit_without_traceback() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "missing-audit.yaml"
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    code = VERIFIER.main()
+                except FileNotFoundError as exc:
+                    raise AssertionError("missing naming audit should be reported normally") from exc
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = f"FAIL: missing Bolt-v3 naming audit file: {audit_path}\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected missing audit finding, got code={code}, stderr={output!r}")
+
+
+def test_main_reports_non_mapping_audit_without_traceback() -> None:
+    for audit_text, type_name in [
+        ("- item\n", "list"),
+        ("justastring\n", "str"),
+    ]:
+        original_root = VERIFIER.REPO_ROOT
+        original_audit_path = VERIFIER.AUDIT_PATH
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audit_path = root / "audit.yaml"
+            audit_path.write_text(audit_text, encoding="utf-8")
+            try:
+                VERIFIER.REPO_ROOT = root
+                VERIFIER.AUDIT_PATH = audit_path
+                with contextlib.redirect_stderr(stderr):
+                    try:
+                        code = VERIFIER.main()
+                    except Exception as exc:
+                        raise AssertionError(
+                            "shape-invalid naming audit should be reported normally"
+                        ) from exc
+            finally:
+                VERIFIER.REPO_ROOT = original_root
+                VERIFIER.AUDIT_PATH = original_audit_path
+
+        output = stderr.getvalue()
+        expected = (
+            "FAIL: invalid Bolt-v3 naming audit file: "
+            f"expected a mapping, got {type_name}\n"
+        )
+        if code != 1 or output != expected:
+            raise AssertionError(
+                f"expected invalid audit finding, got code={code}, stderr={output!r}"
+            )
+
+
+def test_main_reports_unreadable_audit_without_traceback() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.mkdir()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    code = VERIFIER.main()
+                except OSError as exc:
+                    raise AssertionError("unreadable naming audit should be reported normally") from exc
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = f"FAIL: unreadable Bolt-v3 naming audit file: {audit_path}\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected unreadable audit finding, got code={code}, stderr={output!r}")
+
+
+def test_main_reports_undecodable_audit_without_traceback() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_bytes(b"\xff\xfe\x00")
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    code = VERIFIER.main()
+                except UnicodeDecodeError as exc:
+                    raise AssertionError("undecodable naming audit should be reported normally") from exc
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    output = stderr.getvalue()
+    expected = f"FAIL: invalid Bolt-v3 naming audit file: {audit_path} is not valid UTF-8\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected undecodable audit finding, got code={code}, stderr={output!r}")
+
+
+def test_main_reports_invalid_audit_row_schema_without_traceback() -> None:
+    cases = [
+        (
+            "renamed_in_current_audit: bad\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit must be a list",
+        ),
+        (
+            "renamed_in_current_audit:\n"
+            "  - bad\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit[0] must be a mapping",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden:\n"
+            "  - from: 1\n"
+            "    to: ProviderKey\n"
+            "path_scoped_forbidden: []\n",
+            "defensive_forbidden[0].from must be a string",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden:\n"
+            "  - from: VenueKind\n"
+            "    to: 1\n"
+            "path_scoped_forbidden: []\n",
+            "defensive_forbidden[0].to must be a string",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden:\n"
+            "  - from: VenueKind\n"
+            "    to: ProviderKey\n"
+            "    include_globs: src/**/*.rs\n",
+            "path_scoped_forbidden[0].include_globs must be a list of strings",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden:\n"
+            "  - from: VenueKind\n"
+            "    to: ProviderKey\n"
+            "    include_globs:\n"
+            "      - 1\n",
+            "path_scoped_forbidden[0].include_globs must be a list of strings",
+        ),
+    ]
+    for audit_text, message in cases:
+        original_root = VERIFIER.REPO_ROOT
+        original_audit_path = VERIFIER.AUDIT_PATH
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audit_path = root / "audit.yaml"
+            audit_path.write_text(audit_text, encoding="utf-8")
+            try:
+                VERIFIER.REPO_ROOT = root
+                VERIFIER.AUDIT_PATH = audit_path
+                with contextlib.redirect_stderr(stderr):
+                    try:
+                        code = VERIFIER.main()
+                    except Exception as exc:
+                        raise AssertionError(
+                            "schema-invalid naming audit should be reported normally"
+                        ) from exc
+            finally:
+                VERIFIER.REPO_ROOT = original_root
+                VERIFIER.AUDIT_PATH = original_audit_path
+
+        output = stderr.getvalue()
+        expected = f"FAIL: invalid Bolt-v3 naming audit file: {message}\n"
+        if code != 1 or output != expected:
+            raise AssertionError(
+                f"expected invalid audit finding, got code={code}, stderr={output!r}"
+            )
+
+
 def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
@@ -283,6 +478,141 @@ accepted_non_nt_names: []
     output = stderr.getvalue()
     if code != 1 or "forbidden '[venues.'" not in output:
         raise AssertionError(f"expected path-scoped table finding, got code={code}, stderr={output!r}")
+
+
+def test_main_fails_closed_when_scan_paths_are_empty() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    original_scan_globs = VERIFIER.SCAN_GLOBS
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_text(AUDIT_TEXT, encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+            VERIFIER.SCAN_GLOBS = original_scan_globs
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    output = stderr.getvalue()
+    expected = (
+        "FAIL: Bolt-v3 naming scan paths: enforcement set is empty\n"
+        "FAIL: capital-admission misnomer scan paths: enforcement set is empty\n"
+    )
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected empty scan floor finding, got code={code}, stderr={output!r}")
+
+
+def test_main_fails_closed_when_misnomer_scan_paths_are_empty_before_naming_scan() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    original_scan_globs = VERIFIER.SCAN_GLOBS
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_text(AUDIT_TEXT, encoding="utf-8")
+        source = root / "src" / "bad.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("pub struct VenueKind;\n", encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["docs/**/*.md"]
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+            VERIFIER.SCAN_GLOBS = original_scan_globs
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    output = stderr.getvalue()
+    expected = "FAIL: capital-admission misnomer scan paths: enforcement set is empty\n"
+    if code != 1 or output != expected:
+        raise AssertionError(
+            f"expected terminal misnomer scan floor, got code={code}, stderr={output!r}"
+        )
+
+
+def test_main_fails_closed_when_audit_rule_rows_are_empty() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    original_scan_globs = VERIFIER.SCAN_GLOBS
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_text(
+            """
+audit_id: "probe"
+version: 1
+renamed_in_current_audit: []
+defensive_forbidden: []
+path_scoped_forbidden: []
+accepted_non_nt_names: []
+""".lstrip(),
+            encoding="utf-8",
+        )
+        source = root / "src" / "clean.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("pub struct Clean;\n", encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text(
+            "src/clean.rs:1\tpub struct PositionSizer;\tfixture stale entry\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+            VERIFIER.SCAN_GLOBS = original_scan_globs
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    output = stderr.getvalue()
+    expected = "FAIL: Bolt-v3 naming audit rule rows: enforcement set is empty\n"
+    if code != 1 or output != expected:
+        raise AssertionError(f"expected empty rule-row floor, got code={code}, stderr={output!r}")
 
 
 def run_main_with_misnomer_fixture(
@@ -355,6 +685,50 @@ def test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list() ->
         raise AssertionError(f"expected legitimate sizer keep-list to pass, got {code}, {output!r}")
 
 
+def test_capital_admission_misnomer_scan_paths_floor_is_exact() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            findings = VERIFIER.verify_capital_admission_misnomers()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    expected = ["capital-admission misnomer scan paths: enforcement set is empty"]
+    if findings != expected:
+        raise AssertionError(f"expected exact misnomer scan floor, got {findings!r}")
+
+
+def test_capital_admission_misnomer_scan_paths_floor_precedes_missing_allowlist() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = root / "missing-allowlist.txt"
+            findings = VERIFIER.verify_capital_admission_misnomers()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+
+    expected = ["capital-admission misnomer scan paths: enforcement set is empty"]
+    if findings != expected:
+        raise AssertionError(f"expected scan floor before missing allowlist, got {findings!r}")
+
+
 def test_capital_admission_misnomer_fence_fails_closed_without_allowlist() -> None:
     code, output = run_main_with_misnomer_fixture(
         {"src/core.rs": "pub struct CapitalAdmissionOnly;\n"},
@@ -375,9 +749,19 @@ def main() -> int:
         test_scan_paths_excludes_audit_target_git_and_reviews,
         test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_names,
+        test_main_reports_missing_audit_without_traceback,
+        test_main_reports_non_mapping_audit_without_traceback,
+        test_main_reports_unreadable_audit_without_traceback,
+        test_main_reports_undecodable_audit_without_traceback,
+        test_main_reports_invalid_audit_row_schema_without_traceback,
         test_main_reports_path_scoped_forbidden_table_prefix,
+        test_main_fails_closed_when_scan_paths_are_empty,
+        test_main_fails_closed_when_misnomer_scan_paths_are_empty_before_naming_scan,
+        test_main_fails_closed_when_audit_rule_rows_are_empty,
         test_capital_admission_misnomer_fence_catches_screaming_snake,
         test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list,
+        test_capital_admission_misnomer_scan_paths_floor_is_exact,
+        test_capital_admission_misnomer_scan_paths_floor_precedes_missing_allowlist,
         test_capital_admission_misnomer_fence_fails_closed_without_allowlist,
     ]
     for test in tests:

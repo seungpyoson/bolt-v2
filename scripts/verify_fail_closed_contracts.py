@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, cast
 
+from verifier_io import require_nonempty
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = Path("ci/fail-closed-contracts.toml")
@@ -473,6 +475,11 @@ def collect_findings(
 ) -> list[str]:
     root = root.resolve()
     config = load_config(config_path)
+    paths = selected_paths(root, config)
+    path_findings: list[str] = []
+    require_nonempty(paths, "fail-closed contract selected paths", path_findings)
+    if path_findings:
+        return path_findings
     exceptions = load_exceptions(
         exceptions_path or config_path.with_name(DEFAULT_EXCEPTIONS_CONFIG.name),
         frozenset(config.rule_ids.values()),
@@ -480,7 +487,7 @@ def collect_findings(
     source_fence_findings = source_fence_wiring_findings(root)
     raw_findings = [
         raw_finding
-        for path in selected_paths(root, config)
+        for path in paths
         for facts in scan_file(root, path, config)
         for raw_finding in raw_findings_for_facts(config, facts)
     ]
@@ -496,7 +503,7 @@ def collect_findings(
         f"{STALE_EXCEPTION_RULE_ID}:{key.path}:{key.line}: stale fail-closed exception for {key.rule_id}"
         for key in stale
     )
-    return source_fence_findings + findings
+    return source_fence_findings + path_findings + findings
 
 
 def main(argv: list[str] | None = None) -> int:

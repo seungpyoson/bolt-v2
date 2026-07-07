@@ -322,6 +322,7 @@ def verify_financial_value_defaults(root: Path) -> list[str]:
         impl_pattern = re.compile(rf"\bimpl\s+Default\s+for\s+{type_pattern}", re.DOTALL)
         derive_pattern = re.compile(
             rf"#\s*\[\s*derive\s*\([^\]]*\bDefault\b[^\]]*\)\s*\]\s*"
+            rf"(?:#\s*\[[^\]]*\]\s*)*"
             rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{re.escape(registration.type_name)}\b",
             re.DOTALL,
         )

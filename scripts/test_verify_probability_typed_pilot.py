@@ -260,6 +260,35 @@ impl FinancialValue for ReadyRealizedVol {}
             raise AssertionError(f"expected Default derive finding, got {findings!r}")
 
 
+def test_verify_rejects_default_derive_with_intervening_attribute() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{FinancialValue, financial_value_private};
+
+#[derive(Debug, Default, PartialEq)]
+#[repr(transparent)]
+pub struct ValidRealizedVol(f64);
+impl financial_value_private::Sealed for ValidRealizedVol {}
+impl FinancialValue for ValidRealizedVol {}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+impl financial_value_private::Sealed for ReadyRealizedVol {}
+impl FinancialValue for ReadyRealizedVol {}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("Default derive for FinancialValue" in finding for finding in findings):
+            raise AssertionError(
+                f"expected intervening-attribute Default derive finding, got {findings!r}"
+            )
+
+
 def test_verify_rejects_public_financial_value_field() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -453,6 +482,7 @@ def main() -> int:
         test_verify_rejects_unregistered_financial_value_implementor,
         test_verify_rejects_default_impl_for_registered_financial_value,
         test_verify_rejects_default_derive_for_registered_financial_value,
+        test_verify_rejects_default_derive_with_intervening_attribute,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_unsealed_financial_value_trait,
         test_verify_rejects_public_financial_value_sealing_module,

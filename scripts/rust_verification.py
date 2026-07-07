@@ -3269,13 +3269,13 @@ def fallback_push_remote(
     remotes, error = git_output(repo, "remote")
     if error is not None:
         return None, error
-    names = [line.strip() for line in remotes.splitlines() if line.strip()]
+    if not remotes:
+        return None, f"{command_name} requires a configured Git remote"
+    names = [line for line in remotes.splitlines() if line]
     if "origin" in names:
         return "origin", None
     if len(names) == 1:
         return names[0], None
-    if not names:
-        return None, f"{command_name} requires a configured Git remote"
     joined = ", ".join(sorted(names))
     return None, f"{command_name} requires local upstream metadata when multiple remotes are configured: {joined}"
 
@@ -3289,11 +3289,30 @@ def live_remote_branch_head(
     refs, error = git_output(repo, "ls-remote", "--heads", remote, branch)
     if error is not None:
         return None, error
+    if not refs:
+        return None, None
     for line in refs.splitlines():
         fields = line.split()
         if len(fields) >= 2 and fields[1] == f"refs/heads/{branch}":
             return fields[0], None
     return None, None
+
+
+def fallback_live_upstream_head(
+    repo: pathlib.Path,
+    branch: str,
+    *,
+    command_name: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
+    if remote_error is not None or fallback_remote is None:
+        return None, None, None, remote_error
+    upstream, upstream_error = live_remote_branch_head(
+        repo,
+        remote=fallback_remote,
+        branch=branch,
+    )
+    return upstream, branch if upstream is not None else None, fallback_remote, upstream_error
 
 
 def live_upstream_head(
@@ -3304,28 +3323,12 @@ def live_upstream_head(
 ) -> tuple[str | None, str | None, str | None, str | None]:
     remote, error = git_output(repo, "config", f"branch.{branch}.remote")
     if error is not None or not remote:
-        fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
-        if remote_error is not None or fallback_remote is None:
-            return None, None, None, remote_error
-        upstream, upstream_error = live_remote_branch_head(
-            repo,
-            remote=fallback_remote,
-            branch=branch,
-        )
-        return upstream, branch if upstream is not None else None, fallback_remote, upstream_error
+        return fallback_live_upstream_head(repo, branch, command_name=command_name)
     merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
     if error is not None:
         return None, None, None, error
     if not merge_ref:
-        fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
-        if remote_error is not None or fallback_remote is None:
-            return None, None, None, remote_error
-        upstream, upstream_error = live_remote_branch_head(
-            repo,
-            remote=fallback_remote,
-            branch=branch,
-        )
-        return upstream, branch if upstream is not None else None, fallback_remote, upstream_error
+        return fallback_live_upstream_head(repo, branch, command_name=command_name)
     if not merge_ref.startswith("refs/heads/"):
         return None, None, None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
     upstream_branch = merge_ref.removeprefix("refs/heads/")

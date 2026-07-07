@@ -337,6 +337,41 @@ def assert_verify_remote_precondition_errors() -> None:
             owner.git_output = original_git_output
 
 
+def assert_remote_fallback_helpers_handle_empty_outputs() -> None:
+    owner = load_owner_module()
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = lambda _repo, *args: {
+            ("remote",): (None, None),
+        }[args]
+        remote, error = owner.fallback_push_remote(REPO_ROOT, command_name="verify-remote")
+        if remote is not None or error != "verify-remote requires a configured Git remote":
+            raise AssertionError((remote, error))
+
+        owner.git_output = lambda _repo, *args: {
+            ("remote",): ("", None),
+        }[args]
+        remote, error = owner.fallback_push_remote(REPO_ROOT, command_name="verify-remote")
+        if remote is not None or error != "verify-remote requires a configured Git remote":
+            raise AssertionError((remote, error))
+
+        owner.git_output = lambda _repo, *args: {
+            ("ls-remote", "--heads", "origin", "feature"): (None, None),
+        }[args]
+        head, error = owner.live_remote_branch_head(REPO_ROOT, remote="origin", branch="feature")
+        if head is not None or error is not None:
+            raise AssertionError((head, error))
+
+        owner.git_output = lambda _repo, *args: {
+            ("ls-remote", "--heads", "origin", "feature"): ("", None),
+        }[args]
+        head, error = owner.live_remote_branch_head(REPO_ROOT, remote="origin", branch="feature")
+        if head is not None or error is not None:
+            raise AssertionError((head, error))
+    finally:
+        owner.git_output = original_git_output
+
+
 def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> None:
     owner = load_owner_module()
     calls: list[tuple[str, ...]] = []
@@ -1443,6 +1478,7 @@ def main() -> int:
     assert_run_attempt_accepts_positive_ints_only()
     assert_job_database_id_accepts_numeric_database_id_or_id()
     assert_verify_remote_precondition_errors()
+    assert_remote_fallback_helpers_handle_empty_outputs()
     assert_verify_remote_accepts_same_name_remote_without_local_upstream()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()

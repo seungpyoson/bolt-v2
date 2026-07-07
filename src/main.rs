@@ -55,6 +55,7 @@ use bolt_v2::{
     },
     bolt_v3_reference_price_health::{
         ReferenceCurrentPriceHealthReport, ReferenceCurrentPriceHealthRun,
+        check_reference_current_price_health_forbidden_env_vars,
         prepare_reference_current_price_health_run,
         prepare_reference_current_price_health_run_with_resolved,
         run_prepared_reference_current_price_health,
@@ -462,6 +463,9 @@ enum OpsLaunchStage {
 const OPS_LAUNCH_STAGE_CHAIN: &[OpsLaunchStage] = &[
     OpsLaunchStage::VerifyConfig,
     OpsLaunchStage::TargetVerify,
+    // Full-launch gates: `ops launch` must prove the complete live config can
+    // resolve and arm before it starts. The later reference health stage scopes
+    // its own data-client runtime, but it does not bypass full launch readiness.
     OpsLaunchStage::SecretsCheck,
     OpsLaunchStage::SecretsResolve,
     OpsLaunchStage::PrestartCheck,
@@ -797,7 +801,7 @@ fn run_capture_chainlink_reference_fixture_command(
 fn run_loaded_reference_current_price_health(
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    check_reference_current_price_health_forbidden_env_vars(loaded)?;
     let health_run = prepare_reference_current_price_health_run(loaded)?;
     run_reference_current_price_health(health_run)
 }

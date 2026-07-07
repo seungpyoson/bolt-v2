@@ -475,8 +475,8 @@ where
 #[derive(Debug, Clone)]
 struct LoadedBacktestSweepRun {
     run: BacktestSweepRun,
-    source_run_spec_path: PathBuf,
-    source_object_path: PathBuf,
+    source_run_spec_path: String,
+    source_object_path: String,
     source_run_spec_sha256: String,
 }
 
@@ -559,8 +559,10 @@ fn load_backtest_sweep_source_pairs(
     plan.sources
         .iter()
         .map(|source| {
-            let run_spec_path = resolve_source_path(&plan.input_dir, &source.run_spec_path);
-            let object_path = resolve_source_path(&plan.input_dir, &source.object_path);
+            let (run_spec_path, source_run_spec_path) =
+                resolve_source_path("run-spec", &plan.input_dir, &source.run_spec_path)?;
+            let (object_path, source_object_path) =
+                resolve_source_path("object", &plan.input_dir, &source.object_path)?;
             let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
             let accepted_object_bytes = read_accepted_object_for_run_spec(&object_path, &run_spec)?;
             let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
@@ -572,20 +574,53 @@ fn load_backtest_sweep_source_pairs(
                     run_spec,
                     accepted_object_bytes,
                 },
-                source_run_spec_path: run_spec_path,
-                source_object_path: object_path,
+                source_run_spec_path,
+                source_object_path,
                 source_run_spec_sha256,
             })
         })
         .collect()
 }
 
-fn resolve_source_path(input_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        input_dir.join(path)
+fn resolve_source_path(
+    label: &'static str,
+    input_dir: &Path,
+    path: &Path,
+) -> Result<(PathBuf, String)> {
+    Ok((
+        input_dir.join(path),
+        input_relative_source_path(label, path)?,
+    ))
+}
+
+fn input_relative_source_path(label: &'static str, path: &Path) -> Result<String> {
+    ensure!(
+        !path.as_os_str().is_empty(),
+        "{label} source path must not be empty"
+    );
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_str().with_context(|| {
+                    format!("{label} source path must be UTF-8: {}", path.display())
+                })?;
+                parts.push(part.to_string());
+            }
+            _ => {
+                ensure!(
+                    false,
+                    "{label} source path must be relative to input_dir without parent or prefix components: {}",
+                    path.display()
+                );
+            }
+        }
     }
+    ensure!(
+        !parts.is_empty(),
+        "{label} source path must include at least one path component"
+    );
+    Ok(parts.join("/"))
 }
 
 fn source_file_name(label: &'static str, path: &Path) -> Result<String> {
@@ -669,11 +704,11 @@ fn run_pointer_params(
     );
     params.insert(
         "source_run_spec_path".to_string(),
-        serde_json::Value::String(loaded.source_run_spec_path.display().to_string()),
+        serde_json::Value::String(loaded.source_run_spec_path.clone()),
     );
     params.insert(
         "source_object_path".to_string(),
-        serde_json::Value::String(loaded.source_object_path.display().to_string()),
+        serde_json::Value::String(loaded.source_object_path.clone()),
     );
     Ok(params)
 }
@@ -1604,6 +1639,19 @@ mod tests {
             assert!(record.params.contains_key("source_run_spec_sha256"));
             assert!(record.params.contains_key("accepted_object_sha256"));
         }
+        let first_params = &publication.index.runs[0].params;
+        assert_eq!(
+            first_params
+                .get("source_run_spec_path")
+                .and_then(serde_json::Value::as_str),
+            Some("first.toml")
+        );
+        assert_eq!(
+            first_params
+                .get("source_object_path")
+                .and_then(serde_json::Value::as_str),
+            Some("first.object")
+        );
         assert_eq!(publication.index_artifact.path, plan.index_path);
     }
 
@@ -1704,6 +1752,38 @@ mod tests {
             );
             assert!(!plan.index_path.exists(), "index must not be written");
         }
+    }
+
+    #[test]
+    fn sweep_publication_rejects_absolute_source_paths_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let mut source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        source.run_spec_path = input_dir.join("first.toml");
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            "s3://example-bucket/nt-research-analytics",
+            vec![source],
+        );
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("absolute source path must fail");
+
+        assert_eq!(calls, 0, "executor must not run after bad source path");
+        assert!(err.to_string().contains("relative to input_dir"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
     }
 
     #[test]

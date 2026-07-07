@@ -49,7 +49,7 @@ fn main() -> Result<()> {
 
 fn source_pairs(paths: &[PathBuf]) -> Result<Vec<BacktestSweepSourcePair>> {
     ensure!(
-        paths.len() % 2 == 0,
+        paths.len().is_multiple_of(2),
         "--source arguments must be run-spec/object pairs"
     );
     paths

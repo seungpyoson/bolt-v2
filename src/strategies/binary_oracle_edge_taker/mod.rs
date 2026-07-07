@@ -751,6 +751,7 @@ struct SettlementEvidenceIds {
 struct SettlementCloseFetchAttemptState {
     interval_end_ms: u64,
     attempt_count: u64,
+    last_attempt_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -961,6 +962,11 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
     ) -> Result<()> {
         let retry_budget = self.config.market_exit_max_attempts;
+        let retry_interval_ms = self
+            .config
+            .retry_interval_seconds
+            .saturating_mul(MILLIS_PER_SECOND_U64);
+        let mut attempt_due = false;
         let attempts_exhausted = {
             let state = self
                 .settlement_close_fetch_attempts
@@ -968,17 +974,21 @@ impl BinaryOracleEdgeTaker {
                 .or_insert(SettlementCloseFetchAttemptState {
                     interval_end_ms,
                     attempt_count: INITIAL_COUNTER_U64,
+                    last_attempt_ms: None,
                 });
             if state.interval_end_ms != interval_end_ms {
                 *state = SettlementCloseFetchAttemptState {
                     interval_end_ms,
                     attempt_count: INITIAL_COUNTER_U64,
+                    last_attempt_ms: None,
                 };
             }
+            let retry_due =
+                Self::settlement_close_retry_due(state.last_attempt_ms, now_ms, retry_interval_ms);
             if state.attempt_count >= retry_budget {
-                true
+                retry_due
             } else {
-                state.attempt_count = state.attempt_count.saturating_add(COUNTER_INCREMENT_U64);
+                attempt_due = retry_due;
                 false
             }
         };
@@ -990,10 +1000,26 @@ impl BinaryOracleEdgeTaker {
                 "resolution feed missing after settlement close fetch attempts exhausted; settlement not booked".to_string(),
                 now_ms.saturating_mul(NANOS_PER_MILLI_U64),
             )?;
-        } else {
-            self.subscribe_resolution_settlement_close(interval_end_ms);
+        } else if attempt_due && self.subscribe_resolution_settlement_close(interval_end_ms) {
+            if let Some(state) = self
+                .settlement_close_fetch_attempts
+                .get_mut(&settlement_key)
+            {
+                state.attempt_count = state.attempt_count.saturating_add(COUNTER_INCREMENT_U64);
+                state.last_attempt_ms = Some(now_ms);
+            }
         }
         Ok(())
+    }
+
+    fn settlement_close_retry_due(
+        last_attempt_ms: Option<u64>,
+        now_ms: u64,
+        retry_interval_ms: u64,
+    ) -> bool {
+        last_attempt_ms.is_none_or(|last_attempt_ms| {
+            now_ms.saturating_sub(last_attempt_ms) >= retry_interval_ms
+        })
     }
 
     fn try_book_resolution_settlement(&mut self, update: &IndexPriceUpdate) -> Result<()> {
@@ -2116,14 +2142,6 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn reconcile_runtime_venue_state(&mut self, now_ms: u64) {
-        self.run_runtime_reconcile_pass(now_ms);
-    }
-
-    pub(crate) fn reconcile_runtime_venue_state_after_reconnect(&mut self, now_ms: u64) {
-        self.run_runtime_reconcile_pass(now_ms);
-    }
-
-    fn run_runtime_reconcile_pass(&mut self, now_ms: u64) {
         if let Some(query) = self.runtime_reconcile_order_query() {
             if self.runtime_reconcile_order_query_due(&query, now_ms) {
                 self.reconcile_runtime_order_query(query, now_ms);

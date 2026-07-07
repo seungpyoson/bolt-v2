@@ -297,12 +297,12 @@ impl BinaryOracleEdgeTaker {
         );
     }
 
-    pub(super) fn subscribe_resolution_settlement_close(&mut self, interval_end_ms: u64) {
+    pub(super) fn subscribe_resolution_settlement_close(&mut self, interval_end_ms: u64) -> bool {
         self.subscribe_resolution_report_boundary(
             ResolutionStrikeReportBoundary::WindowClose,
             SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM,
             interval_end_ms / MILLIS_PER_SECOND_U64,
-        );
+        )
     }
 
     fn subscribe_resolution_report_boundary(
@@ -310,11 +310,11 @@ impl BinaryOracleEdgeTaker {
         report_boundary: ResolutionStrikeReportBoundary,
         boundary_param: &'static str,
         boundary_unix_seconds: u64,
-    ) {
+    ) -> bool {
         let (Some(resolution_instrument_id), Some(resolution_client_id)) =
             (self.resolution_instrument_id(), self.resolution_client_id())
         else {
-            return;
+            return false;
         };
         // Fail-closed asset binding: refuse to subscribe a resolution instrument
         // that does not resolve this instance's underlying asset, so a
@@ -327,7 +327,7 @@ impl BinaryOracleEdgeTaker {
                 self.config.underlying_asset,
                 self.config.strategy_id,
             );
-            return;
+            return false;
         }
         let mut params = Params::new();
         params.insert(
@@ -368,7 +368,7 @@ impl BinaryOracleEdgeTaker {
                     boundary_unix_seconds,
                 ),
             );
-            return;
+            return true;
         }
 
         params.insert(
@@ -403,6 +403,7 @@ impl BinaryOracleEdgeTaker {
                 data_type,
             ),
         );
+        true
     }
 
     pub(super) fn unsubscribe_resolution_strike(&mut self) {

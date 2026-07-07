@@ -490,6 +490,18 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::validate_positive_u64_field(
             table,
             field_prefix,
+            stringify!(retry_interval_seconds),
+            errors,
+        );
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(market_exit_max_attempts),
+            errors,
+        );
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
             stringify!(sizing_ev_reference_bps),
             errors,
         );

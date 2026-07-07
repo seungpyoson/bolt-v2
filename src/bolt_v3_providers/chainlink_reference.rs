@@ -7,11 +7,11 @@
 use std::{
     any::Any,
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -262,7 +262,7 @@ impl DataClientFactory for ChainlinkReferencePriceClientFactory {
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             websocket: Arc::new(Mutex::new(None)),
             last_message_unix_ms: Arc::new(AtomicU64::new(0)),
-            input_health_missing: Arc::new(AtomicBool::new(false)),
+            input_health_missing_sources: Arc::new(Mutex::new(BTreeSet::new())),
             liveness_task: None,
             connected: false,
         }))
@@ -286,7 +286,7 @@ struct ChainlinkReferencePriceClient {
         Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     last_message_unix_ms: Arc<AtomicU64>,
-    input_health_missing: Arc<AtomicBool>,
+    input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
     liveness_task: Option<JoinHandle<()>>,
     connected: bool,
 }
@@ -311,6 +311,30 @@ impl ChainlinkReferenceSubscriptionKey {
             asset: subscription.asset.clone(),
             source_id: subscription.source_id.clone(),
             instrument_id: subscription.instrument_id.clone(),
+        }
+    }
+}
+
+type ChainlinkReferenceInputHealthMissingSources =
+    Arc<Mutex<BTreeSet<ChainlinkReferenceInputHealthSourceKey>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ChainlinkReferenceInputHealthSourceKey {
+    strategy_instance_id: String,
+    source_id: String,
+    asset: String,
+    provider: String,
+    provider_instrument: String,
+}
+
+impl ChainlinkReferenceInputHealthSourceKey {
+    fn from_source(source: &BoltV3MissingInputSource) -> Self {
+        Self {
+            strategy_instance_id: source.strategy_instance_id.clone(),
+            source_id: source.source_id.clone(),
+            asset: source.asset.clone(),
+            provider: source.provider.clone(),
+            provider_instrument: source.provider_instrument.clone(),
         }
     }
 }
@@ -360,6 +384,9 @@ impl DataClient for ChainlinkReferencePriceClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
+        if let Some(task) = self.liveness_task.take() {
+            task.abort();
+        }
         if chainlink_reference_current_transport_mode(&self.websocket).is_some() {
             self.disconnect().await?;
         }
@@ -370,7 +397,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
             Arc::clone(&self.last_message_unix_ms),
-            Arc::clone(&self.input_health_missing),
+            Arc::clone(&self.input_health_missing_sources),
         )
         .await?;
         chainlink_reference_store_transport(&self.websocket, websocket)?;
@@ -381,7 +408,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.websocket),
             self.data_sender.clone(),
             Arc::clone(&self.last_message_unix_ms),
-            Arc::clone(&self.input_health_missing),
+            Arc::clone(&self.input_health_missing_sources),
         ));
         self.connected = true;
         Ok(())
@@ -504,7 +531,7 @@ async fn chainlink_reference_connect_websocket(
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
-    input_health_missing: Arc<AtomicBool>,
+    input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 ) -> anyhow::Result<BoundaryWebSocket> {
     let websocket_config = reference_price_websocket_config(config)?;
     let handler = chainlink_reference_message_handler_with_input_health_recovery(
@@ -514,7 +541,7 @@ async fn chainlink_reference_connect_websocket(
         last_message_unix_ms,
         Some(ChainlinkReferenceInputHealthRecovery {
             config: config.clone(),
-            input_health_missing,
+            input_health_missing_sources,
         }),
     );
     bolt_v3_wire_boundary::connect_websocket(
@@ -538,7 +565,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
     websocket: Arc<Mutex<Option<BoundaryWebSocket>>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     last_message_unix_ms: Arc<AtomicU64>,
-    input_health_missing: Arc<AtomicBool>,
+    input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 ) -> JoinHandle<()> {
     get_runtime().spawn(async move {
         let mut attempted_reconnects = 0_u32;
@@ -571,20 +598,21 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 attempted_reconnects = 0;
                 continue;
             }
-            input_health_missing.store(true, Ordering::SeqCst);
-            chainlink_reference_emit_input_health_transition(
+            chainlink_reference_emit_missing_input_health_transition(
                 &config,
                 &subscriptions,
+                &input_health_missing_sources,
                 CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_STALE,
-                true,
+                false,
             );
             if !config
                 .reconnect_max_attempts
                 .permits_attempt(attempted_reconnects)
             {
-                chainlink_reference_emit_input_health_transition(
+                chainlink_reference_emit_missing_input_health_transition(
                     &config,
                     &subscriptions,
+                    &input_health_missing_sources,
                     CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_EXHAUSTED,
                     true,
                 );
@@ -615,7 +643,7 @@ fn spawn_chainlink_reference_liveness_supervisor(
                 Arc::clone(&subscriptions),
                 data_sender.clone(),
                 Arc::clone(&last_message_unix_ms),
-                Arc::clone(&input_health_missing),
+                Arc::clone(&input_health_missing_sources),
             )
             .await
             {
@@ -664,24 +692,39 @@ fn chainlink_reference_replayed_subscription_count(
     }
 }
 
-fn chainlink_reference_emit_input_health_transition(
+fn chainlink_reference_emit_missing_input_health_transition(
     config: &ChainlinkReferencePriceClientConfig,
     subscriptions: &Arc<
         Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
     >,
+    missing_sources: &ChainlinkReferenceInputHealthMissingSources,
     reason: &'static str,
-    missing: bool,
+    emit_existing: bool,
 ) {
     let Some(emitter) = config.input_health_transition_emitter.as_ref() else {
         return;
     };
-    for source in
-        chainlink_reference_input_health_sources_for_transition(config, subscriptions, reason)
-    {
-        emitter(
-            reason,
-            BoltV3InputHealthSourceTransition { source, missing },
-        );
+    let sources =
+        chainlink_reference_input_health_sources_for_transition(config, subscriptions, reason);
+    let mut missing_sources = match missing_sources.lock() {
+        Ok(missing_sources) => missing_sources,
+        Err(error) => {
+            log::error!("Chainlink reference input-health missing-source state poisoned: {error}");
+            return;
+        }
+    };
+    for source in sources {
+        let key = ChainlinkReferenceInputHealthSourceKey::from_source(&source);
+        let inserted = missing_sources.insert(key);
+        if inserted || emit_existing {
+            emitter(
+                reason,
+                BoltV3InputHealthSourceTransition {
+                    source,
+                    missing: true,
+                },
+            );
+        }
     }
 }
 
@@ -948,7 +991,7 @@ fn chainlink_reference_message_handler(
 #[derive(Clone)]
 struct ChainlinkReferenceInputHealthRecovery {
     config: ChainlinkReferencePriceClientConfig,
-    input_health_missing: Arc<AtomicBool>,
+    input_health_missing_sources: ChainlinkReferenceInputHealthMissingSources,
 }
 
 fn chainlink_reference_message_handler_with_input_health_recovery(
@@ -1030,22 +1073,35 @@ fn chainlink_reference_emit_recovered_input_health_for_updates(
     recovery: &ChainlinkReferenceInputHealthRecovery,
     updates: &[ReferencePriceUpdate],
 ) {
-    if updates.is_empty() || !recovery.input_health_missing.load(Ordering::SeqCst) {
+    if updates.is_empty() {
         return;
     }
     let Some(emitter) = recovery.config.input_health_transition_emitter.as_ref() else {
         return;
     };
     let sources = chainlink_reference_recovered_input_health_sources(&recovery.config, updates);
-    if sources.is_empty()
-        || recovery
-            .input_health_missing
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-    {
+    if sources.is_empty() {
         return;
     }
-    for source in sources {
+    let recovered_sources = {
+        let mut missing_sources = match recovery.input_health_missing_sources.lock() {
+            Ok(missing_sources) => missing_sources,
+            Err(error) => {
+                log::error!(
+                    "Chainlink reference recovered input-health could not read missing-source state: {error}"
+                );
+                return;
+            }
+        };
+        sources
+            .into_iter()
+            .filter(|source| {
+                let key = ChainlinkReferenceInputHealthSourceKey::from_source(source);
+                missing_sources.remove(&key)
+            })
+            .collect::<Vec<_>>()
+    };
+    for source in recovered_sources {
         emitter(
             CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED,
             BoltV3InputHealthSourceTransition {
@@ -1636,7 +1692,7 @@ mod tests {
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
                 websocket: Arc::new(Mutex::new(None)),
                 last_message_unix_ms: Arc::new(AtomicU64::new(0)),
-                input_health_missing: Arc::new(AtomicBool::new(false)),
+                input_health_missing_sources: Arc::new(Mutex::new(BTreeSet::new())),
                 liveness_task: None,
                 connected: false,
             },
@@ -1646,6 +1702,50 @@ mod tests {
 
     fn test_last_message_clock() -> Arc<AtomicU64> {
         Arc::new(AtomicU64::new(0))
+    }
+
+    fn input_health_source(
+        asset: &str,
+        source_id: &str,
+        provider_instrument: &str,
+    ) -> BoltV3MissingInputSource {
+        BoltV3MissingInputSource {
+            strategy_instance_id: "binary-edge-taker".to_string(),
+            source_id: source_id.to_string(),
+            asset: asset.to_string(),
+            provider: REFERENCE_PRICE_PROVIDER_KEY.to_string(),
+            provider_instrument: provider_instrument.to_string(),
+            reason: "test".to_string(),
+        }
+    }
+
+    fn input_health_missing_sources_with(
+        sources: Vec<&BoltV3MissingInputSource>,
+    ) -> ChainlinkReferenceInputHealthMissingSources {
+        let mut missing_sources = BTreeSet::new();
+        for source in sources {
+            missing_sources.insert(ChainlinkReferenceInputHealthSourceKey::from_source(source));
+        }
+        Arc::new(Mutex::new(missing_sources))
+    }
+
+    fn reference_price_update(
+        asset: &str,
+        source_id: &str,
+        provider_instrument: &str,
+    ) -> ReferencePriceUpdate {
+        ReferencePriceUpdate::try_new(
+            asset,
+            source_id,
+            REFERENCE_PRICE_PROVIDER_KEY,
+            provider_instrument,
+            TEST_BENCHMARK_PRICE,
+            Some(TEST_BID_PRICE),
+            Some(TEST_ASK_PRICE),
+            TEST_OBSERVATIONS_SECONDS.into(),
+            TEST_OBSERVATIONS_SECONDS.into(),
+        )
+        .expect("test reference price update should be valid")
     }
 
     #[test]
@@ -2182,8 +2282,8 @@ mod tests {
         });
         let mut config = client.config.clone();
         config.input_health_transition_emitter = Some(emitter);
-        config.input_health_sources = vec![source];
-        let input_health_missing = Arc::new(AtomicBool::new(true));
+        config.input_health_sources = vec![source.clone()];
+        let input_health_missing_sources = input_health_missing_sources_with(vec![&source]);
         let handler = chainlink_reference_message_handler_with_input_health_recovery(
             config.feed_bindings.clone(),
             Arc::clone(&client.subscriptions),
@@ -2191,7 +2291,7 @@ mod tests {
             test_last_message_clock(),
             Some(ChainlinkReferenceInputHealthRecovery {
                 config,
-                input_health_missing: Arc::clone(&input_health_missing),
+                input_health_missing_sources: Arc::clone(&input_health_missing_sources),
             }),
         );
 
@@ -2204,7 +2304,14 @@ mod tests {
                 .is_empty(),
             "control frames must not mark a missing reference input recovered"
         );
-        assert!(input_health_missing.load(Ordering::SeqCst));
+        assert!(
+            input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .contains(&ChainlinkReferenceInputHealthSourceKey::from_source(
+                    &source,
+                ))
+        );
 
         handler(WireMessage::text(chainlink_report_frame_json()));
 
@@ -2218,7 +2325,74 @@ mod tests {
         );
         assert!(!recorded[0].1.missing);
         assert_eq!(recorded[0].1.source.source_id.as_str(), TEST_SOURCE_ID);
-        assert!(!input_health_missing.load(Ordering::SeqCst));
+        assert!(
+            input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn recovered_input_health_clears_only_matching_missing_source() {
+        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
+        let eth_source =
+            input_health_source(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&transitions);
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
+            recorded
+                .lock()
+                .expect("transition recorder should be available")
+                .push((reason, transition));
+        });
+        let mut config = fixture_config();
+        config.input_health_transition_emitter = Some(emitter);
+        config.input_health_sources = vec![btc_source.clone(), eth_source.clone()];
+        let input_health_missing_sources =
+            input_health_missing_sources_with(vec![&btc_source, &eth_source]);
+        let recovery = ChainlinkReferenceInputHealthRecovery {
+            config,
+            input_health_missing_sources: Arc::clone(&input_health_missing_sources),
+        };
+        let btc_update = reference_price_update(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
+        let eth_update =
+            reference_price_update(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
+
+        chainlink_reference_emit_recovered_input_health_for_updates(&recovery, &[btc_update]);
+
+        {
+            let recorded = transitions
+                .lock()
+                .expect("transition recorder should be available");
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ASSET);
+        }
+        {
+            let missing_sources = input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available");
+            assert!(!missing_sources.contains(
+                &ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source)
+            ));
+            assert!(missing_sources.contains(
+                &ChainlinkReferenceInputHealthSourceKey::from_source(&eth_source)
+            ));
+        }
+
+        chainlink_reference_emit_recovered_input_health_for_updates(&recovery, &[eth_update]);
+
+        let recorded = transitions
+            .lock()
+            .expect("transition recorder should be available");
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[1].1.source.asset.as_str(), TEST_ETH_ASSET);
+        assert!(
+            input_health_missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty()
+        );
     }
 
     #[test]

@@ -670,23 +670,10 @@ fn live_operator_health_surface(
     )
 }
 
-fn configured_reference_current_price_source_count(loaded: &LoadedBoltV3Config) -> usize {
-    loaded
-        .strategies
-        .iter()
-        .filter_map(|strategy| strategy.config.reference_current_price.as_ref())
-        .map(|reference| {
-            reference
-                .source_order
-                .iter()
-                .filter(|source_id| {
-                    reference.sources.get(*source_id).is_some_and(|source| {
-                        reference_price_source_is_runtime_available(reference, source)
-                    })
-                })
-                .count()
-        })
-        .sum()
+fn configured_reference_current_price_source_count(
+    sources_by_client: &BTreeMap<String, Vec<BoltV3MissingInputSource>>,
+) -> usize {
+    sources_by_client.values().map(Vec::len).sum()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -795,6 +782,11 @@ fn reference_current_price_live_input_sources_by_client(
                 continue;
             };
             if !reference_price_source_is_runtime_available(reference, source) {
+                continue;
+            }
+            if !bolt_v3_providers::reference_price_provider_emits_live_input_health(
+                source.provider.as_str(),
+            ) {
                 continue;
             }
             let Some(metadata) = reference_price_provider_metadata(source.provider.as_str()) else {
@@ -2467,10 +2459,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         )))
     });
     let operator_health_transition_logger = BoltV3OperatorHealthTransitionLogger::new();
-    let input_health_configured_source_count =
-        configured_reference_current_price_source_count(loaded);
     let input_health_sources_by_client =
         reference_current_price_live_input_sources_by_client(loaded);
+    let input_health_configured_source_count =
+        configured_reference_current_price_source_count(&input_health_sources_by_client);
     let input_health_accumulator = Arc::new(Mutex::new(BoltV3LiveInputHealthAccumulator::new(
         input_health_configured_source_count,
         &input_health_sources_by_client,

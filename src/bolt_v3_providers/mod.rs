@@ -650,6 +650,10 @@ pub fn reference_price_provider_supports_asset(provider_key: &str, asset: &str) 
     metadata.supported_assets.is_empty() || metadata.supported_assets.contains(&asset)
 }
 
+pub fn reference_price_provider_emits_live_input_health(provider_key: &str) -> bool {
+    provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY
+}
+
 pub fn reference_price_provider_identifier_is_configured(
     root: &BoltV3RootConfig,
     provider_key: &str,

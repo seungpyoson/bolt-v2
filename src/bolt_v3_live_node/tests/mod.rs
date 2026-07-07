@@ -198,6 +198,33 @@ fn live_input_health_accumulator_starts_unobserved_then_tracks_source_transition
 }
 
 #[test]
+fn live_input_health_sources_include_only_providers_with_transition_emitters() {
+    let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+        "tests/fixtures/bolt_v3/root.toml",
+    ))
+    .expect("fixture config should load");
+
+    let sources_by_client = reference_current_price_live_input_sources_by_client(&loaded);
+    let source_count = configured_reference_current_price_source_count(&sources_by_client);
+    let sources = sources_by_client
+        .values()
+        .flat_map(|sources| sources.iter())
+        .collect::<Vec<_>>();
+
+    assert_eq!(source_count, sources.len());
+    assert!(
+        sources.iter().any(|source| source.provider
+            == crate::bolt_v3_providers::chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY),
+        "fixture must include the Chainlink source that can emit live input-health transitions"
+    );
+    assert!(
+        sources.iter().all(|source| source.provider
+            != crate::bolt_v3_providers::polyresearch::REFERENCE_PRICE_PROVIDER_KEY),
+        "providers without live input-health emitters must not be enrolled as live-health sources"
+    );
+}
+
+#[test]
 fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface() {
     let logger = BoltV3OperatorHealthTransitionLogger::new();
     let nominal = BoltV3OperatorHealthSurface::not_configured();

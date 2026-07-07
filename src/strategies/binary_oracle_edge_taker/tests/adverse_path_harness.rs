@@ -811,6 +811,83 @@ fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_
 }
 
 #[test]
+fn position_market_lifecycle_close_fetch_retry_waits_for_retry_interval() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-CLOSE-FETCH-RETRY-PACING"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(2));
+
+    let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
+    assert!(
+        close_fetch_count == 1 && settlement_booking_error_count(&events) == 0,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: close-fetch retries must be paced by retry_interval_seconds, not by every time event; close_fetch_count={close_fetch_count} events={events:?}",
+    );
+}
+
+#[test]
+fn position_market_lifecycle_close_fetch_exhaustion_waits_for_retry_interval() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    strategy.config.market_exit_max_attempts = 1;
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-CLOSE-FETCH-TERMINAL-PACING"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let position_interval_end_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure position interval end");
+
+    roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
+    emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(2));
+
+    let events = evidence.events();
+    let close_fetch_count = settlement_close_fetch_event_count(&strategy);
+    assert!(
+        close_fetch_count == 1 && settlement_booking_error_count(&events) == 0,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: close-fetch exhaustion must wait one retry interval after the final fetch; close_fetch_count={close_fetch_count} events={events:?}",
+    );
+}
+
+#[test]
 fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch() {
     assert_reality_fixtures();
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from verifier_io import require_nonempty
@@ -98,6 +99,10 @@ LEGITIMATE_SIZER_LINE_PATTERNS = [
 ]
 
 
+class AuditConfigError(ValueError):
+    pass
+
+
 def word_re(term: str) -> re.Pattern[str]:
     prefix = r"(?<![A-Za-z0-9_])" if term[:1].isalnum() or term[:1] == "_" else ""
     suffix = r"(?![A-Za-z0-9_])" if term[-1:].isalnum() or term[-1:] == "_" else ""
@@ -106,6 +111,41 @@ def word_re(term: str) -> re.Pattern[str]:
 
 def load_audit() -> object:
     return yaml.safe_load(AUDIT_PATH.read_text(encoding="utf-8")) or {}
+
+
+def audit_row_list(audit: Mapping[object, object], field_name: str) -> list[dict[object, object]]:
+    value = audit.get(field_name, [])
+    if not isinstance(value, list):
+        raise AuditConfigError(f"{field_name} must be a list")
+
+    rows: list[dict[object, object]] = []
+    for index, row in enumerate(value):
+        if not isinstance(row, Mapping):
+            raise AuditConfigError(f"{field_name}[{index}] must be a mapping")
+        normalized_row = dict(row)
+        for string_field in ("from", "to", "reason"):
+            if string_field in normalized_row and not isinstance(normalized_row[string_field], str):
+                raise AuditConfigError(f"{field_name}[{index}].{string_field} must be a string")
+        include_globs = normalized_row.get("include_globs")
+        if include_globs is not None and (
+            not isinstance(include_globs, list)
+            or any(not isinstance(pattern, str) for pattern in include_globs)
+        ):
+            raise AuditConfigError(f"{field_name}[{index}].include_globs must be a list of strings")
+        rows.append(normalized_row)
+    return rows
+
+
+def normalized_audit_rows(
+    audit: object,
+) -> tuple[list[dict[object, object]], list[dict[object, object]], list[dict[object, object]]]:
+    if not isinstance(audit, Mapping):
+        raise AuditConfigError(f"expected a mapping, got {type(audit).__name__}")
+    return (
+        audit_row_list(audit, "renamed_in_current_audit"),
+        audit_row_list(audit, "defensive_forbidden"),
+        audit_row_list(audit, "path_scoped_forbidden"),
+    )
 
 
 def scan_paths_for_globs(
@@ -299,16 +339,11 @@ def main() -> int:
     except yaml.YAMLError as error:
         print(f"FAIL: invalid Bolt-v3 naming audit file: {error}", file=sys.stderr)
         return 1
-    if not isinstance(audit, dict):
-        print(
-            "FAIL: invalid Bolt-v3 naming audit file: "
-            f"expected a mapping, got {type(audit).__name__}",
-            file=sys.stderr,
-        )
+    try:
+        rename_rows, defensive_rows, scoped_rows = normalized_audit_rows(audit)
+    except AuditConfigError as error:
+        print(f"FAIL: invalid Bolt-v3 naming audit file: {error}", file=sys.stderr)
         return 1
-    rename_rows = audit.get("renamed_in_current_audit", [])
-    defensive_rows = audit.get("defensive_forbidden", [])
-    scoped_rows = audit.get("path_scoped_forbidden", [])
     forbidden = {
         row["from"]: f"use {row['to']}"
         for row in [*rename_rows, *defensive_rows]

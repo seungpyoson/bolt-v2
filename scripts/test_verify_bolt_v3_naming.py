@@ -348,6 +348,87 @@ def test_main_reports_undecodable_audit_without_traceback() -> None:
         raise AssertionError(f"expected undecodable audit finding, got code={code}, stderr={output!r}")
 
 
+def test_main_reports_invalid_audit_row_schema_without_traceback() -> None:
+    cases = [
+        (
+            "renamed_in_current_audit: bad\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit must be a list",
+        ),
+        (
+            "renamed_in_current_audit:\n"
+            "  - bad\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit[0] must be a mapping",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden:\n"
+            "  - from: 1\n"
+            "    to: ProviderKey\n"
+            "path_scoped_forbidden: []\n",
+            "defensive_forbidden[0].from must be a string",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden:\n"
+            "  - from: VenueKind\n"
+            "    to: 1\n"
+            "path_scoped_forbidden: []\n",
+            "defensive_forbidden[0].to must be a string",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden:\n"
+            "  - from: VenueKind\n"
+            "    to: ProviderKey\n"
+            "    include_globs: src/**/*.rs\n",
+            "path_scoped_forbidden[0].include_globs must be a list of strings",
+        ),
+        (
+            "renamed_in_current_audit: []\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden:\n"
+            "  - from: VenueKind\n"
+            "    to: ProviderKey\n"
+            "    include_globs:\n"
+            "      - 1\n",
+            "path_scoped_forbidden[0].include_globs must be a list of strings",
+        ),
+    ]
+    for audit_text, message in cases:
+        original_root = VERIFIER.REPO_ROOT
+        original_audit_path = VERIFIER.AUDIT_PATH
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audit_path = root / "audit.yaml"
+            audit_path.write_text(audit_text, encoding="utf-8")
+            try:
+                VERIFIER.REPO_ROOT = root
+                VERIFIER.AUDIT_PATH = audit_path
+                with contextlib.redirect_stderr(stderr):
+                    try:
+                        code = VERIFIER.main()
+                    except Exception as exc:
+                        raise AssertionError(
+                            "schema-invalid naming audit should be reported normally"
+                        ) from exc
+            finally:
+                VERIFIER.REPO_ROOT = original_root
+                VERIFIER.AUDIT_PATH = original_audit_path
+
+        output = stderr.getvalue()
+        expected = f"FAIL: invalid Bolt-v3 naming audit file: {message}\n"
+        if code != 1 or output != expected:
+            raise AssertionError(
+                f"expected invalid audit finding, got code={code}, stderr={output!r}"
+            )
+
+
 def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
@@ -672,6 +753,7 @@ def main() -> int:
         test_main_reports_non_mapping_audit_without_traceback,
         test_main_reports_unreadable_audit_without_traceback,
         test_main_reports_undecodable_audit_without_traceback,
+        test_main_reports_invalid_audit_row_schema_without_traceback,
         test_main_reports_path_scoped_forbidden_table_prefix,
         test_main_fails_closed_when_scan_paths_are_empty,
         test_main_fails_closed_when_misnomer_scan_paths_are_empty_before_naming_scan,

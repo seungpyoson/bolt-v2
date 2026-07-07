@@ -2010,6 +2010,77 @@ mod tests {
     }
 
     #[test]
+    fn sweep_publication_rejects_run_spec_output_prefix_for_different_run_id_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        rewrite_source_run_spec(&input_dir, &source, |spec| {
+            spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/ra-run-b");
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("run-spec output prefix for another run must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after run-spec output prefix targets another run"
+        );
+        assert!(err.to_string().contains("manifest.output_prefix"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn sweep_publication_rejects_duplicate_remote_output_prefixes_before_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let first = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"first",
+        );
+        let second = write_source_pair(
+            &input_dir,
+            "second.toml",
+            "second.object",
+            "ra-run-b",
+            b"second",
+        );
+        rewrite_source_run_spec(&input_dir, &second, |spec| {
+            spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/ra-run-a");
+        });
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![first, second]);
+        let mut calls = 0;
+
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("duplicate remote output prefix must fail before executor");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not run after duplicate remote output prefixes"
+        );
+        assert!(err.to_string().contains("manifest.output_prefix"), "{err}");
+        assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
     fn sweep_publication_rejects_duplicate_run_spec_names_before_executor() {
         let temp = TempDir::new().expect("temp dir");
         let input_dir = temp.path().join("inputs");

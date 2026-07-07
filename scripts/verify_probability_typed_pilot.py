@@ -34,10 +34,28 @@ REGISTERED_FINANCIAL_VALUES = (
     FinancialValueRegistration("src/bolt_v3_realized_volatility.rs", "ReadyRealizedVol"),
 )
 
-RUST_PATH_SEGMENT = r"(?:crate|self|super|[A-Za-z_][A-Za-z0-9_]*)"
-RUST_TYPE_PATH = rf"(?:{RUST_PATH_SEGMENT}::)*([A-Za-z_][A-Za-z0-9_]*)"
-FINANCIAL_VALUE_TRAIT_PATH = rf"(?:{RUST_PATH_SEGMENT}::)*FinancialValue"
-SEALED_TRAIT_PATH = rf"(?:{RUST_PATH_SEGMENT}::)*financial_value_private::Sealed"
+RUST_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+RUST_PATH_SEGMENT = rf"(?:crate|self|super|{RUST_IDENT})"
+RUST_PATH_PREFIX = rf"(?:::\s*)?(?:{RUST_PATH_SEGMENT}\s*::\s*)*"
+RUST_TYPE_PATH = rf"{RUST_PATH_PREFIX}({RUST_IDENT})"
+FINANCIAL_VALUE_TRAIT_PATH = rf"{RUST_PATH_PREFIX}FinancialValue"
+SEALED_TRAIT_PATH = rf"{RUST_PATH_PREFIX}financial_value_private\s*::\s*Sealed"
+DEFAULT_TRAIT_PATH = rf"{RUST_PATH_PREFIX}Default"
+RUST_IMPL_PREFIX = r"\bimpl\b\s*(?:<[^{};]*>\s*)?(?:const\s+)?"
+RUST_DELIMITER_PAIRS = {"{": "}", "(": ")", "[": "]"}
+FINANCIAL_VALUE_ALIAS_IMPORT_PATTERN = re.compile(
+    rf"\buse\b[^;]*(?:"
+    rf"\bFinancialValue\s+as\s+{RUST_IDENT}\b"
+    rf"|\bfinancial_value_private\s+as\s+{RUST_IDENT}\b"
+    rf"|\bfinancial_value_private\s*::\s*Sealed\s+as\s+{RUST_IDENT}\b"
+    rf"|\bfinancial_value_private\s*::\s*\{{[^}}]*\bSealed\s+as\s+{RUST_IDENT}\b"
+    rf")",
+    re.DOTALL,
+)
+DEFAULT_ALIAS_IMPORT_PATTERN = re.compile(
+    rf"\buse\b[^;]*\bDefault\s+as\s+{RUST_IDENT}\b",
+    re.DOTALL,
+)
 
 
 REQUIRED_PATTERNS = [
@@ -226,6 +244,13 @@ def read_source(root: Path, relative_path: str) -> str:
     return (root / relative_path).read_text(encoding="utf-8")
 
 
+def scanner_source(root: Path, relative_path: str) -> str:
+    source = read_source(root, relative_path)
+    if relative_path.endswith(".rs"):
+        return rust_source_scanner.strip_rust_comments_and_literals(source)
+    return source
+
+
 def rust_sources(root: Path) -> list[tuple[str, str]]:
     sources = []
     src_root = root / "src"
@@ -241,7 +266,7 @@ def rust_sources(root: Path) -> list[tuple[str, str]]:
 def missing_required(root: Path, checks: list[PatternCheck]) -> list[str]:
     findings = []
     for check in checks:
-        source = read_source(root, check.path)
+        source = scanner_source(root, check.path)
         if not re.search(check.pattern, source, re.DOTALL):
             findings.append(f"{check.path}: missing {check.description}")
     return findings
@@ -250,7 +275,7 @@ def missing_required(root: Path, checks: list[PatternCheck]) -> list[str]:
 def present_forbidden(root: Path, checks: list[PatternCheck]) -> list[str]:
     findings = []
     for check in checks:
-        source = read_source(root, check.path)
+        source = scanner_source(root, check.path)
         if re.search(check.pattern, source, re.DOTALL):
             findings.append(f"{check.path}: forbidden {check.description}")
     return findings
@@ -260,7 +285,8 @@ def financial_value_impl_set(root: Path) -> set[tuple[str, str]]:
     impls = set()
     for relative_path, source in rust_sources(root):
         for match in re.finditer(
-            rf"\bimpl\s+{FINANCIAL_VALUE_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b", source
+            rf"{RUST_IMPL_PREFIX}{FINANCIAL_VALUE_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b",
+            source,
         ):
             impls.add((relative_path, match.group(1)))
     return impls
@@ -270,7 +296,7 @@ def financial_value_sealed_impl_set(root: Path) -> set[tuple[str, str]]:
     impls = set()
     for relative_path, source in rust_sources(root):
         for match in re.finditer(
-            rf"\bimpl\s+{SEALED_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b",
+            rf"{RUST_IMPL_PREFIX}{SEALED_TRAIT_PATH}\s+for\s+{RUST_TYPE_PATH}\b",
             source,
         ):
             impls.add((relative_path, match.group(1)))
@@ -311,7 +337,104 @@ def verify_financial_value_sealing(root: Path) -> list[str]:
 
 
 def financial_value_type_pattern(type_name: str) -> str:
-    return rf"(?:[A-Za-z_][A-Za-z0-9_]*::)*{re.escape(type_name)}\b"
+    return rf"{RUST_PATH_PREFIX}{re.escape(type_name)}\b"
+
+
+def type_alias_pattern(type_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\b(?:pub(?:\s*\([^)]*\))?\s+)?type\s+{RUST_IDENT}"
+        rf"(?:\s*<[^;=]*>)?\s*=\s*(?:\(\s*)*{financial_value_type_pattern(type_name)}"
+        rf"(?:\s*\))*\s*;",
+        re.DOTALL,
+    )
+
+
+def use_alias_pattern(type_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\buse\b[^;]*\b{re.escape(type_name)}\s+as\s+{RUST_IDENT}\b",
+        re.DOTALL,
+    )
+
+
+def macro_rules_bodies(source: str) -> list[str]:
+    bodies = []
+    search_from = 0
+    while True:
+        match = re.search(rf"\bmacro_rules!\s+{RUST_IDENT}\b", source[search_from:])
+        if match is None:
+            return bodies
+
+        delimiter_start = search_from + match.end()
+        while delimiter_start < len(source) and source[delimiter_start].isspace():
+            delimiter_start += 1
+        if delimiter_start >= len(source):
+            return bodies
+
+        open_delimiter = source[delimiter_start]
+        close_delimiter = RUST_DELIMITER_PAIRS.get(open_delimiter)
+        if close_delimiter is None:
+            search_from = delimiter_start + 1
+            continue
+
+        depth = 1
+        cursor = delimiter_start + 1
+        while cursor < len(source) and depth:
+            if source[cursor] == open_delimiter:
+                depth += 1
+            elif source[cursor] == close_delimiter:
+                depth -= 1
+            cursor += 1
+
+        bodies.append(source[delimiter_start:cursor])
+        search_from = cursor
+
+
+def verify_financial_value_aliases(root: Path) -> list[str]:
+    findings = []
+    sources = rust_sources(root)
+    for relative_path, source in sources:
+        if FINANCIAL_VALUE_ALIAS_IMPORT_PATTERN.search(source):
+            findings.append(f"{relative_path}: forbidden FinancialValue alias import")
+        if DEFAULT_ALIAS_IMPORT_PATTERN.search(source):
+            findings.append(f"{relative_path}: forbidden Default alias import")
+        for registration in REGISTERED_FINANCIAL_VALUES:
+            if type_alias_pattern(registration.type_name).search(source):
+                findings.append(
+                    f"{relative_path}: forbidden FinancialValue type alias for {registration.type_name}"
+                )
+            if use_alias_pattern(registration.type_name).search(source):
+                findings.append(
+                    f"{relative_path}: forbidden FinancialValue type alias for {registration.type_name}"
+                )
+    return findings
+
+
+def verify_financial_value_macros(root: Path) -> list[str]:
+    findings = []
+    # Source-visible macro bodies may not mint or mark FinancialValue types.
+    # Fully metavariable-driven macro invocations and proc-macro expansion remain
+    # outside this text verifier's model.
+    forbidden_impl_pattern = re.compile(
+        rf"{RUST_IMPL_PREFIX}(?:{DEFAULT_TRAIT_PATH}|{FINANCIAL_VALUE_TRAIT_PATH}|"
+        rf"{SEALED_TRAIT_PATH})\s+for\b",
+        re.DOTALL,
+    )
+    registered_type_impl_patterns = [
+        re.compile(
+            rf"{RUST_IMPL_PREFIX}[^{{}};]*\s+for\s+"
+            rf"{financial_value_type_pattern(registration.type_name)}",
+            re.DOTALL,
+        )
+        for registration in REGISTERED_FINANCIAL_VALUES
+    ]
+    for relative_path, source in rust_sources(root):
+        for body in macro_rules_bodies(source):
+            if forbidden_impl_pattern.search(body) or any(
+                pattern.search(body) for pattern in registered_type_impl_patterns
+            ):
+                findings.append(f"{relative_path}: forbidden macro-generated FinancialValue impl")
+                break
+    return findings
 
 
 def verify_financial_value_defaults(root: Path) -> list[str]:
@@ -319,9 +442,19 @@ def verify_financial_value_defaults(root: Path) -> list[str]:
     sources = rust_sources(root)
     for registration in REGISTERED_FINANCIAL_VALUES:
         type_pattern = financial_value_type_pattern(registration.type_name)
-        impl_pattern = re.compile(rf"\bimpl\s+Default\s+for\s+{type_pattern}", re.DOTALL)
+        impl_pattern = re.compile(
+            rf"{RUST_IMPL_PREFIX}{DEFAULT_TRAIT_PATH}\s+for\s+{type_pattern}",
+            re.DOTALL,
+        )
         derive_pattern = re.compile(
             rf"#\s*\[\s*derive\s*\([^\]]*\bDefault\b[^\]]*\)\s*\]\s*"
+            rf"(?:#\s*\[[^\]]*\]\s*)*"
+            rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{re.escape(registration.type_name)}\b",
+            re.DOTALL,
+        )
+        cfg_attr_derive_pattern = re.compile(
+            rf"#\s*\[\s*cfg_attr\s*\([^\]]*\bderive\s*\([^\]]*\bDefault\b[^\]]*\)"
+            rf"[^\]]*\)\s*\]\s*"
             rf"(?:#\s*\[[^\]]*\]\s*)*"
             rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{re.escape(registration.type_name)}\b",
             re.DOTALL,
@@ -331,7 +464,7 @@ def verify_financial_value_defaults(root: Path) -> list[str]:
                 findings.append(
                     f"{relative_path}: forbidden Default impl for FinancialValue {registration.type_name}"
                 )
-            if derive_pattern.search(source):
+            if derive_pattern.search(source) or cfg_attr_derive_pattern.search(source):
                 findings.append(
                     f"{relative_path}: forbidden Default derive for FinancialValue {registration.type_name}"
                 )
@@ -343,6 +476,8 @@ def verify(root: Path) -> list[str]:
     findings.extend(missing_required(root, REQUIRED_PATTERNS))
     findings.extend(missing_required(root, BOUNDARY_PATTERNS))
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
+    findings.extend(verify_financial_value_aliases(root))
+    findings.extend(verify_financial_value_macros(root))
     findings.extend(verify_financial_value_implementors(root))
     findings.extend(verify_financial_value_defaults(root))
     findings.extend(verify_financial_value_sealing(root))

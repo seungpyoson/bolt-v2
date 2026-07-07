@@ -2671,7 +2671,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if self._is_argparse_argument_parser_call(call_name):
             return _ARGPARSE_PARSER
         if call_name in self.functions and call_name not in self.active_value_functions:
-            value = self._resolve_function_return_value(self.functions[call_name])
+            value = self._resolve_function_return_value(self.functions[call_name], node)
             if value is not _UNRESOLVED:
                 return value
         if call_name in self.path_names or call_name.endswith(".Path"):
@@ -2751,11 +2751,29 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                             return _UNRESOLVED
         return _UNRESOLVED
 
-    def _resolve_function_return_value(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> object:
+    def _resolve_function_return_value(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        call_node: ast.Call,
+    ) -> object:
         self.active_value_functions.add(node.name)
         parent = dict(self.scopes[-1])
-        for arg in self._function_parameters(node):
-            parent[arg.arg] = _PARAMETER
+        parameters = self._function_parameters(node)
+        parameter_names = {arg.arg for arg in parameters}
+        explicit_names: set[str] = set()
+        for arg_def, arg_value in zip(parameters, call_node.args):
+            parent[arg_def.arg] = self._resolve_value(arg_value)
+            explicit_names.add(arg_def.arg)
+        for keyword in call_node.keywords:
+            if keyword.arg is not None and keyword.arg in parameter_names:
+                parent[keyword.arg] = self._resolve_value(keyword.value)
+                explicit_names.add(keyword.arg)
+        for default_name, default in self._function_defaults(node).items():
+            if default_name not in explicit_names:
+                parent[default_name] = self._resolve_value(default)
+        for arg in parameters:
+            if arg.arg not in parent:
+                parent[arg.arg] = _UNRESOLVED
         self.scopes.append(parent)
         try:
             for statement in node.body:
@@ -3599,6 +3617,39 @@ subprocess.run(["python3", args.script])
         targets, failures = resolver.resolve()
         assert not failures, f"expected argparse-derived script path to remain an external boundary:\n{source}"
         assert not targets
+
+
+def test_function_return_value_preserves_bound_arguments_for_exec_edges() -> None:
+    fixtures = [
+        """
+import subprocess
+import sys
+
+def script_path(path):
+    return path
+
+subprocess.run([sys.executable, script_path("scripts/test_nextest_fingerprint.py")])
+""",
+        """
+import subprocess
+import sys
+
+def script_path(path):
+    return str(path)
+
+subprocess.run([sys.executable, script_path("scripts/test_nextest_fingerprint.py")])
+""",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures, f"expected concrete wrapper return to resolve:\n{source}"
+        rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+        assert "test_nextest_fingerprint.py" in rels
 
 
 def test_asyncio_subprocess_resolves_python_targets() -> None:
@@ -4802,6 +4853,7 @@ def _registered_self_tests():
         test_subprocess_executable_keyword_process_image_resolves_before_argv0,
         test_subprocess_direct_process_image_resolves_python_by_semantics,
         test_argparse_parse_args_outputs_are_external_parameters,
+        test_function_return_value_preserves_bound_arguments_for_exec_edges,
         test_asyncio_subprocess_resolves_python_targets,
         test_asyncio_subprocess_non_python_targets_are_boundaries,
         test_local_wrappers_resolve_forward_and_nested_calls,

@@ -3,7 +3,6 @@
 
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
@@ -11,17 +10,12 @@ from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
 import pytest
+import rust_verification
 from test_fixtures import rust_verification_policy_text, write_executable, write_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "scripts" / "cargo-shim"
 INSTALLER = ROOT / "scripts" / "install-cargo-shim"
-RUST_VERIFICATION_HELPER_FILES = (
-    "ci_test_manifest.py",
-    "command_understanding.py",
-    "config_validators.py",
-    "rust_verification.py",
-)
 
 POLICY = """\
 schema_version = 2
@@ -45,15 +39,7 @@ REFUSAL_LINES = [
 
 def _init_repo(path: Path, policy: str = POLICY) -> None:
     write_policy(path, policy_text=policy, write_justfile=False)
-    write_rust_verification_helpers(path)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-
-
-def write_rust_verification_helpers(path: Path) -> None:
-    scripts_dir = path / "scripts"
-    scripts_dir.mkdir(exist_ok=True)
-    for name in RUST_VERIFICATION_HELPER_FILES:
-        shutil.copy2(ROOT / "scripts" / name, scripts_dir / name)
 
 
 def _fake_real_cargo(tmp_path: Path) -> Path:
@@ -85,6 +71,12 @@ def _load_shim_module():
     return module
 
 
+def _shim_target_dir_for_cwd(shim, cwd: Path) -> Path:
+    root = shim.nearest_policy_root(cwd)
+    assert root is not None
+    return shim.managed_target_dir(root)
+
+
 def _load_installer_module():
     loader = SourceFileLoader("cargo_shim_installer_under_test", str(INSTALLER))
     spec = spec_from_loader(loader.name, loader)
@@ -110,6 +102,29 @@ def _run_cargo(repo: Path, real_cargo: Path, *args: str, extra_env: dict[str, st
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def test_cargo_shim_has_no_dynamic_module_loader():
+    source = SHIM.read_text(encoding="utf-8")
+
+    assert "spec_from_file_location" not in source
+    assert "importlib" not in source
+    assert "import_module" not in source
+
+
+def test_managed_target_dir_formula_matches_rust_verification_for_policy_roots(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo, policy=rust_verification_policy_text(target_namespace="bolt-v2"))
+    nested = repo / "crates" / "backtesting-vertical-slice"
+    nested.mkdir(parents=True)
+    write_policy(nested, target_namespace="bvs", write_justfile=False)
+    root_base = tmp_path / "rust-root"
+    monkeypatch.setenv("RUST_VERIFICATION_ROOT_BASE", str(root_base))
+    shim = _load_shim_module()
+
+    assert _shim_target_dir_for_cwd(shim, repo) == rust_verification.target_dir(repo)
+    assert _shim_target_dir_for_cwd(shim, nested) == rust_verification.target_dir(nested)
 
 
 def test_policy_refused_subcommand_is_blocked_without_spawning_real_cargo(tmp_path):
@@ -690,7 +705,7 @@ def test_installer_is_idempotent_and_prepends_zshenv_path(tmp_path):
     assert 'export PATH="$BOLT_CARGO_SHIM_DIR:$PATH"' in text
 
 
-def test_installed_cargo_shim_loads_policy_repo_helpers_and_routes_target_dir(tmp_path):
+def test_installed_cargo_shim_routes_target_dir_without_repo_helper_import(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     install_dir = tmp_path / "shim-bin"
@@ -724,7 +739,7 @@ def test_installed_cargo_shim_loads_policy_repo_helpers_and_routes_target_dir(tm
         check=False,
     )
 
-    namespace = _load_shim_module().load_target_namespace_fallback(ROOT / "ci" / "rust-verification.toml")
+    namespace = _load_shim_module().load_target_namespace(ROOT / "ci" / "rust-verification.toml")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"target={root_base / namespace / 'target'}"
 

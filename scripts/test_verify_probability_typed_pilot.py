@@ -453,6 +453,28 @@ impl Default for MuAlias {
             raise AssertionError(f"expected FinancialValue type-alias finding, got {findings!r}")
 
 
+def test_verify_rejects_financial_value_type_alias_with_where_clause() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_sizing.rs": """
+pub type MuAlias
+where
+    (): Sized
+= crate::bolt_v3_maker_mu_estimator::UsableMu;
+impl Default for MuAlias {
+    fn default() -> Self { unreachable!() }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("FinancialValue type alias" in finding for finding in findings):
+            raise AssertionError(f"expected where-clause type-alias finding, got {findings!r}")
+
+
 def test_verify_rejects_macro_default_impl_for_registered_financial_value() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -730,6 +752,7 @@ def main() -> int:
         test_verify_rejects_default_derive_for_registered_financial_value,
         test_verify_rejects_default_derive_with_intervening_attribute,
         test_verify_rejects_financial_value_type_alias,
+        test_verify_rejects_financial_value_type_alias_with_where_clause,
         test_verify_rejects_macro_default_impl_for_registered_financial_value,
         test_verify_rejects_macro_trait_metavar_impl_for_registered_financial_value,
         test_verify_rejects_public_financial_value_field,

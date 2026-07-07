@@ -42,6 +42,7 @@ FINANCIAL_VALUE_TRAIT_PATH = rf"{RUST_PATH_PREFIX}FinancialValue"
 SEALED_TRAIT_PATH = rf"{RUST_PATH_PREFIX}financial_value_private\s*::\s*Sealed"
 DEFAULT_TRAIT_PATH = rf"{RUST_PATH_PREFIX}Default"
 RUST_IMPL_PREFIX = r"\bimpl\b\s*(?:<[^{};]*>\s*)?(?:const\s+)?"
+RUST_WHERE_CLAUSE = r"(?:\s+where\b[^;]*?)?"
 RUST_DELIMITER_PAIRS = {"{": "}", "(": ")", "[": "]"}
 FINANCIAL_VALUE_ALIAS_IMPORT_PATTERN = re.compile(
     rf"\buse\b[^;]*(?:"
@@ -343,8 +344,9 @@ def financial_value_type_pattern(type_name: str) -> str:
 def type_alias_pattern(type_name: str) -> re.Pattern[str]:
     return re.compile(
         rf"\b(?:pub(?:\s*\([^)]*\))?\s+)?type\s+{RUST_IDENT}"
-        rf"(?:\s*<[^;=]*>)?\s*=\s*(?:\(\s*)*{financial_value_type_pattern(type_name)}"
-        rf"(?:\s*\))*\s*;",
+        rf"(?:\s*<[^;=]*>)?{RUST_WHERE_CLAUSE}\s*="
+        rf"\s*(?:\(\s*)*{financial_value_type_pattern(type_name)}"
+        rf"(?:\s*\))*{RUST_WHERE_CLAUSE}\s*;",
         re.DOTALL,
     )
 
@@ -404,7 +406,7 @@ def verify_financial_value_aliases(root: Path) -> list[str]:
                 )
             if use_alias_pattern(registration.type_name).search(source):
                 findings.append(
-                    f"{relative_path}: forbidden FinancialValue type alias for {registration.type_name}"
+                    f"{relative_path}: forbidden FinancialValue import alias for {registration.type_name}"
                 )
     return findings
 

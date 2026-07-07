@@ -516,9 +516,10 @@ def verify_financial_value_default_token_allowlist(root: Path) -> list[str]:
     if extra:
         details.append(f"extra {extra!r}")
     guidance = (
-        "Add unrelated Default usage to FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST "
-        "after review. Do not allowlist Default for Probability, UsableMu, "
-        "ValidRealizedVol, ReadyRealizedVol, or aliases of them."
+        "Add unrelated source lines containing the text Default to "
+        "FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST after review. Do not "
+        "allowlist Default for Probability, UsableMu, ValidRealizedVol, "
+        "ReadyRealizedVol, or aliases of them."
     )
     return [
         f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}. {guidance}"

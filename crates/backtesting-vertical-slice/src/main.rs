@@ -19,7 +19,6 @@ use clap::Parser;
 
 use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
 
-use backtesting_vertical_slice::hashing::sha256_hex;
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     backfill_execution_plan::{
@@ -115,7 +114,9 @@ where
         &spec.accepted_object.sha256,
     )
     .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
-    ensure_object_read_within_raw_payload_limit(&spec)?;
+    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
+        &spec,
+    )?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
     let artifact_store = spec.required_artifact_store()?;
     let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
@@ -189,7 +190,9 @@ where
         &spec.accepted_object.sha256,
     )
     .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
-    ensure_object_read_within_raw_payload_limit(&spec)?;
+    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
+        &spec,
+    )?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
 
     if cli.publish_output {
@@ -439,18 +442,7 @@ fn print_feed_labels(labels: &[BacktestFeedLabel]) {
 }
 
 fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
-    let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
-    let hash = sha256_hex(&bytes);
-    let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
-    let mut spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
-    if spec.source_bindings_path.is_relative() {
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sibling_relative = base_dir.join(&spec.source_bindings_path);
-        if sibling_relative.exists() {
-            spec.source_bindings_path = sibling_relative;
-        }
-    }
-    Ok((spec, hash))
+    backtesting_vertical_slice::research_analytics::read_run_spec_with_hash(path)
 }
 
 fn read_execution_plan(path: &Path) -> Result<BackfillExecutionPlan> {
@@ -552,16 +544,6 @@ fn validate_execution_plan_for_run_spec(
     );
     Ok(())
 }
-fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
-    ensure!(
-        spec.accepted_object.bytes <= spec.converter.raw_payload.max_object_bytes,
-        "accepted_object.bytes {} exceeds converter.raw_payload.max_object_bytes {}",
-        spec.accepted_object.bytes,
-        spec.converter.raw_payload.max_object_bytes
-    );
-    Ok(())
-}
-
 fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
     let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
     let actual_bytes = metadata.len();
@@ -576,6 +558,7 @@ fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use backtesting_vertical_slice::backfill_execution_plan::BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION;
+    use backtesting_vertical_slice::hashing::sha256_hex;
     use clap::error::ErrorKind;
 
     const COMMITTED_RUN_SPEC: &str = include_str!(

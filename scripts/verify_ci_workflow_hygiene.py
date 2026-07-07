@@ -359,6 +359,15 @@ CI_POLICY_ROW_SEMANTICS = {
     "unknown_event": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True),
 }
 NOOP_PROOF_ALLOWED_POLICY_ROWS = frozenset({"ready_pr", "ready_for_review"})
+PROOF_AFFECTING_POLICY_REQUIRED_VALUES = frozenset({"full"})
+NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES = frozenset({"full", "noop"})
+PROOF_AFFECTING_POLICY_ERROR_ALLOWED_TEXT = {
+    PROOF_AFFECTING_POLICY_REQUIRED_VALUES: "full or queue-covered iteration",
+    NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES: "full, noop, or queue-covered iteration",
+}
+PROOF_AFFECTING_POLICY_ERROR_TEMPLATE = (
+    "ci_provenance.policy.{row} is proof-affecting and must be {allowed_text}"
+)
 TAG_SKIPPED_JOBS = (
     "deny",
     "clippy",
@@ -1956,20 +1965,18 @@ def policy_proof_invariant_errors(policy: dict[str, object]) -> list[str]:
                 errors.append("ci_provenance.policy.tag is proof-affecting and must be tag_reuse")
             continue
         if policy_row_is_proof_affecting(semantics):
-            allowed_values = {"full"}
-            if row in NOOP_PROOF_ALLOWED_POLICY_ROWS:
-                allowed_values.add("noop")
+            allowed_values = (
+                NOOP_PROOF_AFFECTING_POLICY_REQUIRED_VALUES
+                if row in NOOP_PROOF_ALLOWED_POLICY_ROWS
+                else PROOF_AFFECTING_POLICY_REQUIRED_VALUES
+            )
             if value not in allowed_values:
-                if "noop" in allowed_values:
-                    errors.append(
-                        f"ci_provenance.policy.{row} is proof-affecting and must be full, noop, "
-                        "or queue-covered iteration"
+                errors.append(
+                    PROOF_AFFECTING_POLICY_ERROR_TEMPLATE.format(
+                        row=row,
+                        allowed_text=PROOF_AFFECTING_POLICY_ERROR_ALLOWED_TEXT[allowed_values],
                     )
-                else:
-                    errors.append(
-                        f"ci_provenance.policy.{row} is proof-affecting and must be full "
-                        "or queue-covered iteration"
-                    )
+                )
     return errors
 
 

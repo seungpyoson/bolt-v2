@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -14,6 +14,25 @@ struct ArtifactRefCandidate {
     path: String,
     sha256: String,
     location: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoPathError {
+    Empty,
+    NotRepoRelative,
+    Absolute,
+    EscapesRoot,
+}
+
+impl fmt::Display for RepoPathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "path is empty"),
+            Self::NotRepoRelative => write!(f, "path is not repo-relative"),
+            Self::Absolute => write!(f, "path is absolute"),
+            Self::EscapesRoot => write!(f, "path escapes repository root"),
+        }
+    }
 }
 
 const DATED_SOURCE_ATTESTATION_OWNERS: &[&str] = &[
@@ -164,8 +183,8 @@ fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str
     object.get(key)?.as_str()
 }
 
-fn should_report_invalid_artifact_ref_path(path: &str, error: &str) -> bool {
-    path.starts_with("repo://") || error == "path escapes repository root"
+fn should_report_invalid_artifact_ref_path(path: &str, error: &RepoPathError) -> bool {
+    path.starts_with("repo://") || matches!(error, RepoPathError::EscapesRoot)
 }
 
 #[test]
@@ -301,6 +320,33 @@ fn invalid_flat_path_hash_pins_are_reported_not_dropped() {
                 && mismatch.contains("actual <invalid path: path escapes repository root>")
         }),
         "invalid flat path/hash pin should be reported: {mismatches:?}"
+    );
+}
+
+#[test]
+fn invalid_bare_parent_traversal_pins_are_reported_not_dropped() {
+    let json = serde_json::json!({
+        "unsafe_contract": {
+            "path": "../outside.json",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "unsafe_path": "../outside.json",
+        "unsafe_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    });
+
+    let mismatches = check_synthetic_artifact_refs(&json);
+
+    assert!(
+        mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_contract")
+                && mismatch.contains("path ../outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }) && mismatches.iter().any(|mismatch| {
+            mismatch.contains("$.unsafe_sha256")
+                && mismatch.contains("path ../outside.json")
+                && mismatch.contains("actual <invalid path: path escapes repository root>")
+        }),
+        "bare parent traversal pins should be reported: {mismatches:?}"
     );
 }
 
@@ -474,19 +520,19 @@ fn is_source_tree_path(path: &str) -> bool {
     path.starts_with("crates/") || path.starts_with("src/") || path.starts_with("scripts/")
 }
 
-fn normalize_repo_path(path: &str) -> Result<String, String> {
+fn normalize_repo_path(path: &str) -> Result<String, RepoPathError> {
     let path = path.strip_prefix("repo://").unwrap_or(path);
     let path = path.replace('\\', "/");
     let repo_path = Path::new(&path);
 
     if path.is_empty() {
-        return Err("path is empty".to_string());
+        return Err(RepoPathError::Empty);
     }
     if path.contains("://") {
-        return Err("path is not repo-relative".to_string());
+        return Err(RepoPathError::NotRepoRelative);
     }
     if repo_path.is_absolute() {
-        return Err("path is absolute".to_string());
+        return Err(RepoPathError::Absolute);
     }
     let mut normalized = PathBuf::new();
     for component in repo_path.components() {
@@ -496,13 +542,13 @@ fn normalize_repo_path(path: &str) -> Result<String, String> {
             std::path::Component::ParentDir
             | std::path::Component::RootDir
             | std::path::Component::Prefix(_) => {
-                return Err("path escapes repository root".to_string());
+                return Err(RepoPathError::EscapesRoot);
             }
         }
     }
     let normalized = normalized.to_string_lossy().replace('\\', "/");
     if normalized.is_empty() {
-        return Err("path is empty".to_string());
+        return Err(RepoPathError::Empty);
     }
 
     Ok(normalized)

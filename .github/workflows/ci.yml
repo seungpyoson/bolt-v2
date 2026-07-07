@@ -717,6 +717,32 @@ jobs:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
+  source-fence-static:
+    name: source-fence-static
+    needs: [ci-policy]
+    if: ${{ github.event_name == 'pull_request' && needs.ci-policy.outputs.full_ci_required != 'true' && needs.ci-policy.outputs.ci_policy_path != 'docs' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install source-fence Python dependencies
+        run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt'
+
+      - name: source-fence-static
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: just source-fence-static
+
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than
   # adding brittle filter expressions that could hide neighboring tests.

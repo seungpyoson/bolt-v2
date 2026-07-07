@@ -187,7 +187,7 @@ fn artifact_ref_collector_treats_named_path_sha256_objects_as_pins() {
 }
 
 #[test]
-fn dated_status_source_path_pins_are_point_in_time_attestations() {
+fn registered_dated_source_attestation_pins_are_delegated_to_dedicated_verifier() {
     let dated_status = Path::new(
         "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
     );

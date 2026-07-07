@@ -1190,6 +1190,10 @@ impl BoltV3LiveNodeRuntime {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
     }
 
+    pub fn kill_switch_loss_protection_configured(&self) -> bool {
+        self.loss_protection.is_some()
+    }
+
     pub fn order_reject_observer_feed_configured(&self) -> bool {
         self.order_reject_observer_feed.is_some()
             && self.order_reject_observer_feed_subscription.is_some()
@@ -1307,6 +1311,14 @@ impl BoltV3LiveNodeRuntime {
     pub fn capital_admission_runtime_feed_configured(&self) -> bool {
         self.capital_admission_runtime_feed.is_some()
             && self.capital_admission_runtime_feed_subscription.is_some()
+    }
+
+    pub fn capital_admission_venue_spendability_source_configured(&self) -> bool {
+        self.capital_admission_venue_spendability_source.is_some()
+    }
+
+    pub fn submit_reservation_recovery_configured(&self) -> bool {
+        self.submit_reservation_recovery.is_some()
     }
 
     pub fn refresh_capital_admission_venue_spendability_from_configured_source(

@@ -240,23 +240,10 @@ pub async fn run_prepared_reference_current_price_health(
         ));
     }
 
-    let registered_data_client_set = registered_data_client_ids
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let missing_client_keys = health_run
-        .plan
-        .client_keys
-        .iter()
-        .filter(|client_key| !registered_data_client_set.contains(*client_key))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !missing_client_keys.is_empty() {
-        return Err(anyhow::anyhow!(
-            "reference_current_price health strategy-free transport did not register source data client(s): {}",
-            missing_client_keys.join(", ")
-        ));
-    }
+    validate_reference_current_price_health_registered_data_clients(
+        &health_run.plan,
+        registered_data_client_ids.clone(),
+    )?;
 
     let subscriptions = reference_current_price_health_subscriptions(&health_run.plan)?;
     let mut subscribed: Vec<&ReferenceCurrentPriceHealthSubscription> = Vec::new();
@@ -323,6 +310,37 @@ pub async fn run_prepared_reference_current_price_health(
         clients,
         source_update_observations,
     })
+}
+
+fn validate_reference_current_price_health_registered_data_clients(
+    plan: &ReferenceCurrentPriceHealthPlan,
+    registered_data_client_ids: Vec<String>,
+) -> Result<()> {
+    let planned_client_keys = plan.client_keys.iter().cloned().collect::<BTreeSet<_>>();
+    let registered_data_client_set = registered_data_client_ids
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let missing_client_keys = planned_client_keys
+        .difference(&registered_data_client_set)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_client_keys.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health strategy-free transport did not register source data client(s): {}",
+            missing_client_keys.join(", ")
+        ));
+    }
+    let extra_client_keys = registered_data_client_set
+        .difference(&planned_client_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !extra_client_keys.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health strategy-free transport registered out-of-plan data client(s): {}",
+            extra_client_keys.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn provider_instrument(asset: &str, source: &ReferencePriceSourceBlock) -> String {
@@ -602,6 +620,7 @@ mod tests {
 
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    use nautilus_model::identifiers::Venue;
     use rust_decimal::{Decimal, prelude::ToPrimitive};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -1076,6 +1095,25 @@ configured_source_param = "configured-value"
             health_run.runtime.registered_strategy_ids().is_empty(),
             "health must clear strategies from the prepared transport runtime"
         );
+        assert!(!health_run.runtime.has_iv_runtime());
+        assert!(!health_run.runtime.has_iv_event_bindings());
+        assert!(!health_run.runtime.loss_governor_configured());
+        assert!(!health_run.runtime.loss_governor_runtime_feed_configured());
+        assert!(!health_run.runtime.capital_admission_configured());
+        assert!(
+            !health_run
+                .runtime
+                .capital_admission_runtime_feed_configured()
+        );
+        assert!(!health_run.runtime.venue_truth_runtime_configured());
+        assert!(!health_run.runtime.order_reject_observer_feed_configured());
+        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
+        assert!(
+            !health_run
+                .runtime
+                .capital_admission_venue_spendability_source_configured()
+        );
+        assert!(!health_run.runtime.submit_reservation_recovery_configured());
     }
 
     #[test]
@@ -1173,6 +1211,52 @@ configured_source_param = "configured-value"
         })
         .expect(
             "reference health env preflight must ignore out-of-plan execution provider env vars",
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_env_check_fails_for_planned_provider_env_vars() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        loaded
+            .root
+            .clients
+            .get_mut("chainlink_reference")
+            .expect("fixture should configure chainlink_reference")
+            .venue = Venue::from(crate::bolt_v3_providers::polymarket::KEY);
+
+        let error =
+            check_reference_current_price_health_forbidden_env_vars_with(&loaded, |env_var| {
+                env_var == "POLYMARKET_PK"
+            })
+            .expect_err("planned data client provider env vars must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("chainlink_reference"), "{message}");
+        assert!(message.contains("POLYMARKET_PK"), "{message}");
+    }
+
+    #[test]
+    fn reference_current_price_health_registered_client_guard_rejects_extra_data_clients() {
+        let plan = ReferenceCurrentPriceHealthPlan {
+            targets: Vec::new(),
+            client_keys: vec!["chainlink_reference".to_string()],
+            observation_timeout_ms: 1,
+        };
+
+        let error = validate_reference_current_price_health_registered_data_clients(
+            &plan,
+            vec![
+                "chainlink_reference".to_string(),
+                "polyresearch_reference".to_string(),
+            ],
+        )
+        .expect_err("extra registered data clients must fail closed");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("registered out-of-plan data client(s): polyresearch_reference"),
+            "{message}"
         );
     }
 

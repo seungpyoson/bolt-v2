@@ -463,6 +463,9 @@ enum OpsLaunchStage {
 const OPS_LAUNCH_STAGE_CHAIN: &[OpsLaunchStage] = &[
     OpsLaunchStage::VerifyConfig,
     OpsLaunchStage::TargetVerify,
+    // Full-launch gates: `ops launch` must prove the complete live config can
+    // resolve and arm before it starts. The later reference health stage scopes
+    // its own data-client runtime, but it does not bypass full launch readiness.
     OpsLaunchStage::SecretsCheck,
     OpsLaunchStage::SecretsResolve,
     OpsLaunchStage::PrestartCheck,

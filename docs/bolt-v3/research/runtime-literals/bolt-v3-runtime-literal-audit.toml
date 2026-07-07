@@ -16197,6 +16197,14 @@ reason = "Reference-current-price health output/status literal; it reports obser
 path = "src/bolt_v3_reference_price_health.rs"
 kind = "string"
 literal = '''", "'''
+context = '''extra_client_keys.join(", ")'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''", "'''
 context = '''registered_strategy_ids.join(", ")'''
 classification = "reference_current_price_health_contract"
 reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
@@ -16246,6 +16254,14 @@ path = "src/bolt_v3_reference_price_health.rs"
 kind = "string"
 literal = '''"reference_current_price health registered strategies: {}"'''
 context = '''"reference_current_price health registered strategies: {}",'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"reference_current_price health strategy-free transport registered out-of-plan data client(s): {}"'''
+context = '''"reference_current_price health strategy-free transport registered out-of-plan data client(s): {}",'''
 classification = "reference_current_price_health_contract"
 reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
 

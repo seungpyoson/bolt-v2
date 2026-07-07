@@ -345,12 +345,22 @@ fn strategy_free_data_client_transport_loaded_config(
 
 fn disable_strategy_free_data_client_live_subsystems(loaded: &mut LoadedBoltV3Config) {
     loaded.root.iv = None;
-    loaded.root.risk.live_submit_governance = None;
-    loaded.root.risk.loss_governor = None;
-    loaded.root.risk.capital_pools = None;
-    loaded.root.risk.risk_reservation_substrate = None;
-    loaded.root.risk.kill_switch = None;
-    loaded.root.risk.basket_execution = None;
+    let crate::bolt_v3_config::RiskBlock {
+        default_max_notional_per_order: _,
+        live_submit_governance,
+        loss_governor,
+        capital_pools,
+        risk_reservation_substrate,
+        nautilus: _,
+        kill_switch,
+        basket_execution,
+    } = &mut loaded.root.risk;
+    *live_submit_governance = None;
+    *loss_governor = None;
+    *capital_pools = None;
+    *risk_reservation_substrate = None;
+    *kill_switch = None;
+    *basket_execution = None;
     loaded
         .root
         .persistence

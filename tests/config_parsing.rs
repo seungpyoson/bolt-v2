@@ -4263,7 +4263,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -4348,7 +4348,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 unowned_connection_field = "must-fail"
@@ -4390,7 +4390,7 @@ max_clock_skew_ms = 5000
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
 endpoint_id = "testnet-data-streams"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -4623,7 +4623,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -7810,7 +7810,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 4
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 {bindings_toml}

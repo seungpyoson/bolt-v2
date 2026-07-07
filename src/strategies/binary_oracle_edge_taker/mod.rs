@@ -2255,7 +2255,8 @@ impl BinaryOracleEdgeTaker {
             return false;
         }
         let spec = {
-            let Some(position) = self.cache().position_for_order(&query.client_order_id) else {
+            let cache = self.cache();
+            let Some(position) = cache.position_for_order(&query.client_order_id) else {
                 return false;
             };
             if position.instrument_id != query.instrument_id {

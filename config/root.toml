@@ -207,7 +207,7 @@ max_clock_skew_ms = 5000
 endpoint_id = "testnet-data-streams"
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 5
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -575,7 +575,7 @@ venue = "CHAINLINK_DATA_STREAMS"
 [clients.chainlink_strike.data]
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = 10
+http_timeout_secs = 5
 
 [clients.chainlink_strike.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"

@@ -30,8 +30,8 @@ pub(crate) use report::{
 };
 pub(crate) use strike_source::{
     ChainlinkStrikeFeedBinding, ChainlinkStrikeSourceConfig, ChainlinkStrikeSourceFactory,
-    STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding,
-    strike_fetch_request_data_type,
+    SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM, STRIKE_FETCH_INSTRUMENT_ID_PARAM,
+    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding, strike_fetch_request_data_type,
 };
 
 use std::{any::Any, sync::Arc};
@@ -321,6 +321,27 @@ pub fn reference_price_instrument_in_shared_catalog(
         }
     }
     Ok(false)
+}
+
+pub(crate) fn resolution_oracle_client_http_timeout_secs(
+    root: &BoltV3RootConfig,
+    client_key: &str,
+) -> Result<Option<u64>, String> {
+    let Some(client) = root.clients.get(client_key) else {
+        return Ok(None);
+    };
+    if client.venue.as_str() != KEY {
+        return Ok(None);
+    }
+    let Some(data) = client.data.as_ref() else {
+        return Ok(None);
+    };
+    let value = data_value_with_root_feed_catalog(root, client_key, data)
+        .map_err(|error| error.to_string())?;
+    let cfg: ChainlinkDataConfig = value
+        .try_into()
+        .map_err(|error: toml::de::Error| format!("clients.{client_key}.data: {error}"))?;
+    Ok(Some(cfg.http_timeout_secs))
 }
 
 fn map_data(

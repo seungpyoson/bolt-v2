@@ -1897,13 +1897,13 @@ mod tests {
         let second = chainlink_reference_websocket_config_at(&config, 1_700_000_001_000)
             .expect("second signed WebSocket config should build");
 
-        let header = |config: &WebSocketConfig, name: &str| {
+        fn header<'a>(config: &'a WebSocketConfig, name: &str) -> &'a str {
             config
                 .headers
                 .iter()
                 .find_map(|(key, value)| (key == name).then_some(value.as_str()))
                 .expect("signed Chainlink header should be present")
-        };
+        }
         assert_eq!(header(&first, "X-Authorization-Timestamp"), "1700000000000");
         assert_eq!(
             header(&second, "X-Authorization-Timestamp"),

@@ -58,7 +58,8 @@ use crate::{
         is_observed_open_side,
     },
     bolt_v3_providers::{
-        ProviderMarketExitOrderConstraints, binding_for_provider_key, resolve_fee_provider,
+        ProviderMarketExitOrderConstraints, binding_for_provider_key,
+        resolution_oracle_client_http_timeout_secs, resolve_fee_provider,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -267,6 +268,9 @@ pub fn validate_strategy(
 ) -> Vec<String> {
     let mut errors = validate_required_market_data(context, strategy);
     errors.extend(validate_reference_current_price_forced_flat_grace(
+        context, root, strategy,
+    ));
+    errors.extend(validate_resolution_retry_interval_covers_http_timeout(
         context, root, strategy,
     ));
     if strategy.realized_volatility_surface_id.is_none() {
@@ -1564,6 +1568,34 @@ fn validate_resolution_data_binding(
     }
 
     Ok(())
+}
+
+fn validate_resolution_retry_interval_covers_http_timeout(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    let Some(resolution_data) = strategy.resolution_data.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(target) =
+        crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+    else {
+        return Vec::new();
+    };
+    let client_key = resolution_data.data_client_id.to_string();
+    match resolution_oracle_client_http_timeout_secs(root, client_key.as_str()) {
+        Ok(Some(http_timeout_secs)) if target.retry_interval_seconds < http_timeout_secs => {
+            vec![format!(
+                "{context}: target.retry_interval_secs `{}` must be greater than or equal to clients.{client_key}.data.http_timeout_secs `{http_timeout_secs}` for resolution_data settlement-close retries; otherwise same-boundary in-flight fetch dedupe can consume market_exit_max_attempts before the first HTTP request times out",
+                target.retry_interval_seconds,
+            )]
+        }
+        Ok(_) => Vec::new(),
+        Err(message) => vec![format!(
+            "{context}: resolution_data data_client_id `{client_key}` could not validate resolution-oracle http_timeout_secs: {message}"
+        )],
+    }
 }
 
 fn signal_data_role_names(strategy: &BoltV3StrategyConfig) -> String {

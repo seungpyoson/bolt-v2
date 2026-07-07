@@ -36,7 +36,8 @@ pub mod reference_live_probe;
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
 pub(crate) use chainlink::{
-    STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+    SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM, STRIKE_FETCH_INSTRUMENT_ID_PARAM,
+    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
     strike_fetch_request_data_type as resolution_strike_fetch_request_data_type,
 };
 pub use chainlink_reference::KEY as REFERENCE_CATALOG_VENUE_KEY;
@@ -1108,6 +1109,13 @@ pub fn validate_resolution_oracle_client_consistency(root: &BoltV3RootConfig) ->
     chainlink::validate_client_gate_provider_consistency(root)
 }
 
+pub(crate) fn resolution_oracle_client_http_timeout_secs(
+    root: &BoltV3RootConfig,
+    client_key: &str,
+) -> Result<Option<u64>, String> {
+    chainlink::resolution_oracle_client_http_timeout_secs(root, client_key)
+}
+
 /// Family-agnostic surface read by core startup validation. Routes
 /// each client block to its per-provider validator based on provider
 /// key. Returns the full error list for the client block.
@@ -1336,6 +1344,16 @@ mod tests {
         assert!(!reference_price_provider_emits_live_input_health(
             "unregistered_reference_provider"
         ));
+        let emitting_provider_keys = reference_price_provider_metadata_entries()
+            .iter()
+            .filter(|metadata| metadata.emits_live_input_health)
+            .map(|metadata| metadata.provider_key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            emitting_provider_keys,
+            vec![chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY],
+            "attach_live_input_health_transition_emitters currently attaches Chainlink live input-health emitters; add a provider attach path when adding another emitting provider"
+        );
     }
 
     fn fake_secret_value(path: &str) -> String {

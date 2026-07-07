@@ -10,12 +10,29 @@ import stat
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - supported runtime has tomllib
+    tomllib = None
+
 
 BEGIN = "# BEGIN bolt cargo guard"
 END = "# END bolt cargo guard"
 LEGACY_START = "_rust_verification_env_unset_args() {"
 LEGACY_CARGO_START = "cargo() {"
 NO_MISTAKES_LAUNCH_AGENT_GLOB = "com.kunchenguid.no-mistakes.daemon.*.plist"
+
+
+class DailyMaintenanceLaunchAgentConfig:
+    __slots__ = ("label", "program_arguments", "start_calendar_interval")
+
+    def __init__(
+        self, label: str, program_arguments: tuple[str, ...],
+        start_calendar_interval: dict[str, int],
+    ) -> None:
+        self.label = label
+        self.program_arguments = program_arguments
+        self.start_calendar_interval = start_calendar_interval
 
 
 def quote(value: Path) -> str:
@@ -160,6 +177,104 @@ def no_mistakes_launch_agents(home: Path) -> list[Path]:
     return sorted(launch_agents_dir(home).glob(NO_MISTAKES_LAUNCH_AGENT_GLOB))
 
 
+def _config_string(section: dict[str, object], key: str, dotted_key: str) -> str:
+    value = section.get(key)
+    if not isinstance(value, str) or value == "":
+        raise ValueError(f"invalid config: {dotted_key} must be a non-empty string")
+    return value
+
+
+def _config_string_array(section: dict[str, object], key: str, dotted_key: str) -> tuple[str, ...]:
+    value = section.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"invalid config: {dotted_key} must be a non-empty string array")
+    return tuple(value)
+
+
+def _config_int_range(section: dict[str, object], key: str, dotted_key: str, *, minimum: int, maximum: int) -> int:
+    value = section.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+        raise ValueError(f"invalid config: {dotted_key} must be an integer from {minimum} to {maximum}")
+    return value
+
+
+def load_daily_maintenance_launch_agent_config(root: Path) -> DailyMaintenanceLaunchAgentConfig:
+    if tomllib is None:
+        raise ValueError("Python 3.11+ with stdlib tomllib is required to read config/clean-merged.toml")
+    config_path = root / "config" / "clean-merged.toml"
+    try:
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"config not found: {config_path}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid TOML in {config_path}: {exc}") from exc
+    clean_merged = data.get("clean-merged")
+    if not isinstance(clean_merged, dict):
+        raise ValueError("missing config: clean-merged")
+    section = clean_merged.get("daily_maintenance_launch_agent")
+    if not isinstance(section, dict):
+        raise ValueError("missing config: clean-merged.daily_maintenance_launch_agent")
+    start_calendar_interval = section.get("start_calendar_interval")
+    if not isinstance(start_calendar_interval, dict):
+        raise ValueError(
+            "missing config: clean-merged.daily_maintenance_launch_agent.start_calendar_interval"
+        )
+    return DailyMaintenanceLaunchAgentConfig(
+        label=_config_string(
+            section,
+            "label",
+            "clean-merged.daily_maintenance_launch_agent.label",
+        ),
+        program_arguments=_config_string_array(
+            section,
+            "program_arguments",
+            "clean-merged.daily_maintenance_launch_agent.program_arguments",
+        ),
+        start_calendar_interval={
+            "Hour": _config_int_range(
+                start_calendar_interval,
+                "Hour",
+                "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+                minimum=0,
+                maximum=23,
+            ),
+            "Minute": _config_int_range(
+                start_calendar_interval,
+                "Minute",
+                "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
+                minimum=0,
+                maximum=59,
+            ),
+        },
+    )
+
+
+def daily_maintenance_launch_agent_path(
+    home: Path, config: DailyMaintenanceLaunchAgentConfig,
+) -> Path:
+    return launch_agents_dir(home) / f"{config.label}.plist"
+
+
+def daily_maintenance_launch_agent_payload(
+    root: Path, config: DailyMaintenanceLaunchAgentConfig,
+) -> dict[str, object]:
+    return {
+        "Label": config.label,
+        "ProgramArguments": list(config.program_arguments),
+        "WorkingDirectory": str(root),
+        "StartCalendarInterval": dict(config.start_calendar_interval),
+    }
+
+
+def install_daily_maintenance_launch_agent(
+    home: Path, root: Path, config: DailyMaintenanceLaunchAgentConfig,
+) -> Path:
+    plist_path = daily_maintenance_launch_agent_path(home, config)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(plist_path, plistlib.dumps(daily_maintenance_launch_agent_payload(root, config)))
+    return plist_path
+
+
 def path_with_shim_first(existing_path: str, install_dir: Path) -> str:
     shim_dir = str(install_dir)
     entries = [entry for entry in existing_path.split(os.pathsep) if entry and entry != shim_dir]
@@ -219,10 +334,23 @@ def main() -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1
+    try:
+        daily_maintenance_config = load_daily_maintenance_launch_agent_config(root)
+    except (OSError, ValueError) as exc:
+        print(f"Failed to load daily maintenance LaunchAgent config: {exc}", file=sys.stderr)
+        return 1
+    try:
+        daily_maintenance_plist = install_daily_maintenance_launch_agent(
+            home, root, daily_maintenance_config,
+        )
+    except OSError as exc:
+        print(f"Failed to install daily maintenance LaunchAgent: {exc}", file=sys.stderr)
+        return 1
     print(f"Installed cargo shim: {target}")
     print(f"Updated zsh startup: {zshenv}")
     for plist_path in no_mistakes_plists:
         print(f"Updated no-mistakes LaunchAgent PATH: {plist_path}")
+    print(f"Installed daily maintenance LaunchAgent: {daily_maintenance_plist}")
     print("Restart or reconfigure long-running agent daemons after install; existing processes keep their old PATH.")
     return 0
 

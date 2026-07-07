@@ -278,6 +278,10 @@ CONFIG_KEYS = frozenset({
     "clean-merged.lane_t.active_process_patterns",
     "clean-merged.lane_t.process_list_timeout_s",
     "clean-merged.lane_t.cwd_visibility_timeout_s",
+    "clean-merged.daily_maintenance_launch_agent.label",
+    "clean-merged.daily_maintenance_launch_agent.program_arguments",
+    "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+    "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
     "clean-merged.logging.audit_format",
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
@@ -288,7 +292,14 @@ CONFIG_KEYS = frozenset({
     "clean-merged.logging.lane_r_log_path",
     "clean-merged.backups.prune_after_days",
 })
-REQUIRED_CONFIG_KEYS = frozenset(key for key in CONFIG_KEYS if not key.startswith("clean-merged.lane_t."))
+OPTIONAL_CONFIG_KEY_PREFIXES = (
+    "clean-merged.lane_t.",
+    "clean-merged.daily_maintenance_launch_agent.",
+)
+REQUIRED_CONFIG_KEYS = frozenset(
+    key for key in CONFIG_KEYS
+    if not any(key.startswith(prefix) for prefix in OPTIONAL_CONFIG_KEY_PREFIXES)
+)
 
 
 def _flatten_config(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -330,6 +341,13 @@ def _config_positive_int(flat: dict[str, Any], key: str) -> int:
     value = flat[key]
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConfigError(f"invalid config: {key} must be a positive integer")
+    return value
+
+
+def _config_int_range(flat: dict[str, Any], key: str, *, minimum: int, maximum: int) -> int:
+    value = flat[key]
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+        raise ConfigError(f"invalid config: {key} must be an integer from {minimum} to {maximum}")
     return value
 
 
@@ -420,6 +438,32 @@ def load_config(repo_root: pathlib.Path) -> Config:
                 flat, "clean-merged.lane_t.process_list_timeout_s"),
             cwd_visibility_timeout_s=_config_positive_float(
                 flat, "clean-merged.lane_t.cwd_visibility_timeout_s"),
+        )
+    daily_maintenance_keys = {
+        "clean-merged.daily_maintenance_launch_agent.label",
+        "clean-merged.daily_maintenance_launch_agent.program_arguments",
+        "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+        "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
+    }
+    present_daily_maintenance_keys = daily_maintenance_keys & set(flat)
+    if present_daily_maintenance_keys and present_daily_maintenance_keys != daily_maintenance_keys:
+        missing_daily_maintenance = sorted(
+            daily_maintenance_keys - present_daily_maintenance_keys)[0]
+        raise ConfigError(f"missing required config: {missing_daily_maintenance}")
+    if present_daily_maintenance_keys:
+        _config_str(flat, "clean-merged.daily_maintenance_launch_agent.label")
+        _config_string_array(flat, "clean-merged.daily_maintenance_launch_agent.program_arguments")
+        _config_int_range(
+            flat,
+            "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Hour",
+            minimum=0,
+            maximum=23,
+        )
+        _config_int_range(
+            flat,
+            "clean-merged.daily_maintenance_launch_agent.start_calendar_interval.Minute",
+            minimum=0,
+            maximum=59,
         )
     logging_cfg = LoggingConfig(
         audit_format=_config_str(flat, "clean-merged.logging.audit_format"),

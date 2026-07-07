@@ -1647,6 +1647,24 @@ class CleanupContractTests(unittest.TestCase):
         with self.assertRaisesRegex(cm.ConfigError, "hook_detach"):
             cm.load_config(self.work)
 
+    def test_daily_maintenance_launch_agent_config_is_allowed_when_complete(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            + textwrap.dedent(
+                """\
+
+                [clean-merged.daily_maintenance_launch_agent]
+                label = "com.example.daily-maintenance"
+                program_arguments = ["/bin/sh", "-lc", "echo configured"]
+                start_calendar_interval = { Hour = 4, Minute = 15 }
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        cm.load_config(self.work)
+
     def test_trunk_resolution_uses_configured_ref_only(self) -> None:
         _run(["git", "checkout", "-b", "operator"], cwd=self.work)
         _run(["git", "branch", "-D", "main"], cwd=self.work)

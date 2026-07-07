@@ -10,7 +10,7 @@ from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
 import pytest
-from test_fixtures import write_executable, write_policy
+from test_fixtures import rust_verification_policy_text, write_executable, write_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "scripts" / "cargo-shim"
@@ -19,6 +19,7 @@ INSTALLER = ROOT / "scripts" / "install-cargo-shim"
 POLICY = """\
 schema_version = 2
 project_id = "bolt-v2"
+target_namespace = "bolt-v2"
 
 [local_compile_policy]
 enabled = true
@@ -46,6 +47,16 @@ def _fake_real_cargo(tmp_path: Path) -> Path:
         real,
         "#!/usr/bin/env sh\n"
         "echo real-cargo \"$@\"\n",
+    )
+    return real
+
+
+def _fake_env_cargo(tmp_path: Path) -> Path:
+    real = tmp_path / "real-cargo-env"
+    write_executable(
+        real,
+        "#!/usr/bin/env sh\n"
+        "printf 'target=%s\\n' \"$CARGO_TARGET_DIR\"\n",
     )
     return real
 
@@ -248,6 +259,28 @@ def test_ci_env_execs_real_cargo_for_refused_subcommand(tmp_path):
     assert result.stderr == ""
 
 
+def test_ci_env_bypass_still_routes_managed_target_dir(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    root_base = tmp_path / "rust-root"
+    real = _fake_env_cargo(tmp_path)
+
+    result = _run_cargo(
+        repo,
+        real,
+        "check",
+        extra_env={
+            "GITHUB_ACTIONS": "true",
+            "RUST_VERIFICATION_ROOT_BASE": str(root_base),
+            "CARGO_TARGET_DIR": str(tmp_path / "leaked-target"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"target={root_base / 'bolt-v2' / 'target'}"
+
+
 def test_truthy_ci_env_value_does_not_bypass_policy(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -299,6 +332,49 @@ refused_cargo_subcommands = ["check"]
     assert result.returncode == 0
     assert result.stdout.strip() == "real-cargo check"
     assert "[local_compile_policy].enabled is missing; local cargo guard disabled" in result.stderr
+
+
+def test_allowed_cargo_exec_gets_managed_target_dir_env(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    root_base = tmp_path / "rust-root"
+    leaked_target = tmp_path / "leaked-target"
+    real = _fake_env_cargo(tmp_path)
+
+    result = _run_cargo(
+        repo,
+        real,
+        "fmt",
+        extra_env={
+            "RUST_VERIFICATION_ROOT_BASE": str(root_base),
+            "CARGO_TARGET_DIR": str(leaked_target),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"target={root_base / 'bolt-v2' / 'target'}"
+
+
+def test_allowed_cargo_resolves_nearest_policy_root_for_nested_workspace(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo, policy=rust_verification_policy_text(target_namespace="outer"))
+    nested = repo / "crates" / "backtesting-vertical-slice"
+    nested.mkdir(parents=True)
+    write_policy(nested, target_namespace="bvs", write_justfile=False)
+    root_base = tmp_path / "rust-root"
+    real = _fake_env_cargo(tmp_path)
+
+    result = _run_cargo(
+        nested,
+        real,
+        "fmt",
+        extra_env={"RUST_VERIFICATION_ROOT_BASE": str(root_base)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"target={root_base / 'bvs' / 'target'}"
 
 
 def test_empty_local_compile_policy_warns_and_execs_real_cargo(tmp_path):
@@ -638,6 +714,79 @@ def test_installer_prepends_no_mistakes_launch_agent_path(tmp_path):
     assert path_entries[0] == str(install_dir)
     assert path_entries.count(str(install_dir)) == 1
     assert os.pathsep.join(path_entries[1:]) == original_path
+
+
+def test_installer_creates_idempotent_daily_clean_merged_launch_agent(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    install_dir = tmp_path / "shim-bin"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["BOLT_CARGO_SHIM_DIR"] = str(install_dir)
+    launch_agent = home / "Library" / "LaunchAgents" / "com.kunchenguid.bolt-v2.daily-maintenance.plist"
+
+    first = subprocess.run(
+        [sys.executable, str(INSTALLER)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    assert f"Installed daily maintenance LaunchAgent: {launch_agent}" in first.stdout
+    first_bytes = launch_agent.read_bytes()
+
+    second = subprocess.run(
+        [sys.executable, str(INSTALLER)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert second.returncode == 0, second.stderr
+    assert launch_agent.read_bytes() == first_bytes
+
+    payload = plistlib.loads(first_bytes)
+    assert payload["Label"] == "com.kunchenguid.bolt-v2.daily-maintenance"
+    assert payload["WorkingDirectory"] == str(ROOT)
+    assert payload["ProgramArguments"] == [
+        "/bin/sh",
+        "-lc",
+        "just clean-merged --include-target-dirs --apply >/dev/null 2>&1 || true",
+    ]
+    assert payload["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
+    assert payload.get("KeepAlive") in (None, False)
+
+
+def test_daily_maintenance_launch_agent_values_load_from_clean_merged_toml(tmp_path):
+    root = tmp_path / "repo"
+    config_dir = root / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "clean-merged.toml").write_text(
+        """\
+schema_version = 1
+[clean-merged.daily_maintenance_launch_agent]
+label = "com.example.daily-maintenance"
+program_arguments = ["/bin/sh", "-lc", "echo configured"]
+start_calendar_interval = { Hour = 4, Minute = 15 }
+""",
+        encoding="utf-8",
+    )
+    installer = _load_installer_module()
+
+    config = installer.load_daily_maintenance_launch_agent_config(root)
+    payload = installer.daily_maintenance_launch_agent_payload(root, config)
+
+    assert installer.daily_maintenance_launch_agent_path(tmp_path, config) == (
+        tmp_path / "Library" / "LaunchAgents" / "com.example.daily-maintenance.plist"
+    )
+    assert payload["Label"] == "com.example.daily-maintenance"
+    assert payload["ProgramArguments"] == ["/bin/sh", "-lc", "echo configured"]
+    assert payload["StartCalendarInterval"] == {"Hour": 4, "Minute": 15}
 
 
 @pytest.mark.parametrize(

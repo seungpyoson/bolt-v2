@@ -600,7 +600,11 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ("branch", "--show-current"): (BRANCH, None),
         ("config", f"branch.{BRANCH}.remote"): ("origin", None),
         ("config", f"branch.{BRANCH}.merge"): (f"refs/heads/{BRANCH}", None),
-        ("ls-remote", "--heads", "origin", BRANCH): (f"{HEAD}\trefs/heads/{BRANCH}", None),
+        ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+        ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): (
+            f"{HEAD}\trefs/heads/{BRANCH}",
+            None,
+        ),
     }
 
     def run_with_git_outputs(
@@ -635,7 +639,11 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ("branch", "--show-current"): (LOCAL_BRANCH, None),
         ("config", f"branch.{LOCAL_BRANCH}.remote"): ("origin", None),
         ("config", f"branch.{LOCAL_BRANCH}.merge"): (f"refs/heads/{UPSTREAM_BRANCH}", None),
-        ("ls-remote", "--heads", "origin", UPSTREAM_BRANCH): (f"{HEAD}\trefs/heads/{UPSTREAM_BRANCH}", None),
+        ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+        ("ls-remote", "--heads", "https://example.invalid/push.git", UPSTREAM_BRANCH): (
+            f"{HEAD}\trefs/heads/{UPSTREAM_BRANCH}",
+            None,
+        ),
     }
     head, branch, error, _calls = run_with_git_outputs(local_branch_outputs)
     if (head, branch, error) != (HEAD, UPSTREAM_BRANCH, None):
@@ -677,7 +685,12 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
         ),
         (
             "unpushed head",
-            {("ls-remote", "--heads", "origin", BRANCH): (f"{'b' * 40}\trefs/heads/{BRANCH}", None)},
+            {
+                ("ls-remote", "--heads", "https://example.invalid/push.git", BRANCH): (
+                    f"{'b' * 40}\trefs/heads/{BRANCH}",
+                    None,
+                )
+            },
             "rust-probe requires HEAD to be pushed to the upstream branch",
         ),
     ]

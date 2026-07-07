@@ -3390,7 +3390,20 @@ def live_upstream_head(
     if not merge_ref.startswith("refs/heads/"):
         return None, None, None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
     upstream_branch = merge_ref.removeprefix("refs/heads/")
-    upstream, error = live_remote_branch_head(repo, remote=remote, branch=upstream_branch)
+    configured_remote, config_error = sandbox_safe_push_remote(repo)
+    if config_error is not None:
+        return None, None, None, config_error
+    if configured_remote is not None and remote != configured_remote:
+        return None, None, None, f"branch.{branch}.remote {remote} must match sandbox_safe_push.remote {configured_remote}"
+    push_url, push_url_error = single_push_url(repo, remote, command_name=command_name)
+    if push_url_error is not None or push_url is None:
+        return None, None, None, push_url_error
+    upstream, error = live_remote_branch_head(
+        repo,
+        remote=push_url,
+        branch=upstream_branch,
+        redact_value=push_url,
+    )
     return upstream, upstream_branch, remote, error
 
 

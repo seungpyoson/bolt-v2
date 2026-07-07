@@ -301,7 +301,8 @@ def assert_verify_remote_precondition_errors() -> None:
                     ("branch", "--show-current"): ("feature", None),
                     ("config", "branch.feature.remote"): ("origin", None),
                     ("config", "branch.feature.merge"): ("refs/heads/feature", None),
-                    ("ls-remote", "--heads", "origin", "feature"): (
+                    ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+                    ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): (
                         "def\trefs/heads/feature",
                         None,
                     ),
@@ -406,6 +407,84 @@ def assert_verify_remote_accepts_same_name_remote_without_local_upstream() -> No
     if (head, branch, error) != ("abc", "feature", None):
         raise AssertionError((head, branch, error))
     if ("ls-remote", "--heads", "https://example.invalid/push.git", "feature") not in calls:
+        raise AssertionError(calls)
+
+
+def assert_verify_remote_uses_push_url_for_configured_upstream() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+        calls.append(args)
+        outputs = {
+            ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+            ("rev-parse", "HEAD"): ("abc", None),
+            ("branch", "--show-current"): ("feature", None),
+            ("config", "branch.feature.remote"): ("origin", None),
+            ("config", "branch.feature.merge"): ("refs/heads/feature", None),
+            ("remote", "get-url", "--push", "--all", "origin"): ("https://example.invalid/push.git", None),
+            ("ls-remote", "--heads", "https://example.invalid/push.git", "feature"): (
+                "abc\trefs/heads/feature",
+                None,
+            ),
+        }
+        if args not in outputs:
+            raise AssertionError(f"unexpected git call: {args}")
+        return outputs[args]
+
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        head, branch, error = owner.ensure_verify_remote_preconditions(REPO_ROOT)
+    finally:
+        owner.git_output = original_git_output
+
+    if (head, branch, error) != ("abc", "feature", None):
+        raise AssertionError((head, branch, error))
+    if ("ls-remote", "--heads", "https://example.invalid/push.git", "feature") not in calls:
+        raise AssertionError(calls)
+    if ("ls-remote", "--heads", "origin", "feature") in calls:
+        raise AssertionError(calls)
+
+
+def assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[str, ...]] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+
+        def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+            calls.append(args)
+            outputs = {
+                ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+                ("rev-parse", "HEAD"): ("abc", None),
+                ("branch", "--show-current"): ("feature", None),
+                ("config", "branch.feature.remote"): ("fork", None),
+                ("config", "branch.feature.merge"): ("refs/heads/feature", None),
+                ("remote", "get-url", "--push", "--all", "fork"): ("https://example.invalid/fork.git", None),
+                ("ls-remote", "--heads", "https://example.invalid/fork.git", "feature"): (
+                    "abc\trefs/heads/feature",
+                    None,
+                ),
+            }
+            if args not in outputs:
+                raise AssertionError(f"unexpected git call: {args}")
+            return outputs[args]
+
+        original_git_output = owner.git_output
+        try:
+            owner.git_output = fake_git_output
+            head, branch, error = owner.ensure_verify_remote_preconditions(repo)
+        finally:
+            owner.git_output = original_git_output
+
+    expected = "branch.feature.remote fork must match sandbox_safe_push.remote origin"
+    if head is not None or branch is not None or error != expected:
+        raise AssertionError((head, branch, error))
+    if ("remote", "get-url", "--push", "--all", "fork") in calls:
         raise AssertionError(calls)
 
 
@@ -1489,6 +1568,8 @@ def main() -> int:
     assert_verify_remote_precondition_errors()
     assert_remote_fallback_helpers_handle_empty_outputs()
     assert_verify_remote_accepts_same_name_remote_without_local_upstream()
+    assert_verify_remote_uses_push_url_for_configured_upstream()
+    assert_verify_remote_rejects_upstream_remote_that_differs_from_sandbox_push()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()

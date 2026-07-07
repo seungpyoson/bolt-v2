@@ -1631,6 +1631,7 @@ def _is_python_script_path(path: Path) -> bool:
 
 _UNRESOLVED = object()
 _PARAMETER = object()
+_ARGPARSE_PARSER = object()
 
 
 class _CodeExecutionEdgeResolver(ast.NodeVisitor):
@@ -1644,6 +1645,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.function_stack: list[str] = []
         self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self.active_functions: set[str] = set()
+        self.active_value_functions: set[str] = set()
         self.run_fences_canonical_loader_call: ast.Call | None = None
         self.subprocess_modules = {"subprocess"}
         self.asyncio_modules = {"asyncio"}
@@ -1653,7 +1655,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.sys_modules = {"sys"}
         self.pathlib_modules = {"pathlib"}
         self.tempfile_modules = {"tempfile"}
+        self.argparse_modules = {"argparse"}
         self.path_names = {"Path"}
+        self.argparse_parser_names: set[str] = set()
         self.temp_path_names = set(_TEMPFILE_REPO_CREATORS | {"gettempdir"})
         self.subprocess_call_names: set[str] = set()
         self.asyncio_exec_names: set[str] = set()
@@ -1704,6 +1708,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 self.pathlib_modules.add(name)
             elif alias.name == "tempfile":
                 self.tempfile_modules.add(name)
+            elif alias.name == "argparse":
+                self.argparse_modules.add(name)
             elif alias.name == "importlib":
                 self.importlib_modules.add(name)
 
@@ -1722,6 +1728,13 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     continue
                 if alias.name == "Path":
                     self.path_names.add(alias.asname or alias.name)
+        elif node.module == "argparse":
+            for alias in node.names:
+                if alias.name == "*":
+                    self.argparse_parser_names.add("ArgumentParser")
+                    continue
+                if alias.name == "ArgumentParser":
+                    self.argparse_parser_names.add(alias.asname or alias.name)
         elif node.module == "importlib.util":
             for alias in node.names:
                 if alias.name == "*":
@@ -2655,6 +2668,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         call_name = self._call_name(node.func)
         if self._is_temp_path_source(node):
             return _PARAMETER
+        if self._is_argparse_argument_parser_call(call_name):
+            return _ARGPARSE_PARSER
+        if call_name in self.functions and call_name not in self.active_value_functions:
+            value = self._resolve_function_return_value(self.functions[call_name])
+            if value is not _UNRESOLVED:
+                return value
         if call_name in self.path_names or call_name.endswith(".Path"):
             if not node.args:
                 return Path()
@@ -2689,6 +2708,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return _UNRESOLVED
         if isinstance(node.func, ast.Attribute):
             owner = self._resolve_value(node.func.value)
+            if owner is _ARGPARSE_PARSER and node.func.attr in {"parse_args", "parse_known_args"}:
+                return _PARAMETER
             if owner is _PARAMETER:
                 return _PARAMETER
             if isinstance(owner, Path):
@@ -2729,6 +2750,33 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                         except ValueError:
                             return _UNRESOLVED
         return _UNRESOLVED
+
+    def _resolve_function_return_value(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> object:
+        self.active_value_functions.add(node.name)
+        parent = dict(self.scopes[-1])
+        for arg in self._function_parameters(node):
+            parent[arg.arg] = _PARAMETER
+        self.scopes.append(parent)
+        try:
+            for statement in node.body:
+                if isinstance(statement, ast.Assign):
+                    value = self._resolve_value(statement.value)
+                    for target in statement.targets:
+                        self._bind_target(target, value)
+                elif isinstance(statement, ast.AnnAssign):
+                    value = self._resolve_value(statement.value) if statement.value is not None else _UNRESOLVED
+                    self._bind_target(statement.target, value)
+                elif isinstance(statement, ast.Return):
+                    return self._resolve_value(statement.value)
+        finally:
+            self.scopes.pop()
+            self.active_value_functions.discard(node.name)
+        return _UNRESOLVED
+
+    def _is_argparse_argument_parser_call(self, call_name: str) -> bool:
+        if call_name in self.argparse_parser_names:
+            return True
+        return any(call_name == f"{module}.ArgumentParser" for module in self.argparse_modules)
 
     def _is_temp_path_source(self, node: ast.AST) -> bool:
         if not isinstance(node, ast.Call):
@@ -3503,6 +3551,56 @@ subprocess.run(SCRIPT)
         assert expected in rels
 
 
+def test_argparse_parse_args_outputs_are_external_parameters() -> None:
+    fixtures = [
+        """
+import argparse
+import subprocess
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--script")
+args = parser.parse_args([])
+subprocess.run([sys.executable, args.script, "--help"])
+""",
+        """
+import argparse
+import subprocess
+import sys
+
+def parser_for_mode(mode):
+    parser = argparse.ArgumentParser()
+    if mode == "probe":
+        parser.add_argument("--script")
+    return parser
+
+mode = "probe"
+rest = []
+parser = parser_for_mode(mode)
+args = parser.parse_args(rest)
+subprocess.run([sys.executable, str(args.script), "--help"])
+""",
+        """
+from argparse import ArgumentParser
+import subprocess
+
+parser = ArgumentParser()
+parser.add_argument("--script")
+args, _extra = parser.parse_known_args([])
+subprocess.run(["python3", args.script])
+""",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures, f"expected argparse-derived script path to remain an external boundary:\n{source}"
+        assert not targets
+
+
 def test_asyncio_subprocess_resolves_python_targets() -> None:
     fixtures = {
         "import asyncio\nasyncio.create_subprocess_exec('python3', 'scripts/test_nextest_fingerprint.py')\n": (
@@ -3638,6 +3736,7 @@ def test_code_execution_tripwires_fail_closed() -> None:
     fixtures = [
         "import subprocess\nsubprocess.run(['python3', script])\n",
         "import subprocess\nscript = 'a.py'\nscript = 'b.py'\nsubprocess.run(['python3', script])\n",
+        "import subprocess\nparser = make_parser()\nargs = parser.parse_args([])\nsubprocess.run(['python3', args.script])\n",
         "import subprocess\nargs = ['scripts/test_nextest_fingerprint.py']\nsubprocess.run(['python3'] + args)\n",
         "import subprocess\nsubprocess.run(['scripts/test_nextest_fingerprint.py'], executable=PYTHON)\n",
         "import subprocess\nsubprocess.run('python3 scripts/missing_guard_fixture.py', shell=True)\n",
@@ -4702,6 +4801,7 @@ def _registered_self_tests():
         test_run_fences_import_module_from_path_rebinding_forms_fail_closed,
         test_subprocess_executable_keyword_process_image_resolves_before_argv0,
         test_subprocess_direct_process_image_resolves_python_by_semantics,
+        test_argparse_parse_args_outputs_are_external_parameters,
         test_asyncio_subprocess_resolves_python_targets,
         test_asyncio_subprocess_non_python_targets_are_boundaries,
         test_local_wrappers_resolve_forward_and_nested_calls,

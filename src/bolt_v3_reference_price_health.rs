@@ -21,8 +21,9 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_config::ReferencePriceSourceBlock,
     bolt_v3_live_node::{
-        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node,
-        build_bolt_v3_strategy_free_live_node_with_resolved,
+        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node_for_data_clients,
+        build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
+        check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with,
     },
     bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
     bolt_v3_reference_price::{
@@ -172,7 +173,8 @@ pub fn prepare_reference_current_price_health_run(
     loaded: &LoadedBoltV3Config,
 ) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
-    let runtime = build_bolt_v3_strategy_free_live_node(loaded)?;
+    let runtime =
+        build_bolt_v3_strategy_free_live_node_for_data_clients(loaded, &plan.client_keys)?;
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,
@@ -186,13 +188,41 @@ pub fn prepare_reference_current_price_health_run_with_resolved(
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
-    let runtime = build_bolt_v3_strategy_free_live_node_with_resolved(loaded, resolved)?;
+    let runtime = build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients(
+        loaded,
+        resolved,
+        &plan.client_keys,
+    )?;
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,
         runtime,
         loaded: loaded.clone(),
     })
+}
+
+pub fn check_reference_current_price_health_forbidden_env_vars(
+    loaded: &LoadedBoltV3Config,
+) -> Result<()> {
+    check_reference_current_price_health_forbidden_env_vars_with(loaded, |env_var| {
+        std::env::var_os(env_var).is_some()
+    })
+}
+
+pub fn check_reference_current_price_health_forbidden_env_vars_with<F>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+) -> Result<()>
+where
+    F: FnMut(&str) -> bool,
+{
+    let plan = reference_current_price_health_plan(loaded)?;
+    check_bolt_v3_strategy_free_live_node_for_data_clients_forbidden_env_vars_with(
+        loaded,
+        &plan.client_keys,
+        env_is_set,
+    )?;
+    Ok(())
 }
 
 pub async fn run_prepared_reference_current_price_health(
@@ -209,24 +239,14 @@ pub async fn run_prepared_reference_current_price_health(
             registered_strategy_ids.join(", ")
         ));
     }
+    validate_reference_current_price_health_registered_execution_clients(
+        registered_exec_client_ids.clone(),
+    )?;
 
-    let registered_data_client_set = registered_data_client_ids
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let missing_client_keys = health_run
-        .plan
-        .client_keys
-        .iter()
-        .filter(|client_key| !registered_data_client_set.contains(*client_key))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !missing_client_keys.is_empty() {
-        return Err(anyhow::anyhow!(
-            "reference_current_price health strategy-free transport did not register source data client(s): {}",
-            missing_client_keys.join(", ")
-        ));
-    }
+    validate_reference_current_price_health_registered_data_clients(
+        &health_run.plan,
+        registered_data_client_ids.clone(),
+    )?;
 
     let subscriptions = reference_current_price_health_subscriptions(&health_run.plan)?;
     let mut subscribed: Vec<&ReferenceCurrentPriceHealthSubscription> = Vec::new();
@@ -293,6 +313,49 @@ pub async fn run_prepared_reference_current_price_health(
         clients,
         source_update_observations,
     })
+}
+
+fn validate_reference_current_price_health_registered_execution_clients(
+    registered_exec_client_ids: Vec<String>,
+) -> Result<()> {
+    if !registered_exec_client_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health registered execution client(s): {}",
+            registered_exec_client_ids.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reference_current_price_health_registered_data_clients(
+    plan: &ReferenceCurrentPriceHealthPlan,
+    registered_data_client_ids: Vec<String>,
+) -> Result<()> {
+    let planned_client_keys = plan.client_keys.iter().cloned().collect::<BTreeSet<_>>();
+    let registered_data_client_set = registered_data_client_ids
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let missing_client_keys = planned_client_keys
+        .difference(&registered_data_client_set)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_client_keys.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health strategy-free transport did not register source data client(s): {}",
+            missing_client_keys.join(", ")
+        ));
+    }
+    let extra_client_keys = registered_data_client_set
+        .difference(&planned_client_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !extra_client_keys.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health strategy-free transport registered out-of-plan data client(s): {}",
+            extra_client_keys.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn provider_instrument(asset: &str, source: &ReferencePriceSourceBlock) -> String {
@@ -572,13 +635,13 @@ mod tests {
 
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    use nautilus_model::identifiers::Venue;
     use rust_decimal::{Decimal, prelude::ToPrimitive};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+    use crate::bolt_v3_live_node::build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary;
     use crate::{
-        bolt_v3_config::load_bolt_v3_config,
-        bolt_v3_live_node::build_bolt_v3_strategy_free_live_node_with_summary,
-        bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+        bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     };
 
     fn fake_bolt_v3_health_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
@@ -594,6 +657,84 @@ mod tests {
                 Err("unexpected SSM path requested by reference-current-price health fake resolver")
             }
         }
+    }
+
+    fn set_unique_reference_health_catalog(loaded: &mut LoadedBoltV3Config, suffix: &str) {
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-reference-price-health-{suffix}-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+    }
+
+    fn out_of_plan_iv_root() -> crate::bolt_v3_iv::config::IvRootConfig {
+        crate::bolt_v3_iv::config::load_iv_config_from_toml(
+            r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "okx_data"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+        )
+        .expect("out-of-plan IV root should parse and validate")
     }
 
     fn reference_health_target(
@@ -946,19 +1087,11 @@ mod tests {
         ));
         loaded.root.persistence.catalog_directory =
             catalog_directory.to_string_lossy().into_owned();
-        let plan = reference_current_price_health_plan(&loaded)
-            .expect("reference_current_price health plan should build");
-        let (runtime, _summary) = build_bolt_v3_strategy_free_live_node_with_summary(
-            &loaded,
-            |_| false,
-            fake_bolt_v3_health_resolver,
-        )
-        .expect("strategy-free transport runtime should build with fake secrets");
-        let health_run = ReferenceCurrentPriceHealthRun {
-            plan,
-            runtime,
-            loaded,
-        };
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("strategy-free health run should build with fake secrets");
 
         assert_eq!(
             health_run.plan.client_keys,
@@ -966,22 +1099,314 @@ mod tests {
         );
         assert_eq!(
             sorted_strings(health_run.runtime.registered_data_client_ids()),
-            vec![
-                "chainlink_reference",
-                "okx_data",
-                "polymarket_main",
-                "polyresearch_reference"
-            ],
-            "health must prepare all strategy-bound transport data clients"
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
         );
-        assert_eq!(
-            sorted_strings(health_run.runtime.registered_exec_client_ids()),
-            vec!["polymarket_main"],
-            "health may prepare the strategy-bound execution transport client but no order path"
+        assert!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
+            "health must prepare zero execution transport clients"
         );
         assert!(
             health_run.runtime.registered_strategy_ids().is_empty(),
             "health must clear strategies from the prepared transport runtime"
+        );
+        assert!(!health_run.runtime.has_iv_runtime());
+        assert!(!health_run.runtime.has_iv_event_bindings());
+        assert!(!health_run.runtime.loss_governor_configured());
+        assert!(!health_run.runtime.loss_governor_runtime_feed_configured());
+        assert!(!health_run.runtime.capital_admission_configured());
+        assert!(
+            !health_run
+                .runtime
+                .capital_admission_runtime_feed_configured()
+        );
+        assert!(!health_run.runtime.venue_truth_runtime_configured());
+        assert!(!health_run.runtime.order_reject_observer_feed_configured());
+        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
+        assert!(
+            !health_run
+                .runtime
+                .capital_admission_venue_spendability_source_configured()
+        );
+        assert!(!health_run.runtime.submit_reservation_recovery_configured());
+    }
+
+    #[test]
+    fn reference_current_price_health_does_not_map_out_of_plan_execution_clients() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        set_unique_reference_health_catalog(&mut loaded, "scope");
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let execution = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .and_then(|client| client.execution.as_mut())
+            .and_then(toml::Value::as_table_mut)
+            .expect("fixture should carry clients.polymarket_main.execution");
+        execution.insert("max_retries".to_string(), toml::Value::Integer(i64::MAX));
+
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("health build must not map execution clients outside plan.client_keys");
+
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
+            "health must prepare zero execution transport clients"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_ignores_out_of_plan_iv_runtime_scope() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        set_unique_reference_health_catalog(&mut loaded, "iv-scope");
+        loaded.root.iv = Some(out_of_plan_iv_root());
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("reference health must ignore out-of-plan IV runtime config");
+
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            !health_run.runtime.has_iv_runtime(),
+            "reference health must not configure IV runtime"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_ignores_out_of_plan_capital_admission_scope() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        set_unique_reference_health_catalog(&mut loaded, "capital-scope");
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture should configure capital pools")[0]
+            .enforce_submit_admission = true;
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+
+        let health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("reference health must ignore out-of-plan capital admission config");
+
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            !health_run.runtime.capital_admission_configured(),
+            "reference health must not configure capital admission"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_env_check_ignores_out_of_plan_execution_provider_env_vars() {
+        let loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+
+        check_reference_current_price_health_forbidden_env_vars_with(&loaded, |env_var| {
+            env_var == "POLYMARKET_PK"
+        })
+        .expect(
+            "reference health env preflight must ignore out-of-plan execution provider env vars",
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_env_check_fails_for_planned_provider_env_vars() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        loaded
+            .root
+            .clients
+            .get_mut("chainlink_reference")
+            .expect("fixture should configure chainlink_reference")
+            .venue = Venue::from(crate::bolt_v3_providers::polymarket::KEY);
+
+        let error =
+            check_reference_current_price_health_forbidden_env_vars_with(&loaded, |env_var| {
+                env_var == "POLYMARKET_PK"
+            })
+            .expect_err("planned data client provider env vars must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("chainlink_reference"), "{message}");
+        assert!(message.contains("POLYMARKET_PK"), "{message}");
+    }
+
+    #[test]
+    fn reference_current_price_health_registered_client_guard_rejects_extra_data_clients() {
+        let plan = ReferenceCurrentPriceHealthPlan {
+            targets: Vec::new(),
+            client_keys: vec!["chainlink_reference".to_string()],
+            observation_timeout_ms: 1,
+        };
+
+        let error = validate_reference_current_price_health_registered_data_clients(
+            &plan,
+            vec![
+                "chainlink_reference".to_string(),
+                "polyresearch_reference".to_string(),
+            ],
+        )
+        .expect_err("extra registered data clients must fail closed");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("registered out-of-plan data client(s): polyresearch_reference"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_registered_client_guard_rejects_execution_clients() {
+        let error = validate_reference_current_price_health_registered_execution_clients(vec![
+            "polymarket_main".to_string(),
+        ])
+        .expect_err("registered execution clients must fail closed");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("registered execution client(s): polymarket_main"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_resolves_only_plan_scoped_data_client_secrets() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-reference-price-health-secret-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let plan = reference_current_price_health_plan(&loaded)
+            .expect("reference_current_price health plan should build");
+        let mut requested_paths = Vec::new();
+
+        let (runtime, _summary) =
+            build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary(
+                &loaded,
+                |_| false,
+                |_region, path| {
+                    requested_paths.push(path.to_string());
+                    fake_bolt_v3_health_resolver(_region, path)
+                },
+                &plan.client_keys,
+            )
+            .expect("health-scoped builder should resolve only plan data-client secrets");
+
+        assert_eq!(
+            requested_paths,
+            vec![
+                "/bolt/testnet/chainlink/api-key",
+                "/bolt/testnet/chainlink/api-secret",
+                "/bolt/polyresearch/api-key",
+            ]
+        );
+        assert_eq!(
+            sorted_strings(runtime.registered_data_client_ids()),
+            plan.client_keys,
+            "health must prepare exactly plan.client_keys data clients"
+        );
+        assert!(
+            sorted_strings(runtime.registered_exec_client_ids()).is_empty(),
+            "health must prepare zero execution transport clients"
+        );
+    }
+
+    #[test]
+    fn strategy_free_data_client_scope_drops_execution_only_secrets_for_selected_data_clients() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-data-client-secret-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let data_client_keys = vec!["polymarket_main".to_string()];
+        let mut requested_paths = Vec::new();
+
+        let (runtime, _summary) =
+            build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary(
+                &loaded,
+                |_| false,
+                |_region, path| {
+                    requested_paths.push(path.to_string());
+                    Err("data-only Polymarket scope must not resolve execution secrets")
+                },
+                &data_client_keys,
+            )
+            .expect("data-only scope should build without execution-only secrets");
+
+        assert!(
+            requested_paths.is_empty(),
+            "data-only Polymarket scope must not request execution secrets: {requested_paths:?}"
+        );
+        assert_eq!(
+            sorted_strings(runtime.registered_data_client_ids()),
+            data_client_keys,
+            "data-only scope must register exactly the selected data client"
+        );
+        assert!(
+            sorted_strings(runtime.registered_exec_client_ids()).is_empty(),
+            "data-only scope must register zero execution clients"
+        );
+    }
+
+    #[test]
+    fn strategy_free_data_client_scope_drops_pre_resolved_execution_only_secrets() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-data-client-resolved-secret-scope-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let data_client_keys = vec!["polymarket_main".to_string()];
+
+        let runtime = build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients(
+            &loaded,
+            &resolved,
+            &data_client_keys,
+        )
+        .expect("data-only resolved scope should build without retaining execution secrets");
+
+        assert!(
+            runtime.redaction_values().is_empty(),
+            "data-only resolved scope must not retain execution-only secret redactions"
+        );
+        assert_eq!(
+            sorted_strings(runtime.registered_data_client_ids()),
+            data_client_keys,
+            "data-only resolved scope must register exactly the selected data client"
+        );
+        assert!(
+            sorted_strings(runtime.registered_exec_client_ids()).is_empty(),
+            "data-only resolved scope must register zero execution clients"
         );
     }
 
@@ -1018,6 +1443,15 @@ mod tests {
         let mut health_run =
             prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
                 .expect("strategy-free health run should build with resolved secrets");
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            health_run.plan.client_keys,
+            "loopback health runtime must register exactly the plan-scoped data clients"
+        );
+        assert!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()).is_empty(),
+            "loopback health runtime must register zero execution clients"
+        );
         let server_join_timeout = reference_current_price_health_stop_timeout(&loaded)
             .expect("health stop timeout should derive from fixture config")
             + Duration::from_millis(health_run.plan.observation_timeout_ms);

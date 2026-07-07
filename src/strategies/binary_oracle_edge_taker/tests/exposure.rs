@@ -1450,6 +1450,35 @@ fn runtime_reconcile_filled_exit_terminal_frees_slot_with_reconcile_source() {
             true,
         )
         .expect("test cache should accept filled exit order");
+    let instrument = strategy
+        .current_instrument(instrument_id)
+        .expect("active instrument should be cached for reconcile test");
+    let mut cached_position = Position::new(
+        &instrument,
+        order_filled_event(
+            ClientOrderId::from("ENTRY-EXIT-RECONCILE-FILLED"),
+            instrument_id,
+            position.position_id,
+        ),
+    );
+    let mut close_fill = order_filled_event_with_details(
+        exit_client_order_id,
+        instrument_id,
+        Some(position.position_id),
+        exit_order_side,
+    );
+    close_fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-EXIT-RECONCILE-FILLED");
+    close_fill.last_qty = position.quantity;
+    cached_position.apply(&close_fill);
+    assert!(cached_position.is_closed());
+    cache
+        .borrow_mut()
+        .add_position(&cached_position, NtOmsType::Netting)
+        .expect("test cache should accept closed reconcile position");
+    cache
+        .borrow_mut()
+        .update_position(&cached_position)
+        .expect("test cache should index closed reconcile position");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
     strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
@@ -1468,6 +1497,78 @@ fn runtime_reconcile_filled_exit_terminal_frees_slot_with_reconcile_source() {
         )),
         "filled exit terminal cache truth must free the slot with reconcile_pass evidence"
     );
+}
+
+#[test]
+fn runtime_reconcile_filled_exit_terminal_waits_without_closed_position_cache() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-RECONCILE-NO-CLOSE"),
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    let exit_client_order_id = ClientOrderId::from("EXIT-RECONCILE-NO-CLOSE");
+    set_exit_pending(
+        &mut strategy,
+        position.clone(),
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let order_config = strategy
+        .normal_exit_order_execution_config()
+        .expect("test config should build exit order config");
+    let exit_order_side = strategy
+        .configured_position_contract()
+        .expect("test config should carry position contract")
+        .exit_order_side;
+    let mut order = strategy
+        .build_exit_order_with_execution_config(
+            order_config,
+            instrument_id,
+            exit_order_side,
+            position.quantity,
+            Price::new(0.45, 2),
+            exit_client_order_id,
+        )
+        .expect("configured exit order should build for reconcile test");
+    close_order_with_filled_event(&mut order, position.position_id);
+    cache
+        .borrow_mut()
+        .add_order(
+            order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept filled exit order");
+
+    let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
+    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitPending(ExitPendingState {
+            pending_exit: PendingExitState {
+                fill_received: true,
+                close_received: false,
+                ..
+            },
+            ..
+        })
+    ));
 }
 
 #[test]

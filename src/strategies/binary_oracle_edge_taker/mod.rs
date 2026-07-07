@@ -2381,14 +2381,14 @@ impl BinaryOracleEdgeTaker {
                 if exit.pending_exit.client_order_id == query.client_order_id
         );
         if exit_matches {
-            let position_absent_from_open_cache = filled
+            let position_closed_in_cache = filled
                 && query.position_id.is_some_and(|position_id| {
-                    !self.cached_position_id_still_open(query.instrument_id, position_id)
+                    self.cached_position_id_closed(query.instrument_id, position_id)
                 });
             if filled && let ExposureState::ExitPending(exit) = &mut self.exposure {
                 exit.pending_exit.fill_received = true;
                 exit.pending_exit.filled_quantity = Some(filled_quantity);
-                if position_absent_from_open_cache {
+                if position_closed_in_cache {
                     exit.pending_exit.close_received = true;
                     exit.position = None;
                 }
@@ -2507,6 +2507,25 @@ impl BinaryOracleEdgeTaker {
         let execution_venue = self.context.execution_venue();
         self.cache()
             .positions_open(
+                Some(&execution_venue),
+                Some(&instrument_id),
+                Some(&strategy_id),
+                None,
+                None,
+            )
+            .into_iter()
+            .any(|cached| cached.id == position_id)
+    }
+
+    fn cached_position_id_closed(
+        &self,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+    ) -> bool {
+        let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        let execution_venue = self.context.execution_venue();
+        self.cache()
+            .positions_closed(
                 Some(&execution_venue),
                 Some(&instrument_id),
                 Some(&strategy_id),

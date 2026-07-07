@@ -8,7 +8,9 @@ use backtesting_vertical_slice::artifact_index_iam_policy::{
     ArtifactIndexProducerIamProvisioningPlan, ArtifactIndexProducerIamProvisioningPlanSpec,
     artifact_index_producer_iam_provisioning_plan,
 };
-use backtesting_vertical_slice::atomic_write;
+use backtesting_vertical_slice::reference_artifact::{
+    ReferenceArtifactRewrite, write_reference_artifact,
+};
 use clap::Parser;
 use serde::Deserialize;
 
@@ -71,8 +73,12 @@ fn write_plan(path: &Path, plan: &ArtifactIndexProducerIamProvisioningPlan) -> R
         fs::create_dir_all(parent)
             .with_context(|| format!("create provisioning plan directory {}", parent.display()))?;
     }
-    let mut bytes = serde_json::to_vec_pretty(plan).context("serialize provisioning plan")?;
-    bytes.push(b'\n');
-    atomic_write(path, &bytes)
-        .with_context(|| format!("write provisioning plan {}", path.display()))
+    write_reference_artifact(
+        path,
+        "artifact_index_iam_provisioning_plan",
+        plan,
+        ReferenceArtifactRewrite::OverwriteAlways,
+    )
+    .with_context(|| format!("write provisioning plan {}", path.display()))
+    .map(|_| ())
 }

@@ -119,6 +119,16 @@ def test_empty_selected_paths_fail_closed() -> None:
     assert findings == ["fail-closed contract selected paths: enforcement set is empty"], findings
 
 
+def test_empty_selected_paths_suppresses_source_fence_wiring_noise() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "ci/fail-closed-contracts.toml", config_text())
+
+        findings = collect(root)
+
+    assert findings == ["fail-closed contract selected paths: enforcement set is empty"], findings
+
+
 def test_bad_fixtures_fail_with_stable_rule_ids() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1128,6 +1138,7 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_empty_selected_paths_fail_closed,
+        test_empty_selected_paths_suppresses_source_fence_wiring_noise,
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
         test_project_exception_named_exception_is_not_broad,

@@ -238,15 +238,17 @@ def misnomer_labels(line: str) -> list[str]:
     return [label for label, pattern in MISNOMER_PATTERNS if pattern.search(line)]
 
 
-def verify_capital_admission_misnomers() -> list[str]:
-    allowlist, findings = load_misnomer_allowlist()
-    if findings:
-        return findings
-
-    used_allowlist: set[tuple[str, int]] = set()
-    paths = scan_misnomer_paths()
+def verify_capital_admission_misnomers(paths: list[Path] | None = None) -> list[str]:
+    findings: list[str] = []
+    paths = scan_misnomer_paths() if paths is None else paths
     if not require_nonempty(paths, "capital-admission misnomer scan paths", findings):
         return findings
+
+    allowlist, allowlist_findings = load_misnomer_allowlist()
+    if allowlist_findings:
+        return allowlist_findings
+
+    used_allowlist: set[tuple[str, int]] = set()
     for path in paths:
         rel = path.relative_to(REPO_ROOT).as_posix()
         for line_number, line in enumerate(
@@ -301,6 +303,12 @@ def main() -> int:
     )
     paths = scan_paths()
     require_nonempty(paths, "Bolt-v3 naming scan paths", findings)
+    misnomer_paths = scan_misnomer_paths()
+    require_nonempty(
+        misnomer_paths,
+        "capital-admission misnomer scan paths",
+        findings,
+    )
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}", file=sys.stderr)
@@ -326,7 +334,7 @@ def main() -> int:
                     f"use {replacement} ({row.get('reason', 'path-scoped rule')})"
                 )
 
-    findings.extend(verify_capital_admission_misnomers())
+    findings.extend(verify_capital_admission_misnomers(misnomer_paths))
 
     if findings:
         for finding in findings:

@@ -118,12 +118,9 @@ def test_empty_scan_fails_closed() -> None:
         root = Path(tmp)
         code, _out, err = run_with(root, allowances=None)
 
-    if code != 1:
-        raise AssertionError(f"expected FAIL (1), got {code}: {err}")
-    if "Bolt-v3 dependency direction source files: enforcement set is empty" not in err:
-        raise AssertionError(f"expected empty source floor finding, got: {err!r}")
-    if "stale allowance" in err:
-        raise AssertionError(f"empty source floor must not emit stale allowance noise: {err!r}")
+    expected = "FAIL: Bolt-v3 dependency direction source files: enforcement set is empty\n"
+    if code != 1 or err != expected:
+        raise AssertionError(f"expected exact empty source floor, got code={code}, stderr={err!r}")
 
 
 def test_new_back_reference_fails_with_line_number() -> None:

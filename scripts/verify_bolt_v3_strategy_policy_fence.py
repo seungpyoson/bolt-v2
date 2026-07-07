@@ -389,16 +389,23 @@ def production_rust_files_under(relative_root: str) -> list:
     return files
 
 
-def source_files_for_strategy_policy_fence() -> list:
+def configured_strategy_policy_source_files() -> list:
     try:
         source_set = source_set_files(STRATEGY_SOURCE_ROOTS, repo_root=REPO_ROOT)
     except FileNotFoundError:
-        source_set = []
-    files = {
+        return []
+    return sorted(
         path
         for path in source_set
         if not is_test_source_file(path)
-    }
+    )
+
+
+def source_files_for_strategy_policy_fence() -> list:
+    configured_files = configured_strategy_policy_source_files()
+    if not configured_files:
+        return []
+    files = set(configured_files)
     files.update(production_rust_files_under("src/strategies"))
     return sorted(
         files, key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8")
@@ -525,7 +532,7 @@ def find_violations_in_text(
 
 
 def collect_violations() -> list[Violation]:
-    violations: list[Violation] = collect_strategy_source_root_violations()
+    violations: list[Violation] = []
     floor_errors: list[str] = []
     strategy_files = source_files_for_strategy_policy_fence()
     mutation_files = source_files_for_mutation_fence()
@@ -537,6 +544,7 @@ def collect_violations() -> list[Violation]:
     )
     if floor_errors:
         return violations
+    violations.extend(collect_strategy_source_root_violations())
     for path in strategy_files:
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(

@@ -197,13 +197,13 @@ def prose_reference_lines(root: Path, paths: list[Path] | None = None) -> list[t
 
 def collect_findings(root: Path = REPO_ROOT) -> list[str]:
     findings: list[str] = []
-    entries = load_ledger(root, findings)
-    for index, entry in enumerate(entries):
-        validate_entry(entry, index, findings)
-
     source_paths = scanned_source_paths(root)
     if not require_nonempty(source_paths, "doc-decoupling scanned source paths", findings):
         return findings
+
+    entries = load_ledger(root, findings)
+    for index, entry in enumerate(entries):
+        validate_entry(entry, index, findings)
 
     allowed: dict[str, list[str]] = {}
     for entry in entries:

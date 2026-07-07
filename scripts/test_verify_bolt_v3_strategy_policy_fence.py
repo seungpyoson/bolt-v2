@@ -144,6 +144,28 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             ],
         )
 
+    def test_missing_configured_strategy_roots_fail_before_supplemental_scan(self) -> None:
+        original_root = VERIFIER.REPO_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.write_source(
+                    root,
+                    "src/strategies/binary_oracle_edge_taker/mod.rs",
+                    "pub struct SupplementalStrategyFixture;\n",
+                )
+                VERIFIER.REPO_ROOT = root
+                strategy_files = VERIFIER.source_files_for_strategy_policy_fence()
+                violations = VERIFIER.collect_violations()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+        self.assertEqual(strategy_files, [])
+        self.assertEqual(
+            [violation.label for violation in violations],
+            ["strategy policy source files: enforcement set is empty"],
+        )
+
     def test_strategy_policy_source_still_flags_runtime_selection_bus_path(self) -> None:
         violations = self.collect_violations_for_temp_sources(
             {

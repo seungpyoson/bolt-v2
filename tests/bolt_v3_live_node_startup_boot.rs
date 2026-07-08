@@ -1,6 +1,6 @@
 use crate::support;
 
-use std::{collections::BTreeSet, time::Duration};
+use std::time::Duration;
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
@@ -9,7 +9,6 @@ use bolt_v2::{
         run_bolt_v3_live_node,
     },
 };
-use nautilus_model::identifiers::ClientId;
 use tokio::net::TcpListener;
 
 fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
@@ -89,10 +88,13 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
                 support::fake_bolt_v3_resolver,
             )
             .expect("Chainlink-only live node should build through production mapping");
-        assert_eq!(
-            summary.registered_data_clients,
-            BTreeSet::from([ClientId::from("chainlink_reference")])
-        );
+        assert_eq!(summary.clients.len(), 1);
+        let registered = summary
+            .clients
+            .get("chainlink_reference")
+            .expect("Chainlink reference client should be registered");
+        assert!(registered.data);
+        assert!(!registered.execution);
 
         let error = tokio::time::timeout(
             Duration::from_secs(6),

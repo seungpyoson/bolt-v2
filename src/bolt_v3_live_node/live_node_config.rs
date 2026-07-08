@@ -290,7 +290,7 @@ pub async fn connect_bolt_v3_clients(
             Err(BoltV3LiveNodeError::ConnectTimeout {
                 timeout_secs,
                 node_state,
-                client_labels: live_node_not_connected_client_labels_from_statuses(
+                not_connected_client_labels: live_node_not_connected_client_labels_from_statuses(
                     kernel.data_client_connection_status(),
                     kernel.exec_client_connection_status(),
                 ),

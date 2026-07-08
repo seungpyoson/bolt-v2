@@ -957,6 +957,14 @@ classification = "startup_watchdog_shutdown_reason_label"
 reason = "Stable log label naming the stop-and-grace path for capture failure before Running; the timeout duration remains config-owned."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"startup shutdown"'''
+context = '''"startup shutdown",'''
+classification = "startup_watchdog_shutdown_reason_label"
+reason = "Stable log label naming the stop-and-grace path for an already-shutting-down startup deadline race; the timeout duration remains config-owned."
+
+[[allowed]]
 path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''

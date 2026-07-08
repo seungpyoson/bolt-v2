@@ -106,9 +106,7 @@ async fn startup_watchdog_capture_failure_after_running_still_awaits_runner_resu
         || stop_called.set(true),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
-            startup_timeout_secs: 1,
             shutdown_grace: Duration::from_millis(25),
-            shutdown_grace_secs: 0,
         },
         vec!["data:chainlink_reference".to_string()],
     )
@@ -150,9 +148,7 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
             || stop_called.set(true),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(1),
-                startup_timeout_secs: 1,
                 shutdown_grace,
-                shutdown_grace_secs: 0,
             },
             vec!["data:chainlink_reference".to_string()],
         ),
@@ -170,17 +166,53 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
         "pre-Running capture failure should return after shutdown grace {shutdown_grace:?}, elapsed {elapsed:?}"
     );
     match outcome {
-        LiveNodeRunStartupOutcome::StartupTimeout {
-            timeout_secs,
+        LiveNodeRunStartupOutcome::RuntimeCaptureStartupShutdownTimeout {
+            shutdown_grace: observed_shutdown_grace,
             node_state,
-            client_labels,
+            registered_client_labels,
         } => {
-            assert_eq!(timeout_secs, 1);
+            assert_eq!(observed_shutdown_grace, shutdown_grace);
             assert_eq!(node_state, "Starting");
-            assert_eq!(client_labels, vec!["data:chainlink_reference".to_string()]);
+            assert_eq!(
+                registered_client_labels,
+                vec!["data:chainlink_reference".to_string()]
+            );
         }
+        other => panic!("expected bounded startup capture-failure shutdown timeout, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_deadline_during_shutdown_preserves_runner_result() {
+    let run_future = async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        Ok(())
+    };
+    tokio::pin!(run_future);
+    let stop_called = Cell::new(false);
+    let mut capture_failure_receiver = None;
+
+    let outcome = live_node_run_startup_watchdog(
+        run_future.as_mut(),
+        &mut capture_failure_receiver,
+        || NodeState::ShuttingDown,
+        || stop_called.set(true),
+        LiveNodeStartupWatchdogBounds {
+            startup_timeout: Duration::from_millis(1),
+            shutdown_grace: Duration::from_millis(100),
+        },
+        vec!["data:chainlink_reference".to_string()],
+    )
+    .await;
+
+    assert!(
+        stop_called.get(),
+        "deadline during existing shutdown should still request stop idempotently"
+    );
+    match outcome {
+        LiveNodeRunStartupOutcome::Finished(Ok(())) => {}
         other => panic!(
-            "expected bounded startup timeout after pre-Running capture failure, got {other:?}"
+            "deadline during shutdown should preserve runner result instead of timeout, got {other:?}"
         ),
     }
 }

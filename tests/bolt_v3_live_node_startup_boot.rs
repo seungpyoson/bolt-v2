@@ -47,10 +47,6 @@ fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
         "websocket_endpoint".to_string(),
         toml::Value::String(endpoint),
     );
-    data.insert(
-        "reconnect_timeout_ms".to_string(),
-        toml::Value::Integer(60_000),
-    );
     loaded
 }
 
@@ -101,9 +97,11 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
 
         let startup_bound = Duration::from_secs(3);
         let shutdown_grace_bound = Duration::from_secs(2);
-        let wall_clock_bound = startup_bound + shutdown_grace_bound + Duration::from_secs(1);
+        let expected_failure_bound =
+            startup_bound + shutdown_grace_bound + Duration::from_secs(2);
+        let smoke_guard = Duration::from_secs(30);
         let started = std::time::Instant::now();
-        let error = tokio::time::timeout(wall_clock_bound, run_bolt_v3_live_node(&mut node, &loaded))
+        let error = tokio::time::timeout(smoke_guard, run_bolt_v3_live_node(&mut node, &loaded))
             .await
             .expect("live-node boot must fail loudly instead of hanging past the smoke-test guard")
             .expect_err("hanging Chainlink first-connect must fail startup");
@@ -112,26 +110,26 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         server.abort();
 
         assert!(
-            elapsed <= wall_clock_bound,
-            "boot failure should stay within startup bound ({startup_bound:?}) plus shutdown grace ({shutdown_grace_bound:?}), elapsed {elapsed:?}"
+            elapsed <= expected_failure_bound,
+            "boot failure should stay within startup bound ({startup_bound:?}) plus shutdown grace ({shutdown_grace_bound:?}) and scheduler slack, elapsed {elapsed:?}"
         );
 
         match error {
-            BoltV3LiveNodeError::ConnectTimeout {
+            BoltV3LiveNodeError::LiveNodeStartupTimeout {
                 timeout_secs,
                 node_state,
-                client_labels,
+                registered_client_labels,
             } => {
                 assert_eq!(timeout_secs, 3);
                 assert_eq!(node_state, "Starting");
                 assert!(
-                    client_labels
+                    registered_client_labels
                         .iter()
                         .any(|client| client == "data:chainlink_reference"),
-                    "timeout must name the Chainlink startup client: {client_labels:?}"
+                    "timeout must name the registered Chainlink startup client: {registered_client_labels:?}"
                 );
             }
-            other => panic!("expected ConnectTimeout for hanging Chainlink boot, got {other}"),
+            other => panic!("expected LiveNodeStartupTimeout for hanging Chainlink boot, got {other}"),
         }
     }));
 }

@@ -1431,27 +1431,21 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
         match frame_updates {
             Ok(frame_updates) => {
                 let ChainlinkReferenceReportFrameUpdates {
-                    report_observed,
                     instrument_id,
                     updates,
                 } = frame_updates;
-                if report_observed {
-                    last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
-                    if let Some(recovery) = &input_health_recovery {
-                        let sources =
-                            chainlink_reference_input_health_sources_for_report_instrument(
-                                &recovery.config,
-                                &instrument_id,
-                            );
-                        chainlink_reference_seed_input_health_report_liveness_for_sources(
-                            &recovery.input_health_report_liveness,
-                            sources.iter(),
-                            received_ts_ms,
-                        );
-                        chainlink_reference_emit_recovered_input_health_for_sources(
-                            recovery, sources,
-                        );
-                    }
+                last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
+                if let Some(recovery) = &input_health_recovery {
+                    let sources = chainlink_reference_input_health_sources_for_report_instrument(
+                        &recovery.config,
+                        &instrument_id,
+                    );
+                    chainlink_reference_seed_input_health_report_liveness_for_sources(
+                        &recovery.input_health_report_liveness,
+                        sources.iter(),
+                        received_ts_ms,
+                    );
+                    chainlink_reference_emit_recovered_input_health_for_sources(recovery, sources);
                 }
                 if !updates.is_empty() {
                     if let Some(recovery) = &input_health_recovery {
@@ -1560,7 +1554,6 @@ fn chainlink_reference_recovered_input_health_sources(
 }
 
 struct ChainlinkReferenceReportFrameUpdates {
-    report_observed: bool,
     instrument_id: String,
     updates: Vec<ReferencePriceUpdate>,
 }
@@ -1614,7 +1607,6 @@ fn chainlink_reference_updates_from_report_frame(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(ChainlinkReferenceReportFrameUpdates {
-        report_observed: true,
         instrument_id,
         updates,
     })

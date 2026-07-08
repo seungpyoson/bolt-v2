@@ -7,7 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from verifier_io import require_snippets, require_text_file
+from verifier_io import require_rust_snippets, require_text_file
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -32,9 +32,9 @@ CODE_SNIPPETS = (
     "relabels_historical_result_after_supersession",
     "redemption_realized_pnl_included",
     "source_binding_key",
-    "venue/provider identity",
+    "binding_sets.venue_keys.contains",
     "artifact_root",
-    "committed snapshot",
+    "ArtifactIndexBulkListSource::CommittedSnapshot",
 )
 TEST_SNIPPETS = (
     "dashboard_read_model_accepts_read_only_sources_with_config_binding_keys",
@@ -58,8 +58,8 @@ def scan_root(root: Path) -> list[str]:
     test_text = require_text_file(root, DASHBOARD_TEST, findings)
     justfile_text = require_text_file(root, JUSTFILE, findings)
 
-    require_snippets(DASHBOARD_RS, code_text, CODE_SNIPPETS, findings)
-    require_snippets(DASHBOARD_TEST, test_text, TEST_SNIPPETS, findings)
+    require_rust_snippets(DASHBOARD_RS, code_text, CODE_SNIPPETS, findings)
+    require_rust_snippets(DASHBOARD_TEST, test_text, TEST_SNIPPETS, findings)
 
     for command in JUSTFILE_COMMANDS:
         if justfile_text and command not in justfile_text:

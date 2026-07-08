@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 
+import ci_provenance
 import git_remote_utils
 
 
@@ -58,7 +59,40 @@ SOURCE_PR_CHECK_WORKFLOWS = {
     "host-health": "CI",
 }
 SOURCE_CHECK_ALIASES: dict[str, str] = {}
-MERGIFY_QUEUE_MAX_BATCH_SIZE = {"hotfix": 1, "default": 6}
+
+
+def mergify_queue_max_batch_size(queue_rule: str) -> int:
+    batch_size = ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["batch_size"]
+    if isinstance(batch_size, dict):
+        return batch_size["max"]
+    return batch_size
+
+
+def mergify_queue_min_batch_size(queue_rule: str) -> int:
+    batch_size = ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["batch_size"]
+    if isinstance(batch_size, dict):
+        return batch_size["min"]
+    return batch_size
+
+
+def mergify_queue_wait_time(queue_rule: str) -> str:
+    return ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["batch_max_wait_time"]
+
+
+def mergify_queue_conditions(queue_rule: str) -> list[str]:
+    return list(ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["queue_conditions"])
+
+
+def mergify_required_reviewer() -> str:
+    return ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["required_reviewer"]
+
+
+def mergify_required_merge_conditions() -> list[str]:
+    expectations = ci_provenance.MERGIFY_CONFIG_EXPECTATIONS
+    return [
+        f"approved-reviews-by = {expectations['required_reviewer']}",
+        *(f"check-success = {check_name}" for check_name in expectations["required_checks"]),
+    ]
 
 
 def expected_head_sha_args(
@@ -252,7 +286,7 @@ def mergify_queue_route_finding(pr: int, queue_rule: str, labels: list[str], que
             "queue_rule": queue_rule,
             "labels": labels,
             "queue_conditions": queue_conditions,
-            "max_batch_size": MERGIFY_QUEUE_MAX_BATCH_SIZE[queue_rule],
+            "max_batch_size": mergify_queue_max_batch_size(queue_rule),
         },
     }
 
@@ -1326,8 +1360,9 @@ def approved_pr_view(
     *,
     base: str = "main",
     labels: tuple[str, ...] = (),
-    approving_reviewers: tuple[str, ...] = ("sp-reviewer",),
+    approving_reviewers: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
+    reviewers = (mergify_required_reviewer(),) if approving_reviewers is None else approving_reviewers
     return {
         "number": 1,
         "state": "OPEN",
@@ -1339,7 +1374,7 @@ def approved_pr_view(
         "labels": [{"name": label} for label in labels],
         "reviews": [
             {"author": {"login": reviewer}, "state": "APPROVED"}
-            for reviewer in approving_reviewers
+            for reviewer in reviewers
         ],
         "title": "one",
         "url": "https://example.invalid/pull/1",
@@ -1912,53 +1947,29 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
         assert readiness_ready_finding(2, default_head, passing_source_pr_checks(2)[2]) in payload["findings"], (
             payload["findings"]
         )
-        assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], (
+        assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], mergify_queue_conditions("hotfix")) in payload["findings"], (
             payload["findings"]
         )
-        assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
+        assert mergify_queue_route_finding(2, "default", [], mergify_queue_conditions("default")) in payload["findings"], payload["findings"]
         assert mergify_queue_proof_source_finding(
             "hotfix",
-            ["label = hotfix"],
-            [
-                "approved-reviews-by = sp-reviewer",
-                "check-success = gate",
-                "check-success = backtester-gate",
-                "check-success = actionlint",
-                "check-success = host-health",
-            ],
+            mergify_queue_conditions("hotfix"),
+            mergify_required_merge_conditions(),
         ) in payload["findings"], payload["findings"]
         assert mergify_required_reviewer_finding(
             "hotfix",
-            ["sp-reviewer"],
-            [
-                "approved-reviews-by = sp-reviewer",
-                "check-success = gate",
-                "check-success = backtester-gate",
-                "check-success = actionlint",
-                "check-success = host-health",
-            ],
+            [mergify_required_reviewer()],
+            mergify_required_merge_conditions(),
         ) in payload["findings"], payload["findings"]
         assert mergify_queue_proof_source_finding(
             "default",
-            [],
-            [
-                "approved-reviews-by = sp-reviewer",
-                "check-success = gate",
-                "check-success = backtester-gate",
-                "check-success = actionlint",
-                "check-success = host-health",
-            ],
+            mergify_queue_conditions("default"),
+            mergify_required_merge_conditions(),
         ) in payload["findings"], payload["findings"]
         assert mergify_required_reviewer_finding(
             "default",
-            ["sp-reviewer"],
-            [
-                "approved-reviews-by = sp-reviewer",
-                "check-success = gate",
-                "check-success = backtester-gate",
-                "check-success = actionlint",
-                "check-success = host-health",
-            ],
+            [mergify_required_reviewer()],
+            mergify_required_merge_conditions(),
         ) in payload["findings"], payload["findings"]
         assert_equal(
             [batch["prs"] for batch in payload["batches"]],
@@ -1990,12 +2001,13 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         assert_equal(result.returncode, 1, "default queue above max rc")
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
+        max_batch_size = mergify_queue_max_batch_size("default")
         assert_equal(
             [batch["prs"] for batch in payload["batches"]],
-            [list(range(1, 7)), list(range(7, 12))],
+            [list(range(1, max_batch_size + 1)), list(range(max_batch_size + 1, 12))],
             "default queue above max size-valid batches",
         )
-        assert mergify_queue_batch_above_max_finding("default", list(heads), 6) in payload["findings"], payload["findings"]
+        assert mergify_queue_batch_above_max_finding("default", list(heads), max_batch_size) in payload["findings"], payload["findings"]
 
 
 def assert_default_queue_below_min_reports_wait_behavior() -> None:
@@ -2013,7 +2025,12 @@ def assert_default_queue_below_min_reports_wait_behavior() -> None:
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "ready", "default queue below min wave status")
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("queue_as_one_wave", 0), "default queue below min contract")
-        assert mergify_queue_batch_below_min_finding("default", [1], 2, "5 minutes") in payload["findings"], payload["findings"]
+        assert mergify_queue_batch_below_min_finding(
+            "default",
+            [1],
+            mergify_queue_min_batch_size("default"),
+            mergify_queue_wait_time("default"),
+        ) in payload["findings"], payload["findings"]
 
 
 def assert_invalid_mergify_config_does_not_route() -> None:
@@ -2690,9 +2707,11 @@ def assert_fallback_recombines_survivors_after_batch_max_split() -> None:
         )
         assert_equal(result.returncode, 2, "poison fallback max split rc")
         payload = parse_json(result.stdout)
+        survivor_prs = [1, *range(3, 12)]
+        max_batch_size = mergify_queue_max_batch_size("default")
         assert_equal(
             [batch["prs"] for batch in payload["batches"]],
-            [[1, 3, 4, 5, 6, 7], [8, 9, 10, 11]],
+            [survivor_prs[:max_batch_size], survivor_prs[max_batch_size:]],
             "poison fallback max split batches",
         )
         blocked = payload["blocked_prs"]
@@ -4115,7 +4134,7 @@ def assert_selected_mergify_reviewer_must_approve_at_runtime() -> None:
         evidence = reviewer_findings[0]["evidence"]
         assert_equal(evidence["pr"], 1, "required reviewer pr")
         assert_equal(evidence["queue_rule"], "default", "required reviewer queue")
-        assert_equal(evidence["required_reviewers"], ["sp-reviewer"], "required reviewers")
+        assert_equal(evidence["required_reviewers"], [mergify_required_reviewer()], "required reviewers")
         assert_equal(evidence["approved_reviewers"], ["other-reviewer"], "approved reviewers")
         assert_equal(payload["lane_statuses"]["readiness"], "blocked", "required reviewer lane")
 

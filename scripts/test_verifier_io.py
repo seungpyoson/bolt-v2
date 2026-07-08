@@ -115,11 +115,34 @@ def test_required_discovery_floor_contracts_are_classified_and_proven() -> None:
             raise AssertionError(f"{contract}: call_count must be positive")
 
 
+def test_rust_snippet_requirements_ignore_comments_and_literals() -> None:
+    findings: list[str] = []
+    verifier_io.require_rust_snippets(
+        Path("src/probe.rs"),
+        "\n".join(
+            (
+                "// fn required_runtime_call() {}",
+                'const _LABEL: &str = "RequiredType";',
+                "fn real_runtime_call() {}",
+            )
+        ),
+        ("required_runtime_call", "RequiredType", "real_runtime_call"),
+        findings,
+    )
+    expected = [
+        "src/probe.rs: missing `required_runtime_call`",
+        "src/probe.rs: missing `RequiredType`",
+    ]
+    if findings != expected:
+        raise AssertionError(f"Rust snippet stripping did not reject comments/literals: {findings}")
+
+
 def main() -> int:
     tests = [
         test_required_discovery_floor_invariant_is_marked_next_to_helper,
         test_required_discovery_floor_contract_registry_matches_live_call_sites,
         test_required_discovery_floor_contracts_are_classified_and_proven,
+        test_rust_snippet_requirements_ignore_comments_and_literals,
     ]
     for test in tests:
         test()

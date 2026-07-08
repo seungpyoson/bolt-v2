@@ -19,9 +19,12 @@ FORBIDDEN_MODULES = (
     "nautilus_trader.backtest.engine",
     "nautilus_trader.backtest.node",
 )
-RA_CODE_DIRS = ("notebooks", "research", "analytics")
 RA_SCRIPT_PREFIXES = ("leadlag", "research", "analytics")
 PYTHON_SUFFIXES = (".py", ".ipynb")
+RA_NOTEBOOKS_CODE_FILES_LABEL = "RA single-engine notebooks code files"
+RA_RESEARCH_CODE_FILES_LABEL = "RA single-engine research code files"
+RA_ANALYTICS_CODE_FILES_LABEL = "RA single-engine analytics code files"
+RA_SCRIPTS_CODE_FILES_LABEL = "RA single-engine scripts code files"
 
 
 @dataclass(frozen=True)
@@ -35,28 +38,62 @@ class Finding:
         return f"{rel}:{self.line}: forbidden RA single-engine import {self.module}"
 
 
-def research_code_files(root: Path) -> list[Path]:
-    paths: set[Path] = set()
-    for directory_name in RA_CODE_DIRS:
-        directory = root / directory_name
-        if directory.exists():
-            paths.update(
-                path
-                for suffix in PYTHON_SUFFIXES
-                for path in directory.rglob(f"*{suffix}")
-                if path.is_file()
-            )
+def tree_python_files(directory: Path) -> list[Path] | None:
+    if not directory.is_dir():
+        return None
+    return sorted(
+        path
+        for suffix in PYTHON_SUFFIXES
+        for path in directory.rglob(f"*{suffix}")
+        if path.is_file()
+    )
 
-    scripts_dir = root / "scripts"
-    if scripts_dir.exists():
-        paths.update(
-            path
-            for suffix in PYTHON_SUFFIXES
-            for path in scripts_dir.glob(f"*{suffix}")
-            if path.is_file()
-            and path.name.startswith(RA_SCRIPT_PREFIXES)
-            and not path.name.startswith(("test_", "verify_"))
-        )
+
+def script_python_files(directory: Path) -> list[Path] | None:
+    if not directory.is_dir():
+        return None
+    return sorted(
+        path
+        for suffix in PYTHON_SUFFIXES
+        for path in directory.glob(f"*{suffix}")
+        if path.is_file()
+        and path.name.startswith(RA_SCRIPT_PREFIXES)
+        and not path.name.startswith(("test_", "verify_"))
+    )
+
+
+def research_code_files(root: Path, findings: list[str] | None = None) -> list[Path]:
+    paths: set[Path] = set()
+
+    notebooks = tree_python_files(root / "notebooks")
+    if findings is None:
+        if notebooks is not None:
+            paths.update(notebooks)
+    elif notebooks is not None and require_nonempty(notebooks, RA_NOTEBOOKS_CODE_FILES_LABEL, findings):
+        paths.update(notebooks)
+
+    research = tree_python_files(root / "research")
+    if findings is None:
+        if research is not None:
+            paths.update(research)
+    elif research is not None and require_nonempty(research, RA_RESEARCH_CODE_FILES_LABEL, findings):
+        paths.update(research)
+
+    analytics = tree_python_files(root / "analytics")
+    if findings is None:
+        if analytics is not None:
+            paths.update(analytics)
+    elif analytics is not None and require_nonempty(analytics, RA_ANALYTICS_CODE_FILES_LABEL, findings):
+        paths.update(analytics)
+
+    scripts = script_python_files(root / "scripts")
+    if findings is None:
+        if scripts is not None:
+            paths.update(scripts)
+    elif scripts is None:
+        findings.append(f"{RA_SCRIPTS_CODE_FILES_LABEL}: configured source path scripts is not present")
+    elif require_nonempty(scripts, RA_SCRIPTS_CODE_FILES_LABEL, findings):
+        paths.update(scripts)
     return sorted(paths)
 
 
@@ -147,9 +184,9 @@ def file_findings(path: Path) -> list[Finding]:
 
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
-    paths = research_code_files(root)
     findings_text: list[str] = []
-    if not require_nonempty(paths, "RA single-engine code files", findings_text):
+    paths = research_code_files(root, findings_text)
+    if findings_text:
         return findings_text
     findings: list[Finding] = []
     for path in paths:

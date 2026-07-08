@@ -50,6 +50,7 @@ def valid_remote_probe() -> dict:
             "check-lib": "heavy",
             "check-test-target": "heavy",
             "nextest-no-run-test-target": "heavy",
+            "nextest-lib-name": "heavy",
             "nextest-test-target": "heavy",
             "nextest-test-target-name": "heavy",
         },
@@ -326,6 +327,7 @@ def assert_parser_help_exposes_suggest_and_examples() -> None:
         "Examples:",
         "just rust-probe suggest",
         "just rust-probe check-test-target <harness_target>",
+        "just rust-probe nextest-lib-name <test_name>",
         "just rust-probe nextest-test-target-name <harness_target> <member_stem>::",
     ):
         if fragment not in help_text:

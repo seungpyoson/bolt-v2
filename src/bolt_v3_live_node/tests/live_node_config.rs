@@ -288,7 +288,10 @@ async fn startup_watchdog_deadline_during_hung_startup_timeout_names_shutdown_gr
     .expect("deadline during hung startup must return after shutdown grace");
     let elapsed = started.elapsed();
 
-    assert!(stop_called.get(), "deadline during startup must request stop");
+    assert!(
+        stop_called.get(),
+        "deadline during startup must request stop"
+    );
     assert!(
         elapsed < Duration::from_millis(150),
         "startup shutdown timeout should return after grace {shutdown_grace:?}, elapsed {elapsed:?}"

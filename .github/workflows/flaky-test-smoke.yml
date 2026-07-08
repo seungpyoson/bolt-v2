@@ -123,6 +123,20 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "sccache enabled=$enabled"
 
+      - name: Summarize sccache state
+        if: always()
+        shell: bash
+        env:
+          SCCACHE_ELIGIBLE: ${{ steps.sccache-eligible.outputs.eligible || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
+          SCCACHE_AWS_OUTCOME: ${{ steps.sccache-aws.outcome || 'skipped' }}
+          SCCACHE_INSTALL_OUTCOME: ${{ steps.sccache-install.outcome || 'skipped' }}
+        run: |
+          echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+            echo "::notice::sccache read-only cache disabled; compiling without remote cache"
+          fi
+
       - name: Configure nextest JUnit output
         run: |
           cp .config/nextest.toml "$RUNNER_TEMP/nextest-junit.toml"
@@ -138,9 +152,10 @@ jobs:
         env:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
+          log="$RUNNER_TEMP/flaky-smoke-root-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
+          bash .github/scripts/sccache-fail-open.sh "$log" just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
@@ -277,6 +292,20 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "sccache enabled=$enabled"
 
+      - name: Summarize sccache state
+        if: always()
+        shell: bash
+        env:
+          SCCACHE_ELIGIBLE: ${{ steps.sccache-eligible.outputs.eligible || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
+          SCCACHE_AWS_OUTCOME: ${{ steps.sccache-aws.outcome || 'skipped' }}
+          SCCACHE_INSTALL_OUTCOME: ${{ steps.sccache-install.outcome || 'skipped' }}
+        run: |
+          echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+            echo "::notice::sccache read-only cache disabled; compiling without remote cache"
+          fi
+
       - name: Configure nextest JUnit output
         run: |
           printf '%s\n' \
@@ -290,9 +319,10 @@ jobs:
         env:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
+          log="$RUNNER_TEMP/flaky-smoke-backtester-${{ matrix.shard }}-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          bash .github/scripts/sccache-fail-open.sh "$log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
@@ -428,6 +458,20 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "sccache enabled=$enabled"
 
+      - name: Summarize sccache state
+        if: always()
+        shell: bash
+        env:
+          SCCACHE_ELIGIBLE: ${{ steps.sccache-eligible.outputs.eligible || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
+          SCCACHE_AWS_OUTCOME: ${{ steps.sccache-aws.outcome || 'skipped' }}
+          SCCACHE_INSTALL_OUTCOME: ${{ steps.sccache-install.outcome || 'skipped' }}
+        run: |
+          echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+            echo "::notice::sccache read-only cache disabled; compiling without remote cache"
+          fi
+
       - name: Configure nextest JUnit output
         run: |
           printf '%s\n' \
@@ -441,9 +485,10 @@ jobs:
         env:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
+          log="$RUNNER_TEMP/flaky-smoke-backtester-issue-789-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
+          bash .github/scripts/sccache-fail-open.sh "$log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"

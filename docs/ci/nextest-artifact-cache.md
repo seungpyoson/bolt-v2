@@ -13,8 +13,9 @@ archive payloads do not write to the branch-scoped Actions cache.
 - `CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX` selects the S3 prefix for archive objects.
 - `CI_SCCACHE_BUCKET` and `CI_SCCACHE_REGION` select the shared CI cache bucket.
 - `AWS_CI_CACHE_ROLE_ARN` is used only by `push` runs on `refs/heads/main`.
-- `AWS_CI_CACHE_PR_READONLY_ROLE_ARN` is used by PR, merge queue, and manual
-  dispatch restore attempts.
+- `AWS_CI_CACHE_PR_READONLY_ROLE_ARN` is the read-only cache consumer role. It
+  is used by PR, merge queue, manual dispatch restore attempts, Rust Probe,
+  Debug Test, and scheduled Flaky Test Smoke cache reads.
 
 Tag pushes intentionally rebuild nextest archive payloads locally. They do not
 receive an S3 cache role or `cache_mode`, so deploy-lane tag runs fail open to

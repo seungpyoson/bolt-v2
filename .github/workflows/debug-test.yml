@@ -320,6 +320,20 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "sccache enabled=$enabled"
 
+      - name: Summarize sccache state
+        if: always()
+        shell: bash
+        env:
+          SCCACHE_ELIGIBLE: ${{ steps.sccache-eligible.outputs.eligible || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
+          SCCACHE_AWS_OUTCOME: ${{ steps.sccache-aws.outcome || 'skipped' }}
+          SCCACHE_INSTALL_OUTCOME: ${{ steps.sccache-install.outcome || 'skipped' }}
+        run: |
+          echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+            echo "::notice::sccache read-only cache disabled; compiling without remote cache"
+          fi
+
       - name: Run debug test
         id: run-debug-test
         shell: bash
@@ -330,8 +344,8 @@ jobs:
         run: |
           log="$RUNNER_TEMP/debug-test.log"
           set +e
-          just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee "$log"
-          rc="${PIPESTATUS[0]}"
+          bash .github/scripts/sccache-fail-open.sh "$log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE"
+          rc="$?"
           set -e
           if [[ "$rc" -eq 0 ]]; then
             echo "Debug test: pass" >> "$GITHUB_STEP_SUMMARY"

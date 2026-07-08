@@ -187,6 +187,20 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "sccache enabled=$enabled"
 
+      - name: Summarize sccache state
+        if: always()
+        shell: bash
+        env:
+          SCCACHE_ELIGIBLE: ${{ steps.sccache-eligible.outputs.eligible || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
+          SCCACHE_AWS_OUTCOME: ${{ steps.sccache-aws.outcome || 'skipped' }}
+          SCCACHE_INSTALL_OUTCOME: ${{ steps.sccache-install.outcome || 'skipped' }}
+        run: |
+          echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+            echo "::notice::sccache read-only cache disabled; compiling without remote cache"
+          fi
+
       - name: Run Rust Probe
         shell: bash
         env:
@@ -196,7 +210,7 @@ jobs:
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
-        run: bash .github/scripts/run-rust-probe.sh
+        run: bash .github/scripts/sccache-fail-open.sh "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
 
       - name: Print sccache stats
         if: always() && steps.sccache.outputs.enabled == 'true'
@@ -292,6 +306,20 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "sccache enabled=$enabled"
 
+      - name: Summarize sccache state
+        if: always()
+        shell: bash
+        env:
+          SCCACHE_ELIGIBLE: ${{ steps.sccache-eligible.outputs.eligible || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
+          SCCACHE_AWS_OUTCOME: ${{ steps.sccache-aws.outcome || 'skipped' }}
+          SCCACHE_INSTALL_OUTCOME: ${{ steps.sccache-install.outcome || 'skipped' }}
+        run: |
+          echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+            echo "::notice::sccache read-only cache disabled; compiling without remote cache"
+          fi
+
       - name: Run Rust Probe
         shell: bash
         env:
@@ -301,7 +329,7 @@ jobs:
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
-        run: bash .github/scripts/run-rust-probe.sh
+        run: bash .github/scripts/sccache-fail-open.sh "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
 
       - name: Print sccache stats
         if: always() && steps.sccache.outputs.enabled == 'true'

@@ -12972,6 +12972,12 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
     "Print sccache stats": (
         '\'"$SCCACHE_PATH" --show-stats || true\'',
     ),
+    "Summarize sccache state": (
+        'echo "sccache read-only cache: eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"',
+        'if [[ "$SCCACHE_ENABLED" != "true" ]]; then',
+        'echo "::notice::sccache read-only cache disabled; compiling without remote cache"',
+        "fi",
+    ),
     "Configure nextest JUnit output": (
         "printf '%s\\n' \\",
         "'[profile.default.junit]' \\",
@@ -13032,6 +13038,8 @@ def bvs_backtester_job_steps_are_allowlisted(job_text: str) -> bool:
 def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ...]:
     # Allowlist the whole BVS shell block instead of predicting shell wrapper syntax.
     lines = simple_shell_lines(run_block)
+    if lines and lines[0].startswith('log="$RUNNER_TEMP/'):
+        lines = lines[1:]
     expected_prefix = ("rc=0", "set +e")
     expected_suffix = (
         "rc=$?",
@@ -13043,13 +13051,16 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
     if lines[: len(expected_prefix)] != expected_prefix or lines[-len(expected_suffix) :] != expected_suffix:
         return ()
 
-    command_prefix = (
+    command_prefixes = (
         'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
-        '--partition "count:${{ matrix.shard }}/'
+        '--partition "count:${{ matrix.shard }}/',
+        'bash .github/scripts/sccache-fail-open.sh "$log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
+        '--partition "count:${{ matrix.shard }}/',
     )
     command_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
     command = lines[len(expected_prefix)]
-    if not command.startswith(command_prefix) or not command.endswith(command_suffix):
+    command_prefix = next((prefix for prefix in command_prefixes if command.startswith(prefix)), None)
+    if command_prefix is None or not command.endswith(command_suffix):
         return ()
 
     denominator = command[len(command_prefix) : -len(command_suffix)]
@@ -13265,6 +13276,7 @@ DEBUG_LANE_SCCACHE_LOCATION_MATCH = (
     '&& "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]'
 )
 DEBUG_TEST_SCCACHE_COMPILE_IF = "steps.debug-archive-ready.outputs.value != 'true' || inputs.package != ''"
+DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh"
 
 
 def debug_lane_sccache_workflow_env_errors(workflow_name: str, workflow_text: str) -> list[str]:
@@ -13306,10 +13318,21 @@ def debug_lane_sccache_job_errors(
         "Configure AWS credentials for sccache",
         "Install sccache",
         "Resolve sccache enablement",
+        "Summarize sccache state",
         "Print sccache stats",
     ):
         if named_step_block(job_lines, step_name) is None:
             errors.append(f"{label} must include step {step_name!r}")
+    for step_name in (
+        "Resolve sccache eligibility",
+        "Configure AWS credentials for sccache",
+        "Install sccache",
+        "Resolve sccache enablement",
+    ):
+        block = named_step_block(job_lines, step_name)
+        block_text = uncommented_text(block) if block is not None else ""
+        if "continue-on-error: true" not in block_text:
+            errors.append(f"{label} sccache step {step_name!r} must be continue-on-error")
 
     resolve_block = named_step_block(job_lines, "Resolve sccache eligibility")
     resolve_text = uncommented_text(resolve_block) if resolve_block is not None else ""
@@ -13353,6 +13376,12 @@ def debug_lane_sccache_job_errors(
     compile_text = uncommented_text(compile_block) if compile_block is not None else ""
     if DEBUG_LANE_SCCACHE_OPT_IN not in compile_text:
         errors.append(f"{label} compile step must opt into managed sccache conditionally")
+    if DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER not in compile_text:
+        errors.append(f"{label} compile step must retry sccache infrastructure failures without sccache")
+    summary_block = named_step_block(job_lines, "Summarize sccache state")
+    summary_text = uncommented_text(summary_block) if summary_block is not None else ""
+    if "sccache read-only cache:" not in summary_text or "$GITHUB_STEP_SUMMARY" not in summary_text:
+        errors.append(f"{label} must summarize sccache state")
     stats_block = named_step_block(job_lines, "Print sccache stats")
     stats_text = uncommented_text(stats_block) if stats_block is not None else ""
     if '"$SCCACHE_PATH" --show-stats || true' not in stats_text:
@@ -13363,23 +13392,43 @@ def debug_lane_sccache_job_errors(
 
 
 def bvs_debug_lane_cache_policy_errors(policy_text: str) -> list[str]:
-    policy_clean = uncommented_text(policy_text.splitlines())
-    required_fragments = (
-        "[remote_compile_cache]",
-        "enabled = true",
-        'enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"',
-        'ci_env = "GITHUB_ACTIONS"',
-        'wrapper_env = "SCCACHE_PATH"',
-        'wrapper_program = "sccache"',
-        "[remote_fast_linker]",
-        'linker_env = "BOLT_RUST_FAST_LINKER"',
-        'programs = ["mold", "lld"]',
+    try:
+        policy = tomllib.loads(policy_text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"backtesting-vertical-slice rust policy must be valid TOML for flaky smoke cache parity: {exc}"]
+    expected_tables: tuple[tuple[str, dict[str, object]], ...] = (
+        (
+            "remote_compile_cache",
+            {
+                "enabled": True,
+                "enable_env": "BOLT_RUST_VERIFICATION_SCCACHE",
+                "ci_env": "GITHUB_ACTIONS",
+                "wrapper_env": "SCCACHE_PATH",
+                "wrapper_program": "sccache",
+            },
+        ),
+        (
+            "remote_fast_linker",
+            {
+                "enabled": True,
+                "ci_env": "GITHUB_ACTIONS",
+                "linker_env": "BOLT_RUST_FAST_LINKER",
+                "programs": ["mold", "lld"],
+            },
+        ),
     )
-    return [
-        f"backtesting-vertical-slice rust policy must include {fragment} for flaky smoke cache parity"
-        for fragment in required_fragments
-        if fragment not in policy_clean
-    ]
+    errors: list[str] = []
+    for table_name, expected_values in expected_tables:
+        table = policy.get(table_name)
+        if not isinstance(table, dict):
+            errors.append(f"backtesting-vertical-slice rust policy must include [{table_name}] for flaky smoke cache parity")
+            continue
+        for key, expected in expected_values.items():
+            if table.get(key) != expected:
+                errors.append(
+                    f"backtesting-vertical-slice rust policy must set {table_name}.{key}={expected!r} for flaky smoke cache parity"
+                )
+    return errors
 
 
 def verify_debug_lane_compile_cache_parity(
@@ -15680,7 +15729,11 @@ def verify_debug_test_workflow(
                 errors.append(f"{workflow_name} {step_name}' must assume the resolved {label} role")
         run_step = named_step_block(job, "Run debug test")
         run_text = uncommented_text(run_step) if run_step is not None else ""
-        if "shell: bash" not in run_text or 'rc="${PIPESTATUS[0]}"' not in run_text:
+        preserves_status = (
+            'rc="${PIPESTATUS[0]}"' in run_text
+            or (DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER in run_text and 'rc="$?"' in run_text)
+        )
+        if "shell: bash" not in run_text or not preserves_status:
             errors.append(f"{workflow_name} debug-test workflow must preserve nextest exit status under bash")
 
     if "debug-test" in mergify_text:

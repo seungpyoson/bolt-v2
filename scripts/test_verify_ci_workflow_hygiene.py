@@ -3255,7 +3255,7 @@ def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ..
     return tuple(
         int(denominator)
         for denominator in re.findall(
-            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            r"(?m)^\s*(?:bash \.github/scripts/sccache-fail-open\.sh \"\$log\" )?just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
             "\n".join(job_lines),
         )
     )
@@ -9202,22 +9202,184 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile step must opt into managed sccache conditionally",
         ),
         (
+            "debug sccache steps must stay fail-open",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    "        id: sccache-aws\n"
+                    "        if: steps.sccache-eligible.outputs.eligible == 'true'\n"
+                    "        continue-on-error: true\n",
+                    "        id: sccache-aws\n"
+                    "        if: steps.sccache-eligible.outputs.eligible == 'true'\n",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "sccache step 'Configure AWS credentials for sccache' must be continue-on-error",
+        ),
+        (
+            "debug compile step must retry cache-infra failures without sccache",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    "bash .github/scripts/sccache-fail-open.sh",
+                    "bash .github/scripts/no-sccache-fail-open.sh",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "compile step must retry sccache infrastructure failures without sccache",
+        ),
+        (
+            "flaky smoke must surface disabled sccache state",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    "      - name: Summarize sccache state\n",
+                    "      - name: Summarize cache state\n",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "must summarize sccache state",
+        ),
+        (
             "BVS policy must activate the remote compile cache",
             workflows,
-            bvs_policy.replace("[remote_compile_cache]\n", "", 1),
+            bvs_policy.replace(
+                "[remote_compile_cache]\n"
+                "enabled = true\n"
+                'enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"\n'
+                'ci_env = "GITHUB_ACTIONS"\n'
+                'wrapper_env = "SCCACHE_PATH"\n'
+                'wrapper_program = "sccache"\n\n',
+                "",
+                1,
+            ),
             "backtesting-vertical-slice rust policy must include [remote_compile_cache]",
+        ),
+        (
+            "BVS policy must not disable the remote compile cache",
+            workflows,
+            bvs_policy.replace("[remote_compile_cache]\nenabled = true", "[remote_compile_cache]\nenabled = false", 1),
+            "remote_compile_cache.enabled=True",
         ),
         (
             "BVS policy must activate the remote fast linker",
             workflows,
-            bvs_policy.replace("[remote_fast_linker]\n", "", 1),
+            bvs_policy.replace(
+                "[remote_fast_linker]\n"
+                "enabled = true\n"
+                'ci_env = "GITHUB_ACTIONS"\n'
+                'linker_env = "BOLT_RUST_FAST_LINKER"\n'
+                'programs = ["mold", "lld"]\n\n',
+                "",
+                1,
+            ),
             "backtesting-vertical-slice rust policy must include [remote_fast_linker]",
+        ),
+        (
+            "BVS policy must keep the CI fast-linker env",
+            workflows,
+            bvs_policy.replace('ci_env = "GITHUB_ACTIONS"\nlinker_env = "BOLT_RUST_FAST_LINKER"', 'ci_env = "NOT_CI"\nlinker_env = "BOLT_RUST_FAST_LINKER"', 1),
+            "remote_fast_linker.ci_env='GITHUB_ACTIONS'",
         ),
     )
     for label, mutated_workflows, mutated_policy, expected in cases:
         errors = verifier.verify_debug_lane_compile_cache_parity(mutated_workflows, mutated_policy)
         if not any(expected in error for error in errors):
             raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
+
+
+def assert_cache_docs_cover_debug_schedule_consumers() -> None:
+    text = repo_source_text("docs/ci/nextest-artifact-cache.md")
+    required_fragments = (
+        "Rust Probe",
+        "Debug Test",
+        "scheduled Flaky Test Smoke",
+        "AWS_CI_CACHE_PR_READONLY_ROLE_ARN",
+    )
+    missing = [fragment for fragment in required_fragments if fragment not in text]
+    if missing:
+        raise AssertionError(f"cache docs must name debug read-only consumers, missing: {missing}")
+
+
+def assert_sccache_fail_open_helper_contract() -> None:
+    helper = REPO_ROOT / ".github" / "scripts" / "sccache-fail-open.sh"
+    if not helper.exists():
+        raise AssertionError(".github/scripts/sccache-fail-open.sh is required")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        counter = root / "count"
+        fake_command = root / "fake-command"
+        fake_command.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                count=0
+                if [[ -f "$COUNT_FILE" ]]; then
+                  count="$(cat "$COUNT_FILE")"
+                fi
+                count=$((count + 1))
+                echo "$count" > "$COUNT_FILE"
+                case "$FAKE_MODE" in
+                  sccache-transient)
+                    if [[ "$count" -eq 1 ]]; then
+                      echo "sccache: server connection failed" >&2
+                      exit 86
+                    fi
+                    if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
+                      echo "retry did not disable sccache" >&2
+                      exit 87
+                    fi
+                    exit 0
+                    ;;
+                  real-test-failure)
+                    echo "test failed without cache marker" >&2
+                    exit 42
+                    ;;
+                  no-cache)
+                    echo "sccache: server connection failed" >&2
+                    exit 43
+                    ;;
+                  *)
+                    echo "unknown FAKE_MODE=$FAKE_MODE" >&2
+                    exit 99
+                    ;;
+                esac
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_command.chmod(0o755)
+
+        def run_case(*, mode: str, sccache: str) -> tuple[int, int]:
+            counter.unlink(missing_ok=True)
+            log = root / f"{mode}-{sccache}.log"
+            env = {
+                **os.environ,
+                "COUNT_FILE": str(counter),
+                "FAKE_MODE": mode,
+                "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
+            }
+            result = subprocess.run(
+                ["bash", str(helper), str(log), str(fake_command)],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+            return result.returncode, count
+
+        if run_case(mode="sccache-transient", sccache="1") != (0, 2):
+            raise AssertionError("sccache infrastructure failure must retry once without sccache")
+        if run_case(mode="real-test-failure", sccache="1") != (42, 1):
+            raise AssertionError("non-cache test failures must not be retried")
+        if run_case(mode="no-cache", sccache="0") != (43, 1):
+            raise AssertionError("disabled sccache must not retry")
 
 
 def assert_bootstrap_uses_onepassword_key_generation() -> None:
@@ -19157,6 +19319,8 @@ def main() -> int:
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_debug_test_workflow_contract()
     assert_debug_lane_compile_cache_parity_contract()
+    assert_cache_docs_cover_debug_schedule_consumers()
+    assert_sccache_fail_open_helper_contract()
     assert_bootstrap_uses_onepassword_key_generation()
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()

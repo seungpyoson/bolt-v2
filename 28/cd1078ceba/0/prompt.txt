@@ -2005,3 +2005,259 @@ ok then let's separate noop_fresh that you are worried about, and have the work 
 ---
 
 so we should have 2 prs
+
+---
+
+yes
+
+---
+
+seems like the pending checks here are not starting - can you check? [Image #6]
+
+---
+
+• I hit a real repo-governance conflict before commit/push.
+
+  Implemented in the new worktree/branch:
+  feat/1215-source-fence-static-pr-lane
+
+  Current diff:
+
+  - Only .github/workflows/ci.yml
+  - Adds source-fence-static job
+  - needs: [ci-policy]
+  - PR-only, non-full-CI, non-docs condition
+  - Runs compile-free just source-fence-static
+  - Not in gate.needs
+  - scripts/ci_provenance.py and ci/github-actions-runners.toml are still byte-identical to origin/main
+  - git grep -n noop_fresh returns nothing
+
+  Verification:
+
+  - just source-fence-static → passed
+  - python3.12 scripts/test_lane_governor.py → passed
+  - actionlint -color=false .github/workflows/ci.yml → passed
+  - git diff --check → clean
+
+  Blocker:
+  python3 scripts/verify_ci_workflow_hygiene.py fails with:
+
+  ERROR: .github/workflows/ci.yml job source-fence-static missing from ci/github-actions-runners.toml
+
+  That means the requested constraints conflict:
+
+  - You asked for green locally
+  - You also asked to not touch ci/github-actions-runners.toml
+  - Current repo hygiene requires every ci.yml job to be registered there
+
+  I have not committed or pushed. Decision needed: should I add the minimal runner entry in ci/github-actions-runners.toml, or keep the strict ci.yml-only
+  scope and accept that the repo hygiene verifier fails?
+
+---
+
+Implemented and opened draft PR #1292:
+
+  https://github.com/seungpyoson/bolt-v2/pull/1292
+
+  Head:
+  f0863587d178d5f8998fba94c2e07bc3df499940
+
+  Changed:
+
+  - .github/workflows/ci.yml: adds feedback-only source-fence-static job for draft/non-full/non-docs PRs.
+  - ci/github-actions-runners.toml: adds only source-fence-static = "managed_light" under [workflows.ci].
+
+  Verified:
+
+  - just source-fence-static passed
+  - python3.12 scripts/test_lane_governor.py passed
+  - python3 scripts/verify_ci_workflow_hygiene.py passed
+  - actionlint -color=false .github/workflows/ci.yml passed
+  - git diff --check passed
+  - git grep -n noop_fresh returned no matches
+  - scripts/ci_provenance.py unchanged from origin/main
+
+  Notes:
+
+  - No [ci_provenance.*] edits.
+  - PR is draft.
+  - Remote checks are currently pending.
+  - Local worktree is clean.
+
+review them - and we should also edit pr title and body as we see fit
+
+---
+
+for both prs -
+
+---
+
+edit title and body for both 1288 and 1292
+
+---
+
+do not merge is too aggressive. I think we should see if we can do something about this later
+
+---
+
+we need to assess why 1285 CI fials
+
+---
+
+so 1285 should address it?
+
+---
+
+give me a blurb - prompt
+
+---
+
+• Fixed and pushed PR #1285 to head 6a9bd8b5b126c59c08202d360f3ea164f17f2044.
+
+  Change:
+
+  - Added emits_live_input_health: true to the planted pyth_ws ReferencePriceProviderMetadata in .worktrees/fix-session1-stability-fixes/tests/
+    bolt_v3_reference_provider_registration.rs:51.
+
+  Verification:
+
+  - cargo fmt --check: passed
+  - git diff --check: passed
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo check --tests: passed at rebased head
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo test --test pricing bolt_v3_reference_provider_registration: passed, 8/8
+
+  I also swept construction sites: only the two production entries and this test initializer construct ReferencePriceProviderMetadata.
+
+---
+
+1285 still seems to fail
+
+---
+
+• Implemented and pushed to PR #1285.
+
+  Changed the five inline Chainlink gate-provider timeout fixtures in .worktrees/fix-session1-stability-fixes/tests/config_parsing.rs from 10 to 4, leaving the
+  divergence test’s scoped 4 -> 6 mutation intact.
+
+  Verification at pushed head 9c5226c9e47e2e5d993982d500183a09c958ed48:
+
+  - cargo fmt --check passed
+  - git diff --check HEAD~1..HEAD passed
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo test --test platform_config passed: 408/408
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo test --test pricing bolt_v3_reference_provider_registration passed: 8/8
+
+  Note: cargo test --test config_parsing is not a configured Cargo target; tests/config_parsing.rs is included through the platform_config harness, so I ran
+  the full affected harness.
+
+---
+
+still 1285 is failing
+
+---
+
+you got this request earlier right? 
+
+  We queued PRs #1281 and #1286 through just merge-queue. Mergify created draft queue PR #1294 on branch:
+
+  mergify/merge-queue/1a91ea54d7
+
+  Queue head SHA:
+
+  cdc463ab4ef35a4f07543ed52986dcda7d7b2be9
+
+  Mergify ETA was 2026-07-07 17:35 UTC, but the wave merged late at 18:03 UTC.
+
+  What happened:
+
+  - The real proof path worked.
+  - Root CI eventually emitted gate.
+  - gate passed at 2026-07-07 18:02:13 UTC.
+  - Mergify merged #1281 at 18:03:16 UTC and #1286 at 18:03:19 UTC.
+
+  Observed evidence:
+
+  - nextest archive was the long real blocker:
+      - Started 17:46:40 UTC
+      - Completed 18:01:07 UTC
+      - Build nextest archive ran 17:47:34 to 17:59:13
+
+  - Then downstream jobs passed quickly:
+      - test passed 18:01:15
+      - ci-provenance-emit passed 18:01:48
+      - gate passed 18:02:13
+
+  Suspicious behavior:
+
+  - While the queue proof PR was running, GitHub Actions repeatedly created duplicate pull_request workflow runs for the same queue branch and same head SHA.
+  - Several duplicate CI, Backtester CI, Coverage Enforcer, and actionlint runs appeared on #1294.
+  - Some were canceled; others briefly became the latest required context.
+  - After gate passed, Mergify briefly shifted to waiting on a newer duplicate host-health.
+  - Mergify still merged once the duplicate host-health passed.
+
+  Likely root cause:
+
+  - Workflows include pull_request: edited.
+  - Mergify updates/edits draft queue PR metadata while the queue is running.
+  - Those metadata-only edited events retrigger workflows on mergify/merge-queue/* proof PRs.
+  - Current workflow concurrency tries not to cancel Mergify proof runs, but it still allows duplicate runs to be created for the same queue head SHA.
+
+  Relevant files:
+
+  - .github/workflows/ci.yml
+  - .github/workflows/backtester-ci.yml
+  - .github/workflows/coverage-enforcer.yml
+  - .github/workflows/actionlint.yml
+  - scripts/verify_ci_workflow_hygiene.py
+  - scripts/test_verify_ci_workflow_hygiene.py
+
+  Hypothesis to investigate:
+  For Mergify proof PRs, pull_request: edited metadata-only events should not launch new proof workflows. Ordinary PR edited events still matter for base-
+  retarget handling, so do not remove edited globally.
+
+  Suggested fix direction:
+  Add workflow-level or job-level filtering so edited events on mergify/merge-queue/* / tmp-mergify/merge-queue/* proof PRs are no-op unless the base ref
+  actually changed. Add workflow hygiene tests to prevent regression.
+
+  Need Fable 5 to verify:
+
+  1. Exact event payload for Mergify queue PR edited events.
+  2. Whether GitHub Actions supports the intended expression cleanly at workflow/job level.
+  3. Whether skipping all queue-PR edited events is safe, or whether only metadata-only edits should be skipped.
+  4. Which required contexts GitHub branch rules and Mergify actually consume when duplicate contexts exist.
+
+---
+
+all of the PRs we discussed merged
+
+---
+
+so are we done with the overall CI and cargo optimizations? what's left?
+
+---
+
+but CI still seems quite expensive - just on ubicloud alone - can you check
+
+---
+
+what do you mean by draft default not started? I thought we already have draft default
+
+---
+
+I told you that I need to see drastic improvements in:
+1) cost
+2) speed
+3) frequency 
+
+and we landed a lot of PRs - I want to know whether we are in the "to be" status
+
+---
+
+investigate into this -  Kill the proof churn — the 78%-cancelled batch thrashing is the biggest single lever on cost and frequency, and it's entirely untouched. This is where I'd start.
+
+---
+
+verify first - and explain the situation in plain english and make this concise
+
+---
+
+[Image #12] is it something we edit on the frontend (of mergify)?

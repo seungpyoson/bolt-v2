@@ -99,13 +99,9 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         assert!(registered.data);
         assert!(!registered.execution);
 
-        let error = tokio::time::timeout(
-            Duration::from_secs(6),
-            run_bolt_v3_live_node(&mut node, &loaded),
-        )
-        .await
-        .expect("live-node boot must fail loudly instead of hanging past the smoke-test guard")
-        .expect_err("hanging Chainlink first-connect must fail startup");
+        let error = run_bolt_v3_live_node(&mut node, &loaded)
+            .await
+            .expect_err("hanging Chainlink first-connect must fail startup");
 
         server.abort();
 

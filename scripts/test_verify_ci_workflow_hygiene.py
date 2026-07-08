@@ -1740,15 +1740,16 @@ runs:
             exit 0
           fi
         done
-        sudo apt-get update
-        for rust_linker_program in "${rust_linker_programs[@]}"; do
-          if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
-            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-            exit 0
-          fi
-        done
-        echo "::error::failed to install any configured Rust linker"
-        exit 1
+        if sudo apt-get update; then
+          for rust_linker_program in "${rust_linker_programs[@]}"; do
+            if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
+              echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+        fi
+        echo "::warning::failed to install any configured Rust linker; continuing without fast linker"
+        echo "Rust linker: unavailable; continuing without BOLT_RUST_FAST_LINKER" >> "$GITHUB_STEP_SUMMARY"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -3255,7 +3256,7 @@ def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ..
     return tuple(
         int(denominator)
         for denominator in re.findall(
-            r"(?m)^\s*(?:bash \.github/scripts/sccache-fail-open\.sh \"\$log\" )?just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            r"(?m)^\s*(?:BOLT_RUST_VERIFICATION_SCCACHE=0\s+)?just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
             "\n".join(job_lines),
         )
     )
@@ -4766,7 +4767,7 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             "must retry the build without sccache",
             replace_once(
                 workflow,
-                'BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"',
+                'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" just test-archive "$NEXTEST_ARCHIVE_PATH"',
                 "true",
             ),
         ),
@@ -4911,12 +4912,13 @@ def _run_test_archive_build_script(script: str, *, sccache: str, fake_just_mode:
             "PATH": f"{root}:{os.environ['PATH']}",
             "JUST_COUNT_FILE": str(counter),
             "JUST_MODE": fake_just_mode,
-            "NEXTEST_ARCHIVE_PATH": "out/nextest-archive.tar.zst",
+            "NEXTEST_ARCHIVE_PATH": str(root / "out" / "nextest-archive.tar.zst"),
+            "RUNNER_TEMP": str(root),
             "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
         }
         result = subprocess.run(
             ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
-            cwd=root,
+            cwd=REPO_ROOT,
             env=env,
             check=False,
             capture_output=True,
@@ -8005,8 +8007,8 @@ jobs:
         run: |
           rc=0
           set +e
-          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
-          rc=$?
+          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
 
@@ -8032,8 +8034,8 @@ jobs:
         run: |
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
-          rc=$?
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
 
@@ -8058,8 +8060,8 @@ jobs:
         run: |
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
-          rc=$?
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
 
@@ -9021,7 +9023,7 @@ def assert_debug_test_workflow_contract() -> None:
         ),
         (
             "debug-test workflow must call managed just debug-test recipe",
-            workflow.replace('just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE"', 'cargo nextest run -E "$DEBUG_TEST_FILTER" --locked', 1),
+            workflow.replace("just debug-test", "true"),
         ),
         (
             "debug-test workflow must use the PR-readonly cache role only",
@@ -9096,7 +9098,7 @@ def assert_debug_test_workflow_contract() -> None:
         raise AssertionError(f"debug-test mergify reference must be rejected, got: {mergify_errors}")
 
     justfile_without_recipe = repo_source_text("justfile").replace(
-        'debug-test filter package="": check-workspace require-rust-verification-owner\n',
+        'debug-test filter package="" *extra_args: check-workspace require-rust-verification-owner\n',
         "",
         1,
     )
@@ -9222,13 +9224,65 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    "bash .github/scripts/sccache-fail-open.sh",
+                    "bash .github/scripts/sccache-fail-open.sh --on any",
                     "bash .github/scripts/no-sccache-fail-open.sh",
                     1,
                 ),
             },
             bvs_policy,
             "compile step must retry sccache infrastructure failures without sccache",
+        ),
+        (
+            "debug compile step must not spoof the helper in an echo",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    'bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
+                    'echo bash .github/scripts/sccache-fail-open.sh --on any "$compile_log"; just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "compile step must wrap a compile-only command with sccache-fail-open",
+        ),
+        (
+            "flaky smoke run step must not retry test execution",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast',
+                    'bash .github/scripts/sccache-fail-open.sh --on any "$log" just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "test execution must not be wrapped in sccache fail-open",
+        ),
+        (
+            "flaky smoke compile preflight must stay no-run",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run',
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "compile preflight must use --no-run",
+        ),
+        (
+            "sccache summary must run under always",
+            {
+                **workflows,
+                ".github/workflows/rust-probe.yml": workflows[".github/workflows/rust-probe.yml"].replace(
+                    "      - name: Summarize sccache state\n        if: always()\n",
+                    "      - name: Summarize sccache state\n",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "Summarize sccache state must run under always()",
         ),
         (
             "flaky smoke must surface disabled sccache state",
@@ -9294,6 +9348,9 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
 def assert_cache_docs_cover_debug_schedule_consumers() -> None:
     text = repo_source_text("docs/ci/nextest-artifact-cache.md")
     required_fragments = (
+        "CI_SCCACHE_S3_KEY_PREFIX",
+        "nextest-archive restores",
+        "sccache read-only access",
         "Rust Probe",
         "Debug Test",
         "scheduled Flaky Test Smoke",
@@ -9326,7 +9383,7 @@ def assert_sccache_fail_open_helper_contract() -> None:
                 case "$FAKE_MODE" in
                   sccache-transient)
                     if [[ "$count" -eq 1 ]]; then
-                      echo "sccache: server connection failed" >&2
+                      echo "compiler exited before printing a cache-specific marker" >&2
                       exit 86
                     fi
                     if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
@@ -9335,9 +9392,24 @@ def assert_sccache_fail_open_helper_contract() -> None:
                     fi
                     exit 0
                     ;;
+                  retry-fails)
+                    if [[ "$count" -eq 1 ]]; then
+                      echo "compiler exited before printing a cache-specific marker" >&2
+                      exit 86
+                    fi
+                    if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
+                      echo "retry did not disable sccache" >&2
+                      exit 87
+                    fi
+                    exit 88
+                    ;;
                   real-test-failure)
                     echo "test failed without cache marker" >&2
                     exit 42
+                    ;;
+                  real-test-failure-mentions-sccache)
+                    echo "test failed while asserting the word sccache is rendered" >&2
+                    exit 44
                     ;;
                   no-cache)
                     echo "sccache: server connection failed" >&2
@@ -9364,7 +9436,7 @@ def assert_sccache_fail_open_helper_contract() -> None:
                 "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
             }
             result = subprocess.run(
-                ["bash", str(helper), str(log), str(fake_command)],
+                ["bash", str(helper), "--on", "any", str(log), str(fake_command)],
                 cwd=root,
                 env=env,
                 check=False,
@@ -9376,8 +9448,12 @@ def assert_sccache_fail_open_helper_contract() -> None:
 
         if run_case(mode="sccache-transient", sccache="1") != (0, 2):
             raise AssertionError("sccache infrastructure failure must retry once without sccache")
-        if run_case(mode="real-test-failure", sccache="1") != (42, 1):
-            raise AssertionError("non-cache test failures must not be retried")
+        if run_case(mode="retry-fails", sccache="1") != (88, 2):
+            raise AssertionError("failed retry must return the retry exit code")
+        if run_case(mode="real-test-failure", sccache="1") != (42, 2):
+            raise AssertionError("helper any-mode must own compile-only retry semantics")
+        if run_case(mode="real-test-failure-mentions-sccache", sccache="1") != (44, 2):
+            raise AssertionError("helper any-mode must not inspect broad log markers")
         if run_case(mode="no-cache", sccache="0") != (43, 1):
             raise AssertionError("disabled sccache must not retry")
 
@@ -19243,6 +19319,14 @@ def main() -> int:
     assert_error(
         "setup action missing expected literal 'BOLT_RUST_FAST_LINKER=$rust_linker_program'",
         action=BASE_ACTION.replace("BOLT_RUST_FAST_LINKER=$rust_linker_program", "BOLT_RUST_FAST_LINKER=hardcoded"),
+    )
+    assert_error(
+        "setup action Rust linker install failures must fail open",
+        action=replace_once(
+            BASE_ACTION,
+            'echo "::warning::failed to install any configured Rust linker; continuing without fast linker"',
+            'echo "::error::failed to install any configured Rust linker"',
+        ),
     )
     assert_error(
         "setup action must export managed_target_dir from target_dir step",

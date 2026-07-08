@@ -210,7 +210,16 @@ jobs:
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
-        run: bash .github/scripts/sccache-fail-open.sh "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
+        run: |
+          case "$RUST_PROBE_MODE" in
+            nextest-test-target|nextest-test-target-name)
+              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
+              BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh
+              ;;
+            *)
+              bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
+              ;;
+          esac
 
       - name: Print sccache stats
         if: always() && steps.sccache.outputs.enabled == 'true'
@@ -329,7 +338,16 @@ jobs:
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
-        run: bash .github/scripts/sccache-fail-open.sh "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
+        run: |
+          case "$RUST_PROBE_MODE" in
+            nextest-test-target|nextest-test-target-name)
+              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
+              BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh
+              ;;
+            *)
+              bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
+              ;;
+          esac
 
       - name: Print sccache stats
         if: always() && steps.sccache.outputs.enabled == 'true'

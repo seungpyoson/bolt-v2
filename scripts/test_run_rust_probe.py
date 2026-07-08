@@ -59,6 +59,7 @@ def run_probe(
     expected_sha: str = "a" * 40,
     actual_sha: str | None = None,
     probe_id: str = "probe-test",
+    compile_only: str = "0",
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     if workspace is None:
@@ -72,6 +73,7 @@ def run_probe(
     env["RUST_PROBE_EXPECTED_SHA"] = expected_sha
     env["RUST_PROBE_FAKE_HEAD"] = actual_sha or expected_sha
     env["RUST_PROBE_ID"] = probe_id
+    env["RUST_PROBE_COMPILE_ONLY"] = compile_only
     return subprocess.run(
         ["bash", str(SCRIPT_PATH), *script_args],
         check=False,
@@ -91,9 +93,10 @@ def assert_valid(
     test_target: str,
     test_name: str,
     expected_args: list[str],
+    compile_only: str = "0",
 ) -> None:
     with fake_workspace() as temp:
-        result = run_probe(temp, mode, test_target, test_name)
+        result = run_probe(temp, mode, test_target, test_name, compile_only=compile_only)
         if result.returncode != 0:
             raise AssertionError(
                 f"{description}: expected success, got {result.returncode}\n"
@@ -103,6 +106,7 @@ def assert_valid(
             f"Rust Probe id: probe-test\n"
             f"Rust Probe checkout SHA: {'a' * 40}\n"
             f"Rust Probe mode: {mode}\n"
+            f"Rust Probe compile_only: {compile_only}\n"
             f"Rust Probe test_target: {test_target or '<empty>'}\n"
             f"Rust Probe test_name: {test_name or '<empty>'}\n"
         )
@@ -210,6 +214,30 @@ def main() -> int:
             "build_script_git_head_rerun_paths",
             "build_script_reads_manifest_dir_at_run_time",
         ],
+    )
+    assert_valid(
+        "nextest-test-target compile-only preflight",
+        "nextest-test-target",
+        "build_script_git_head_rerun_paths",
+        "",
+        ["nextest", "run", "--locked", "--no-run", "--test", "build_script_git_head_rerun_paths"],
+        compile_only="1",
+    )
+    assert_valid(
+        "nextest-test-target-name compile-only preflight",
+        "nextest-test-target-name",
+        "build_script_git_head_rerun_paths",
+        "build_script_reads_manifest_dir_at_run_time",
+        [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-run",
+            "--test",
+            "build_script_git_head_rerun_paths",
+            "build_script_reads_manifest_dir_at_run_time",
+        ],
+        compile_only="1",
     )
     assert_valid(
         "target regex accepts safe punctuation",

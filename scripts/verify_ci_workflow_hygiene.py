@@ -909,8 +909,12 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     'python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
     'command -v "$rust_linker_program" >/dev/null',
     "BOLT_RUST_FAST_LINKER=$rust_linker_program",
+    'echo "::warning::failed to install any configured Rust linker; continuing without fast linker"',
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
+)
+SETUP_FAST_LINKER_FAIL_OPEN_WARNING = (
+    'echo "::warning::failed to install any configured Rust linker; continuing without fast linker"'
 )
 SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_toolchain": "steps.shared.outputs.rust_toolchain",
@@ -967,7 +971,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "26f12192ac235c6468c3c85d81969495569bab6dfa5ea02794918b2425acfd6f"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "894eadb0a72bd8d51ac7680d7adbd8873d1d2f0b289249af7fbd893062d66c64"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -1074,7 +1078,10 @@ TEST_ARCHIVE_SCCACHE_OPT_IN = (
 # must retry without sccache on failure, so a future edit cannot silently disable
 # either and make the cache able to fail the required build.
 TEST_ARCHIVE_SCCACHE_IGNORE_IO = 'SCCACHE_IGNORE_SERVER_IO_ERROR: "1"'
-TEST_ARCHIVE_SCCACHE_RETRY = "BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive"
+TEST_ARCHIVE_SCCACHE_RETRY = (
+    'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" '
+    'just test-archive "$NEXTEST_ARCHIVE_PATH"'
+)
 TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION = (
     '[[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
 )
@@ -11904,7 +11911,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive sidecar build must use dev profile debug knob")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_block):
             errors.append("test-archive sidecar build must use tracked root binary sidecar helper")
-        if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
+        if 'just test-archive "$NEXTEST_ARCHIVE_PATH"' not in archive_text:
             errors.append("test-archive must build through just test-archive")
         for output in TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS:
             if output not in archive_text:
@@ -12330,6 +12337,8 @@ def verify_setup_action(action_text: str) -> list[str]:
     for literal in SETUP_ACTION_REQUIRED_LITERALS:
         if literal not in uncommented:
             errors.append(f"setup action missing expected literal {literal!r}")
+    if SETUP_FAST_LINKER_FAIL_OPEN_WARNING not in uncommented:
+        errors.append("setup action Rust linker install failures must fail open")
     for output_name, output_mapping in SETUP_ACTION_OUTPUT_MAPPINGS.items():
         output_block = extract_action_output_block(action_text, output_name)
         if not output_block:
@@ -12928,7 +12937,11 @@ def simple_shell_lines(run_text: str) -> tuple[str, ...]:
 
 
 def bte_test_invocation_count(run_block: str) -> int:
-    return len(re.findall(r"\bjust\s+bte-test\b", run_block))
+    return sum(
+        len(re.findall(r"\bjust\s+bte-test\b", line))
+        for line in simple_shell_lines(run_block)
+        if not line.startswith(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER)
+    )
 
 
 BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
@@ -13040,27 +13053,49 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
     lines = simple_shell_lines(run_block)
     if lines and lines[0].startswith('log="$RUNNER_TEMP/'):
         lines = lines[1:]
-    expected_prefix = ("rc=0", "set +e")
-    expected_suffix = (
-        "rc=$?",
-        "set -e",
-        "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
+    if lines and lines[0].startswith('compile_log="$RUNNER_TEMP/'):
+        lines = lines[1:]
+    compile_prefix = (
+        'bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" '
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run '
+        '--partition "count:${{ matrix.shard }}/'
     )
-    if len(lines) != len(expected_prefix) + 1 + len(expected_suffix):
+    compile_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
+    if lines and lines[0].startswith(compile_prefix) and lines[0].endswith(compile_suffix):
+        lines = lines[1:]
+    expected_prefix = ("rc=0", "set +e")
+    expected_suffixes = (
+        (
+            "rc=$?",
+            "set -e",
+            "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
+        ),
+        (
+            'rc="${PIPESTATUS[0]}"',
+            "set -e",
+            "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
+        ),
+    )
+    suffix = next((candidate for candidate in expected_suffixes if lines[-len(candidate) :] == candidate), None)
+    if suffix is None or len(lines) != len(expected_prefix) + 1 + len(suffix):
         return ()
-    if lines[: len(expected_prefix)] != expected_prefix or lines[-len(expected_suffix) :] != expected_suffix:
+    if lines[: len(expected_prefix)] != expected_prefix:
         return ()
 
     command_prefixes = (
         'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
         '--partition "count:${{ matrix.shard }}/',
-        'bash .github/scripts/sccache-fail-open.sh "$log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
+        'BOLT_RUST_VERIFICATION_SCCACHE=0 just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
         '--partition "count:${{ matrix.shard }}/',
     )
-    command_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
+    command_suffixes = (
+        '" -- --skip issue_789_first_real_free_data_taker_pl',
+        '" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
+    )
     command = lines[len(expected_prefix)]
     command_prefix = next((prefix for prefix in command_prefixes if command.startswith(prefix)), None)
-    if command_prefix is None or not command.endswith(command_suffix):
+    command_suffix = next((suffix for suffix in command_suffixes if command.endswith(suffix)), None)
+    if command_prefix is None or command_suffix is None:
         return ()
 
     denominator = command[len(command_prefix) : -len(command_suffix)]
@@ -13138,7 +13173,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 (
                     "run_number: [1]",
                     "set +e",
-                    "rc=$?",
+                    'rc="${PIPESTATUS[0]}"',
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
@@ -13152,7 +13187,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "run_number: [1]",
                     "shard: [1]",
                     "set +e",
-                    "rc=$?",
+                    'rc="${PIPESTATUS[0]}"',
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
@@ -13165,7 +13200,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 (
                     "run_number: [1]",
                     "set +e",
-                    "rc=$?",
+                    'rc="${PIPESTATUS[0]}"',
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
@@ -13276,7 +13311,7 @@ DEBUG_LANE_SCCACHE_LOCATION_MATCH = (
     '&& "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]'
 )
 DEBUG_TEST_SCCACHE_COMPILE_IF = "steps.debug-archive-ready.outputs.value != 'true' || inputs.package != ''"
-DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh"
+DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh --on any"
 
 
 def debug_lane_sccache_workflow_env_errors(workflow_name: str, workflow_text: str) -> list[str]:
@@ -13376,10 +13411,35 @@ def debug_lane_sccache_job_errors(
     compile_text = uncommented_text(compile_block) if compile_block is not None else ""
     if DEBUG_LANE_SCCACHE_OPT_IN not in compile_text:
         errors.append(f"{label} compile step must opt into managed sccache conditionally")
-    if DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER not in compile_text:
+    compile_lines = simple_shell_lines(compile_text)
+    helper_lines = [line for line in compile_lines if DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER in line]
+    real_helper_lines = [
+        line
+        for line in helper_lines
+        if line.startswith(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER)
+        or line.startswith(f"RUST_PROBE_COMPILE_ONLY=1 {DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER}")
+    ]
+    if not real_helper_lines:
         errors.append(f"{label} compile step must retry sccache infrastructure failures without sccache")
+    if helper_lines and not real_helper_lines:
+        errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
+    if workflow_name.endswith("flaky-test-smoke.yml"):
+        if any("--no-run" not in line for line in real_helper_lines):
+            errors.append(f"{label} compile preflight must use --no-run")
+        test_execution_lines = [
+            line
+            for line in compile_lines
+            if ("just test " in line or "just bte-test " in line) and "--no-run" not in line
+        ]
+        if any(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
+            errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
+    if workflow_name.endswith("debug-test.yml"):
+        if not any("just debug-test" in line and "--no-run" in line for line in real_helper_lines):
+            errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
     summary_block = named_step_block(job_lines, "Summarize sccache state")
     summary_text = uncommented_text(summary_block) if summary_block is not None else ""
+    if "if: always()" not in summary_text and "if: ${{ always() }}" not in summary_text:
+        errors.append(f"{label} Summarize sccache state must run under always()")
     if "sccache read-only cache:" not in summary_text or "$GITHUB_STEP_SUMMARY" not in summary_text:
         errors.append(f"{label} must summarize sccache state")
     stats_block = named_step_block(job_lines, "Print sccache stats")
@@ -15740,7 +15800,11 @@ def verify_debug_test_workflow(
         errors.append("debug-test workflow must not be referenced by .mergify.yml")
 
     if justfile_text:
-        if 'debug-test filter package="": check-workspace require-rust-verification-owner' not in justfile_text:
+        if (
+            'debug-test filter package="": check-workspace require-rust-verification-owner' not in justfile_text
+            and 'debug-test filter package="" *extra_args: check-workspace require-rust-verification-owner'
+            not in justfile_text
+        ):
             errors.append("justfile must define debug-test filter package")
         for fragment in (
             'python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked',

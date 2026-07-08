@@ -153,10 +153,12 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           log="$RUNNER_TEMP/flaky-smoke-root-${{ matrix.run_number }}.log"
+          compile_log="$RUNNER_TEMP/flaky-smoke-root-compile-${{ matrix.run_number }}.log"
+          bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run
           rc=0
           set +e
-          bash .github/scripts/sccache-fail-open.sh "$log" just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
-          rc=$?
+          BOLT_RUST_VERIFICATION_SCCACHE=0 just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
 
@@ -320,10 +322,12 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           log="$RUNNER_TEMP/flaky-smoke-backtester-${{ matrix.shard }}-${{ matrix.run_number }}.log"
+          compile_log="$RUNNER_TEMP/flaky-smoke-backtester-compile-${{ matrix.shard }}-${{ matrix.run_number }}.log"
+          bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
           rc=0
           set +e
-          bash .github/scripts/sccache-fail-open.sh "$log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
-          rc=$?
+          BOLT_RUST_VERIFICATION_SCCACHE=0 just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
 
@@ -486,10 +490,12 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           log="$RUNNER_TEMP/flaky-smoke-backtester-issue-789-${{ matrix.run_number }}.log"
+          compile_log="$RUNNER_TEMP/flaky-smoke-backtester-issue-789-compile-${{ matrix.run_number }}.log"
+          bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run issue_789_first_real_free_data_taker_pl
           rc=0
           set +e
-          bash .github/scripts/sccache-fail-open.sh "$log" just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
-          rc=$?
+          BOLT_RUST_VERIFICATION_SCCACHE=0 just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
 

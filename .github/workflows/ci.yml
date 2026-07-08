@@ -1265,23 +1265,7 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
-          # Fail-open guarantee: sccache must never be able to fail this required
-          # build. SCCACHE_IGNORE_SERVER_IO_ERROR covers in-flight S3/server I/O
-          # errors, but not a mid-build sccache server crash that also fails to
-          # restart (sccache propagates that connect/start failure to a non-zero
-          # rustc exit). If the wrapper is active and the build fails for any
-          # reason, rebuild once with the wrapper forced off so the gate reflects
-          # the code, not sccache.
-          set +e
-          just test-archive "$NEXTEST_ARCHIVE_PATH"
-          rc=$?
-          set -e
-          if [[ "$rc" -ne 0 && "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" == "1" ]]; then
-            echo "::warning::nextest archive build failed (rc=$rc) with sccache active; retrying once without sccache (fail-open)"
-            BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"
-          elif [[ "$rc" -ne 0 ]]; then
-            exit "$rc"
-          fi
+          bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" just test-archive "$NEXTEST_ARCHIVE_PATH"
 
       - name: Print sccache stats
         if: always() && steps.sccache.outputs.enabled == 'true'

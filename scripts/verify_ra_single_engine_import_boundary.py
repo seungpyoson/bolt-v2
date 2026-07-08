@@ -11,7 +11,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from verifier_io import require_nonempty
+from verifier_io import (
+    DECLARED_SOURCE_ABSENT,
+    DECLARED_SOURCE_PRESENT,
+    require_declared_source_files,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,9 +23,12 @@ FORBIDDEN_MODULES = (
     "nautilus_trader.backtest.engine",
     "nautilus_trader.backtest.node",
 )
-RA_CODE_DIRS = ("notebooks", "research", "analytics")
 RA_SCRIPT_PREFIXES = ("leadlag", "research", "analytics")
 PYTHON_SUFFIXES = (".py", ".ipynb")
+RA_NOTEBOOKS_CODE_FILES_LABEL = "RA single-engine notebooks code files"
+RA_RESEARCH_CODE_FILES_LABEL = "RA single-engine research code files"
+RA_ANALYTICS_CODE_FILES_LABEL = "RA single-engine analytics code files"
+RA_SCRIPTS_CODE_FILES_LABEL = "RA single-engine scripts code files"
 
 
 @dataclass(frozen=True)
@@ -35,28 +42,72 @@ class Finding:
         return f"{rel}:{self.line}: forbidden RA single-engine import {self.module}"
 
 
-def research_code_files(root: Path) -> list[Path]:
-    paths: set[Path] = set()
-    for directory_name in RA_CODE_DIRS:
-        directory = root / directory_name
-        if directory.exists():
-            paths.update(
-                path
-                for suffix in PYTHON_SUFFIXES
-                for path in directory.rglob(f"*{suffix}")
-                if path.is_file()
-            )
+def tree_python_files(directory: Path) -> list[Path] | None:
+    if not directory.is_dir():
+        return None
+    return sorted(
+        path
+        for suffix in PYTHON_SUFFIXES
+        for path in directory.rglob(f"*{suffix}")
+        if path.is_file()
+    )
 
-    scripts_dir = root / "scripts"
-    if scripts_dir.exists():
-        paths.update(
-            path
-            for suffix in PYTHON_SUFFIXES
-            for path in scripts_dir.glob(f"*{suffix}")
-            if path.is_file()
-            and path.name.startswith(RA_SCRIPT_PREFIXES)
-            and not path.name.startswith(("test_", "verify_"))
-        )
+
+def script_python_files(directory: Path) -> list[Path] | None:
+    if not directory.is_dir():
+        return None
+    return sorted(
+        path
+        for suffix in PYTHON_SUFFIXES
+        for path in directory.glob(f"*{suffix}")
+        if path.is_file()
+        and path.name.startswith(RA_SCRIPT_PREFIXES)
+        and not path.name.startswith(("test_", "verify_"))
+    )
+
+
+def research_code_files(root: Path, findings: list[str]) -> list[Path]:
+    paths: set[Path] = set()
+
+    notebooks = tree_python_files(root / "notebooks")
+    if require_declared_source_files(
+        notebooks,
+        RA_NOTEBOOKS_CODE_FILES_LABEL,
+        "notebooks",
+        DECLARED_SOURCE_ABSENT,
+        findings,
+    ):
+        paths.update(notebooks)
+
+    research = tree_python_files(root / "research")
+    if require_declared_source_files(
+        research,
+        RA_RESEARCH_CODE_FILES_LABEL,
+        "research",
+        DECLARED_SOURCE_ABSENT,
+        findings,
+    ):
+        paths.update(research)
+
+    analytics = tree_python_files(root / "analytics")
+    if require_declared_source_files(
+        analytics,
+        RA_ANALYTICS_CODE_FILES_LABEL,
+        "analytics",
+        DECLARED_SOURCE_ABSENT,
+        findings,
+    ):
+        paths.update(analytics)
+
+    scripts = script_python_files(root / "scripts")
+    if require_declared_source_files(
+        scripts,
+        RA_SCRIPTS_CODE_FILES_LABEL,
+        "scripts",
+        DECLARED_SOURCE_PRESENT,
+        findings,
+    ):
+        paths.update(scripts)
     return sorted(paths)
 
 
@@ -147,9 +198,9 @@ def file_findings(path: Path) -> list[Finding]:
 
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
-    paths = research_code_files(root)
     findings_text: list[str] = []
-    if not require_nonempty(paths, "RA single-engine code files", findings_text):
+    paths = research_code_files(root, findings_text)
+    if findings_text:
         return findings_text
     findings: list[Finding] = []
     for path in paths:

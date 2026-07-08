@@ -103,6 +103,9 @@ class AuditConfigError(ValueError):
     pass
 
 
+AUDIT_ROW_KEYS = frozenset({"from", "to", "owner", "nt_evidence", "reason", "include_globs"})
+
+
 def word_re(term: str) -> re.Pattern[str]:
     prefix = r"(?<![A-Za-z0-9_])" if term[:1].isalnum() or term[:1] == "_" else ""
     suffix = r"(?![A-Za-z0-9_])" if term[-1:].isalnum() or term[-1:] == "_" else ""
@@ -123,7 +126,16 @@ def audit_row_list(audit: Mapping[object, object], field_name: str) -> list[dict
         if not isinstance(row, Mapping):
             raise AuditConfigError(f"{field_name}[{index}] must be a mapping")
         normalized_row = dict(row)
-        for string_field in ("from", "to", "reason"):
+        unsupported_keys = sorted(str(key) for key in normalized_row if key not in AUDIT_ROW_KEYS)
+        if unsupported_keys:
+            noun = "key" if len(unsupported_keys) == 1 else "keys"
+            raise AuditConfigError(
+                f"{field_name}[{index}] must not define unsupported {noun} {', '.join(unsupported_keys)}"
+            )
+        for required_key in ("from", "to"):
+            if required_key not in normalized_row:
+                raise AuditConfigError(f"{field_name}[{index}] must define {required_key}")
+        for string_field in ("from", "to", "owner", "nt_evidence", "reason"):
             if string_field in normalized_row and not isinstance(normalized_row[string_field], str):
                 raise AuditConfigError(f"{field_name}[{index}].{string_field} must be a string")
         include_globs = normalized_row.get("include_globs")

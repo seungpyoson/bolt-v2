@@ -364,6 +364,28 @@ def test_main_reports_invalid_audit_row_schema_without_traceback() -> None:
             "renamed_in_current_audit[0] must be a mapping",
         ),
         (
+            "renamed_in_current_audit:\n"
+            "  - to: ProviderKey\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit[0] must define from",
+        ),
+        (
+            "renamed_in_current_audit:\n"
+            "  - from: VenueKind\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit[0] must define to",
+        ),
+        (
+            "renamed_in_current_audit:\n"
+            "  - form: VenueKind\n"
+            "    to: ProviderKey\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit[0] must not define unsupported key form",
+        ),
+        (
             "renamed_in_current_audit: []\n"
             "defensive_forbidden:\n"
             "  - from: 1\n"
@@ -378,6 +400,15 @@ def test_main_reports_invalid_audit_row_schema_without_traceback() -> None:
             "    to: 1\n"
             "path_scoped_forbidden: []\n",
             "defensive_forbidden[0].to must be a string",
+        ),
+        (
+            "renamed_in_current_audit:\n"
+            "  - from: VenueKind\n"
+            "    to: ProviderKey\n"
+            "    owner: 1\n"
+            "defensive_forbidden: []\n"
+            "path_scoped_forbidden: []\n",
+            "renamed_in_current_audit[0].owner must be a string",
         ),
         (
             "renamed_in_current_audit: []\n"

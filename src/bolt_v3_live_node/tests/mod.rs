@@ -66,7 +66,6 @@ mod governance_mode;
 mod iv_runtime;
 mod live_node_config;
 mod provider_approvals;
-mod startup_boot;
 mod startup_rebuild;
 mod strategy_free_probe;
 mod transport_scope;

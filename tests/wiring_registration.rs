@@ -9,6 +9,7 @@ mod bolt_v3_complete_set_strategy_shell;
 mod bolt_v3_controlled_connect;
 mod bolt_v3_credential_log_suppression;
 mod bolt_v3_decision_evidence;
+mod bolt_v3_live_node_startup_boot;
 mod bolt_v3_operator_health;
 mod bolt_v3_prod_profile;
 mod bolt_v3_production_entrypoint;

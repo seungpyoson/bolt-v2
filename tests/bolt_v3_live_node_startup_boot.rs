@@ -1,13 +1,20 @@
-#![cfg(test)]
+use crate::support;
 
-use super::*;
+use std::{collections::BTreeSet, time::Duration};
 
-use std::time::Duration;
-
+use bolt_v2::{
+    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_live_node::{
+        BoltV3LiveNodeError, build_bolt_v3_all_configured_client_mapping_live_node_with_summary,
+        run_bolt_v3_live_node,
+    },
+};
+use nautilus_model::identifiers::ClientId;
 use tokio::net::TcpListener;
 
 fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
-    let mut loaded = fixture_loaded_config();
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded.strategies.clear();
     loaded.root.strategy_files.clear();
     loaded.root.risk.capital_pools = None;
@@ -79,7 +86,7 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
             build_bolt_v3_all_configured_client_mapping_live_node_with_summary(
                 &loaded,
                 |_| false,
-                fake_bolt_v3_resolver,
+                support::fake_bolt_v3_resolver,
             )
             .expect("Chainlink-only live node should build through production mapping");
         assert_eq!(

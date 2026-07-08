@@ -2296,11 +2296,19 @@ where
                             "LiveNode run failed during startup timeout shutdown: {error}"
                         );
                     }
-                    break LiveNodeRunStartupOutcome::StartupTimeout {
-                        timeout_secs: bounds.startup_timeout.as_secs(),
-                        node_state,
-                        registered_client_labels,
-                    };
+                    match stop_result {
+                        Some(_) => break LiveNodeRunStartupOutcome::StartupTimeout {
+                            timeout_secs: bounds.startup_timeout.as_secs(),
+                            node_state,
+                            registered_client_labels,
+                        },
+                        None => break LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
+                            trigger: LiveNodeStartupShutdownGraceTrigger::StartupDeadline,
+                            shutdown_grace: bounds.shutdown_grace,
+                            node_state,
+                            registered_client_labels,
+                        },
+                    }
                 } else if matches!(&state, NodeState::ShuttingDown | NodeState::Stopped) {
                     let node_state = format!("{state:?}");
                     log::warn!(

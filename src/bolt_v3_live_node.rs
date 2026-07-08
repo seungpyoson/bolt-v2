@@ -2155,6 +2155,7 @@ pub async fn run_bolt_v3_live_node(
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
     let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
     let startup_timeout_secs = live_node_startup_timeout_secs(loaded)?;
+    let startup_shutdown_grace_secs = live_node_startup_shutdown_grace_timeout_secs(loaded)?;
     let startup_deadline = tokio::time::sleep(Duration::from_secs(startup_timeout_secs));
     tokio::pin!(startup_deadline);
 
@@ -2167,43 +2168,88 @@ pub async fn run_bolt_v3_live_node(
         let node = &mut runtime.node;
         let run_future = node.run();
         tokio::pin!(run_future);
+        let mut startup_deadline_fired = false;
 
-        if let Some(receiver) = capture_failure_receiver.as_mut() {
-            tokio::select! {
-                result = &mut run_future => LiveNodeRunStartupOutcome::Finished(result),
-                _ = &mut startup_deadline => {
-                    if matches!(node_handle.state(), NodeState::Running) {
-                        LiveNodeRunStartupOutcome::Finished(run_future.await)
-                    } else {
-                        log::error!(
-                            "LiveNode startup exceeded configured startup bound \
-                             ({startup_timeout_secs}s); requesting stop"
-                        );
-                        node_handle.stop();
-                        LiveNodeRunStartupOutcome::StartupTimeout {
-                            timeout_secs: startup_timeout_secs,
+        loop {
+            if let Some(receiver) = capture_failure_receiver.as_mut() {
+                tokio::select! {
+                    result = &mut run_future => break LiveNodeRunStartupOutcome::Finished(result),
+                    _ = &mut startup_deadline, if !startup_deadline_fired => {
+                        startup_deadline_fired = true;
+                        if !matches!(node_handle.state(), NodeState::Running) {
+                            log::error!(
+                                "LiveNode startup exceeded configured startup bound \
+                                 ({startup_timeout_secs}s); requesting stop"
+                            );
+                            node_handle.stop();
+                            let startup_shutdown_grace = tokio::time::sleep(Duration::from_secs(
+                                startup_shutdown_grace_secs,
+                            ));
+                            tokio::pin!(startup_shutdown_grace);
+                            tokio::select! {
+                                result = &mut run_future => {
+                                    if let Err(error) = &result {
+                                        log::error!(
+                                            "LiveNode run failed during startup timeout shutdown: \
+                                             {error}"
+                                        );
+                                    }
+                                }
+                                _ = &mut startup_shutdown_grace => {
+                                    log::error!(
+                                        "LiveNode startup timeout shutdown grace elapsed \
+                                         ({startup_shutdown_grace_secs}s); reporting startup \
+                                         timeout"
+                                    );
+                                }
+                            }
+                            break LiveNodeRunStartupOutcome::StartupTimeout {
+                                timeout_secs: startup_timeout_secs,
+                            };
                         }
                     }
-                }
-                _ = receiver => {
-                    log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");
-                    LiveNodeRunStartupOutcome::Finished(run_future.await)
-                }
-            }
-        } else {
-            tokio::select! {
-                result = &mut run_future => LiveNodeRunStartupOutcome::Finished(result),
-                _ = &mut startup_deadline => {
-                    if matches!(node_handle.state(), NodeState::Running) {
-                        LiveNodeRunStartupOutcome::Finished(run_future.await)
-                    } else {
+                    _ = receiver => {
                         log::error!(
-                            "LiveNode startup exceeded configured startup bound \
-                             ({startup_timeout_secs}s); requesting stop"
+                            "NT runtime capture failure detected, awaiting LiveNode shutdown"
                         );
-                        node_handle.stop();
-                        LiveNodeRunStartupOutcome::StartupTimeout {
-                            timeout_secs: startup_timeout_secs,
+                        break LiveNodeRunStartupOutcome::Finished(run_future.await);
+                    }
+                }
+            } else {
+                tokio::select! {
+                    result = &mut run_future => break LiveNodeRunStartupOutcome::Finished(result),
+                    _ = &mut startup_deadline, if !startup_deadline_fired => {
+                        startup_deadline_fired = true;
+                        if !matches!(node_handle.state(), NodeState::Running) {
+                            log::error!(
+                                "LiveNode startup exceeded configured startup bound \
+                                 ({startup_timeout_secs}s); requesting stop"
+                            );
+                            node_handle.stop();
+                            let startup_shutdown_grace = tokio::time::sleep(Duration::from_secs(
+                                startup_shutdown_grace_secs,
+                            ));
+                            tokio::pin!(startup_shutdown_grace);
+                            tokio::select! {
+                                result = &mut run_future => {
+                                    if let Err(error) = &result {
+                                        log::error!(
+                                            "LiveNode run failed during startup timeout shutdown: \
+                                             {error}"
+                                        );
+                                    }
+                                }
+                                _ = &mut startup_shutdown_grace => {
+                                    log::error!(
+                                        "LiveNode startup timeout shutdown grace elapsed \
+                                         ({startup_shutdown_grace_secs}s); reporting startup \
+                                         timeout"
+                                    );
+                                }
+                            }
+                            break LiveNodeRunStartupOutcome::StartupTimeout {
+                                timeout_secs: startup_timeout_secs,
+                            };
                         }
                     }
                 }
@@ -2260,6 +2306,12 @@ fn strategy_free_start_timeout_secs(
 
 fn live_node_startup_timeout_secs(loaded: &LoadedBoltV3Config) -> Result<u64, BoltV3LiveNodeError> {
     strategy_free_start_timeout_secs(loaded)
+}
+
+fn live_node_startup_shutdown_grace_timeout_secs(
+    loaded: &LoadedBoltV3Config,
+) -> Result<u64, BoltV3LiveNodeError> {
+    strategy_free_stop_timeout_secs(loaded)
 }
 
 fn strategy_free_stop_timeout_secs(

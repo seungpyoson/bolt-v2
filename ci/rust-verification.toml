@@ -119,6 +119,7 @@ suggest_base_ref = "origin/main"
 check-lib = "heavy"
 check-test-target = "heavy"
 nextest-no-run-test-target = "heavy"
+nextest-lib-name = "heavy"
 nextest-test-target = "heavy"
 nextest-test-target-name = "heavy"
 

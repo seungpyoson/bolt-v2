@@ -191,6 +191,19 @@ def main() -> int:
         ["nextest", "run", "--locked", "--no-run", "--test", "build_script_git_head_rerun_paths"],
     )
     assert_valid(
+        "nextest-lib-name",
+        "nextest-lib-name",
+        "",
+        "live_node_config::startup_watchdog_capture_failure_after_running_still_awaits_runner_result",
+        [
+            "nextest",
+            "run",
+            "--locked",
+            "--lib",
+            "live_node_config::startup_watchdog_capture_failure_after_running_still_awaits_runner_result",
+        ],
+    )
+    assert_valid(
         "nextest-test-target",
         "nextest-test-target",
         "build_script_git_head_rerun_paths",
@@ -298,6 +311,20 @@ def main() -> int:
         "nextest-test-target requires target",
         "test_target is required",
         "nextest-test-target",
+        "",
+        "",
+    )
+    assert_invalid_with_workspace(
+        "nextest-lib-name forbids target",
+        "test_target is forbidden",
+        "nextest-lib-name",
+        "build_script_git_head_rerun_paths",
+        "live_node_config::startup_watchdog_capture_failure_after_running_still_awaits_runner_result",
+    )
+    assert_invalid_with_workspace(
+        "nextest-lib-name requires name",
+        "test_name is required",
+        "nextest-lib-name",
         "",
         "",
     )

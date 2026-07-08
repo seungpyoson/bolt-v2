@@ -67,6 +67,7 @@ RUST_PROBE_MODES = (
     "check-lib",
     "check-test-target",
     "nextest-no-run-test-target",
+    "nextest-lib-name",
     "nextest-test-target",
     "nextest-test-target-name",
 )
@@ -84,6 +85,7 @@ Examples:
   just rust-probe check-lib
   just rust-probe check-test-target <harness_target>
   just rust-probe nextest-no-run-test-target <harness_target>
+  just rust-probe nextest-lib-name <test_name>
   just rust-probe nextest-test-target <harness_target>
   just rust-probe nextest-test-target-name <harness_target> <member_stem>::
 
@@ -4028,6 +4030,14 @@ def validate_rust_probe_selection(mode: str, test_target: str, test_name: str) -
         if test_name:
             return rust_probe_validation_hint("test_name is forbidden for mode check-lib")
         return None
+    if mode == "nextest-lib-name":
+        if test_target:
+            return rust_probe_validation_hint("test_target is forbidden for mode nextest-lib-name")
+        if not test_name:
+            return rust_probe_validation_hint("test_name is required for mode nextest-lib-name")
+        if not name_regex.match(test_name):
+            return rust_probe_validation_hint("test_name must be a safe nextest test name")
+        return None
     if mode in {"check-test-target", "nextest-no-run-test-target", "nextest-test-target"}:
         if not test_target:
             return rust_probe_validation_hint(f"test_target is required for mode {mode}")
@@ -4436,6 +4446,9 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     test_target = args.test_target or ""
     test_name = args.test_name or ""
+    if args.mode == "nextest-lib-name" and not test_name:
+        test_name = test_target
+        test_target = ""
     selection_error = validate_rust_probe_selection(args.mode, test_target, test_name)
     if selection_error is not None:
         return verify_remote_fail(selection_error)

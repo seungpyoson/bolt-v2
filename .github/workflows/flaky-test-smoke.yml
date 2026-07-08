@@ -94,6 +94,7 @@ jobs:
           fi
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Print sccache stats
         if: always()
@@ -102,6 +103,7 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
 
       - name: Upload test results to Mergify
@@ -205,6 +207,7 @@ jobs:
           fi
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Print sccache stats
         if: always()
@@ -213,6 +216,7 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
 
       - name: Upload test results to Mergify
@@ -315,6 +319,7 @@ jobs:
           fi
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Print sccache stats
         if: always()
@@ -323,6 +328,7 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
 
       - name: Upload test results to Mergify

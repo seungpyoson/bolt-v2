@@ -11979,7 +11979,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             stats_text = uncommented_text(stats_block) if stats_block is not None else ""
             if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
                 errors.append("test-archive sccache must print stats after the compile step")
-            elif not step_occurs_after(archive_lines, "Print sccache stats", "Build nextest archive"):
+            elif "if: always()" not in stats_text or not step_occurs_after(archive_lines, "Print sccache stats", "Build nextest archive"):
                 errors.append("test-archive sccache must print stats after the compile step")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
@@ -13047,6 +13047,7 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
         "fi",
         "set -e",
         "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
+        'exit "$rc"',
     )
     if len(lines) != 1 + len(expected_tail):
         return ()
@@ -13467,12 +13468,18 @@ def debug_lane_sccache_job_errors(
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just test ", "just bte-test "))
         if any(ANY_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
             errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
+        if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
+            errors.append(f"{label} test execution must not force sccache off")
+        if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' in compile_lines and 'exit "$rc"' not in compile_lines:
+            errors.append(f"{label} flaky smoke run step must exit with captured rc")
     if workflow_name.endswith("debug-test.yml"):
         if not any("just debug-test" in line and "--no-run" in line for line in real_helper_lines):
             errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just debug-test",))
         if any(ANY_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
             errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
+        if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
+            errors.append(f"{label} test execution must not force sccache off")
     if workflow_name.endswith("rust-probe.yml"):
         split_fragments = (
             'RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh',
@@ -13485,7 +13492,7 @@ def debug_lane_sccache_job_errors(
     stats_text = uncommented_text(stats_block) if stats_block is not None else ""
     if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
         errors.append(f"{label} must print sccache stats after compile")
-    elif not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
+    elif "if: always()" not in stats_text or not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
         errors.append(f"{label} must print sccache stats after compile")
     if "RUSTC_WRAPPER:" in job_text:
         errors.append(f"{label} must not bypass managed_env with a direct RUSTC_WRAPPER env")

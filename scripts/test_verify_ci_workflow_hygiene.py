@@ -4750,6 +4750,14 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             workflow.replace("      - name: Print sccache stats\n", "      - name: Print early sccache stats\n", 1),
         ),
         (
+            "test-archive sccache must print stats after the compile step",
+            workflow.replace(
+                "      - name: Print sccache stats\n        if: always()\n",
+                "      - name: Print sccache stats\n        if: success()\n",
+                1,
+            ),
+        ),
+        (
             "test-archive sccache setup must include",
             replace_once(
                 workflow,
@@ -9057,6 +9065,8 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             raise AssertionError(f"{workflow_name} must use the shared sccache setup action")
         if "uses: ./.github/actions/sccache-stats" not in workflow_text:
             raise AssertionError(f"{workflow_name} must use the shared sccache stats action after compile")
+    if workflows[".github/workflows/flaky-test-smoke.yml"].count('exit "$rc"') != 3:
+        raise AssertionError("flaky smoke run steps must exit with the captured rc")
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
@@ -9193,6 +9203,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile preflight must use --no-run",
         ),
         (
+            "flaky smoke must exit with captured rc",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    '          exit "$rc"\n',
+                    "",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "flaky smoke run step must exit with captured rc",
+        ),
+        (
             "debug test execution must not retry test execution",
             {
                 **workflows,
@@ -9204,6 +9227,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             },
             bvs_policy,
             "test execution must not be wrapped in sccache fail-open",
+        ),
+        (
+            "debug test execution must not force sccache off",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    'BOLT_RUST_VERIFICATION_SCCACHE=0 just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "test execution must not force sccache off",
         ),
         (
             "rust-probe test modes must split compile from execution",
@@ -9220,6 +9256,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "Rust Probe test modes must compile with fail-open before unwrapped execution",
         ),
         (
+            "debug stats must run on failures",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    "      - name: Print sccache stats\n        if: always()\n",
+                    "      - name: Print sccache stats\n        if: success()\n",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "must print sccache stats after compile",
+        ),
+        (
             "flaky smoke execution must not retry test execution",
             {
                 **workflows,
@@ -9231,6 +9280,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             },
             bvs_policy,
             "test execution must not be wrapped in sccache fail-open",
+        ),
+        (
+            "flaky smoke execution must not force sccache off",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast',
+                    'BOLT_RUST_VERIFICATION_SCCACHE=0 just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "test execution must not force sccache off",
         ),
         (
             "BVS policy must activate the remote compile cache",

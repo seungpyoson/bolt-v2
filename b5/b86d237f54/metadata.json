@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "b5b86d237f54",
+  "strategy": "manual-commit",
+  "branch": "fix/chainlink-connect-boot-hang",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_live_node/tests/mod.rs",
+    "src/bolt_v3_live_node/tests/startup_boot.rs",
+    "tests/bolt_v3_live_node_startup_boot.rs",
+    "tests/wiring_registration.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b5/b86d237f54/0/metadata.json",
+      "transcript": "/b5/b86d237f54/0/full.jsonl",
+      "compact_transcript": "/b5/b86d237f54/0/transcript.jsonl",
+      "content_hash": "/b5/b86d237f54/0/content_hash.txt",
+      "prompt": "/b5/b86d237f54/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 84651,
+    "cache_creation_tokens": 4899084,
+    "cache_read_tokens": 195447773,
+    "output_tokens": 1290809,
+    "api_call_count": 558
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "b5b86d237f54",
+  "session_id": "0668120b-cee8-4d2d-bdc5-69d670db2be8",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-08T05:04:09.516046Z",
+  "branch": "fix/chainlink-connect-boot-hang",
+  "checkpoints_count": 1,
+  "save_step_count": 2,
+  "files_touched": [
+    "src/bolt_v3_live_node/tests/mod.rs",
+    "src/bolt_v3_live_node/tests/startup_boot.rs",
+    "tests/bolt_v3_live_node_startup_boot.rs",
+    "tests/wiring_registration.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "1b15e41d8fb2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 84651,
+    "cache_creation_tokens": 4899084,
+    "cache_read_tokens": 195447773,
+    "output_tokens": 1290809,
+    "api_call_count": 558
+  },
+  "session_metrics": {
+    "turn_count": 55
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-08T05:04:09.054019Z",
+    "agent_lines": 115,
+    "agent_removed": 108,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 115,
+    "total_lines_changed": 223,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 115,
+      "agent_lines_removed": 108
+    }
+  ]
+}

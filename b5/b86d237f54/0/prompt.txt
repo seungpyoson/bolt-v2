@@ -1,0 +1,2263 @@
+Context / why this exists. You're the design-and-review owner of the bolt-v2 CI-DX campaign (epic #1215, child of #1068), working for the user, who is a non-technical infra owner and is the GitHub reviewer account sp-reviewer — their approval is the only thing that merges a PR. The campaign makes CI faster, debuggable, and its hygiene verifier consolidated, without ever weakening a gate. What your review output enables: the user green-lights each PR on your evidence, so your job is to produce reproducible verdicts they can trust, not to merge or implement anything yourself.
+
+How the work splits. You design, review, adjudicate, and write the Codex relay prompts. Codex implements — the user relays your prompts to it; Codex pushes and reports a head SHA. External model panels (GPT, GLM, Kimi) run via SHA-pinned copy-paste packets you generate; the user relays their verdicts back. Treat every external verdict and every Codex report as a draft: reproduce each finding yourself at the exact head before it changes any decision. Metered API is banned except GLM. You never use the sp-reviewer account, never merge, never implement.
+
+Hard constraints (violating any means reverting the session's work): python3.12 for CI parity; Rust runs in CI only; no GitHub close-keywords in commits/PR bodies (squash hoists them); never cancel/rerun/dispatch CI; never gh auth refresh; gh issue close needs explicit per-session OK; never declare "merge-ready" — report state + evidence; the campaign baseline is 9 PRs (cap 10) — flag any drift the moment it happens. The rest of your standing rules and the deep per-PR history live in your memory files — read MEMORY.md first and follow the pointers; project_ci_dx_epic_1215.md, project_pr1232_review.md, project_pr1235_review.md, and feedback_pin_blob_dont_predict_mutations.md are the ones in play right now.
+
+The one lesson that governs these reviews. For any tamper/integrity check: pin the whole enclosing blob (a digest of total content) plus a small closed set of "must contain" assertions — never enumerate the forbidden mutations. Enumerating forbidden edits (AST shapes, redirect operators, variable-naming forms, override styles) is an open surface and never terminates; that antipattern is what dragged #1232 to eight rounds. If you catch yourself adding a check for "the specific way an attacker would do X," stop — pin the region instead.
+
+Live board.
+- #1228 — done, 4/4 external approve, 36/36 green at ce3818544. Parked, awaiting the user's GitHub approval only.
+- #1232 — round 8 relayed to Codex: replace the step-scoped digest + context enumeration with a single sha256 over the entire test-archive job body per lane (ci.yml + backtester-ci.yml), delete the subsumed helpers (net LOC must drop), keep the closed "must contain" set, add two boundary checks (top-level env mustn't set PATH/BASH_ENV; no top-level defaults.run). Design is in PR comment 4885556208. When Codex reports the head, reproduce that the whole-job digest fires on all of: tee -a $GITHUB_PATH prior step, job continue-on-error, defaults.run, a one-line body mutation, PATH in top-level env — both lanes — confirm LOC dropped, then run a final panel that checks the structure, not another leaf.
+- #1235 — round 3 APPROVED at 21a85c931; open item is the final external confirmation panel. The append/reassign presence-pin weakness is filed as a repo-wide class item (digest the role-chain region across ci.yml + backtester + debug-test), not a blocker.
+- After these: engine tranches ×2 (WS2 rule engine) → kernel sweep → coverage-enforcer.
+
+Reproduction recipe (load-bearing — every verdict needs a personally-run anchor): git fetch origin <SHA>; git worktree add --detach <scratchpad>/wt-<pr>-<round> <SHA>; run python3.12 scripts/verify_ci_workflow_hygiene.py for a green control first; then a probe harness that mutates the workflow, runs the verifier, and does git checkout -- . between every probe — verify git status is clean after each, because an inserted step can silently land in the next job and give a false result. Run the harness in the background (a full battery is ~45s; the foreground-sleep guard blocks  is scripts/verify_ci_workflow_hygiene.py (~15.9k lines); the partition-digest call sites are near lines 11843 (root) and 13220 (BVS).
+
+How to work. When you have enough to act, act — don't re-derive what's in memory or re-litigate settled decisions. Reproduce before you assert; if something isn't verified, say so. Delegate independent searches to subagents (sonnet for search, opus for deep review; never Fable for subagents). Stop only for a genuine gate — the user's approval, an irreversible action, or input only they can give — otherwise keep the review loop moving. You have ample context; don't summarize or hand off on account of budget.
+
+---
+
+▎ #1235 — Approved and done reviewing. Unanimous 4/4 at head 21a85c931 (GPT, GLM, Kimi, and the direct review), waiting only on the user's GitHub approval to merge. The review closed the earlier finding that the AWS role binding was unpinned; the one remaining weakness — a presence-pin that a value-override (an extra role_arn write after the pinned line, or a shell reassignment before it) slips past — was proven pre-existing and repo-wide by running the identical mutation against ci.yml's own pin and getting the same green, so it does not block this PR. It is tracked as issue #1236 (harden the role-chain pins by effective value across ci.yml, backtester-ci.yml, and debug-test, ci.yml first) under the epic. One post-merge obligation: debug-test.yml is a brand-new workflow file, so its workflow_dispatch acceptance runs return 404 until the file is on the default branch — once it merges, run the debug lane end-to-end (a deliberately failing test that finishes in a few minutes, concurrent dispatches, and digest-hit reuse) and report the run IDs against #1215.
+
+---
+
+is there a potential failure between 1235 and 1228?
+
+---
+
+no you need to just tell me what to do - you tell me the execution instructions
+
+---
+
+so what do you suggest that we do
+
+---
+
+I DIDN'T UNDERSTAND
+
+---
+
+yes give me the prompt for 1
+
+---
+
+PR 1232: 
+Claude: 
+⏺ Cleanup complete — my two worktrees are removed and the main tree's .github/workflows/ is untouched (the M tests/... entries belong to other concurrent worktrees, not this review). All four mandate points are resolved with personally-reproduced evidence. Here is the review.
+
+  ---
+  Review — PR #1232 @ 69294690c (Round 8, whole-blob pin)
+
+  VERDICT: REQUEST_CHANGES
+
+  Precondition personally verified at head: verify_ci_workflow_hygiene.py → rc 0 ("verifier passed"); test_verify_ci_workflow_hygiene.py → rc 0 ("self-tests passed").
+
+  The whole-blob approach is sound and the three structural properties I was asked to confirm all hold (details below). But mandate #2 — "name any other workflow-level construct that alters execution inside the job and is neither in the digest nor the boundary" — surfaced a real, proven leakage surface on the BVS lane. It is not a textual re-spin of a digested mutation: it lives at top level, which the job-body digest can never cover, and it slips the 2-surface boundary.
+
+  ---
+  F1 — Top-level env code-injection class escapes the tamper guard on the BVS lane (.github/workflows/bac
+
+  What's wrong. The boundary rejects only PATH/BASH_ENV among top-level env keys. BASH_ENV being in that set shows the intended class is "env that injects code into what the job runs," not narrowly PATH resolution — but the same class includes LD_PRELOAD / LD_LIBRARY_PATH (glibc loader injection on the Linux runners this lane uses), which are inherited by the pinned test-archive job's steps. They escape the digest (top-level env is outside the job body) and the boundary (not PATH/BASH_ENV).
+
+  On ci.yml this is incidentally closed by a separate deny-by-default allowlist, top_level_env_reuse_scope_errors (9730/9769) — but that runs only inside verify_workflow, which verify_workflows calls solely for "ci.yml" / *"/ci.yml" (14110). "backtester-ci.yml" ends in -ci.yml, so it takes the else branch and never gets the allowlist; its only top-level-env guard is the {PATH, BASH_ENV} boundary. So the PR's "closed 2-surface boundary applied to both files" is not closed for this class on the lane that lacks the allowlist backstop. This is the PR's own invariant (ci.yml already treats an unclassified top-level env key as a hard failure) not enforced on one of the two lanes it claims to protect equally.
+
+  Failure scenario. A PR adds to backtester-ci.yml top-level env: a line LD_PRELOAD: ${{ github.workspace }}/.ci/pwn.so (or LD_LIBRARY_PATH: …). GitHub Actions inherits it into every test-archive step's process environment; the loader preloads attacker code into cargo/nextest/just/python/aws invocations in the archive lane. The tamper guard stays green — the exact "change what the pinned job executes without re-pinning" outcome the guard exists to prevent.
+
+  cd /tmp/pr1232-f1
+  python3 - <<'PY'
+  import pathlib
+  p=pathlib.Path(".github/workflows/backtester-ci.yml"); s=p.read_text()
+  a='env:\n  JUST_VERSION: "1.49.0"\n'
+  p.write_text(s.replace(a,'env:\n  LD_PRELOAD: ${{ github.workspace }}/.ci/pwn.so\n  JUST_VERSION: "1.49.0"\n',1))
+  PY
+  python3.12 scripts/verify_ci_workflow_hygiene.py; echo "BVS rc=$?"   # -> rc=0  GREEN (tamper undetected)
+  git checkout -- .github/workflows/
+  # contrast: identical edit on ci.yml is rejected (by the allowlist, not the boundary)
+  python3 - <<'PY'
+  import pathlib
+  p=pathlib.Path(".github/workflows/ci.yml"); s=p.read_text()
+  a='env:\n  JUST_VERSION: "1.49.0"\n'
+  p.write_text(s.replace(a,'env:\n  LD_PRELOAD: ${{ github.workspace }}/.ci/pwn.so\n  JUST_VERSION: "1.49.0"\n',1))
+  PY
+  python3.12 scripts/verify_ci_workflow_hygiene.py; echo "ROOT rc=$?"  # -> rc=1  RED
+  cd - && git worktree remove --force /tmp/pr1232-f1
+  My run captured verbatim: BVS rc=0 ("verifier passed"); ROOT rc=1 (top-level env.LD_PRELOAD must be classified as reuse-scoped or build-neutral). Controls confirm the boundary is live on the BVS lane (top-level PATH and BASH_ENV each → RED).
+
+  Fix direction (class, not leaf). Do not add LD_PRELOAD/LD_LIBRARY_PATH/DYLD_*/… to the boundary blocklist — that reopens the enumerate-forbidden-edits surface this PR spent seven rounds closing. Close the surface instead: give the BVS lane the same deny-by-default closed allowlist on top-level env keys that ci.yml already has (unclassified key ⇒ fail), so any code-injection env var fails on both lanes without naming any of them. That is the same "closed set" mechanism as the rest of round 8.
+
+  ---
+  Confirmations (the structure I was asked to verify — all hold)
+
+  ① Digest covers the entire job body, both lanes — CONFIRMED. parse_jobs (1219) accumulates every strip_comment-ed line under test-archive: up to the next 2-space job key or top-level key; job_body_sha256 (12590) hashes the join. Proven: captured body == independently-computed span exactly — ci.yml 548/548 lines (raw 809→1357), backtester 451/451 (raw 352→803); both include job-level env: and steps:; mutating the first line, the last line, or appending a trailing line each flips the digest. strip_comment (1157) is quote- and word-boundary-aware, so only genuine (non-executing) comments are excluded — out of scope per the mandate. Neither file uses YAML anchors/aliases (0/0), so no out-of-body anchor can mutate in-job execution behind a constant textual digest. Job-level env/defaults/continue-on-error are inside the digest (probes fire).
+
+  ② Boundary completeness — the finding (F1). Enumerating all workflow-level keys (name/run-name/on/permissions/env/defaults/concurrency/jobs), defaults.run is covered, jobs is digested, permissions is a separate axis, the rest are inert — leaving env as the sole uncovered surface. Single finding, MECE.
+
+  ③ Fail-closed on job rename, both lanes — CONFIRMED. partition_job_body_digest_errors (12594) returns the "target job not found" error when jobs.get("test-archive") is None. Renaming test-archive: → RED on both: ROOT_TEST_ARCHIVE_JOB_SHA256 … target job not found and backtester bvs-test archive: job body digest pin target job not found.
+
+④ Self-tests non-vacuous — CONFIRMED (gold-standard differential). Neutering the digest-change branch (return []) and rerunning the suite fails at the first digest assertion — assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_rc_condition_probe) → AssertionError: … got: ['test-archive must aggregate partition failures']. The probes depend specifically on the digest (the mutation still trips a semantic check, but not the SHA), so they are not vacuous. The unmodified suite passes (rc 0).
+
+Net: whole-blob pin, fail-closed anchoring, and the differential tests are solid. The one blocker is that the boundary's completeness claim doesn't hold for the top-level-env code-injection class on backtester-ci.yml — close that surface with a deny-by-default top-level-env allowlist on the BVS lane and this terminates.
+GLM: Verdict: APPROVE at 69294690c
+Mandate verification
+1. Digest covers the entire job body — CONFIRMED.
+parse_jobs (verify_ci_workflow_hygiene.py:1219) captures every line of each job header→next-job with a 1:1 line correspondence: ROOT test-archive = 548/548 raw lines, BVS = 451/451, 0 content mismatches. A tail-of-job mutation (new entry in the job-level outputs: block, which sits after steps:) fires the digest on both lanes — proving the tail, not just the head/steps, is hashed. The normalization (strip_comment, verify_ci_workflow_hygiene.py:1157) is quote-aware and rstrips; it only removes inert content (YAML comments, trailing whitespace), and ${var#x}/quoted-# survive, so no execution-affecting byte eludes the hash.
+2. Boundary set complete (command-resolution axis) — CONFIRMED.
+{PATH, BASH_ENV, defaults.run} is the closed shell-execution injection surface: binary-name resolution (PATH), shell prelude (BASH_ENV), shell+working-dir (defaults.run). No other top-level workflow key injects command-resolution changes (job-level env/defaults/runs-on/if are all inside the digest; permissions/on/concurrency don't reach step execution). Both boundary checks fire on both lanes for PATH, BASH_ENV, and defaults.run.
+3. Missing-anchor fail-closed — CONFIRMED.
+Renaming test-archive: → test-archive-renamed: makes jobs.get("test-archive") return None, and partition_job_body_digest_errors (:12594) returns "job body digest pin target job not found" on both lanes (no vacuous pass).
+4. Differential self-tests non-vacuous — CONFIRMED.
+The probes assert the digest-specific marker strings (ROOT_TEST_ARCHIVE_JOB_SHA256 / BVS_TEST_ARCHIVE_JOB_SHA256), produced only by the digest function. Neutralizing partition_job_body_digest_errors removes those markers entirely (verified by monkeypatch) → every digest assertion would fail if the check were deleted.
+Advisory (out of scope, not blocking)
+Top-level env.JUST_VERSION (and RUST_VERIFICATION_ROOT_BASE) live outside the blob, are interpolated by the blob (just-version: ${{ env.JUST_VERSION }}), and a mutation leaves the verifier green. This is tool-version value-substitution, not command resolution — the just name still resolves to just; only its version changes. Treating it as a boundary finding would re-open the non-terminating enumeration ("every interpolated top-level env var") that round 8 was designed to close, and it's a different trust axis (install-action SHA pinning + version-bump review). Flagged only for transparency on the boundary's scope: its closure is axis-scoped to shell-execution injection, which is the stated purpose of the guard and the class of every prior blocker (R2–R7).
+The trust region is pinned and the boundary is closed for its declared axis.
+GPT: • REQUEST_CHANGES at 69294690c.
+
+  Finding
+  /private/tmp/bolt-v2-pr1232/.github/workflows/backtester-
+  ci.yml:105, via /private/tmp/bolt-v2-pr1232/scripts/
+  verify_ci_workflow_hygiene.py:12646: the boundary check
+  misses valid flow-style top-level env.
+
+  Concrete scenario: replace the block-style top-level env: in
+  backtester-ci.yml with a flow map that prepends
+  ${{ github.workspace }}/.ci-shims to PATH. That changes
+  command resolution for later run: steps after checkout, is
+  valid according to actionlint, and leaves the hygiene
+  verifier green.
+
+  Repro at pinned head:
+
+  python3.12 - <<'PY'
+  import pathlib, subprocess, sys
+  sys.path.insert(0, "scripts")
+  import verify_ci_workflow_hygiene as v
+
+  text = pathlib.Path(".github/workflows/backtester-
+  ci.yml").read_text()
+  lines = text.splitlines()
+  start = lines.index("env:")
+  end = lines.index("permissions:")
+  new_env = 'env: {PATH: "${{ github.workspace }}/.ci-shims:/
+  usr/local/bin:/usr/bin:/bin", JUST_VERSION: "1.49.0",
+  CARGO_TERM_COLOR: always, RUST_VERIFICATION_ROOT_BASE:
+  "${{ github.workspace }}/.rust-verification"}'
+  mutated = "\n".join(lines[:start] + [new_env] + lines[end:])
+  + "\n"
+
+  errors = v.verify_repo_automation_texts({".github/workflows/
+  backtester-ci.yml": mutated})
+  print("hygiene_errors:", errors)
+
+  lint = subprocess.run(
+      ["actionlint", "-stdin-filename", ".github/workflows/
+      backtester-ci.yml", "-"],
+      input=mutated,
+      text=True,
+      capture_output=True,
+  )
+  print("actionlint_rc:", lint.returncode)
+  print(lint.stdout + lint.stderr)
+  PY
+
+  Observed locally: hygiene_errors: [] and actionlint_rc: 0.
+
+  Confirmed
+  The whole-job digests do cover the parsed test-archive
+  bodies: root ci.yml body lines 809 through before cache-
+  persistence-audit, BVS body lines 352 through before
+  issue_789, and both SHA values match the pinned constants.
+
+  Missing-anchor is fail-closed on both lanes. Root reports
+  missing required job plus ROOT_TEST_ARCHIVE_JOB_SHA256
+  target-not-found; BVS reports BVS_TEST_ARCHIVE_JOB_SHA256
+  target-not-found plus missing archive producer.
+
+  Ran:
+  python3.12 scripts/verify_ci_workflow_hygiene.py
+  python3.12 scripts/test_verify_ci_workflow_hygiene.py
+
+  Both exited 0.
+
+---
+
+so we should not be having too many rounds of churn - I'm being very concerned now
+
+---
+
+• Pushed PR #1232 round-9 fix.
+
+  Head SHA: 4e855f324d6c1dcf2e8922ca82e1a750b22afcba
+
+  Net LOC delta on the two scripts: +20 (53 insertions, 33
+  deletions).
+
+  Verification passed:
+
+  - python3.12 scripts/verify_ci_workflow_hygiene.py
+  - python3.12 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile scripts/verify_ci_workflow_hygiene.py
+    scripts/test_verify_ci_workflow_hygiene.py
+
+  - git diff --check
+
+  Branch is clean against origin/codex/1213-ci-debuggability.
+
+---
+
+<task-notification>
+<task-id>bj00o1j3o</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/0668120b-cee8-4d2d-bdc5-69d670db2be8/tasks/bj00o1j3o.output</output-file>
+<status>completed</status>
+<summary>Background command "Run verifier self-test suite at r9 head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+don't we need to get external reviews?
+
+---
+
+so what are we missing out on CI? 
+
+
+  The disk-full symptom is relieved. We deleted only rebuildable Cargo target/ directories, not source/worktree roots. Free
+  disk went from ~112 MiB to ~114 GiB. Repo preflight now passes.
+
+  The root issue is not “too many worktrees” alone. It is unmanaged Cargo output being written into repo-local/worktree-local
+  target/ directories despite prior disk-pressure work.
+
+  Key evidence:
+
+  Before cleanup:
+  119.6 GiB total in Cargo target dirs
+
+  Largest targets:
+  15G  /Users/spson/Projects/Claude/bolt-v2/target
+  11G  /Users/spson/Projects/Claude/bolt-v2/.worktrees/ci-config-profile-validation/target
+  13G  /Users/spson/Projects/Claude/bolt-v2-wt-s3-smoke/target
+  36G  /Users/spson/Projects/Claude/bolt-v2-wt-s3-smoke/crates/backtesting-vertical-slice/target
+  24G  /Users/spson/Projects/Claude/bolt-v2-wt-fixture-mutation/crates/backtesting-vertical-slice/target
+  20G  /Users/spson/Projects/Claude/bolt-v2-wt-money-rpl1/target
+
+  After cleanup:
+
+  /Users/spson/Projects/Claude/bolt-v2                         7.4G
+  /Users/spson/Projects/Claude/bolt-v2/.worktrees               3.2G
+  /Users/spson/Projects/Claude/bolt-v2-wt-s3-smoke              152M
+  /Users/spson/Projects/Claude/bolt-v2-wt-fixture-mutation      150M
+  /Users/spson/Projects/Claude/bolt-v2-wt-money-rpl1            153M
+
+  Relevant governance/spec context:
+
+  - specs/014-disk-pressure-governance/spec.md
+  - specs/014-disk-pressure-governance/contracts/disk-pressure-governance.md
+  - specs/024-developer-tool-storage-hygiene/
+  - docs/ops/developer-tool-storage-hygiene.md
+  - ci/developer-tool-storage-hygiene.toml
+
+  Important distinction:
+
+  - #375 developer-tool hygiene handles Codex sessions/logs/toolchains. It currently still reports ~3.7 GiB expired Codex
+    session cleanup candidates, but that was not the main disk-full cause.
+
+  - The current failure matches #374-style target-routing drift: raw Cargo / wrapper / agent / nested crate / worktree cwd
+    bypass creating local target/.
+
+  Likely investigation targets:
+
+  1. Identify which command path created those local targets.
+  2. Check whether crates/backtesting-vertical-slice is a separate Cargo workspace/package path that bypasses root target
+     routing.
+
+  3. Audit recent shell history / agent commands / no-mistakes / probe scripts for raw cargo, cargo test, cargo nextest, or
+     rust_verification.py cargo runs without shared CARGO_TARGET_DIR.
+
+  4. Verify whether the cargo shim is installed/active in shells used by agents.
+  5. Add guard or source-fence coverage so worktree-local target/ cannot silently reappear.
+
+  Current repo dirty state was pre-existing and unrelated to cleanup:
+
+  UU .githooks/post-rewrite
+   M tests/bolt_v3_decision_evidence.rs
+   M tests/bolt_v3_loss_protection.rs
+   M tests/bolt_v3_polymarket_venue_truth.rs
+  ?? .review/
+
+  No files were edited for this cleanup; only Cargo build artifact directories were removed.
+
+---
+
+yes use opus or sonnet for this. not sure why we are keep having this issue - I had another session look into this earlier (this is partial transcript from a few days ago) - For the merged #928/#684 work: no blocking follow-ups. The only worthwhile backlog items are optional
+polish:
+
+- #377: schedule the cache sweep cadence.
+- Extract shared process-visibility helpers between rust_verification.py and clean_merged_artifacts.py.
+- Add extra Lane T edge tests for not-a-directory, scan-incomplete, audit-write, and main/invoke-root
+skip.
+- Minor Cargo config polish: refuse top-level target-dir, clean temp file on mid-write failure.
+
+For the live worktrees: don’t remove all of them.
+
+- Safe to remove: /private/tmp/bolt-v2-1179-lane1-venue-rejects
+Clean, branch codex/1179-lane1-venue-rejects is merged into main.
+- Keep: /Users/spson/Projects/Claude/bolt-v2-wt-money
+Dirty with many modified files on fix/1179-money-loop.
+- Keep: /Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1165-env-entry-parser
+Detached and dirty with 3 modified files.
+
+I’d only remove the clean merged 1179-lane1-venue-rejects worktree and leave the other two alone.
+
+---
+
+from PR 1232: 
+
+Claude: The control suite finished — let me confirm the marker directly.
+
+  Ran 1 shell command
+
+Confirmed — the caveat is now closed:
+
+R9_CONTROL_RC=0 — "CI workflow hygiene verifier self-tests passed." Both the verifier (rc 0) and the full self-test suite (rc 0) exit 0 at head, personally verified. Worktrees cleaned up; your main tree is untouched.
+
+Verdict stands: APPROVE at 4e855f324. Nothing outstanding.
+
+Final evidence ledger (all run by me at the pinned head):
+- Verifier → rc 0; self-tests → rc 0.
+- Probe battery/LD_LIBRARY_PATH
+RED on both lanydeny-by-default, flow-style env fails closed both lanes, defaults.run + job-rename fail-closed both lanes.
+- Neuter of cla→ suite fails
+(got: []) — new
+- Termination care the onlyout-of-body execution-injection surfaces, both covered by the shared deny-by-default boundary; anchors/aliases closed by the digest; permissions is a separate authz axis. The desiterminates becas the allowedset, not the in
+GPT: 
+• REQUEST_CHANGES at 4e855f324.
+
+  Finding
+  /private/tmp/bolt-v2-pr1232-r9/scripts/
+  verify_ci_workflow_hygiene.py:12613: defaults.run detection
+  misses quoted keys in a flow map.
+
+  Concrete scenario: add top-level defaults: {"run": {shell:
+  bash}} before permissions: in either workflow. This is
+  outside the digested job body, is valid actionlint, changes
+  default execution semantics for run: steps without explicit
+  shell, and the verifier stays green.
+
+  Repro:
+
+  python3.12 - <<'PY'
+  import pathlib, subprocess, sys
+  sys.path.insert(0, "scripts")
+  import verify_ci_workflow_hygiene as v
+
+  for path, verify in (
+      (".github/workflows/ci.yml", lambda t:
+      v.verify_workflow(t)),
+      (".github/workflows/backtester-ci.yml", lambda t:
+      v.verify_repo_automation_texts({".github/workflows/
+      backtester-ci.yml": t})),
+  ):
+      text = pathlib.Path(path).read_text()
+      mutated = text.replace("permissions:\n", 'defaults:
+      {"run": {shell: bash}}\npermissions:\n', 1)
+      print(path, "verifier_errors:", verify(mutated))
+      lint = subprocess.run(["actionlint", "-stdin-filename",
+      path, "-"], input=mutated, text=True)
+      print(path, "actionlint_rc:", lint.returncode)
+  PY
+
+  Observed: verifier errors are [] for both files;
+  actionlint_rc is 0.
+
+  Confirmed
+  The whole-job digest range covers each parsed test-archive
+  body through the next job, and both hashes match. Missing job
+  anchors fail closed on both lanes. The new env boundary is
+  shared and non-vacuous: block PATH and flow-style env fail
+  for both workflows, and those errors disappear if
+  classified_top_level_env_errors is stubbed out.
+
+  I ran python3.12 scripts/verify_ci_workflow_hygiene.py
+  successfully. The full self-test run could not complete
+  locally because this machine is out of disk/temp space, but
+  the focused boundary probes above ran at the pinned head.
+GLM: Verdict: APPROVE at 4e855f324
+Termination claim — CONFIRMED correct
+Round 9 replaces the non-terminating {PATH, BASH_ENV} blocklist with deny-by-default on keys (classified_top_level_env_errors, verify_ci_workflow_hygiene.py:9730): every top-level env key must be in REUSE_RELEVANT_WORKFLOW_ENV_KEYS or REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS, else fail closed. The scoped-value format check rejects a finite, stable sigil set (|>&*! — YAML's complete scalar/anchor/tag indicators), not an open enumeration. There is no residual open surface. Adding a new env key requires one classification edit; nothing to keep extending. The claim holds.
+Mandate verification
+1. Digest covers entire job body — CONFIRMED. Unchanged from round 8; parse_jobs captures 548/548 (ROOT) and 451/451 (BVS) lines 1:1.
+2. Boundary closed deny-by-default, one shared path — CONFIRMED. partition_workflow_boundary_errors (:12633) calls classified_top_level_env_errors for both lanes (ci.yml :11344, backtester-ci.yml :13066) — no dual-path drift. Old blocklist + top_level_env_reuse_scope_errors fully removed. Verified fail-closed for: unclassified key, <<: merge-key injection, flow-style map, scoped-key alias/tag/block-scalar; plus defaults.run forbidden outright.
+3. Missing-anchor fail-closed — CONFIRMED. Job rename → "job body digest pin target job not found" on both lanes.
+4. Differential tests non-vacuous — CONFIRMED. They assert the classifier-only marker "must be classified as reuse-scoped or build-neutral". The LD_PRELOAD and EVIL_INJECT probes (test:14179,14191) are keys the round-8 blocklist would have missed — proving deny-default terminates where blocklist didn't.
+Round-8 advisory (JUST_VERSION) — CLOSED
+JUST_VERSION and RUST_VERIFICATION_ROOT_BASE are now reuse-scoped, so their values feed the nextest fingerprint → a value change forces a governed rebuild rather than silently changing execution. The round-8 value-substitution gap is resolved at the key level.
+Advisory (out of scope, non-blocking)
+A neutral key (CARGO_TERM_COLOR/S3_DEPLOY_PATH) with an alias value passes green, but neutral keys are declared inert — they don't feed the fingerprint and don't affect command resolution. Not a trust violation; flagging only for transparency on the boundary's scope.
+Both exit 0 at head; CI green. Trust region is pinned and the boundary is closed as a terminating structure.
+
+---
+
+<task-notification>
+<task-id>a20f93063d002ca8e</task-id>
+<tool-use-id>toolu_01EPmkGXpYtQ31AP2AxKf5Yf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/0668120b-cee8-4d2d-bdc5-69d670db2be8/tasks/a20f93063d002ca8e.output</output-file>
+<status>completed</status>
+<summary>Agent "Trace cargo-shim PATH activation" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Direct Answer
+
+**Best-effort/manual, not guaranteed.** The cargo shim is a machine-level, one-time, manually-run installer that patches `~/.zshenv` (a *per-user-account* file, not a repo artifact). It works in a fresh shell only if that shell is `zsh` and sources `.zshenv` (true for non-login/non-interactive zsh too, since `.zshenv` is unconditionally sourced by zsh). Nothing in the repo — no Claude Code hook, no Codex config, no git hook, no CI step — installs or re-verifies it. The project's own governance docs and a closed issue explicitly call this "defense-in-depth for accidental" bypass, not a hard guarantee, and explicitly declined to add per-agent harness hooks. **There is no fail-closed backstop that detects a live bypass.**
+
+One correction to the framing in the task: the shim does **not** "route build output to a managed shared target dir." Reading the code shows it's a **refusal** mechanism — it blocks local invocation of compile-heavy `cargo` subcommands (`build`, `test`, `check`, `clippy`, `nextest`, `run`, `rustc`, etc.) outright for agent sessions unless a break-glass env var is set, forcing verification onto remote CI instead. A separate wrapper (`scripts/rust_verification.py`) is what actually sets `CARGO_TARGET_DIR` to the shared cache, for the small set of commands that *are* allowed to run locally (e.g. `cargo fmt`).
+
+## Findings (each anchored to a file I read)
+
+1. **[CONFIRMED]** `scripts/install-cargo-shim:99-153` (`install_shim`, `update_zshenv`) copies the shim to `~/.local/bin/bolt-cargo-shim/cargo` (overridable via `BOLT_CARGO_SHIM_DIR`) and writes a `# BEGIN bolt cargo guard` block into **`~/.zshenv` only** (`zshenv_path`, lines 26-35) that prepends the shim dir to `$PATH`. No other shell profile (`.bashrc`, `.bash_profile`, `.profile`, `/etc/zshenv`) is touched.
+
+2. **[CONFIRMED]** `scripts/install-cargo-shim` has no CLI flags/argparse — `main()` (lines 197-231) unconditionally installs. It must be run manually (`python3 scripts/install-cargo-shim`); nothing invokes it automatically.
+
+3. **[CONFIRMED]** `scripts/cargo-shim:176-297` (`main`) is a policy-refusal wrapper: it loads `ci/rust-verification.toml [local_compile_policy]` and, if the invoked subcommand is in `refused_cargo_subcommands` and no break-glass/CI env is set, prints a refusal and exits 101; otherwise it `execv`s the real cargo (`exec_real_cargo`, lines 245-257). It does not redirect `CARGO_TARGET_DIR`.
+
+4. **[CONFIRMED]** `ci/rust-verification.toml:19-25` `[local_compile_policy]`: `refused_cargo_subcommands` covers essentially all compile-heavy subcommands; `break_glass_env = "BOLT_ALLOW_LOCAL_RUST"`; `allowed_ci_env = "GITHUB_ACTIONS"` (CI is exempt, by design, not a bypass).
+
+5. **[CONFIRMED]** No Claude Code hook installs/verifies the shim. `.claude/settings.json` hooks are only `entire` (session logging) and `bd prime` (SessionStart) — no reference to `cargo-shim`, PATH, or Rust anywhere in that file.
+
+6. **[CONFIRMED]** `AGENTS.md:49` — the repo's own governance doc states verbatim: *"Known bypasses: absolute-path cargo, `rustup run ... cargo`, cross-repo cargo, old daemons, non-shim PATHs, **startup-skipping shells**, direct `rustc`."* This is the maintainers' own admission that shells which don't source `.zshenv` bypass the guard.
+
+7. **[CONFIRMED]** `REASONIX.md:57,59` reiterates the shim is a "guarded" accidental-use layer and separately lists *"daemon-managed PATHs without the shim directory, and toolchain-manager bypasses remain outside the accidental-use guard."*
+
+8. **[CONFIRMED]** `specs/014-disk-pressure-governance/374-cargo-invocation-enumeration.md:23,55,61,99` — historical evidence: *"Gemini-shell created an 8.8 GiB worktree `target/` in about 30 minutes"* because *"Bash-shell agent launchers bypass zsh-only cargo wrapping."* Line 55/61 explicitly lists "Codex shell tool" and "Claude `bash -c`" as launcher classes that "remain in #374 scope" / still need proof of coverage — this doc (dated 2026-05-20) never closes that question for bash-based agent shells.
+
+9. **[CONFIRMED via `gh`]** `.githooks/post-checkout` and `.githooks/post-merge` (read in full) do **not** call `install-cargo-shim` — they only run `clean_merged_artifacts.py` and a foreign-Cargo-workspace warning. No git hook re-asserts shim installation on new worktrees/clones.
+
+10. **[CONFIRMED via `gh issue/pr view`]** Issue **#656** ("vendor cargo compile guard from claude-system-config", merged as PR #657, 2026-06-13) body states explicitly: *"Non-goals: ... **Per-agent harness hooks and a multi-tool shim framework are explicitly NOT planned** (evidence-gated; revisit only if the doctor ever shows real coverage gaps)."* and *"Machine-installed artifacts (`~/.local/bin/bolt-cargo-shim/`, `~/.zshenv` block) are untouched ... post-merge reinstall/doctor verification is tracked in #671."*
+
+11. **[CONFIRMED via `gh issue view 671`]** Issue **#671** ("Make cargo-shim installer shell-neutral and self-verifying") was the follow-up meant to add a POSIX-neutral env snippet and a `--check` doctor mode with nonzero exit on stale/missing install. It was **closed 2026-06-18 without implementation**, with the closing comment: *"Closing — consolidated into epic #123 ... Nothing dropped — re-open or pick it up from the epic."* As of today (2026-07-05), `gh pr list --search "cargo shim"` shows no follow-up PR since #657/#649 — the doctor mode does not exist.
+
+12. **[CONFIRMED]** Merged PR **#649** body ("Residual Gaps" section) lists, verbatim: *"Processes that never load shell startup files. Already-running daemons with old environments. Non-no-mistakes daemon managers whose PATH does not include the shim directory."*
+
+13. **[CONFIRMED]** Issue **#645** ("Enforce remote-first Rust verification at agent command layer") body states: *"Implement enforcement outside the repo, likely in the agent command/hook layer, because repo code cannot intercept arbitrary raw shell `cargo ...`."* — i.e. the project itself acknowledges the repo cannot force this; it depends on external, unenforced agent-layer cooperation.
+
+14. **[CONFIRMED]** `scripts/test_cargo_shim.py` (45 test functions, names grepped) tests the shim's refusal logic and installer idempotency against sandboxed `tmp_path`/mocked `$HOME` — **no test exercises a live PATH-activation check**. `justfile:350-351` (`cargo-shim-tests` recipe) just runs this pytest suite; `.github/workflows/ci.yml:660-666` runs it in CI. This is a component unit-test, not a runtime bypass detector.
+
+15. **[CONFIRMED]** `docs/ops/developer-tool-storage-hygiene.md:5` — the disk-hygiene policy (#375) explicitly excludes cargo: *"It does not change ... cargo registry/git cache policy ..."* This doc/spec is unrelated to the cargo-shim PATH-guarantee question; it only covers Codex/Factory logs and rustup toolchains. `ci/developer-tool-storage-hygiene.toml` has no cargo/target entries at all (full file read).
+
+16. **[CONFIRMED — empirical, this exact session]** In this Bash tool's own shell: `$0` = `/bin/zsh`; `which -a cargo` resolves first to `/Users/spson/.local/bin/bolt-cargo-shim/cargo`; `~/.zshenv` contains the `# BEGIN bolt cargo guard` block. So on **this specific operator's machine**, for **Claude Code's Bash tool specifically**, the shim is currently active — but this is a property of this machine having had the installer run manually at some point, not something the repo or Claude Code guarantees. No equivalent verification was possible for Codex's exec sandbox from this repo alone (`~/.codex/config.toml` shows `sandbox_mode = "workspace-write"`, no shell directive found); the enumeration doc (#8/#374) explicitly still treats "Codex shell tool" as an unproven launcher class.
+
+## Exact activation path required
+
+For the shim to intercept a given agent command, **all** of the following must hold:
+1. `scripts/install-cargo-shim` was run at least once on that machine/user account (manual, not automated anywhere).
+2. That write went to the `.zshenv` resolved at install time (respecting `$ZDOTDIR` if set then — a later `ZDOTDIR` change would silently orphan the guard).
+3. The agent's command-execution shell is `zsh` (any invocation mode — login, non-login, interactive, non-interactive — since `.zshenv` is sourced unconditionally by zsh, unless invoked with `-f`/no-rcs).
+4. The shell isn't a daemon/service process descended from something other than a shell that sourced `.zshenv` (e.g., a LaunchAgent/systemd-style daemon needs separate PATH patching — only the "no-mistakes" LaunchAgent glob gets that patch in `install-cargo-shim`, per `no_mistakes_launch_agents`/`update_no_mistakes_launch_agents`, `scripts/install-cargo-shim:159-194`).
+5. `cargo` is invoked bare (not via absolute path, `rustup run ... cargo`, `cargo +toolchain` past the parser's coverage, or `--manifest-path`/`-C` into another repo) — all documented residuals.
+
+## Fail-closed backstop for bypass
+
+**No.** Confirmed absence via: no git hook (`post-checkout`/`post-merge` read in full) checks `which cargo`; no CI job runs against a live agent shell to assert shim presence (`cargo-shim-tests` is a sandboxed unit-test of the shim's own code); the one issue designed to add this (`#671`, a `--check` doctor mode with nonzero exit on stale/missing install) was closed unimplemented and re-parked in epic `#123` on 2026-06-18, with no follow-up PR as of 2026-07-05. The project's stance, stated twice in closed-issue text (`#656`, `#671`), is that per-agent enforcement hooks are an explicit **non-goal** "unless the doctor ever shows real coverage gaps" — and the doctor was never built.</result>
+<usage><subagent_tokens>143321</subagent_tokens><tool_uses>51</tool_uses><duration_ms>442297</duration_ms></usage>
+</task-notification>
+
+---
+
+this is pretty crtical what can we do about this - • The queue is stuck because the Mergify proof PR changed AGENTS.md, which triggers the “self-authorizing governance edits”
+  detector.
+
+  That detector then scans added lines across the whole queue diff. In this wave, the queue diff includes large JSON
+  artifacts from #1222. The detector uses difflib.SequenceMatcher(..., autojunk=False), and I reproduced it locally hanging
+  in that exact call on a large source-universe-execution-pack.json diff.
+
+  Current effect:
+
+  - detector job is stuck in Block self-authorizing governance edits
+  - gate cannot complete because detector is a prerequisite
+  - coverage-enforcer is waiting for required checks, so it is also stuck
+  - Mergify is waiting on gate / coverage-enforcer and won’t merge the wave
+
+  So this is not normal “CI is slow.” It is a pathological verifier hang caused by combining the AGENTS.md governance edit
+  with the large #1222 diff in the same queue wave.
+
+───────────────────────────────────────────────────
+
+---
+
+so what do you mean? are you suggesting to fix this in pr 1232? Merge queue stuck — pathological verifier hang, not slow CI.
+
+The Mergify proof PR edits AGENTS.md, which trips the "self-authorizing governance edits" detector. That detector scans added lines across the whole queue-wave diff with difflib.SequenceMatcher(autojunk=False) — and this wave also carries #1222's large generated JSON (source-universe-execution-pack.json). SequenceMatcher on that huge diff hangs, so: detector never finishes → gate can't complete → coverage-enforcer waits → Mergify won't merge.
+
+Immediate unblock (reversible, do this first): dequeue #1222 from the current wave. That removes the large JSON from the diff the detector scans, so the detector completes and the rest of the wave merges. Re-queue #1222 on its own after the detector fix lands. (Do not cancel/rerun the whole queue — just take #1222 out of this wave.)
+
+Root fix (so it can't recur): the governance detector is scanning the wrong scope. A generated data artifact is not a self-authorizing governance edit, so the detector must not run similarity matching over it. Fix the class, not the instance:
+1. Scope the detector to governance-relevant paths only (AGENTS.md, rules/, gate/manifest files) and exclude generated/data artifacts (the #1222 JSON packs, catalogs).
+2. Add a hard size bound so no single file/diff can hang SequenceMatcher — skip the similarity check above a threshold (safe: excluded paths aren't governance surfaces).
+Confirm both against the actual detector code before shipping.
+
+---
+
+so should we cancel the merge queue?
+
+---
+
+yes
+
+---
+
+I dequeued 1222 already - so what's the systematic fix? what's the root cause? can you explain in plain english - make it concise
+
+---
+
+IS IT REALLY THE ROOT CAUSE OR NOT
+
+---
+
+and seems like the algo may be o(n) or more inefficient - why can't we do a very quick search
+
+---
+
+so what should we do? answer very cocnisely
+
+---
+
+so we only do 1 fix?
+
+---
+
+The other thing (giant JSON fixtures churning in PRs) is a separate problem that #1222 itself already addresses — you don't need it to stop the hang. So: one fix to unhang the detector; the fixture cleanup is #1222's own job. -> so 1222 already addresese to the root
+
+---
+
+yes
+
+---
+
+yes, but give me first what to do for the detector hang root, and what we should do for pr 1232 where I already relayed the update to you
+
+---
+
+Pushed PR #1232 round-9 fix.
+
+  Head SHA: 4e855f324d6c1dcf2e8922ca82e1a750b22afcba
+
+  Net LOC delta on the two scripts: +20 (53 insertions, 33
+  deletions).
+
+  Verification passed:
+
+  - python3.12 scripts/verify_ci_workflow_hygiene.py
+  - python3.12 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile scripts/verify_ci_workflow_hygiene.py
+    scripts/test_verify_ci_workflow_hygiene.py
+
+  - git diff --check
+
+  Branch is clean against origin/codex/1213-ci-debuggability.
+
+---
+
+is the execution prompt for the detector hang the best one you can come up with?
+
+---
+
+so what should we be doing it with pr 1232 and what was your analysis on the other issue you said you will investigate
+
+---
+
+give me the prompt - what do we need to do for 1232?
+
+---
+
+then investigate the next item
+
+---
+
+• Pushed the PR #1232 defaults-boundary follow-up.
+
+  Head SHA: 0906f1521144e7095f25e6bd8606fdf6ca6ce5d2
+
+  Net LOC delta: -15 (40 insertions, 55 deletions).
+
+  Verification passed:
+
+  - python3.12 scripts/verify_ci_workflow_hygiene.py
+  - python3.12 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile scripts/verify_ci_workflow_hygiene.py
+    scripts/test_verify_ci_workflow_hygiene.py
+
+  - git diff --check
+
+  Branch is clean against origin/codex/1213-ci-debuggability.
+
+---
+
+so tell me what to say to the detector hang session
+
+---
+
+and what do we do for 1232
+
+---
+
+• Opened draft PR #1241:
+
+  https://github.com/seungpyoson/bolt-v2/pull/1241
+
+  Branch pushed: fix/self-authorizing-diff-scope
+  Head SHA: 9ec8f677f8b3882e3add065091282b1d999713d8
+  Base: main
+  Reviewer requested: sp-reviewer
+
+  The PR body references #1222 as incident context without a
+  close-keyword. Local worktree is clean and tracking origin/
+  fix/self-authorizing-diff-scope. - WE NEED TO RESOLVE THE PR comments
+
+---
+
+PR 1232:
+Claude: 
+Non-vacuity confirmed (neuter → suite fails). Control self-test suite is still completing (silent until done); the verifier itself is already confirmed green via the clean-tree control (rc 0) in my battery. Here's the verdict.
+
+---
+Round-9-r2 — PR #1232 @ 0906f1521
+
+VERDICT: APPROVE.
+
+The remaining shape-detector is gone and the whole boundary is now closed at the key lewith got: [].
+
+Termination — no third surface. Enumerating every top-level workflow key: env and defaults are the only two GitHub injects into a job's execution from outside its body — both now deny-by-default and syntax-robust at the key level. permissions is an authz axis (changes what the token may access, not what code runs) — correctly out of scope. Anchors/aliases are closed by the digest (in-job alias use flips the hash; 0 present in either file). name/run-name/on/concurrency are inert; jobs is digested. The design terminates because both boundary surfaces now key on the target (the defaults key; the closed allowlist of env keys), not on the mechanism or syntax — the same principle that made the digest terminate.
+
+One honest caveat: the full self-test control suite is still finishing in the background; the verifier is already green (rc 0) and the neuter run proves the harness executes correctly. I'll confirm its exit-0 the moment it lands — it doesn't gate the verdict. Approve at 0906f1521.
+GPT:  REQUEST_CHANGES at 0906f1521.
+
+  Finding
+  .worktrees/codex-1213-ci-debuggability/scripts/
+  verify_ci_workflow_hygiene.py:12599:
+  top_level_defaults_errors misses YAML explicit-key/tagged
+  forms on the backtester-ci.yml path. This leaves top-level
+  defaults outside the job digest while changing execution
+  context.
+
+  Repro:
+
+  python3.12 - <<'PY'
+  import pathlib, subprocess, sys
+  sys.path.insert(0, "scripts")
+  import verify_ci_workflow_hygiene as v
+
+  text = pathlib.Path(".github/workflows/backtester-
+  ci.yml").read_text()
+  mutated = text.replace(
+      "permissions:\n",
+      "? defaults\n: {run: {working-directory:
+      scripts}}\npermissions:\n",
+      1,
+  )
+
+  errors = v.verify_repo_automation_texts({".github/workflows/
+  backtester-ci.yml": mutated})
+  print("verifier_errors", errors)
+
+  lint = subprocess.run(
+      ["actionlint", "-stdin-filename", ".github/workflows/
+      backtester-ci.yml", "-"],
+      input=mutated,
+      text=True,
+      capture_output=True,
+  )
+  print("actionlint_rc", lint.returncode)
+  print(lint.stdout + lint.stderr)
+  PY
+
+  Observed: verifier_errors [], actionlint_rc 0. This is still
+  the existing defaults boundary, not a third surface, but it
+  refutes the “any syntactic form” termination claim for
+  backtester.
+
+  Confirmed at head: python3.12 scripts/
+  verify_ci_workflow_hygiene.py and python3.12 scripts/
+  test_verify_ci_workflow_hygiene.py both pass. The normal
+  defaults forms in the checklist fire on both lanes and are
+  non-vacuous under a stub. Quoted-flow env fails closed on
+  both lanes. Whole-job digest and missing-anchor checks still
+  fail closed.
+GLM:Verdict: APPROVE at 0906f1521
+Termination claim — CONFIRMED correct
+The complete set of GitHub Actions top-level keys that inject into a job's execution from outside the job body is {env, defaults}. Of the top-level keys (name, on, permissions, env, defaults, concurrency, jobs, run-name), only env (merged into every step's environment) and defaults (inherited shell/working-directory) change what a run step executes. permissions is a different axis (token authorization, not command resolution) and is already enforced separately (workflow_permissions_have_actions_read/issues_read). No third surface exists; no third syntax variant remains.
+Checklist verification (all at head, 25/25 probes pass)
+1. defaults deny-all, all syntax forms, both lanes — CONFIRMED. top_level_defaults_errors (verify_ci_workflow_hygiene.py:12599) keys on the column-0 defaults key via the quote-normalizing workflow_yaml_structural_line, so the value form is irrelevant. Fires on both lanes for: block, unquoted-flow {run:…}, quoted-flow value {"run":…}, quoted-key "defaults":, single-quoted-key 'defaults':, empty-flow {}, quoted-key empty-flow. The old shape-detector top_level_mapping_has_child is deleted. Job-level (indented) defaults correctly does not fire (it's inside the digest).
+2. env deny-by-default both lanes — CONFIRMED. Quoted-flow env: {"PATH":…} fails closed (unparseable); new unclassified key (LD_PRELOAD) fails closed. Unchanged from r9r1.
+3. Whole-job digest + fail-closed — CONFIRMED. In-job byte change fires the digest on both lanes; job rename → "job body digest pin target job not found" on both lanes.
+4. Non-vacuous — CONFIRMED. The differential tests assert the check-only marker "top-level defaults must not be used" across 5 syntax forms (incl. the r9r1 regression defaults: {"run":…}) on both lanes (test:14215 BVS, test:16301 ROOT). Stubbing top_level_defaults_errors turns the quoted-flow mutation green → tests would fail.
+Both verifier and self-tests exit 0 at head. The round-9-r1 quoted-flow evasion is closed, and the boundary is a terminating deny-by-default structure across both surfaces and both lanes.
+
+-- 
+
+
+• Updated PR #1241 and pushed the follow-up.
+
+  New head SHA: 0e331fb469d27527dea05cefdd775ee02573ba29
+
+  Changes made:
+
+  - Relaxed regression timing guard from <1s to <5s.
+  - Aligned RejectLargeDataSequenceMatcher.__init__ with
+    difflib.SequenceMatcher(self, isjunk, a, b, autojunk=True).
+
+  - Kept self_authorizing_added_lines(..., pathspecs) required,
+    with no default.
+
+  - Updated PR body note from one-second to five-second bound.
+
+  Verification on the rebased head passed:
+
+  python3.12 scripts/verify_ci_workflow_hygiene.py
+  python3.12 scripts/test_verify_ci_workflow_hygiene.py
+  python3 -m py_compile scripts/verify_ci_workflow_hygiene.py
+  scripts/test_verify_ci_workflow_hygiene.py
+  git diff --check
+
+  Local branch is clean and tracking origin/fix/self-
+  authorizing-diff-scope.
+
+---
+
+anything as you suggest - I resolved threads thinking they were done reopen if they are valid
+
+---
+
+so we cannot do prediction which will always have loop holes
+
+---
+
+what do we do with 1241?
+
+---
+
+<task-notification>
+<task-id>bepow87a6</task-id>
+<tool-use-id>toolu_018W2cYrSmeqcsDMxh8YstMq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/0668120b-cee8-4d2d-bdc5-69d670db2be8/tasks/bepow87a6.output</output-file>
+<status>completed</status>
+<summary>Background command "Run 1241 self-test suite at rebased head in background" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+1235 merged.
+
+PR 1241:
+
+Claude: will share soon
+GPT:
+• APPROVE at 0e331fb469d27527dea05cefdd775ee02573ba29.
+
+  Findings: none.
+
+  Confirmed the behavior-preserving argument: every consumer of
+  added_lines or changed_paths still filters to .github/
+  workflows/, .github/actions/, or
+  SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS, so the new
+  SELF_AUTHORIZING_CAPABILITY_PATHS scope only removes
+  irrelevant file diffing. self_authorizing_added_lines has no
+  default pathspec and has a single updated caller.
+
+  Verification:
+
+  - Fetched and reviewed exact head 0e331fb4 against base
+    e3e7e86.
+
+  - git diff --check passed.
+  - Ran targeted
+    assert_self_authorizing_governance_detector_contract()
+    under python3.12 at the exact head: passed. This includes
+    the 100k+ line data fixture guard, the SequenceMatcher
+    monkeypatch, the <5s assertion, the workflow secret
+    positive signal, and data-file ignore assertion.
+
+  - gh pr view confirmed PR 1241 is still at head 0e331fb4 and
+    base e3e7e86.
+
+  - gh pr checks showed no failing jobs.
+
+  I did not use the broad local self-test run as evidence; I
+  interrupted it after several minutes while it was in
+  unrelated cache-persistence verifier tests.
+Kimi:
+ ● Reviewed 0e331fb469d27527dea05cefdd775ee02573ba29 against
+   base e3e7e8669200c2ddcf62ca9561027529a2818291.
+
+   Verdict: APPROVE
+
+   Verified each confirmation point against the actual diff
+   and by running the relevant self-test:
+
+   1. Behavior-preserving. SELF_AUTHORIZING_CAPABILITY_PATHS
+      is exactly SELF_AUTHORIZING_GITHUB_AUTOMATION_PREFIXES ∪
+      SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS. Every consumer
+      of added_lines already filters to one of those two sets:
+       • self_authorizing_secret_ref_signals:
+         is_github_automation_path
+       • self_authorizing_secret_inherit_signals:
+         is_github_automation_path
+       • self_authorizing_new_active_secret_signals:
+         is_github_automation_path
+       • self_authorizing_permission_signals:
+         is_github_automation_path
+       • self_authorizing_allowlist_signals:
+         SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS
+
+      So scoping the diff pathspec cannot drop a
+      previously-caught signal; it only drops the large
+      irrelevant files.
+
+   2. Hang gone. The new regression test in
+      scripts/test_verify_ci_workflow_hygiene.py (around line
+      2412) builds a 100,001-line data fixture, monkeypatches
+      difflib.SequenceMatcher to raise if that data file is
+      diffed, asserts completion < 5 s, and confirms the
+      data-file secret is ignored. I ran only the
+      self-authorizing contract function and it passed:
+      ```
+        OK: self-authorizing governance detector contract
+      passed
+      ```
+
+   3. Not fail-open. The same regression test adds
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }} in
+      .github/workflows/large-data-signal.yml and asserts the
+      error list contains "secret reference
+      secrets.JULES_API_KEY".
+
+   4. Required arg is correct. self_authorizing_added_lines
+      now has pathspecs: tuple[str, ...] with no default.
+      self_authorizing_added_lines has only one caller
+      (self_authorizing_capability_signals), which now passes
+      SELF_AUTHORIZING_CAPABILITY_PATHS. A default tuple()
+      would re-introduce the unscoped SequenceMatcher hang
+      over every changed file.
+
+   The full self-test script failed locally in an unrelated
+   pre-existing check
+   (assert_local_verification_gate_recipes_are_enforced /
+   missing run_ci_lint_suites module), which is outside the
+   scope of this hotfix and not caused by these two files.
+
+GLM: VERDICT: APPROVE @ 0e331fb4
+All four claims verified by static analysis + empirical reproduction at exact HEAD (isolated worktree). No findings.
+Evidence (run at 0e331fb4):
+Claim    Verification
+1. Behavior-preserving    All 5 signal extractors pre-filter by path: self_authorizing_secret_ref_signals/_secret_inherit_signals/_new_active_secret_signals/_permission_signals gate on is_github_automation_path (10447/10472/10714/10663); self_authorizing_allowlist_signals gates on SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS (10692). SELF_AUTHORIZING_CAPABILITY_PATHS is a covering superset: dir pathspecs .github/workflows/+.github/actions/ match every .yml/.yaml the prefix+suffix check accepts; the 3 allowlist files are exact pathspecs. No previously-caught signal can drop. Caller audit (verify_ci_workflow_hygiene.py): SequenceMatcher only at :10408; self_authorizing_added_lines has exactly one caller (:10752, now scoped).
+2. Hang gone    134k-line fixture (matches #1222) + governance edit + workflow secret → detector 0.113s, SequenceMatcher never invoked on the data file (guarded matcher would raise), secret still flagged. Capability-scoped changed_paths returns only ['.github/workflows/large-data-signal.yml']; unscoped returns the data file too.
+3. Not fail-open    secrets.JULES_API_KEY in .github/workflows/*.yml blocked with both guarded and real SequenceMatcher (errors=1, JULES blocked=True). Verifier self-run: OK: CI workflow hygiene verifier passed. (exit 0).
+4. Required arg    self_authorizing_added_lines :10399 pathspecs: tuple[str, ...] (no default); self_authorizing_changed_paths :10373 already required. Reproduced that self_authorizing_added_lines(..., tuple()) diffs the large file → confirms the regression test is non-vacuous and a default () would re-introduce the hang.
+Notes (not findings):
+- The new regression test at test_verify_ci_workflow_hygiene.py:2415 mirrors the scenario exactly; a standalone reproduction of identical logic passed in 0.27s. The full ~17k-line self-test suite times out locally (>180s, environmental — each test builds fixture git repos); a prior run reached line 15379 (past the new test at 2415) before hitting an unrelated pre-existing failure (scripts/run_ci_lint_suites.py absent — not touched by this PR, present at BASE too).
+- The third self_authorizing_changed_paths caller at :10782 (governance_diff_errors) was already scoped to SELF_AUTHORIZING_GOVERNANCE_PATHS before this PR and uses --name-only only (no SequenceMatcher) — correctly out of scope for this fix.
+Ship it.
+
+---
+
+• Pushed PR #1232 follow-up.
+
+  Head SHA: 4392748c65f760dc8603927015556c4e3ef74adb
+
+  Net LOC delta: +76 (95 insertions, 19 deletions).
+
+  Verification passed:
+
+  - python3.12 scripts/verify_ci_workflow_hygiene.py
+  - python3.12 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile scripts/verify_ci_workflow_hygiene.py
+    scripts/test_verify_ci_workflow_hygiene.py
+
+  - git diff --check
+
+  Branch is clean against origin/codex/1213-ci-debuggability.
+
+---
+
+okay so what's next for 1232
+
+---
+
+<task-notification>
+<task-id>bd28bf8uc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/0668120b-cee8-4d2d-bdc5-69d670db2be8/tasks/bd28bf8uc.output</output-file>
+<status>completed</status>
+<summary>Background command "Non-vacuity check + start self-test suite at 1232 r9c head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+give me the confirmation packet again -
+
+---
+
+GPT: 
+• APPROVE at 4392748c.
+
+  No findings. I could not introduce top-level defaults through
+  block, flow, quoted key, explicit key, tag, anchor, merge
+  key, or document-marker forms without a rejected top-level
+  entry. The default-reject allowlist in
+  partition_workflow_top_level_key_errors closes the prior
+  YAML-shape class.
+
+  Verified:
+
+  - python3.12 scripts/verify_ci_workflow_hygiene.py passes.
+  - python3.12 scripts/test_verify_ci_workflow_hygiene.py
+    passes.
+
+  - Explicit-key ? defaults errors on both workflows and
+    becomes green when partition_workflow_top_level_key_errors
+    is stubbed, so the test is non-vacuous.
+
+  - Quoted-flow env: {"PATH": ...} still fails closed on both
+    workflows.
+
+  - Whole-job digest still fires on scoped in-job byte changes;
+    missing test-archive fails closed.
+
+  - Real workflows, env version bump, and job-body edits do not
+    trip the top-level allowlist. Duplicate allowed top-level
+    keys like a second env: are not rejected by this helper,
+    but actionlint rejects them as duplicate workflow keys
+    before execution, so they do not reach the pinned job.
+Kimi: 
+ ● Verdict: REQUEST_CHANGES at
+   4392748c65f760dc8603927015556c4e3ef74adb
+
+   I verified the PR HEAD in an isolated git worktree. The
+   allowlist terminates the exotic-key defaults evasion class,
+   but I found one execution-injecting top-level construct the
+   verifier's boundary check does not reject.
+
+   What works (confirmed)
+
+   • Verifier and self-tests pass at HEAD:
+       • python3.12 scripts/verify_ci_workflow_hygiene.py → OK
+       • python scripts/test_verify_ci_workflow_hygiene.py →
+         OK: CI workflow hygiene verifier self-tests passed.
+   • Allowlist rejects all exotic defaults forms tested:
+       • block: defaults:\n  run:\n    shell: sh
+       • quoted-flow: defaults: {"run": {shell: bash}}
+       • multi-line explicit key: ? defaults\n: {run: ...}
+       • single-line explicit key: ? defaults : {run: ...}
+       • tagged key: !!map defaults: {run: ...}
+       • anchored key: defaults: &defaults_probe {run: ...}
+       • quoted key: "defaults":\n  run:\n    shell: sh
+       • merge key: <<: *defaults
+       • document markers, YAML directives, bare defaults,
+         unicode keys
+   • No over-reject: real ci.yml and backtester-ci.yml pass;
+     env version bump passes; job-body edit correctly triggers
+     digest mismatch.
+   • Non-vacuous: stubbing
+     partition_workflow_top_level_key_errors to return []
+     makes both the ci.yml and backtester-ci.yml ? defaults
+     tests pass silently; restored function passes.
+   • Env + digest still hold for single top-level env blocks
+     and in-job byte changes.
+
+   Finding: duplicate top-level env blocks evade env
+   deny-by-default
+
+   File: scripts/verify_ci_workflow_hygiene.py
+
+   Failure scenario: An attacker adds a second top-level env:
+   block containing an execution-injecting variable. The new
+   allowlist sees the column-0 key env: (allowed), and
+   classified_top_level_env_errors/top_level_block_lines only
+   parse the first env block, so the malicious entry is never
+   classified.
+
+   Reproduction (ci.yml):
+
+   ```yaml
+     env:
+       JUST_VERSION: "1.49.0"
+       CARGO_TERM_COLOR: always
+       RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace
+   }}/.rust-verification
+     env:
+       PATH: /tmp/shim
+   ```
+
+   Run:
+
+   ```python
+     verifier.verify_text(mutated, BASE_ACTION,
+   BASE_NEXTEST_CONFIG)
+   ```
+
+   → returns [] (no errors).
+
+   Same result for backtester-ci.yml via
+   verify_repo_automation_texts.
+
+   Why this matters: PATH (or LD_PRELOAD, etc.) injected from
+   outside the job body is exactly the execution-injection
+   surface the boundary is meant to guard. The allowlist +
+   first-block env parser are not fail-closed for duplicate
+   keys. The checklist item "a form the extractor can't
+   classify must reject, not pass" is violated.
+
+   Mitigation already present: actionlint rejects duplicate
+   keys, so the current CI pipeline would catch this. However,
+   the integrity model advertises the verifier's boundary as
+   the protection; relying on a separate linter for this case
+   is not fail-closed at the boundary layer.
+
+   Recommended fix
+
+   Make partition_workflow_top_level_key_errors track seen
+   top-level keys and reject duplicates. No legitimate
+   workflow needs duplicate top-level keys, so this is safe
+   and closes the hole without re-parsing YAML. Example shape:
+
+   ```python
+     seen: set[str] = set()
+     ...
+     if match is not None:
+         entry = unquote_yaml_scalar(match.group(1))
+     if entry in seen:
+         errors.append(f"{workflow_name} top-level key
+   {entry!r} is duplicated")
+     seen.add(entry)
+   ```
+
+   If you prefer to keep duplicate-key detection entirely in
+   actionlint, then the boundary claim and "no under-reject"
+   checklist item should be updated to document that
+   limitation explicitly.
+
+   I'll switch to APPROVE once the verifier rejects duplicate
+   top-level keys (or the boundary scope is explicitly
+   narrowed and documented).
+Claude: 
+The memory already records this exact head (4392748c) as APPROVE with the same analysis — my independent re-verification this session confirms it, so no duplicate entry is needed (the earlier edit conflict was that other-session update landing).
+
+Everything confirmed. Verdict stands: APPROVE at 4392748c.
+
+Final ledger, all run by me at the pinned head:
+- Self-tests → R10_CONTROL_RC=0; verifier green; worktrees both lanes (? defaults multiline+inline, <<: merge, --- marker, !!map tag, block, quoted-key, flow-root) — with no masquerade possible (regex extracts the same pre-colon key GHA parses).
+- Fail-closed (item 2): entry defaults to the whole line, so any non-key: form falls through to rejection; the sole skip path (leading tab/whitespace) is GHA-invalid and digest-backstopped (whole-file indent shift → RED, verified).
+- No over-reject (item 3): real files + env bump green; indented defaults: inside a job not flagged.
+- item 5: env deny-by-default + digest both still fire.
+- Non-vacuous (item 4): neuter → suite fails (got: []).
+
+The class is terminated. The design finally reaches the terminating shape on all three layers — pin the blob (digest), closed allowlist of classified env keys, closed allowlist of top-level keys — with reject-by-default everywhere and no enumeration of forbidden forms. The four-round defaults whack-a-mole is over because the fix stopped predicting bad forms and started allowlisting good keys.
+GLM: Verdict: APPROVE at 4392748c
+Termination — CONFIRMED; the detection arms race is structurally over
+Round 9-r3 abandons detection. partition_workflow_top_level_key_errors (verify_ci_workflow_hygiene.py:12604) is a positive allowlist with default-reject: a column-0 line is accepted only if its key is in PARTITION_WORKFLOW_TOP_LEVEL_KEYS = {name, run-name, on, permissions, env, concurrency, jobs} — exactly the complete GitHub Actions top-level key set minus defaults. Rejection no longer depends on recognizing defaults; it depends on not being in the allowlist. There is no syntactic form of defaults (or any execution-injecting construct) that the allowlist accepts, because acceptance is keyed on the allowlist identity, not on shape-matching the forbidden key.
+The fail-closed path is the load-bearing property: a column-0 line that doesn't match key:rest falls through to entry = whole line, which can never equal an allowed key string → reject. So ? defaults, multi-line explicit keys, <<: merges, tagged keys, document markers, and raw text all reject rather than pass.
+Could not find an escaping construct
+I attacked the column-0 extraction with 13 defaults syntax forms (block, unquoted/quoted-flow, quoted/single-quoted-key, empty-flow, ? defaults ×2, multi-line explicit key, merge <<:, tagged !!map, anchored value, space-before-colon) plus 4 unclassifiable forms (---, ..., ???, raw text) — all 17 reject on both lanes (41/41 probes pass). The only way to avoid rejection is to masquerade as an allowed key, and no allowed key provides defaults-style execution injection (env → classifier; permissions → separate auth axis already enforced by workflow_permissions_have_actions_read; name/on/concurrency/run-name → non-injecting). A line is skipped only if blank/comment/indented, none of which can carry a top-level key GitHub interprets. No third surface exists.
+Checklist
+1. Termination / no escape — CONFIRMED (17 forms reject on both lanes; real top-level keys are exactly the allowlist ⊇ {name, run-name, on, concurrency, env, permissions, jobs}).
+2. Fail-closed (no under-reject) — CONFIRMED (unclassifiable column-0 lines reject).
+3. No over-reject — CONFIRMED (both real workflows green; env value bump 1.49→1.50 passes the top-key check; job-body edit passes the top-key check while the digest fires separately).
+4. Non-vacuous — CONFIRMED (stubbing partition_workflow_top_level_key_errors turns the ? defaults case green; tests assert the check-only "top-level entry" marker across 8 forms incl. evil_top: {a: b} proving general allowlist behavior, on both lanes).
+5. env deny-by-default + whole-job digest + fail-closed — CONFIRMED unchanged (quoted-flow env PATH rejects; in-job byte change fires digest; job rename → target-not-found).
+Verifier and self-tests both exit 0 at head; CI green. The class is terminated — the boundary is a closed allowlist, immune to further syntax variants.
+
+---
+
+so if 1232 and 1241 land, are we more or less done with the CI jobs?
+
+---
+
+CI and cargo improvements
+
+---
+
+what's WS3 and WS5 for? can we work on the preflight lane contention now
+
+---
+
+no - so give me the architecture request prompt for the preflight and lane contention so that I can have a separate claude to take this from here
+
+---
+
+no let the new session do this
+
+---
+
+so would we fix cost, speed, frequency after the 2 PRs pending? is that a wrap at least for now
+
+---
+
+I know but we shipped a lot - so I'm asking, do we have cost, speed, frequency under control now
+
+---
+
+no I don't think that's true. we need to get it under $1-2 / day - that will get us under $50 / month
+
+---
+
+yes you should not be guessing and speculating, but let's first resolve pr 1232 -
+
+---
+
+should this be waiting 
+• The probe is taking longer than a quick unit run, likely
+  compiling the harness. I’m checking the run status once more
+  before waiting again.
+
+• Ran gh run view 28743726110 --json
+  │ status,conclusion,url,headSha,jobs --jq '{status,
+  │ conclusion, headSha, url, jobs: [.jobs[] | {name, status,
+  │ … +1 lines
+  └ {"conclusion":"","headSha":"25056e6162708a923356dcfdbe4d5e7
+    9c137b6f4","jobs":
+    … +13 lines (ctrl + t to view transcript)
+    job/85230918305"}],"status":"in_progress","url":"https://
+    github.com/seungpyoson/bolt-v2/actions/runs/28743726110"}
+
+───────────────────────────────────────────────────────────────
+
+• Still in progress with no failure reported. I’m waiting for
+  completion.
+
+• Working (20m 24s • esc to interrupt)
+
+ for some cargo runs? or CI runs?
+
+---
+
+which models were most helpful for you?
+
+---
+
+I think we should have quicker CI proofs - are there any levers to optimize and reduce the time
+
+---
+
+are you sure about these 4 analysis?
+
+---
+
+are these related to your analysis Repo is clean (my timing worktree removed; the other worktrees are pns). Saving the
+  Ran 1 shell com
+
+Repo is clean (my timing worktree removed; the other worktrees are pre-existing from other sessions). Saving the
+investigation t
+
+  Recalled 1 memory, wrote 3 memories
+
+The memory indeting it now
+
+Still 1.3KB over — trimming the fattest grouped lines.
+
+  Read 6 files, wrote 21 memories
+
+That line was already merged into the archive line during the rewrite. Two more small trims to get under the limit.
+
+  Read 3 files, wrote 6 memories
+
+Investigation done, measured, memory saved, repo left clean.
+Here's the deli
+
+Merge-queue preflight latency — root cause (measured) + design options
+ current HEAD. It's redundant serial compute with zero progress output: for N PRs, preflight runs the full ~107-second fence battery 2N−1 times back-to-back, and the operator buffers every byte until the very end. One PR ≈ 2
+minutes of silehree ≈ 9+minutes. And CI re-runs the identical check afterward anyway.
+
+Where the wall-, main@83859b220)
+
+1. The verifierially. Inr_commands call at scripts/merge_queue_preflight.py:2829), then each PR after the first gets a second full run on the batch-candidate merge (:2899). All sequential. The static profile is ["just
+source-fence-sttoml:76).
+
+2. One just soul / 89.4s userCPU (timed live). Per-module breakdown via a timing harness: verify phase 35.9s across 44 static fences; test phase 71.6s
+— of which test.4s (~40% of the
+whole battery). thatdeliberately spawn real subprocess lock-holders and sleep through acquire timeouts — it's wall-clock-heavy by design,
+and it re-tests nothing to do
+
+3. Everything else is noise. Worktree add/remove per run: 0.73s + 0.37s. git ls-remote: 0.64s each. The gh readiness and fetch calls are seconds-scale. Input lanes total ~10–15s.
+
+4. Total opacity. The operator runs preflight through runner(command, cwd=repo) at scripts/merge_queue_operator.py:223 — stdout and stderr fully
+piped, communicat all, nothingstreamed. Preflight in turn pipes each verifier child (run_command, merge_queue_preflight.py:1844) and prints only final JSON. So a healthy 6-minute run is indistinguishable
+from a hung one
+
+On the four que:
+
+- Lock contention? Disproven at HEAD. Since #896/#900 (merged
+2026-06-23, f16nce-static,verifier path never touches bolt-v2.lane.lock. The 0%-CPU processes you saw are wrapper chains (just → gate → just inner → run_fences.py — only the leaf burns CPU) and preflight parents waiting on their sequential children.
+Before 06-23 th it isn't themechanism.
+- Is the global lane too coarse? The remaining heavy lane is only for genuinely CPU-heavy non-cheap lanes and matches the
+audited single-ed there.
+hine? Minor. Concurrent fence runs (I caught Codex's test_verify_ci_workflow_hygiene.py at 97% CPU mid-investigation) compete for CPU but each battery is single-threaded on a multi-core box. An isolated machine
+would still tak
+- Does preflighe required CI
+source-fence joence-static (orfull source-fence) at .github/workflows/ci.yml:687-699, and Mergify/CI remains the enforcing gate. Local preflight is fail-fast advice + batch-split advice — which means its
+scheduling can invariant: everyses stderr through instead of swallowing it, and gets a real timeout instead of the current unbounded wait. No gate semantics touched.
+Trade-off: none of substance; it doesn't make anything
+faster, only ho
+
+B. Batch-first verifier scheduling with bisect-on-failure (biggest win, no gate change)
+Invert the loopfirst, run thebattery once, and only if it fails fall back to per-PR runs to attribute blame. Green wave (the common case) drops from 2N−1 runs to 1 — a 3-PR wave goes from ~9 min to ~2 min. Same
+commands, same -fast outcome;hanges (the deferred "fast battery")
+Add a run_fences.py --fences-only mode (the run_tests=False parameter already exists internally at run_fences.py:285 — it's just not exposed) and a preflight profile that uses it:
+~36s instead ofvalidates thes itself — a function of scripts/, not of the PR tree — and CI runs it regardless. Escalation rule keeps it airtight: if the synthetic merge touches scripts/** (or the fence/test files specifically), preflight runs the full
+battery includi
+on
+
+All three — they're independent and compound: A first (smallest, makes B/C measurable in the wild), then B (pure
+scheduling, big(battery cost).
+Combined effectmin silent → ~45s with live progress. Nothing is dropped from CI; the enforcing gate is untouched.
+fication battery is a mis-tiering worth naming explicitly in the Codex brief — it belongs with harness self-tests (CI + escalation path), not in the per-merge hot path.
+
+Full investigation detail is saved in memory (project_merge_Ready to turnthis into a Codex brief whenever you've picked the option
+set. (this is from the preflight research session)
+
+---
+
+yes
+
+---
+
+ok first park it - let's resolve 1232 first
+
+---
+
+PR 1232
+Kimi:  ● Verdict: APPROVE at
+   4dc6bb49606259f7f7b89ffe3fca8276c4e36150
+
+   I verified the PR HEAD in an isolated git worktree. The
+   duplicate-key rejection closes the remaining
+   execution-injection gap; no regressions.
+
+   Local verification
+
+   • python3.12 scripts/verify_ci_workflow_hygiene.py → OK
+   • python scripts/test_verify_ci_workflow_hygiene.py → OK:
+     CI workflow hygiene verifier self-tests passed.
+
+   1. Duplicate-key gap closed
+
+   partition_workflow_top_level_key_errors at
+   scripts/verify_ci_workflow_hygiene.py:12624 now tracks
+   seen_keys and rejects any repeated top-level key.
+
+   Confirmed on both lanes:
+   • ci.yml second env: block with PATH → ci.yml duplicate
+     top-level key 'env'
+   • ci.yml second env: block with LD_PRELOAD → ci.yml
+     duplicate top-level key 'env'
+   • ci.yml second jobs: → ci.yml duplicate top-level key
+     'jobs'
+   • backtester-ci.yml second env: block with PATH →
+     backtester-ci.yml duplicate top-level key 'env'
+   • backtester-ci.yml second jobs: → backtester-ci.yml
+     duplicate top-level key 'jobs'
+   • Mixed representation env: + "env": → duplicate rejected
+
+   No remaining attack vector found. Exotic top-level forms
+   (explicit keys ? defaults, tags !!map defaults:, merge keys
+   <<:, anchors, document markers, directives, bare keys,
+   quoted keys, flow-style maps) all still hit the allowlist
+   rejection.
+
+   2. No regression
+
+   • defaults rejected in all forms (block, quoted-flow
+     {"run":...}, explicit key ? defaults, tagged, anchored,
+     quoted-key).
+   • Single-block env deny-by-default still fires for
+     LD_PRELOAD, EVIL_INJECT, and quoted-flow env: {"PATH":
+     ...} on both lanes.
+   • Whole-job digest still fires on in-job byte changes
+     (ROOT_TEST_ARCHIVE_JOB_SHA256 /
+     BVS_TEST_ARCHIVE_JOB_SHA256).
+   • Missing test-archive anchor still fails closed.
+
+   3. No over-reject / churn
+
+   • Real ci.yml and backtester-ci.yml pass unchanged.
+   • JUST_VERSION bump passes (no boundary errors).
+   • Job-body edit only triggers digest mismatch, not a
+     boundary false-positive.
+
+   4. Non-vacuous
+
+   • Removed the seen_keys logic from
+     partition_workflow_top_level_key_errors and re-ran
+     self-tests. The ci.yml and backtester-ci.yml
+     duplicate-env PATH tests both failed (expected error
+     missing), and the full suite exited non-zero. Restored
+     the logic; suite passes.
+
+   Remote CI
+
+   gh pr view 1232 --json statusCheckRollup shows 0 failing,
+   14 SUCCESS, 20 SKIPPED, 1 NEUTRAL.
+
+   No findings. APPROVE.
+GPT: ──────────────────────────────────────────────────────────
+
+• Findings: none.
+
+  Verdict: APPROVE at 4dc6bb49606259f7f7b89ffe3fca8276c4e36150.
+
+  Confirmed:
+
+  - Duplicate top-level env and jobs are rejected on both
+    ci.yml and backtester-ci.yml; I also ran the exact
+    duplicate LD_PRELOAD case and it rejected on both lanes.
+
+  - Existing env/defaults/digest/missing-anchor coverage did
+    not regress; full self-tests passed.
+
+  - Real workflows, env version bump, and non-boundary job-body
+    edit cases stay clean.
+
+  - Non-vacuous check passed: monkeypatching back to the old
+    no-seen_keys behavior lets duplicate top-level env with
+    PATH produce 0 errors.
+
+  Evidence run:
+
+  - python3.12 scripts/verify_ci_workflow_hygiene.py -> OK
+  - python3.12 scripts/test_verify_ci_workflow_hygiene.py -> OK
+  - gh pr view confirmed base 83859b22 and head 4dc6bb49
+  - gh pr checks showed no failing checks, only pass/skipping
+    statuses.
+Claude: Verdict: APPROVE at 4dc6bb49
+
+Independently re-verified at HEAD in a fresh python3.12 worktree (not trusting prior rounds). All 4 confirm-points proven; no bypass found.
+
+1. Duplicate-key gap closed — both lanes ✅
+The fix is structurally sound, not just patched: partition_workflow_top_level_key_errors runs its dedup (seen_keys) and its allowlist check on the same normalized entry (workflow_yaml_structural_line → unquote_yaml_scalar). So no spelling  yet evade the dedup as not-enRGET, not the mechanism" less. My 19-casesweep against the real workflows, all rejected: 2nd env:(PATH), 2nd env:(LD_PRELOAD), quoted "env":, duplicate jobs:, defaults: (block / quoted / ? explicit-key), ---       separator, flowl; 2nd env:(PATH)
+eny-by-default fires (unknown env key → "must be classified as reuse-scoped or build-neutral").
+- In-job byte change → job body digest changed error, while the boundary stays clean (correct layer separation — digest owns job-body integrity).
+- Missing job → fail-closed digest pin target job not found.
+- classified_top_level_env_errors (renamed) is now called     unconditionallyr gated onnextest-fingerprint-reuse in jobs → strictly stronger; the deleted top_level_defaults_reuse_scope_errors folded into the allowlist → defaults still rejected, now in any form.
+
+3. No over-reject ✅                                          verify_workflown the real repo = 0 errors (whichROOT_/BVS_TEST_ARCHIVE_JOB_SHA256 match the real job bodies at HEAD). Real backtester clean; JUST_VERSION bump clean; job-body edit boundary-clean.                               
+n_keys branch from the live source → the malicious 2nd env:(PATH) is no longer detected and the boundary returns [] — it slips completely. seen_keys is the sole, load-bearing defense against a second env block (since classified_top_level_env_errors only inspects the first env block).
+
+Dispatch verified end-to-end: the mutated backtester surfacebacktester-ci.ynv' is notallowed through full verify_workflows; the backtester path is guarded by endswith("backtester-ci.yml") and the boundary calls are unconditional in both lanes.                      
+Architecture: this round completes the shift from forbidden-pattern enumeration (the root of the R1–R8 churn) to closed-form allowlist + dedup + per-job digest — the correct "pin the blob" direction.
+
+One non-blocking scope note (so "boundary closed" isn't over-read): the partition closes the top-level-key class andenv-key contentnsitive archivejob bodies. The contents of on: / permissions: / non-pinned job bodies stayeparate checks —not regressed bouch them andreal workflows pass), and not this round's class.
+
+Nothing regressed. Ship it.
+
+---
+
+this is from another session that did some research - /model
+  ⎿  Set model to Fable 5 and saved as your default for new sessions with xhigh effort
+
+❯ I want you to review extensively the historical work - this is the overall context Yes — all three are under control now. Straight read per lever:
+
+  - Cost: under control. Down ~81% ($58.6 → $11.2/day, last measured 07-04 — not re-checked today). It's predictable and ~5× lower, not oretical floor
+
+---
+
+no I want to know the current state with hard evidences so that I need to know whether I need to invest more resources into CI cargo improvements or not.
+
+---
+
+explain very concisely
+
+---
+
+so what's as is and what's to be and what are the estimated efforts?
+
+---
+
+yes do you have hard evidences for all?
+
+---
+
+let's pin down further
+
+---
+
+explain very concisely - so let's confirm so that estimate is airtight
+
+---
+
+ok give me the prompt for that - if you are 100% confident
+
+---
+
+yes
+
+---
+
+even after shipping the debugging feature why are we having long CI run? 
+• Still no output from the watcher after two more minutes. I’m
+  checking run and job status; if GitHub still reports active
+  jobs, I’ll continue monitoring.
+
+• Ran gh run view 28745550636 --json status,conclusion,jobs
+  │ --jq '.status + "\t" + (.conclusion // "") , (.jobs[] |
+  │ select(.status!="completed" or .conclusion!="success") |
+  │ … +1 lines
+  └ in_progress
+    merge-readiness-progress    completed    skipped
+    … +14 lines (ctrl + t to view transcript)
+    https://github.com/seungpyoson/bolt-v2/actions/runs/28745550636/job/85235814183
+
+───────────────────────────────────────────────────────────────
+
+• Source-fence has gone green. Remaining active lanes are
+  build, clippy, and nextest archive.
+
+• Working (1h 30m 59s • esc to interrupt)
+
+
+› Implement {feature}
+
+---
+
+I guess it's not merged yet
+
+---
+
+Fastest relief, no code: have that Codex session iterate on the debug lane and only fire full CI at the end. Want me to write that as an explicit instruction for the session, and separately queue the linker fix prompt? yes
+
+---
+
+no it was that debugging should not taking full run to find the errors - but more like O(1) lookup - that's what you told me
+
+---
+
+what about for the codex session that we launched? is it relevant?
+
+---
+
+what's (b)
+
+---
+
+what's the linker fix prompt - is that the codex session we launched
+
+---
+
+so what can we do to make CI / cargo runs faster?
+
+---
+
+so #4 is in implementation or are we waiting
+
+---
+
+is that preflight issue dependent on something
+
+---
+
+yes -
+
+---
+
+explain the situation in plain english- make this concise
+
+---
+
+1241 is merged
+
+---
+
+1232 is merged too
+
+---
+
+yes let's do #1, but give me 1252 handoff first
+
+---
+
+tell me blurbs to send to each session
+
+---
+
+Note: the real cargo-target 119 GB recurrence is still untracked — it needs its own issue + handoff, separate from #1250. should we do this now? it was separate
+
+---
+
+is this the one line fix? 3. Cargo-target disk issue — I was wrong twice, here's the truth
+
+Not "untracked," but not cleanly tracked either:
+- The routing class-fix was tracked in #684 — which you closed as NOT_PLANNED (2026-06-18) and consolidated into epic #333's "Consolidated Tail Items." So it's a buried bullet in a big epic, not an actionable ticket.
+- .cargo/config.toml does not exist in the repo → the routing fix (build.target-dir → managed pool) never landed → the raw-cargo ./target blowup recurrence is genuinely open.
+
+give me the blurb to send to 1251
+
+---
+
+so i don't understand what we need to do
+
+---
+
+2 - it's already closed. yes for 4. I already sent out 1
+
+---
+
+I want you to give me the prompt for 1252 - is the current prompt the best one possible?
+
+---
+
+nail them now
+
+---
+
+Still on hold — this is ready to send the moment you take the disk campaign off hold; don't dispatch yet. -> what is this let's trace now. so I'm genuinely confused overall
+
+---
+
+1252 -> started already. we should go on 1253. 
+
+but I keep saying that we should use debug lane, but they don't use it.
+
+---
+
+sure - but this is the more urgent one - let's pause on the cargo disk space work 1. Change the written rule once. In AGENTS.md + the Codex handoff template: "Iterate on the debug lane. Do not manually dispatch full CI. The merge queue runs full CI as the gate — that is the proof." Every future session inherits it automatically. Free, and I can draft it right now.
+2. Remove the reason they do it. They fire full CI "for final evidence" — but the merge queue re-runs full CI anyway when the PR merges. The manual proof is redundant. Drop that step: the merge queue is the evidence.
+3. Put up a guardrail. #933 (already an open issue) makes a manual dispatch default to the debug lane, with full CI requiring a deliberate opt-in flag. Then they can't fire full CI out of habit. Needs building — a small Codex task.
+
+but I don't think behavioral is good - I kept sayign but they do not follow
+
+---
+
+are you sure about this? so do you understand the root issue at hand end to end?
+
+---
+
+so give me a blurb so that we can tell sessions to not run the full CI this is not manageable
+
+---
+
+are you sure that you have understanding end to end?
+
+---
+
+so you have end to end understanding? so what's the fix? can you make it very concise?
+
+---
+
+are you really sure?
+
+---
+
+verify first
+
+---
+
+no you are going back and forth - so I need to know what the 100% confidence problem analysis and solution is. and I don't know how we can enforce sessions to iterate on the debug lane.
+
+---
+
+yes.
+
+---
+
+is this the best prompt you can come up with
+
+---
+
+already sent
+
+---
+
+so why is this so long again
+
+---
+
+• ci-lint-workflow failed only because the sandbox denied local
+  TCP bind in test_ci_provenance.py; the suite explicitly
+  reports it needs local TCP permission. I’m rerunning that
+  gate escalated rather than changing code.
+
+• Running just ci-lint-workflow
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a bounded local verification rerun to satisfy
+  the user-authorized non-compile gate, and the requested
+  escalation is only for local TCP bind needed by the test
+  harness.
+
+✔ Auto-reviewer approved codex to run just ci-lint-workflow
+  this time
+
+───────────────────────────────────────────────────────────────
+
+• The escalated workflow lint rerun passed the previously
+  failing ci-provenance suite and is waiting on the remaining
+  long hygiene tests.
+
+───────────────────────────────────────────────────────────────
+
+• The rerun is still active; only the large workflow-hygiene
+  and merge-queue-preflight/cache-retention tails appear to
+  remain.
+
+───────────────────────────────────────────────────────────────
+
+• The escalated ci-lint-workflow is nearly done; the long
+  hygiene self-test is the remaining visible suite.
+
+───────────────────────────────────────────────────────────────
+
+• Still waiting on the final workflow-hygiene self-test. I’m
+  not starting deny or source-fence until this gate exits to
+  avoid local lane contention.
+
+───────────────────────────────────────────────────────────────
+
+• The local lint wrapper is still alive with no new output.
+  This is the same long tail as the prior run, so I’m
+  continuing to wait for a clean final summary.
+
+• Ran just ci-lint-workflow
+  └ python3 "/Users/spson/Projects/Claude/
+    bolt-v2-wt-settlement/scripts/rust_verification.py"
+    … +190 lines (ctrl + t to view transcript)
+    OK: No raw cargo workflow commands or explicit Rust-wrapper
+    bypasses found
+
+───────────────────────────────────────────────────────────────
+
+• The escalated ci-lint-workflow gate is green. I’m running
+  just deny next.
+
+• Ran just deny
+  └ python3 "/Users/spson/Projects/Claude/
+    bolt-v2-wt-settlement/scripts/rust_verification.py"
+    … +30 lines (ctrl + t to view transcript)
+    Users/spson/.cache/rust-verification/bolt-v2/cache.lock'
+    error: recipe `deny` failed on line 243 with exit code 1
+
+───────────────────────────────────────────────────────────────
+
+• just deny failed on the Rust verification cache lock under
+  ~/.cache, which is outside the sandbox writable roots. I’m
+  rerunning it escalated for that cache lock only.
+
+• Running just deny
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a bounded local verification rerun within the
+  user-authorized debug-and-gates workflow, and the escalation
+  is only to permit the tool's cache lock under ~/.cache.
+
+✔ Auto-reviewer approved codex to run just deny this time
+
+• Ran just deny
+  └ python3 "/Users/spson/Projects/Claude/
+    bolt-v2-wt-settlement/scripts/rust_verification.py"
+    … +11726 lines (ctrl + t to view transcript)
+
+    bans ok
+
+───────────────────────────────────────────────────────────────
+
+• just deny passed after allowing the cache lock. I’m running
+  just source-fence-static next.
+
+───────────────────────────────────────────────────────────────
+
+• source-fence-static found stale/moved capital-admission
+  misnomer allowlist entries in src/
+  bolt_v3_decision_evidence.rs; that is line-number drift from
+  the trait edit, not a new source issue. I’ll let the fence
+  finish, then update the existing allowlist rows to the new
+  line numbers.
+
+• Working (43m 13s • esc to interrupt) · 1 background terminal…
+
+---
+
+so what's the situation in plain english - make this concise
+
+---
+
+Just surfaced: a session burned 43 min on local gates and tripped over an allowlist keyed on line numbers, so it breaks on every edit — a small, worth-fixing class bug (re-key it on content). Offered to file it -> you mean file an issue?
+
+---
+
+yes class fix
+
+---
+
+why is this session doing another long CI / cargo runs? I thought it's basically O(1) to find where the error is - ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• No new coordinator clippy message has arrived yet. Once the remote tests and that clean clippy report
+  are both available, the only remaining local blocker will be explicit approval to restore .githooks/
+  post-rewrite.
+
+• Waited for background terminal · sleep 180
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The PR body update is ready to be assembled once I have final run conclusions. I’m deliberately not
+  posting a partially final body because the red-proof quotes are the high-value part.
+
+• Waited for background terminal · sleep 180
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Still waiting on the remote jobs; there’s no change in local status. This is the environment-class wait
+  the unblock directive called out, so I’m keeping it remote-only.
+
+• Working (45m 35s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+this is for PR 1282
+
+---
+
+tell me what I should send to codex instead
+
+---
+
+what part of 1256 did we not do?
+
+---
+
+yes so are you sure that pr2 wasn't done?
+
+---
+
+yes - we should start from worktree and branch. also I need to know whether we are addressing the root problems fully end to end
+
+---
+
+yes - so 1 issue that resolves all right
+
+---
+
+is it the best prompt possible? and how does 1253 work? do you have a very solid understanding?
+
+---
+
+yes - then 1 session to address both together
+
+---
+
+so do we have 1 pr or 2 PRs?
+
+---
+
+so which PRs are they? what are the number
+
+---
+
+no thye were dispatched
+
+---
+
+we can't merge them together?
+
+---
+
+I interrupted the rerun while it was still inside preflight so it wouldn’t keep running in the
+  background.
+
+  Source-fence failure is on PR #1287, not #1288 right now. Root cause:
+
+  source-fence fails in scripts/test_lane_governor.py during cheap-lane code-execution discovery:
+
+  AssertionError: cheap-lane code-execution discovery failed closed:
+    scripts/cargo-shim:275: unresolved loader path target in importlib.util.spec_from_file_location
+
+  PR #1287 added this dynamic loader in scripts/cargo-shim:
+
+  helper_root = nearest_helper_root(root)
+  helper = helper_root / "scripts" / "rust_verification.py"
+  spec = importlib.util.spec_from_file_location("bolt_policy_rust_verification", helper)
+
+  The runtime behavior may be intentional, but source-fence requires cheap-lane loader targets to be
+  statically resolvable. Since helper_root comes from a runtime ancestor search, the verifier cannot prove
+  what file is being loaded, so it fails closed.
+
+  The gate failure is downstream only: it says ERROR: source-fence did not succeed.
+
+  Likely fix direction: avoid spec_from_file_location in cargo-shim for this helper load. Use a normal
+  import after putting the resolved helper scripts/ dir at the front of sys.path, or update the lane-
+  governor contract with explicit tests if dynamic ancestor helper loading is meant to be allowed.
+
+─ Worked for 6m 51s ──────────────────────────────────────────────────────────────────────────────────────
+
+
+› so what should we do? is that how it should be or are we fitting into the CI?
+
+
+• Using the plan skill because this is an architecture direction question: whether to preserve the dynamic
+  design or adapt to the CI contract. what should we do?
+
+---
+
+so clippy, nextest archive, test all fails - can you review the failures of 1287, 1288 and tell us what we should be doing?
+
+---
+
+so what should we be doing?
+
+---
+
+explain the situation in plain English - I didn't understand. make this concise
+
+---
+
+so we are still adding in CI rulebook (docs)?
+
+---
+
+so what's the systematic solution? should we be doing Path B eventually?
+
+---
+
+ok so how big is path b? is it another separate PR?
+
+---
+
+yes
+
+---
+
+explain in plain english - I'm confused. make this very concise
+
+---
+
+so this is the solo work - I can just not go direct merge at all. but is this something we can enforce at the github system level?
+
+---
+
+but is that supporting Mergify merge queue or Github native merge queue only
+
+---
+
+no we are using mergify - what do you mean we are using native queue?
+
+---
+
+3
+
+---
+
+but can you check if this is really true? can we just have 100% confidence?
+
+---
+
+explain in palin english - make this concise
+
+---
+
+can agents press that button or use gh api to merge directly?
+
+---
+
+what do you suggest?
+
+---
+
+are you sure about this? so what pr number is pr1?
+
+---
+
+so what problem does pr2 solve?
+
+---
+
+so I think it is helpful. so we don't need to make decision right away right
+
+---
+
+so what's noop_fresh?
+
+---
+
+so what's hte verdict on 1287/ 1288? we merge 1287 only first? is 1287 CI failures only blocked by 1289?
+
+---
+
+generate an execution prompt for 1287
+
+---
+
+what can we do for 1288? we should also just fix it so that it's in a mergeable state.
+
+---
+
+explain your rationale in plain English - and make this concise
+
+---
+
+but I'm not sure whether the risky part is for sure decided to be removed
+
+---
+
+let's make the decision now - I do not like to defer decisions
+
+---
+
+but removing duplicate full CI run is helpful because that causes a lot of CI churn and cost - so I do not understand why you are jumping into that decision that fast
+
+---
+
+but again native merge queue requires github enterprise, which costs $42/month for 2 seats.
+
+---
+
+ok give me the draft for 1288 - also review whether we should have comprehensive review for 1287 given that we did some code changes - • Implemented and pushed to PR #1287.
+
+  Commit: 642239dd82b18863f9b84bcb9e165118fa995510
+  Branch: fix/1253-cargo-target-routing
+  PR head now points at that SHA.
+
+  Changed:
+
+  - Removed cargo-shim’s dynamic rust_verification.py loader entirely.
+  - Inline-computes CARGO_TARGET_DIR as root_base / target_namespace / "target".
+  - Preserves nearest policy-root routing for root vs BVS nested policy roots.
+  - Added tests proving no dynamic loader remains and the shim’s target-dir formula matches rust_verification.target_dir.
+
+  Verification run:
+
+  - Red tests failed first for the expected reasons.
+  - python3 -m pytest scripts/test_cargo_shim.py -q -> 60 passed
+  - PYTHONPATH=/Users/spson/Library/Python/3.14/lib/python/site-packages python3.12 scripts/test_cargo_shim.py -> 60 passed
+  - python3.12 scripts/test_lane_governor.py -> passed
+  - just source-fence-static -> passed
+  - git grep -nE "spec_from_file_location|importlib|import_module" scripts/cargo-shim -> no matches
+  - git diff --check -> clean
+
+  Note: local git status still shows [ahead 1] only because the remote push succeeded but the sandbox could not update the local origin/... tracking ref lock.
+  git ls-remote and gh pr view 1287 both confirm the remote/PR head is 642239dd8.
+
+─ Worked for 8m 59s ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› conduct an internal adverserial review
+
+
+• Using the code-review skill for this. I’ll review the pushed PR #1287 head in its branch worktree, not the dirty main worktree.
+
+• Explored
+  └ Read SKILL.md (code-review skill)
+
+• Ran git diff --stat HEAD~1..HEAD
+  └  scripts/cargo-shim         | 82 ++++++++++++++++------------------------------
+     scripts/test_cargo_shim.py | 49 +++++++++++++++++----------
+     2 files changed, 61 insertions(+), 70 deletions(-)
+
+• Ran git status --short --branch
+  └ ## fix/1253-cargo-target-routing...origin/fix/1253-cargo-target-routing [ahead 1]
+
+• Ran git show --stat --oneline --no-renames HEAD
+  └ 642239dd8 Fix cargo shim target routing without dynamic loader
+     scripts/cargo-shim         | 82 ++++++++++++++++------------------------------
+     scripts/test_cargo_shim.py | 49 +++++++++++++++++----------
+     2 files changed, 61 insertions(+), 70 deletions(-)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’ve got the review scope: commit 642239dd8, two files. I’m going adversarial now: checking not just the happy path, but whether the shim now diverges from
+  policy validation, misses env behavior, or leaves stale tests around the old helper import.
+
+• Ran git diff HEAD~1..HEAD -- scripts/cargo-shim scripts/test_cargo_shim.py
+  └ diff --git a/scripts/cargo-shim b/scripts/cargo-shim
+    index 865272cad..3a758864c 100755
+    … +230 lines (ctrl + t to view transcript)
+         assert result.stdout.strip() == f"target={root_base / namespace / 'target'}"
+
+
+• Explored
+  └ Read cargo-shim, test_cargo_shim.py
+    Search def load_policy|target_namespace|validate.*target|managed_env|target_dir\( in rust_verification.py
+
+• Context compacted
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• No blocking findings.
+
+  I reviewed PR #1287 at 642239dd82b18863f9b84bcb9e165118fa995510, focused on .worktrees/fix-1253-cargo-target-routing/scripts/cargo-shim and .worktrees/fix-
+  1253-cargo-target-routing/scripts/test_cargo_shim.py. The dynamic loader is gone, cargo-shim now computes only CARGO_TARGET_DIR, and the differential tests
+  cover root and BVS policy roots against rust_verification.target_dir().
+
+  Residual notes:
+
+  - No source-fence exception was added.
+  - I found no downstream dependency on RUST_VERIFICATION_PRESERVE_ROUTING_ENV.
+  - Local verification had already passed: just source-fence-static, python3.12 scripts/test_lane_governor.py, python3.12 scripts/test_cargo_shim.py, and the
+    grep check for dynamic import terms.
+
+  - The only caveat is that the Python 3.12 pytest run used an existing local pytest via PYTHONPATH because installing a fresh 3.12 pytest package was blocked.
+
+  Recommendation: no internal changes needed for this fix.
+
+--
+
+yes verify the ruleset mechanism
+
+---
+
+yes focused review, and I don't fully understand the 1288 decision
+
+---
+
+ok then let's separate noop_fresh that you are worried about, and have the work that you suggest to keep - generate a prompt for that
+
+---
+
+so we should have 2 prs
+
+---
+
+yes
+
+---
+
+seems like the pending checks here are not starting - can you check? [Image #6]
+
+---
+
+• I hit a real repo-governance conflict before commit/push.
+
+  Implemented in the new worktree/branch:
+  feat/1215-source-fence-static-pr-lane
+
+  Current diff:
+
+  - Only .github/workflows/ci.yml
+  - Adds source-fence-static job
+  - needs: [ci-policy]
+  - PR-only, non-full-CI, non-docs condition
+  - Runs compile-free just source-fence-static
+  - Not in gate.needs
+  - scripts/ci_provenance.py and ci/github-actions-runners.toml are still byte-identical to origin/main
+  - git grep -n noop_fresh returns nothing
+
+  Verification:
+
+  - just source-fence-static → passed
+  - python3.12 scripts/test_lane_governor.py → passed
+  - actionlint -color=false .github/workflows/ci.yml → passed
+  - git diff --check → clean
+
+  Blocker:
+  python3 scripts/verify_ci_workflow_hygiene.py fails with:
+
+  ERROR: .github/workflows/ci.yml job source-fence-static missing from ci/github-actions-runners.toml
+
+  That means the requested constraints conflict:
+
+  - You asked for green locally
+  - You also asked to not touch ci/github-actions-runners.toml
+  - Current repo hygiene requires every ci.yml job to be registered there
+
+  I have not committed or pushed. Decision needed: should I add the minimal runner entry in ci/github-actions-runners.toml, or keep the strict ci.yml-only
+  scope and accept that the repo hygiene verifier fails?
+
+---
+
+Implemented and opened draft PR #1292:
+
+  https://github.com/seungpyoson/bolt-v2/pull/1292
+
+  Head:
+  f0863587d178d5f8998fba94c2e07bc3df499940
+
+  Changed:
+
+  - .github/workflows/ci.yml: adds feedback-only source-fence-static job for draft/non-full/non-docs PRs.
+  - ci/github-actions-runners.toml: adds only source-fence-static = "managed_light" under [workflows.ci].
+
+  Verified:
+
+  - just source-fence-static passed
+  - python3.12 scripts/test_lane_governor.py passed
+  - python3 scripts/verify_ci_workflow_hygiene.py passed
+  - actionlint -color=false .github/workflows/ci.yml passed
+  - git diff --check passed
+  - git grep -n noop_fresh returned no matches
+  - scripts/ci_provenance.py unchanged from origin/main
+
+  Notes:
+
+  - No [ci_provenance.*] edits.
+  - PR is draft.
+  - Remote checks are currently pending.
+  - Local worktree is clean.
+
+review them - and we should also edit pr title and body as we see fit
+
+---
+
+for both prs -
+
+---
+
+edit title and body for both 1288 and 1292
+
+---
+
+do not merge is too aggressive. I think we should see if we can do something about this later
+
+---
+
+we need to assess why 1285 CI fials
+
+---
+
+so 1285 should address it?
+
+---
+
+give me a blurb - prompt
+
+---
+
+• Fixed and pushed PR #1285 to head 6a9bd8b5b126c59c08202d360f3ea164f17f2044.
+
+  Change:
+
+  - Added emits_live_input_health: true to the planted pyth_ws ReferencePriceProviderMetadata in .worktrees/fix-session1-stability-fixes/tests/
+    bolt_v3_reference_provider_registration.rs:51.
+
+  Verification:
+
+  - cargo fmt --check: passed
+  - git diff --check: passed
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo check --tests: passed at rebased head
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo test --test pricing bolt_v3_reference_provider_registration: passed, 8/8
+
+  I also swept construction sites: only the two production entries and this test initializer construct ReferencePriceProviderMetadata.
+
+---
+
+1285 still seems to fail
+
+---
+
+• Implemented and pushed to PR #1285.
+
+  Changed the five inline Chainlink gate-provider timeout fixtures in .worktrees/fix-session1-stability-fixes/tests/config_parsing.rs from 10 to 4, leaving the
+  divergence test’s scoped 4 -> 6 mutation intact.
+
+  Verification at pushed head 9c5226c9e47e2e5d993982d500183a09c958ed48:
+
+  - cargo fmt --check passed
+  - git diff --check HEAD~1..HEAD passed
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo test --test platform_config passed: 408/408
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo test --test pricing bolt_v3_reference_provider_registration passed: 8/8
+
+  Note: cargo test --test config_parsing is not a configured Cargo target; tests/config_parsing.rs is included through the platform_config harness, so I ran
+  the full affected harness.
+
+---
+
+still 1285 is failing
+
+---
+
+you got this request earlier right? 
+
+  We queued PRs #1281 and #1286 through just merge-queue. Mergify created draft queue PR #1294 on branch:
+
+  mergify/merge-queue/1a91ea54d7
+
+  Queue head SHA:
+
+  cdc463ab4ef35a4f07543ed52986dcda7d7b2be9
+
+  Mergify ETA was 2026-07-07 17:35 UTC, but the wave merged late at 18:03 UTC.
+
+  What happened:
+
+  - The real proof path worked.
+  - Root CI eventually emitted gate.
+  - gate passed at 2026-07-07 18:02:13 UTC.
+  - Mergify merged #1281 at 18:03:16 UTC and #1286 at 18:03:19 UTC.
+
+  Observed evidence:
+
+  - nextest archive was the long real blocker:
+      - Started 17:46:40 UTC
+      - Completed 18:01:07 UTC
+      - Build nextest archive ran 17:47:34 to 17:59:13
+
+  - Then downstream jobs passed quickly:
+      - test passed 18:01:15
+      - ci-provenance-emit passed 18:01:48
+      - gate passed 18:02:13
+
+  Suspicious behavior:
+
+  - While the queue proof PR was running, GitHub Actions repeatedly created duplicate pull_request workflow runs for the same queue branch and same head SHA.
+  - Several duplicate CI, Backtester CI, Coverage Enforcer, and actionlint runs appeared on #1294.
+  - Some were canceled; others briefly became the latest required context.
+  - After gate passed, Mergify briefly shifted to waiting on a newer duplicate host-health.
+  - Mergify still merged once the duplicate host-health passed.
+
+  Likely root cause:
+
+  - Workflows include pull_request: edited.
+  - Mergify updates/edits draft queue PR metadata while the queue is running.
+  - Those metadata-only edited events retrigger workflows on mergify/merge-queue/* proof PRs.
+  - Current workflow concurrency tries not to cancel Mergify proof runs, but it still allows duplicate runs to be created for the same queue head SHA.
+
+  Relevant files:
+
+  - .github/workflows/ci.yml
+  - .github/workflows/backtester-ci.yml
+  - .github/workflows/coverage-enforcer.yml
+  - .github/workflows/actionlint.yml
+  - scripts/verify_ci_workflow_hygiene.py
+  - scripts/test_verify_ci_workflow_hygiene.py
+
+  Hypothesis to investigate:
+  For Mergify proof PRs, pull_request: edited metadata-only events should not launch new proof workflows. Ordinary PR edited events still matter for base-
+  retarget handling, so do not remove edited globally.
+
+  Suggested fix direction:
+  Add workflow-level or job-level filtering so edited events on mergify/merge-queue/* / tmp-mergify/merge-queue/* proof PRs are no-op unless the base ref
+  actually changed. Add workflow hygiene tests to prevent regression.
+
+  Need Fable 5 to verify:
+
+  1. Exact event payload for Mergify queue PR edited events.
+  2. Whether GitHub Actions supports the intended expression cleanly at workflow/job level.
+  3. Whether skipping all queue-PR edited events is safe, or whether only metadata-only edits should be skipped.
+  4. Which required contexts GitHub branch rules and Mergify actually consume when duplicate contexts exist.
+
+---
+
+all of the PRs we discussed merged
+
+---
+
+so are we done with the overall CI and cargo optimizations? what's left?
+
+---
+
+but CI still seems quite expensive - just on ubicloud alone - can you check
+
+---
+
+what do you mean by draft default not started? I thought we already have draft default
+
+---
+
+I told you that I need to see drastic improvements in:
+1) cost
+2) speed
+3) frequency 
+
+and we landed a lot of PRs - I want to know whether we are in the "to be" status
+
+---
+
+investigate into this -  Kill the proof churn — the 78%-cancelled batch thrashing is the biggest single lever on cost and frequency, and it's entirely untouched. This is where I'd start.
+
+---
+
+verify first - and explain the situation in plain english and make this concise
+
+---
+
+[Image #12] is it something we edit on the frontend (of mergify)?

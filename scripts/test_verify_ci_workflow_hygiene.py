@@ -3458,12 +3458,43 @@ def assert_mergify_contract_rules_are_structured_and_falsifiable() -> None:
 
 def assert_mergify_contract_preserves_legacy_error_lists() -> None:
     verifier = load_verifier()
+    provenance = load_provenance()
+    expectations = provenance.MERGIFY_CONFIG_EXPECTATIONS
+    queue_rule_order = expectations["queue_rule_order"]
+    queue_rules = expectations["queue_rules"]
+    merge_queue_scalars = expectations["merge_queue"]
     mergify_config = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
+    hotfix_rule_name = queue_rule_order[0]
+    default_rule_name = queue_rule_order[1]
+    hotfix_rule_line = f"  - name: {hotfix_rule_name}\n"
+    default_rule_line = f"  - name: {default_rule_name}\n"
+    queue_rules_header = f"\n{'queue_rules'}:\n"
+    priority_rules_header = f"\n{'priority_rules'}:\n"
+    queue_conditions_key = "queue_conditions"
+    hotfix_queue_conditions_header = f"    {queue_conditions_key}:"
+    default_rule_start = mergify_config.index(default_rule_line)
+    priority_rules_start = mergify_config.index(priority_rules_header)
+    config_without_default_queue_rule = mergify_config[:default_rule_start] + mergify_config[priority_rules_start:]
+    merge_queue_block = (
+        f"{'merge_queue'}:\n"
+        + "".join(
+            mergify_scalar_line("  ", key, merge_queue_scalars[key])
+            for key in ("max_parallel_checks", "reset_on_external_merge")
+        )
+    )
+    default_batch_size = queue_rules[default_rule_name]["batch_size"]
+    if not isinstance(default_batch_size, dict):
+        raise AssertionError("default queue batch_size fixture must be mapping-backed")
+    default_batch_max_line = mergify_scalar_line("      ", "max", default_batch_size["max"])
+    hotfix_batch_size_line = mergify_scalar_line("    ", "batch_size", queue_rules[hotfix_rule_name]["batch_size"])
+    default_merge_method_line = mergify_scalar_line("    ", "merge_method", queue_rules[default_rule_name]["merge_method"])
+    hotfix_draft_account_line = mergify_scalar_line("    ", "draft_bot_account", queue_rules[hotfix_rule_name]["draft_bot_account"])
+    default_draft_account_line = mergify_scalar_line("    ", "draft_bot_account", queue_rules[default_rule_name]["draft_bot_account"])
     cases = {
         "missing merge_queue": (
             replace_once(
                 mergify_config,
-                "merge_queue:\n  max_parallel_checks: 1\n  reset_on_external_merge: always\n\n",
+                f"{merge_queue_block}\n",
                 "",
             ),
             [".mergify.yml must define merge_queue"],
@@ -3472,7 +3503,7 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
         "non-mapping merge_queue": (
             replace_once(
                 mergify_config,
-                "merge_queue:\n  max_parallel_checks: 1\n  reset_on_external_merge: always\n",
+                merge_queue_block,
                 "merge_queue: []\n",
             ),
             [".mergify.yml merge_queue must be a mapping"],
@@ -3481,7 +3512,7 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
         "batch unsupported key before equality drift": (
             replace_once(
                 mergify_config,
-                "      max: 6\n",
+                default_batch_max_line,
                 "      max: 5\n      spread: true\n",
             ),
             [
@@ -3494,7 +3525,7 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
             ],
         ),
         "renamed queue_rules keeps root errors before missing section errors": (
-            replace_once(mergify_config, "\nqueue_rules:\n", "\nqueue_rules_missing:\n"),
+            replace_once(mergify_config, queue_rules_header, "\nqueue_rules_missing:\n"),
             [
                 ".mergify.yml must not define unsupported top-level key queue_rules_missing",
                 ".mergify.yml must define queue_rules",
@@ -3509,7 +3540,7 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
             ],
         ),
         "renamed priority_rules keeps root errors before missing section errors": (
-            replace_once(mergify_config, "\npriority_rules:\n", "\npriority_rules_missing:\n"),
+            replace_once(mergify_config, priority_rules_header, "\npriority_rules_missing:\n"),
             [
                 ".mergify.yml must not define unsupported top-level key priority_rules_missing",
                 ".mergify.yml must define priority_rules",
@@ -3521,6 +3552,69 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
                 "mergify.priority_rules.order",
             ],
         ),
+        "root key classifications keep document order": (
+            (
+                "aaa_unknown: true\n"
+                "defaults:\n"
+                "  queue_rule:\n"
+                "    batch_size: 1\n"
+                "zzz_unknown: true\n"
+                "pull_request_rules:\n"
+                "  - name: autoqueue\n"
+                + mergify_config
+            ),
+            [
+                ".mergify.yml must not define unsupported top-level key aaa_unknown",
+                ".mergify.yml must keep manual queueing only; remove defaults",
+                ".mergify.yml must not define unsupported top-level key zzz_unknown",
+                ".mergify.yml must keep manual queueing only; remove pull_request_rules",
+            ],
+            [
+                "mergify.root.supported_keys",
+                "mergify.root.manual_queueing_only",
+                "mergify.root.supported_keys",
+                "mergify.root.manual_queueing_only",
+            ],
+        ),
+        "queue-rule errors stay grouped by rule": (
+            replace_once_after(
+                replace_once_after(
+                    mergify_config,
+                    hotfix_rule_line,
+                    hotfix_batch_size_line,
+                    "    batch_size: 99\n",
+                ),
+                default_rule_line,
+                default_merge_method_line,
+                "    merge_method: merge\n",
+            ),
+            [
+                ".mergify.yml hotfix batch_size must be 1",
+                ".mergify.yml default merge_method must be squash",
+            ],
+            [
+                "mergify.queue_rules.hotfix.batch_size",
+                "mergify.queue_rules.default.merge_method",
+            ],
+        ),
+        "missing later queue rule stays after present earlier rule errors": (
+            replace_once_after(
+                config_without_default_queue_rule,
+                hotfix_rule_line,
+                hotfix_queue_conditions_header,
+                f"    autoqueue: true\n{hotfix_queue_conditions_header}",
+            ),
+            [
+                ".mergify.yml queue_rules must define exactly hotfix followed by default",
+                ".mergify.yml hotfix must not define unsupported key autoqueue",
+                ".mergify.yml must define default queue rule",
+            ],
+            [
+                "mergify.queue_rules.order",
+                "mergify.queue_rules.hotfix.supported_keys",
+                "mergify.queue_rules.order",
+            ],
+        ),
     }
     for label, (mutated, expected_errors, expected_rule_ids) in cases.items():
         findings = verifier.verify_mergify_config_findings(mutated)
@@ -3530,6 +3624,109 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
             raise AssertionError(f"{label} rule ids changed: {actual_rule_ids}")
         if actual_errors != expected_errors:
             raise AssertionError(f"{label} legacy errors changed: {actual_errors}")
+
+
+def assert_mergify_contract_missing_scalar_keys_fail_closed() -> None:
+    verifier = load_verifier()
+    provenance = load_provenance()
+    expectations = provenance.MERGIFY_CONFIG_EXPECTATIONS
+    queue_rule_order = expectations["queue_rule_order"]
+    queue_rules = expectations["queue_rules"]
+    mergify_config = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
+    hotfix_rule_name = queue_rule_order[0]
+    default_rule_name = queue_rule_order[1]
+    hotfix_rule_line = f"  - name: {hotfix_rule_name}\n"
+    default_rule_line = f"  - name: {default_rule_name}\n"
+    hotfix_draft_account_line = mergify_scalar_line(
+        "    ",
+        "draft_bot_account",
+        queue_rules[hotfix_rule_name]["draft_bot_account"],
+    )
+    default_draft_account_line = mergify_scalar_line(
+        "    ",
+        "draft_bot_account",
+        queue_rules[default_rule_name]["draft_bot_account"],
+    )
+    cases = {
+        "hotfix": (
+            replace_once_after(
+                mergify_config,
+                hotfix_rule_line,
+                hotfix_draft_account_line,
+                "",
+            ),
+            ".mergify.yml hotfix draft_bot_account must be null",
+            "mergify.queue_rules.hotfix.draft_bot_account",
+        ),
+        "default": (
+            replace_once_after(
+                mergify_config,
+                default_rule_line,
+                default_draft_account_line,
+                "",
+            ),
+            ".mergify.yml default draft_bot_account must be null",
+            "mergify.queue_rules.default.draft_bot_account",
+        ),
+    }
+    for label, (mutated, expected_error, expected_rule_id) in cases.items():
+        findings = verifier.verify_mergify_config_findings(mutated)
+        actual = [
+            (contract_finding_rule_id(finding), contract_finding_message(finding))
+            for finding in findings
+        ]
+        if actual != [(expected_rule_id, expected_error)]:
+            raise AssertionError(f"missing {label} draft_bot_account must fail closed, got: {actual}")
+
+
+def assert_mergify_contract_engine_rejects_invalid_rule_tables() -> None:
+    contract_engine = load_script_module("contract_engine")
+    contract_rules = load_script_module("contract_rules")
+    rules = tuple(contract_rules.MERGIFY_RULES)
+    parsed_config = {"merge_queue": {}, "queue_rules": [], "priority_rules": []}
+
+    without_root_mapping = tuple(
+        rule for rule in rules if contract_rule_selector(rule) != ("root",)
+    )
+    try:
+        contract_engine.evaluate(without_root_mapping, [], config_name=".mergify.yml")
+    except ValueError as exc:
+        if "root mapping" not in str(exc):
+            raise AssertionError(f"missing root rule error must name root mapping, got: {exc}")
+    else:
+        raise AssertionError("contract engine must reject non-mapping roots without a root mapping rule")
+
+    typo_rule = dataclasses.replace(
+        rules[0],
+        rule_id="mergify.typo.selector",
+        kind="scalar-EQ",
+        selector=("merge_qeueu", "max_parallel_checks"),
+        expected=1,
+        message_template="{config_name} typo selector must not lint root",
+    )
+    try:
+        contract_engine.evaluate((rules[0], typo_rule), parsed_config, config_name=".mergify.yml")
+    except ValueError as exc:
+        if "unsupported selector namespace" not in str(exc):
+            raise AssertionError(f"unsupported selector error must name namespace, got: {exc}")
+    else:
+        raise AssertionError("contract engine must reject unsupported selector namespaces")
+
+    unknown_order_rule = dataclasses.replace(
+        rules[0],
+        rule_id="mergify.other_rules.order",
+        kind="required-rule-presence/order",
+        selector=("other_rules",),
+        expected=("default",),
+        message_template="{config_name} other_rules must define default",
+    )
+    try:
+        contract_engine.evaluate((rules[0], unknown_order_rule), parsed_config, config_name=".mergify.yml")
+    except ValueError as exc:
+        if "unsupported required-rule selector" not in str(exc):
+            raise AssertionError(f"unsupported order selector error must name selector, got: {exc}")
+    else:
+        raise AssertionError("contract engine must reject unsupported required-rule selectors")
 
 
 def assert_workflow_model_helpers_are_shared_and_cached() -> None:
@@ -3546,6 +3743,10 @@ def assert_workflow_model_helpers_are_shared_and_cached() -> None:
         "named_step_block",
         "block_top_level_items",
         "block_nested_mapping_items",
+        "line_indent",
+        "unquote_yaml_scalar",
+        "normalize_script_text",
+        "block_step_property_indent",
         "top_level_mapping_items",
         "job_top_level_items",
     )
@@ -3557,9 +3758,20 @@ def assert_workflow_model_helpers_are_shared_and_cached() -> None:
 
     workflow_text = "name: generated\njobs:\n  one:\n    steps:\n      - run: echo one\n"
     first_parse = workflow_model.parse_jobs(workflow_text)
+    first_parse["one"].append("__POISON__")
     second_parse = workflow_model.parse_jobs(workflow_text)
-    if first_parse is not second_parse:
-        raise AssertionError("workflow_model.parse_jobs must memoize parses per workflow text")
+    if first_parse is second_parse or "__POISON__" in second_parse["one"]:
+        raise AssertionError("workflow_model.parse_jobs must return fresh mutable parse results")
+
+    shared_constants = (
+        "YAML_ANCHOR_PATTERN",
+        "YAML_KEY_PATTERN",
+        "YAML_STEP_ITEM_RE",
+        "YAML_RUN_LINE_RE",
+    )
+    for constant_name in shared_constants:
+        if getattr(verifier, constant_name, None) is not getattr(workflow_model, constant_name, None):
+            raise AssertionError(f"verifier must re-export workflow_model.{constant_name}")
 
 
 def mutate_named_step_after(
@@ -6192,6 +6404,16 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
 def assert_mergify_config_gaps_are_reported() -> None:
     verifier = load_verifier()
+    provenance = load_provenance()
+    expectations = provenance.MERGIFY_CONFIG_EXPECTATIONS
+    merge_queue_scalars = expectations["merge_queue"]
+    queue_rule_order = expectations["queue_rule_order"]
+    queue_rules = expectations["queue_rules"]
+    priority_rule_order = expectations["priority_rule_order"]
+    required_reviewer = expectations["required_reviewer"]
+    required_checks = expectations["required_checks"]
+    hotfix_queue = queue_rules[queue_rule_order[0]]
+    default_queue = queue_rules[queue_rule_order[1]]
     mergify_config = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
     baseline_errors = verifier.verify_mergify_config(mergify_config)
     if baseline_errors:
@@ -6204,9 +6426,28 @@ def assert_mergify_config_gaps_are_reported() -> None:
     if result == 0 or ".mergify.yml is required for Mergify queue governance" not in output:
         raise AssertionError(f"verifier main must reject a missing .mergify.yml, got: {result}, {output!r}")
 
-    hotfix_rule_start = mergify_config.index("  # Exceptional path only. Normal merge sessions use the default queue below.\n")
-    default_rule_start = mergify_config.index("  - name: default\n")
-    priority_rules_start = mergify_config.index("\npriority_rules:\n")
+    def rule_name_line(rule_name: str) -> str:
+        return f"  - name: {rule_name}\n"
+
+    def section_line(section_name: str) -> str:
+        return f"{section_name}:\n"
+
+    def previous_line_start(text: str, line_start: int) -> int:
+        previous_line_end = text.rfind("\n", 0, line_start - 1)
+        if previous_line_end == -1:
+            return 0
+        previous_line_start_index = text.rfind("\n", 0, previous_line_end)
+        if previous_line_start_index == -1:
+            return 0
+        return previous_line_start_index + 1
+
+    hotfix_rule_line = rule_name_line(queue_rule_order[0])
+    default_rule_line = rule_name_line(queue_rule_order[1])
+    priority_rule_line = rule_name_line(priority_rule_order[0])
+    hotfix_rule_start = mergify_config.index(hotfix_rule_line)
+    default_rule_start = mergify_config.index(default_rule_line)
+    priority_rule_start = mergify_config.index(priority_rule_line, default_rule_start + len(default_rule_line))
+    priority_rules_start = previous_line_start(mergify_config, priority_rule_start)
     hotfix_rule_block = mergify_config[hotfix_rule_start:default_rule_start]
     default_rule_block = mergify_config[default_rule_start:priority_rules_start]
     swapped_queue_rules = (
@@ -6224,6 +6465,212 @@ def assert_mergify_config_gaps_are_reported() -> None:
     expected_order_error = ".mergify.yml queue_rules must define exactly hotfix followed by default"
     if expected_order_error not in swapped_errors:
         raise AssertionError(f"swapped queue-rule block must render legacy error, got: {swapped_errors}")
+
+    def sequence_block(indent: str, key: str, values: tuple[str, ...]) -> str:
+        if not values:
+            return f"{indent}{key}: []\n"
+        return f"{indent}{key}:\n" + "".join(f"{indent}  - {value}\n" for value in values)
+
+    def item_sequence_block(key: str, values: tuple[str, ...]) -> str:
+        if not values:
+            return f"  - {key}: []\n"
+        return f"  - {key}:\n" + "".join(f"      - {value}\n" for value in values)
+
+    def merge_conditions_block(indent: str) -> str:
+        return (
+            f"{indent}merge_conditions:\n"
+            f"{indent}  - approved-reviews-by = {required_reviewer}\n"
+            + "".join(f"{indent}  - check-success = {check_name}\n" for check_name in required_checks)
+        )
+
+    def queue_rule_fixture(
+        rule_name: str,
+        expectation: dict[str, object],
+        *,
+        name_line: str,
+        name_after_queue_conditions: bool = False,
+    ) -> str:
+        queue_conditions = expectation["queue_conditions"]
+        if not isinstance(queue_conditions, tuple):
+            raise AssertionError(f"{rule_name} queue_conditions fixture must be tuple-backed")
+        batch_size = expectation["batch_size"]
+        lines = [name_line]
+        if name_after_queue_conditions:
+            lines = [item_sequence_block("queue_conditions", queue_conditions), f"    name: {rule_name}\n"]
+        else:
+            lines.append(sequence_block("    ", "queue_conditions", queue_conditions))
+        lines.append(merge_conditions_block("    "))
+        lines.append(
+            mergify_scalar_line(
+                "    ",
+                "branch_protection_injection_mode",
+                expectation["branch_protection_injection_mode"],
+            )
+        )
+        if isinstance(batch_size, dict):
+            lines.append("    batch_size:\n")
+            lines.append(mergify_scalar_line("      ", "min", batch_size["min"]))
+            lines.append(mergify_scalar_line("      ", "max", batch_size["max"]))
+        else:
+            lines.append(mergify_scalar_line("    ", "batch_size", batch_size))
+        for key in (
+            "batch_max_wait_time",
+            "batch_max_failure_resolution_attempts",
+            "checks_timeout",
+            "draft_bot_account",
+            "merge_method",
+        ):
+            lines.append(mergify_scalar_line("    ", key, expectation[key]))
+        return "".join(lines) + "\n"
+
+    def merge_queue_block(indent: str) -> str:
+        return (
+            section_line("merge_queue")
+            + "".join(
+                mergify_scalar_line(indent, key, merge_queue_scalars[key])
+                for key in ("max_parallel_checks", "reset_on_external_merge")
+            )
+        )
+
+    default_queue_conditions = sequence_block("    ", "queue_conditions", default_queue["queue_conditions"])
+    default_max_line = mergify_scalar_line("      ", "max", default_queue["batch_size"]["max"])
+    default_wait_line = mergify_scalar_line("    ", "batch_max_wait_time", default_queue["batch_max_wait_time"])
+    hotfix_merge_method_line = mergify_scalar_line("    ", "merge_method", hotfix_queue["merge_method"])
+    invalid_check_condition = f"      - check-success = {required_checks[0]}\n"
+    shape_hardening_cases = [
+        (
+            "yaml merge key enabled",
+            replace_once_after(
+                mergify_config,
+                default_rule_line,
+                default_queue_conditions,
+                "    <<: *default_queue\n" + default_queue_conditions,
+            ),
+            "YAML merge key is forbidden",
+        ),
+        (
+            "duplicate queue_rules top level",
+            mergify_config + "\n" + section_line("queue_rules") + default_rule_line,
+            "duplicate key queue_rules",
+        ),
+        (
+            "duplicate default queue conditions",
+            replace_once_after(
+                mergify_config,
+                default_rule_line,
+                default_queue_conditions,
+                default_queue_conditions + "    queue_conditions:\n" + invalid_check_condition,
+            ),
+            "duplicate key queue_conditions",
+        ),
+        (
+            "quoted duplicate default queue conditions",
+            replace_once_after(
+                mergify_config,
+                default_rule_line,
+                default_queue_conditions,
+                default_queue_conditions + "    \"queue_conditions\":\n" + invalid_check_condition,
+            ),
+            "duplicate key queue_conditions",
+        ),
+        (
+            "default batch max duplicated",
+            replace_once(
+                mergify_config,
+                default_max_line,
+                default_max_line
+                + mergify_scalar_line("      ", "max", mergify_max_batch_size(default_queue["batch_size"]) - 1),
+            ),
+            "duplicate key max",
+        ),
+        (
+            "duplicate default wait",
+            replace_once_after(
+                mergify_config,
+                default_rule_line,
+                default_wait_line,
+                default_wait_line
+                + mergify_scalar_line("    ", "batch_max_wait_time", alternate_mergify_scalar(default_queue["batch_max_wait_time"])),
+            ),
+            "duplicate key batch_max_wait_time",
+        ),
+        (
+            "duplicate hotfix merge method",
+            replace_once_after(
+                mergify_config,
+                hotfix_rule_line,
+                hotfix_merge_method_line,
+                hotfix_merge_method_line
+                + mergify_scalar_line("    ", "merge_method", alternate_mergify_scalar(hotfix_queue["merge_method"])),
+            ),
+            "duplicate key merge_method",
+        ),
+        (
+            "quoted-name extra queue rule",
+            replace_once(
+                mergify_config,
+                default_rule_line,
+                queue_rule_fixture(
+                    "sneaky",
+                    hotfix_queue,
+                    name_line="  - \"name\": sneaky\n",
+                )
+                + default_rule_line,
+            ),
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "name-not-first extra queue rule",
+            replace_once(
+                mergify_config,
+                default_rule_line,
+                queue_rule_fixture(
+                    "sneaky",
+                    hotfix_queue,
+                    name_line="",
+                    name_after_queue_conditions=True,
+                )
+                + default_rule_line,
+            ),
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "wide-indent merge queue unsupported key",
+            replace_once(
+                mergify_config,
+                merge_queue_block("  "),
+                merge_queue_block("    ") + "    skip_intermediate_results: true\n",
+            ),
+            "merge_queue must not define unsupported key skip_intermediate_results",
+        ),
+        (
+            "yaml aliases forbidden",
+            replace_once_after(
+                mergify_config,
+                default_rule_line,
+                default_queue_conditions,
+                "    queue_conditions: *default_conditions\n",
+            ),
+            "YAML aliases are forbidden",
+        ),
+        (
+            "non-scalar mapping key forbidden",
+            "? [not, scalar]\n: value\n" + mergify_config,
+            "mapping keys must be scalars",
+        ),
+        (
+            "multiple documents forbidden",
+            mergify_config + "\n---\nextra: true\n",
+            "must contain exactly one YAML document",
+        ),
+    ]
+    for label, mutated, expected in shape_hardening_cases:
+        findings = verifier.verify_mergify_config_findings(mutated)
+        errors = [contract_finding_message(finding) for finding in findings]
+        if not any(expected in error for error in errors):
+            raise AssertionError(
+                f"expected .mergify.yml {label} error containing {expected!r}, got: {errors}"
+            )
 
     original_run = verifier.subprocess.run
     try:
@@ -10345,7 +10792,6 @@ def assert_command_parse_cache_is_transparent() -> None:
         "      - run: cargo build --target-dir /tmp/raw # inline comment\n      - run: just fmt-check",
     )
     cached_strip_fn = verifier.strip_comment
-    cached_parse_jobs_fn = verifier.parse_jobs
     cached_token_fn = verifier._command_tokens_cached
     workflow_model = verifier.workflow_model
     findings_live = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
@@ -10354,17 +10800,13 @@ def assert_command_parse_cache_is_transparent() -> None:
     hits_before = cached_strip_fn.cache_info().hits + cached_token_fn.cache_info().hits
     try:
         verifier.strip_comment = cached_strip_fn.__wrapped__
-        verifier.parse_jobs = cached_parse_jobs_fn.__wrapped__
         verifier._command_tokens_cached = cached_token_fn.__wrapped__
         workflow_model.strip_comment = cached_strip_fn.__wrapped__
-        workflow_model.parse_jobs = cached_parse_jobs_fn.__wrapped__
         findings_bypassed = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
     finally:
         verifier.strip_comment = cached_strip_fn
-        verifier.parse_jobs = cached_parse_jobs_fn
         verifier._command_tokens_cached = cached_token_fn
         workflow_model.strip_comment = cached_strip_fn
-        workflow_model.parse_jobs = cached_parse_jobs_fn
     hits_after = cached_strip_fn.cache_info().hits + cached_token_fn.cache_info().hits
     if findings_live != findings_bypassed:
         raise AssertionError(
@@ -12878,8 +13320,8 @@ def run_verifier_main_with_no_mistakes(
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
+            justfile_text=repo_source_text("justfile"),
             write_workflow=False,
-            write_justfile=False,
         )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
@@ -12899,6 +13341,7 @@ def run_verifier_main_with_no_mistakes(
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        temp_verifier.verify_test_harness_manifest = lambda: []
         original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
         temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
@@ -12926,8 +13369,8 @@ def run_verifier_main_with_extra_action(
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
+            justfile_text=repo_source_text("justfile"),
             write_workflow=False,
-            write_justfile=False,
         )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
@@ -12947,6 +13390,7 @@ def run_verifier_main_with_extra_action(
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        temp_verifier.verify_test_harness_manifest = lambda: []
         original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
         temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
@@ -12972,8 +13416,8 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
+            justfile_text=repo_source_text("justfile"),
             write_workflow=False,
-            write_justfile=False,
         )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
@@ -12989,6 +13433,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        temp_verifier.verify_test_harness_manifest = lambda: []
         original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
         temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
@@ -19163,6 +19608,8 @@ def main() -> int:
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_contract_rules_are_structured_and_falsifiable()
     assert_mergify_contract_preserves_legacy_error_lists()
+    assert_mergify_contract_missing_scalar_keys_fail_closed()
+    assert_mergify_contract_engine_rejects_invalid_rule_tables()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_cache_persistence_audit_gaps_are_reported()

@@ -37,7 +37,6 @@ def strip_comment(line: str) -> str:
     return line.rstrip()
 
 
-@functools.cache
 def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
     """Parse this repo's strict GitHub Actions job subset.
 

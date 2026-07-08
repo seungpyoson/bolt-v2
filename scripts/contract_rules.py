@@ -52,6 +52,83 @@ MERGIFY_QUEUE_RULE_KEYS = frozenset(
 )
 MERGIFY_DYNAMIC_BATCH_KEYS = frozenset({"min", "max"})
 MERGIFY_PRIORITY_RULE_KEYS = frozenset({"name", "conditions", "priority", "allow_checks_interruption"})
+MERGIFY_QUEUE_RULE_SCALAR_KEYS = (
+    "branch_protection_injection_mode",
+    "batch_max_wait_time",
+    "batch_max_failure_resolution_attempts",
+    "checks_timeout",
+    "draft_bot_account",
+    "merge_method",
+)
+MERGIFY_PRIORITY_RULE_NAME = _EXPECTATIONS["priority_rule_order"][0]
+
+
+def queue_rule_contract_rules(rule_name: str) -> tuple[ContractRule, ...]:
+    expectation = _EXPECTATIONS["queue_rules"][rule_name]
+    rules = [
+        ContractRule(
+            f"mergify.queue_rules.{rule_name}.supported_keys",
+            "forbidden-unknown-key",
+            ("queue_rules", rule_name),
+            MERGIFY_QUEUE_RULE_KEYS,
+            "{config_name} {rule_name} must not define unsupported key {key}",
+        ),
+        ContractRule(
+            f"mergify.queue_rules.{rule_name}.queue_conditions",
+            "mapping-EQ",
+            ("queue_rules", rule_name, "queue_conditions"),
+            expectation["queue_conditions"],
+            "{config_name} {rule_name} queue_conditions must be {expected_list!r}",
+        ),
+        ContractRule(
+            f"mergify.queue_rules.{rule_name}.merge_conditions",
+            "required-membership",
+            ("queue_rules", rule_name, "merge_conditions"),
+            _REQUIRED_MERGE_CONDITIONS,
+            "{config_name} {rule_name} merge_conditions must require {required_reviewer} and all {required_check_count} gates",
+        ),
+        *(
+            ContractRule(
+                f"mergify.queue_rules.{rule_name}.{key}",
+                "scalar-EQ",
+                ("queue_rules", rule_name, key),
+                expectation[key],
+                "{config_name} {rule_name} {key} must be {expected_yaml}",
+            )
+            for key in MERGIFY_QUEUE_RULE_SCALAR_KEYS
+        ),
+    ]
+    batch_size = expectation["batch_size"]
+    if isinstance(batch_size, dict):
+        rules.extend(
+            [
+                ContractRule(
+                    f"mergify.queue_rules.{rule_name}.batch_size.supported_keys",
+                    "forbidden-unknown-key",
+                    ("queue_rules", rule_name, "batch_size"),
+                    MERGIFY_DYNAMIC_BATCH_KEYS,
+                    "{config_name} {rule_name} batch_size must not define unsupported key {key}",
+                ),
+                ContractRule(
+                    f"mergify.queue_rules.{rule_name}.batch_size",
+                    "mapping-EQ",
+                    ("queue_rules", rule_name, "batch_size"),
+                    batch_size,
+                    "{config_name} {rule_name} batch_size must be min {min} max {max}",
+                ),
+            ]
+        )
+    else:
+        rules.append(
+            ContractRule(
+                f"mergify.queue_rules.{rule_name}.batch_size",
+                "scalar-EQ",
+                ("queue_rules", rule_name, "batch_size"),
+                batch_size,
+                "{config_name} {rule_name} batch_size must be {expected_yaml}",
+            )
+        )
+    return tuple(rules)
 
 MERGIFY_RULES = (
     ContractRule(
@@ -100,73 +177,9 @@ MERGIFY_RULES = (
         "{config_name} queue_rules must define exactly hotfix followed by default",
     ),
     *(
-        ContractRule(
-            f"mergify.queue_rules.{rule_name}.supported_keys",
-            "forbidden-unknown-key",
-            ("queue_rules", rule_name),
-            MERGIFY_QUEUE_RULE_KEYS,
-            "{config_name} {rule_name} must not define unsupported key {key}",
-        )
+        rule
         for rule_name in _EXPECTATIONS["queue_rule_order"]
-    ),
-    *(
-        ContractRule(
-            f"mergify.queue_rules.{rule_name}.queue_conditions",
-            "mapping-EQ",
-            ("queue_rules", rule_name, "queue_conditions"),
-            _EXPECTATIONS["queue_rules"][rule_name]["queue_conditions"],
-            "{config_name} {rule_name} queue_conditions must be {expected_list!r}",
-        )
-        for rule_name in _EXPECTATIONS["queue_rule_order"]
-    ),
-    *(
-        ContractRule(
-            f"mergify.queue_rules.{rule_name}.merge_conditions",
-            "required-membership",
-            ("queue_rules", rule_name, "merge_conditions"),
-            _REQUIRED_MERGE_CONDITIONS,
-            "{config_name} {rule_name} merge_conditions must require {required_reviewer} and all {required_check_count} gates",
-        )
-        for rule_name in _EXPECTATIONS["queue_rule_order"]
-    ),
-    *(
-        ContractRule(
-            f"mergify.queue_rules.{rule_name}.{key}",
-            "scalar-EQ",
-            ("queue_rules", rule_name, key),
-            _EXPECTATIONS["queue_rules"][rule_name][key],
-            "{config_name} {rule_name} {key} must be {expected_yaml}",
-        )
-        for rule_name in _EXPECTATIONS["queue_rule_order"]
-        for key in (
-            "branch_protection_injection_mode",
-            "batch_max_wait_time",
-            "batch_max_failure_resolution_attempts",
-            "checks_timeout",
-            "draft_bot_account",
-            "merge_method",
-        )
-    ),
-    ContractRule(
-        "mergify.queue_rules.hotfix.batch_size",
-        "scalar-EQ",
-        ("queue_rules", "hotfix", "batch_size"),
-        _EXPECTATIONS["queue_rules"]["hotfix"]["batch_size"],
-        "{config_name} hotfix batch_size must be {expected_yaml}",
-    ),
-    ContractRule(
-        "mergify.queue_rules.default.batch_size.supported_keys",
-        "forbidden-unknown-key",
-        ("queue_rules", "default", "batch_size"),
-        MERGIFY_DYNAMIC_BATCH_KEYS,
-        "{config_name} default batch_size must not define unsupported key {key}",
-    ),
-    ContractRule(
-        "mergify.queue_rules.default.batch_size",
-        "mapping-EQ",
-        ("queue_rules", "default", "batch_size"),
-        _EXPECTATIONS["queue_rules"]["default"]["batch_size"],
-        "{config_name} default batch_size must be min {min} max {max}",
+        for rule in queue_rule_contract_rules(rule_name)
     ),
     ContractRule(
         "mergify.priority_rules.order",
@@ -176,32 +189,32 @@ MERGIFY_RULES = (
         "{config_name} priority_rules must define exactly hotfix",
     ),
     ContractRule(
-        "mergify.priority_rules.hotfix.supported_keys",
+        f"mergify.priority_rules.{MERGIFY_PRIORITY_RULE_NAME}.supported_keys",
         "forbidden-unknown-key",
-        ("priority_rules", "hotfix"),
+        ("priority_rules", MERGIFY_PRIORITY_RULE_NAME),
         MERGIFY_PRIORITY_RULE_KEYS,
-        "{config_name} hotfix priority must not define unsupported key {key}",
+        "{config_name} {rule_name} priority must not define unsupported key {key}",
     ),
     ContractRule(
-        "mergify.priority_rules.hotfix.conditions",
+        f"mergify.priority_rules.{MERGIFY_PRIORITY_RULE_NAME}.conditions",
         "mapping-EQ",
-        ("priority_rules", "hotfix", "conditions"),
-        _EXPECTATIONS["priority_rules"]["hotfix"]["conditions"],
-        "{config_name} hotfix priority conditions must be {expected_list!r}",
+        ("priority_rules", MERGIFY_PRIORITY_RULE_NAME, "conditions"),
+        _EXPECTATIONS["priority_rules"][MERGIFY_PRIORITY_RULE_NAME]["conditions"],
+        "{config_name} {rule_name} priority conditions must be {expected_list!r}",
     ),
     ContractRule(
-        "mergify.priority_rules.hotfix.priority",
+        f"mergify.priority_rules.{MERGIFY_PRIORITY_RULE_NAME}.priority",
         "scalar-EQ",
-        ("priority_rules", "hotfix", "priority"),
-        _EXPECTATIONS["priority_rules"]["hotfix"]["priority"],
-        "{config_name} hotfix priority must be {expected_yaml}",
+        ("priority_rules", MERGIFY_PRIORITY_RULE_NAME, "priority"),
+        _EXPECTATIONS["priority_rules"][MERGIFY_PRIORITY_RULE_NAME]["priority"],
+        "{config_name} {rule_name} priority must be {expected_yaml}",
     ),
     ContractRule(
-        "mergify.priority_rules.hotfix.allow_checks_interruption",
+        f"mergify.priority_rules.{MERGIFY_PRIORITY_RULE_NAME}.allow_checks_interruption",
         "scalar-EQ",
-        ("priority_rules", "hotfix", "allow_checks_interruption"),
-        _EXPECTATIONS["priority_rules"]["hotfix"]["allow_checks_interruption"],
-        "{config_name} hotfix allow_checks_interruption must be {expected_yaml}",
+        ("priority_rules", MERGIFY_PRIORITY_RULE_NAME, "allow_checks_interruption"),
+        _EXPECTATIONS["priority_rules"][MERGIFY_PRIORITY_RULE_NAME]["allow_checks_interruption"],
+        "{config_name} {rule_name} allow_checks_interruption must be {expected_yaml}",
     ),
 )
 
@@ -242,7 +255,8 @@ MERGIFY_LEGACY_ERROR_FAMILY_RULE_IDS = {
         "mergify.priority_rules.order",
     ),
     "{config_name} {path} must be a mapping": (
-        "mergify.root.mapping",
+        "mergify.queue_rules.order",
+        "mergify.priority_rules.order",
         "mergify.queue_rules.default.batch_size",
     ),
     "{config_name} {path} must be a list": (
@@ -280,28 +294,28 @@ MERGIFY_LEGACY_ERROR_FAMILY_RULE_IDS = {
         "mergify.queue_rules.default.draft_bot_account",
         "mergify.queue_rules.default.merge_method",
     ),
-    "{config_name} hotfix batch_size must be {expected_yaml}": (
+    "{config_name} {rule_name} batch_size must be {expected_yaml}": (
         "mergify.queue_rules.hotfix.batch_size",
     ),
-    "{config_name} default batch_size must not define unsupported key {key}": (
+    "{config_name} {rule_name} batch_size must not define unsupported key {key}": (
         "mergify.queue_rules.default.batch_size.supported_keys",
     ),
-    "{config_name} default batch_size must be min {min} max {max}": (
+    "{config_name} {rule_name} batch_size must be min {min} max {max}": (
         "mergify.queue_rules.default.batch_size",
     ),
     "{config_name} priority_rules must define exactly hotfix": (
         "mergify.priority_rules.order",
     ),
-    "{config_name} hotfix priority must not define unsupported key {key}": (
+    "{config_name} {rule_name} priority must not define unsupported key {key}": (
         "mergify.priority_rules.hotfix.supported_keys",
     ),
-    "{config_name} hotfix priority conditions must be {expected_list!r}": (
+    "{config_name} {rule_name} priority conditions must be {expected_list!r}": (
         "mergify.priority_rules.hotfix.conditions",
     ),
-    "{config_name} hotfix priority must be {expected_yaml}": (
+    "{config_name} {rule_name} priority must be {expected_yaml}": (
         "mergify.priority_rules.hotfix.priority",
     ),
-    "{config_name} hotfix allow_checks_interruption must be {expected_yaml}": (
+    "{config_name} {rule_name} allow_checks_interruption must be {expected_yaml}": (
         "mergify.priority_rules.hotfix.allow_checks_interruption",
     ),
 }

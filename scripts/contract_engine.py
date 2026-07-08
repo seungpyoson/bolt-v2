@@ -114,31 +114,32 @@ def named_rules(
     rule_kind: str,
     order_rule: object,
     config_name: str,
-) -> tuple[dict[str, dict[str, Any]], tuple[ContractFinding, ...]]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    tuple[ContractFinding, ...],
+    dict[tuple[str, str], ContractFinding],
+]:
     findings: list[ContractFinding] = []
+    missing_findings: dict[tuple[str, str], ContractFinding] = {}
     expected_names = tuple(rule_field(order_rule, "expected"))
     if key not in root:
         findings.append(fallback_finding(order_rule, f"{config_name} must define {key}"))
         for expected_name in expected_names:
-            findings.append(
-                fallback_finding(
-                    order_rule,
-                    f"{config_name} must define {expected_name} {rule_kind} rule",
-                )
+            missing_findings[(key, expected_name)] = fallback_finding(
+                order_rule,
+                f"{config_name} must define {expected_name} {rule_kind} rule",
             )
-        return {}, tuple(findings)
+        return {}, tuple(findings), missing_findings
     values, type_finding = list_value(root[key], path=key, rule=order_rule, config_name=config_name)
     if type_finding is not None:
         findings.append(type_finding)
     if values is None:
         for expected_name in expected_names:
-            findings.append(
-                fallback_finding(
-                    order_rule,
-                    f"{config_name} must define {expected_name} {rule_kind} rule",
-                )
+            missing_findings[(key, expected_name)] = fallback_finding(
+                order_rule,
+                f"{config_name} must define {expected_name} {rule_kind} rule",
             )
-        return {}, tuple(findings)
+        return {}, tuple(findings), missing_findings
 
     names: list[Any] = []
     by_name: dict[str, dict[str, Any]] = {}
@@ -160,13 +161,11 @@ def named_rules(
         findings.append(finding(order_rule, config_name))
     for expected_name in expected_names:
         if expected_name not in by_name:
-            findings.append(
-                fallback_finding(
-                    order_rule,
-                    f"{config_name} must define {expected_name} {rule_kind} rule",
-                )
+            missing_findings[(key, expected_name)] = fallback_finding(
+                order_rule,
+                f"{config_name} must define {expected_name} {rule_kind} rule",
             )
-    return by_name, tuple(findings)
+    return by_name, tuple(findings), missing_findings
 
 
 def queue_rule_context(
@@ -178,15 +177,20 @@ def queue_rule_context(
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[tuple[str, ...], tuple[ContractFinding, ...]],
+    dict[tuple[str, str], ContractFinding],
 ]:
     findings_by_selector: dict[tuple[str, ...], tuple[ContractFinding, ...]] = {}
+    missing_findings_by_selector: dict[tuple[str, str], ContractFinding] = {}
     order_rules = {rule_selector(rule): rule for rule in rules if rule_field(rule, "kind") == "required-rule-presence/order"}
+    unsupported_order_selectors = sorted(set(order_rules) - {("queue_rules",), ("priority_rules",)})
+    if unsupported_order_selectors:
+        raise ValueError(f"unsupported required-rule selector {unsupported_order_selectors[0]!r}")
 
     queue_rules: dict[str, dict[str, Any]] = {}
     priority_rules: dict[str, dict[str, Any]] = {}
     queue_order_rule = order_rules.get(("queue_rules",))
     if queue_order_rule is not None:
-        queue_rules, queue_findings = named_rules(
+        queue_rules, queue_findings, queue_missing_findings = named_rules(
             root=root,
             key="queue_rules",
             rule_kind="queue",
@@ -194,9 +198,10 @@ def queue_rule_context(
             config_name=config_name,
         )
         findings_by_selector[("queue_rules",)] = queue_findings
+        missing_findings_by_selector.update(queue_missing_findings)
     priority_order_rule = order_rules.get(("priority_rules",))
     if priority_order_rule is not None:
-        priority_rules, priority_findings = named_rules(
+        priority_rules, priority_findings, priority_missing_findings = named_rules(
             root=root,
             key="priority_rules",
             rule_kind="priority",
@@ -204,7 +209,8 @@ def queue_rule_context(
             config_name=config_name,
         )
         findings_by_selector[("priority_rules",)] = priority_findings
-    return queue_rules, priority_rules, findings_by_selector
+        missing_findings_by_selector.update(priority_missing_findings)
+    return queue_rules, priority_rules, findings_by_selector, missing_findings_by_selector
 
 
 def selector_parent(
@@ -214,18 +220,50 @@ def selector_parent(
     queue_rules: dict[str, dict[str, Any]],
     priority_rules: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
+    if not selector:
+        raise ValueError("contract rule selector must not be empty")
+    if selector[0] == "root":
+        if selector != ("root",):
+            raise ValueError(f"unsupported root selector {selector!r}")
+        return root
     if selector[0] == "merge_queue":
         value = root.get("merge_queue")
         return value if isinstance(value, dict) else None
     if selector[0] == "queue_rules":
+        if len(selector) < 2:
+            raise ValueError(f"queue_rules selector must include a rule name: {selector!r}")
         parent = queue_rules.get(selector[1])
         if parent is not None and len(selector) >= 3 and selector[2] == "batch_size":
             value = parent.get("batch_size")
             return value if isinstance(value, dict) else None
         return parent
     if selector[0] == "priority_rules":
+        if len(selector) < 2:
+            raise ValueError(f"priority_rules selector must include a rule name: {selector!r}")
         return priority_rules.get(selector[1])
-    return root
+    raise ValueError(f"unsupported selector namespace {selector[0]!r}")
+
+
+def evaluate_root_key_policy(
+    *,
+    root: dict[str, Any],
+    manual_rule: object,
+    supported_rule: object,
+    config_name: str,
+) -> tuple[ContractFinding, ...]:
+    manual_keys = rule_field(manual_rule, "expected")
+    supported_keys = rule_field(supported_rule, "expected")
+    if not isinstance(manual_keys, frozenset):
+        raise TypeError(f"{rule_field(manual_rule, 'rule_id')} expected key set must be a frozenset")
+    if not isinstance(supported_keys, frozenset):
+        raise TypeError(f"{rule_field(supported_rule, 'rule_id')} expected key set must be a frozenset")
+    findings: list[ContractFinding] = []
+    for key in root:
+        if key in manual_keys:
+            findings.append(finding(manual_rule, config_name, key=key))
+        elif key not in supported_keys:
+            findings.append(finding(supported_rule, config_name, key=key))
+    return tuple(findings)
 
 
 def evaluate_forbidden_unknown_key(
@@ -285,6 +323,12 @@ def selected_value(
     config_name: str,
 ) -> tuple[Any, ContractFinding | None]:
     selector = rule_selector(rule)
+    if not selector:
+        raise ValueError("contract rule selector must not be empty")
+    if selector[0] == "root":
+        if selector != ("root",):
+            raise ValueError(f"unsupported root selector {selector!r}")
+        return root, None
     if selector[0] == "merge_queue":
         if "merge_queue" not in root or not isinstance(root["merge_queue"], dict):
             return MISSING_PARENT, None
@@ -295,6 +339,8 @@ def selected_value(
             return MISSING_KEY, None
         return merge_queue[selector[1]], None
     if selector[0] == "queue_rules":
+        if len(selector) < 2:
+            raise ValueError(f"queue_rules selector must include a rule name: {selector!r}")
         rule_name = selector[1]
         parent = queue_rules.get(rule_name)
         if parent is None:
@@ -305,6 +351,8 @@ def selected_value(
             return MISSING_KEY, None
         return parent[selector[2]], None
     if selector[0] == "priority_rules":
+        if len(selector) < 2:
+            raise ValueError(f"priority_rules selector must include a rule name: {selector!r}")
         rule_name = selector[1]
         parent = priority_rules.get(rule_name)
         if parent is None:
@@ -314,7 +362,7 @@ def selected_value(
         if selector[2] not in parent:
             return MISSING_KEY, None
         return parent[selector[2]], None
-    return root, None
+    raise ValueError(f"unsupported selector namespace {selector[0]!r}")
 
 
 def evaluate_scalar_eq(
@@ -371,7 +419,7 @@ def evaluate_mapping_eq(
     if isinstance(expected, tuple):
         values, type_finding = list_value(
             None if actual is MISSING_KEY else actual,
-            path=f"{selector[1]} {selector[2]}" if selector[0] == "queue_rules" else "hotfix priority conditions",
+            path=f"{selector[1]} {selector[2]}" if selector[0] == "queue_rules" else f"{selector[1]} priority conditions",
             rule=rule,
             config_name=config_name,
         )
@@ -390,7 +438,7 @@ def evaluate_mapping_eq(
         if type_finding is not None:
             return (type_finding,)
         if values != expected:
-            return (finding(rule, config_name),)
+            return (finding(rule, config_name, rule_name=selector[1]),)
         return ()
     raise TypeError(f"unsupported mapping-EQ expected value: {expected!r}")
 
@@ -436,26 +484,60 @@ def evaluate(
     *,
     config_name: str = ".mergify.yml",
 ) -> tuple[ContractFinding, ...]:
-    root_rule = next((rule for rule in rules if rule_selector(rule) == ("root",)), None)
+    root_rule = next(
+        (
+            rule
+            for rule in rules
+            if rule_field(rule, "kind") == "mapping-EQ" and rule_selector(rule) == ("root",)
+        ),
+        None,
+    )
+    if root_rule is None:
+        raise ValueError("contract rules must include a root mapping rule")
     if not isinstance(parsed, dict):
-        if root_rule is None:
-            return ()
         return (finding(root_rule, config_name),)
 
-    queue_rules, priority_rules, order_findings_by_selector = queue_rule_context(
+    root_key_rules = {
+        rule_selector(rule): rule
+        for rule in rules
+        if rule_field(rule, "kind") == "forbidden-unknown-key"
+        and rule_selector(rule) in {("root", "manual_queueing_only"), ("root", "supported_keys")}
+    }
+    if root_key_rules and set(root_key_rules) != {("root", "manual_queueing_only"), ("root", "supported_keys")}:
+        raise ValueError("contract rules must include paired root key classification rules")
+
+    queue_rules, priority_rules, order_findings_by_selector, missing_findings_by_selector = queue_rule_context(
         root=parsed,
         rules=rules,
         config_name=config_name,
     )
     findings: list[ContractFinding] = []
+    emitted_root_key_policy = False
+    emitted_missing_selectors: set[tuple[str, str]] = set()
 
     for rule in rules:
         kind = rule_field(rule, "kind")
         selector = rule_selector(rule)
+        if len(selector) >= 2 and selector[:2] in missing_findings_by_selector and selector[:2] not in emitted_missing_selectors:
+            findings.append(missing_findings_by_selector[selector[:2]])
+            emitted_missing_selectors.add(selector[:2])
         if kind == "required-rule-presence/order":
-            findings.extend(order_findings_by_selector.get(selector, ()))
+            if selector in order_findings_by_selector:
+                findings.extend(order_findings_by_selector[selector])
             continue
         if kind == "mapping-EQ" and selector == ("root",):
+            continue
+        if kind == "forbidden-unknown-key" and selector in root_key_rules:
+            if not emitted_root_key_policy:
+                findings.extend(
+                    evaluate_root_key_policy(
+                        root=parsed,
+                        manual_rule=root_key_rules[("root", "manual_queueing_only")],
+                        supported_rule=root_key_rules[("root", "supported_keys")],
+                        config_name=config_name,
+                    )
+                )
+                emitted_root_key_policy = True
             continue
         if kind == "forbidden-unknown-key":
             findings.extend(

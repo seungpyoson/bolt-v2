@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify broad exception handlers do not hide fail-closed contract failures."""
+"""Verify silent fallbacks do not hide fail-closed contract failures."""
 
 from __future__ import annotations
 
@@ -26,6 +26,17 @@ SUPPORTED_CONFIG_VERSION = 1
 SOURCE_FENCE_STATIC_RECIPE = "source-fence-static-inner"
 REQUIRED_SOURCE_FENCE_COMMANDS = (
     "python3 scripts/run_fences.py",
+)
+SILENT_FALLBACK_RATCHET_BASELINE = 38
+STRICT_SILENT_FALLBACK_PATHS = frozenset(
+    {
+        "scripts/contract_engine.py",
+        "scripts/contract_rules.py",
+        "scripts/verify_ci_workflow_hygiene.py",
+        "scripts/workflow_model.py",
+        "scripts/verify_fail_closed_contracts.py",
+        "scripts/verify_no_config_retype.py",
+    }
 )
 
 
@@ -76,6 +87,14 @@ class Rule:
     applies: Callable[[HandlerFacts], bool]
 
 
+@dataclass(frozen=True)
+class SilentFallbackFacts:
+    rel_path: str
+    line: int
+    rule_key: str
+    message: str
+
+
 RULES: tuple[Rule, ...] = (
     Rule("bare_except_pass", "bare except handler passes silently", lambda facts: facts.is_bare and facts.is_silent),
     Rule("broad_except_pass", "broad exception handler passes silently", lambda facts: facts.is_broad and facts.is_silent),
@@ -90,6 +109,13 @@ RULES: tuple[Rule, ...] = (
         lambda facts: facts.catches_all and not facts.has_logging and bool(facts.sentinel_returns),
     ),
 )
+SILENT_FALLBACK_RULE_MESSAGES = {
+    "loaded_input_empty_dict_fallback": "loaded input falls back to an empty mapping",
+    "loaded_input_empty_list_fallback": "loaded input falls back to an empty list",
+    "config_get_default": "config table lookup uses a silent default",
+    "missing_path_return": "missing enforcement input returns a silent fallback",
+    "missing_path_continue": "missing enforcement input is skipped silently",
+}
 NESTED_SCOPE_NODES = (
     ast.AsyncFunctionDef,
     ast.ClassDef,
@@ -108,12 +134,16 @@ CONFIG_KEYS = frozenset(
         "rule_ids",
     }
 )
-RULE_ID_KEYS = frozenset(rule.key for rule in RULES)
+RULE_ID_KEYS = frozenset(rule.key for rule in RULES) | frozenset(SILENT_FALLBACK_RULE_MESSAGES)
 EXCEPTIONS_KEYS = frozenset({"version", "exceptions"})
 EXCEPTION_ENTRY_KEYS = frozenset({"rule_id", "path", "line", "reason"})
 STALE_EXCEPTION_RULE_ID = "FLC000"
+RATCHET_RULE_ID = "FLC099"
 LOGGER_RECEIVER_NAMES = frozenset({"log", "logger", "logging"})
 LOGGER_FACTORY_NAMES = frozenset({"get_log", "get_logger", "get_logging", "getLogger"})
+LOADED_INPUT_CALL_SUFFIXES = frozenset({"load", "loads", "parse", "read_text"})
+CONFIG_TABLE_RECEIVER_MARKERS = frozenset({"config", "policy", "rules", "selector", "settings", "table"})
+PATH_RECEIVER_MARKERS = frozenset({"file", "path"})
 
 
 def strings(field_name: str, value: object) -> tuple[str, ...]:
@@ -405,6 +435,122 @@ def sentinel_returns(handler: ast.ExceptHandler) -> frozenset[str]:
     )
 
 
+def empty_container_rule_key(node: ast.AST) -> str | None:
+    match node:
+        case ast.Dict(keys=[], values=[]):
+            return "loaded_input_empty_dict_fallback"
+        case ast.List(elts=[]):
+            return "loaded_input_empty_list_fallback"
+        case _:
+            return None
+
+
+def is_loaded_input_expr(node: ast.AST) -> bool:
+    match node:
+        case ast.Call(func=func):
+            name = dotted_name(func)
+            if name is None:
+                return False
+            leaf = name.rsplit(".", maxsplit=1)[-1]
+            return leaf in LOADED_INPUT_CALL_SUFFIXES or leaf.startswith(("load_", "parse_", "read_"))
+        case ast.Name(id=name):
+            return name.lower() in {"data", "payload", "config", "parsed", "document"}
+        case _:
+            return False
+
+
+def loaded_input_empty_fallbacks(rel_path: str, node: ast.BoolOp) -> list[SilentFallbackFacts]:
+    if not isinstance(node.op, ast.Or):
+        return []
+    if not any(is_loaded_input_expr(value) for value in node.values):
+        return []
+    facts: list[SilentFallbackFacts] = []
+    for value in node.values:
+        rule_key = empty_container_rule_key(value)
+        if rule_key is None:
+            continue
+        facts.append(
+            SilentFallbackFacts(
+                rel_path=rel_path,
+                line=node.lineno,
+                rule_key=rule_key,
+                message=SILENT_FALLBACK_RULE_MESSAGES[rule_key],
+            )
+        )
+    return facts
+
+
+def receiver_leaf(node: ast.AST) -> str | None:
+    name = dotted_name(node)
+    if name is None:
+        return None
+    return name.rsplit(".", maxsplit=1)[-1].lower()
+
+
+def receiver_has_marker(node: ast.AST, markers: frozenset[str]) -> bool:
+    leaf = receiver_leaf(node)
+    return leaf is not None and any(marker in leaf for marker in markers)
+
+
+def config_get_default_fallback(rel_path: str, node: ast.Call) -> SilentFallbackFacts | None:
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "get" or len(node.args) < 2:
+        return None
+    if not receiver_has_marker(node.func.value, CONFIG_TABLE_RECEIVER_MARKERS):
+        return None
+    return SilentFallbackFacts(
+        rel_path=rel_path,
+        line=node.lineno,
+        rule_key="config_get_default",
+        message=SILENT_FALLBACK_RULE_MESSAGES["config_get_default"],
+    )
+
+
+def is_missing_path_test(node: ast.AST) -> bool:
+    if not isinstance(node, ast.UnaryOp) or not isinstance(node.op, ast.Not):
+        return False
+    call = node.operand
+    if not isinstance(call, ast.Call):
+        return False
+    if not isinstance(call.func, ast.Attribute) or call.func.attr not in {"exists", "is_file"}:
+        return False
+    return receiver_has_marker(call.func.value, PATH_RECEIVER_MARKERS)
+
+
+def if_body_has_silent_return(node: ast.If) -> bool:
+    return any(isinstance(stmt, ast.Return) and sentinel_shape(stmt.value) is not None for stmt in node.body)
+
+
+def if_body_has_continue(node: ast.If) -> bool:
+    return any(isinstance(stmt, ast.Continue) for stmt in node.body)
+
+
+def missing_path_fallbacks(rel_path: str, node: ast.If) -> list[SilentFallbackFacts]:
+    if not is_missing_path_test(node.test):
+        return []
+    facts: list[SilentFallbackFacts] = []
+    if if_body_has_silent_return(node):
+        rule_key = "missing_path_return"
+        facts.append(
+            SilentFallbackFacts(
+                rel_path=rel_path,
+                line=node.lineno,
+                rule_key=rule_key,
+                message=SILENT_FALLBACK_RULE_MESSAGES[rule_key],
+            )
+        )
+    if if_body_has_continue(node):
+        rule_key = "missing_path_continue"
+        facts.append(
+            SilentFallbackFacts(
+                rel_path=rel_path,
+                line=node.lineno,
+                rule_key=rule_key,
+                message=SILENT_FALLBACK_RULE_MESSAGES[rule_key],
+            )
+        )
+    return facts
+
+
 def is_silent_handler_statement(node: ast.AST) -> bool:
     match node:
         case ast.Pass():
@@ -442,6 +588,22 @@ def scan_file(root: Path, path: Path, config: Config) -> list[HandlerFacts]:
     ]
 
 
+def scan_silent_fallback_file(root: Path, path: Path) -> list[SilentFallbackFacts]:
+    rel_path = rel_name(path, root)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel_path)
+    facts: list[SilentFallbackFacts] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BoolOp):
+            facts.extend(loaded_input_empty_fallbacks(rel_path, node))
+        elif isinstance(node, ast.Call):
+            fact = config_get_default_fallback(rel_path, node)
+            if fact is not None:
+                facts.append(fact)
+        elif isinstance(node, ast.If):
+            facts.extend(missing_path_fallbacks(rel_path, node))
+    return facts
+
+
 def finding(config: Config, facts: HandlerFacts, rule: Rule) -> str | None:
     rule_id = config.rule_ids[rule.key]
     return f"{rule_id}:{facts.rel_path}:{facts.line}: {rule.message}"
@@ -464,6 +626,22 @@ def raw_findings_for_facts(config: Config, facts: HandlerFacts) -> list[tuple[Ex
     ]
 
 
+def silent_fallback_exception_key(config: Config, facts: SilentFallbackFacts) -> ExceptionKey:
+    return ExceptionKey(
+        rule_id=config.rule_ids[facts.rule_key],
+        path=facts.rel_path,
+        line=facts.line,
+    )
+
+
+def raw_finding_for_silent_fallback(
+    config: Config,
+    facts: SilentFallbackFacts,
+) -> tuple[ExceptionKey, str]:
+    key = silent_fallback_exception_key(config, facts)
+    return key, f"{key.rule_id}:{facts.rel_path}:{facts.line}: {facts.message}"
+
+
 def findings_for_facts(config: Config, facts: HandlerFacts) -> list[str]:
     return [result for _, result in raw_findings_for_facts(config, facts)]
 
@@ -472,6 +650,9 @@ def collect_findings(
     root: Path,
     config_path: Path = REPO_ROOT / DEFAULT_CONFIG,
     exceptions_path: Path | None = None,
+    *,
+    silent_fallback_ratchet_baseline: int = SILENT_FALLBACK_RATCHET_BASELINE,
+    strict_silent_fallback_paths: frozenset[str] = STRICT_SILENT_FALLBACK_PATHS,
 ) -> list[str]:
     root = root.resolve()
     config = load_config(config_path)
@@ -491,6 +672,14 @@ def collect_findings(
         for facts in scan_file(root, path, config)
         for raw_finding in raw_findings_for_facts(config, facts)
     ]
+    raw_silent_fallback_findings = sorted(
+        (
+            raw_finding_for_silent_fallback(config, facts)
+            for path in paths
+            for facts in scan_silent_fallback_file(root, path)
+        ),
+        key=lambda item: (item[0].path, item[0].line, item[0].rule_id),
+    )
     matched_exceptions: set[ExceptionKey] = set()
     findings: list[str] = []
     for key, text in raw_findings:
@@ -498,6 +687,20 @@ def collect_findings(
             matched_exceptions.add(key)
         else:
             findings.append(text)
+    ratchet_findings: list[str] = []
+    for key, text in raw_silent_fallback_findings:
+        if key in exceptions.entries:
+            matched_exceptions.add(key)
+        elif key.path in strict_silent_fallback_paths:
+            findings.append(text)
+        else:
+            ratchet_findings.append(text)
+    if len(ratchet_findings) > silent_fallback_ratchet_baseline:
+        findings.append(
+            f"{RATCHET_RULE_ID}: silent fallback ratchet increased: "
+            f"{len(ratchet_findings)} current > {silent_fallback_ratchet_baseline} baseline"
+        )
+        findings.extend(ratchet_findings)
     stale = sorted(set(exceptions.entries) - matched_exceptions, key=lambda key: (key.path, key.line, key.rule_id))
     findings.extend(
         f"{STALE_EXCEPTION_RULE_ID}:{key.path}:{key.line}: stale fail-closed exception for {key.rule_id}"

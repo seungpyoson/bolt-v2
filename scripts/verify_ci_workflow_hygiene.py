@@ -220,13 +220,13 @@ GITHUB_SECRET_REF_RE = re.compile(r"secrets\.([A-Z0-9_]+)")
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
 LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
-YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
-YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")"""
+YAML_ANCHOR_PATTERN = workflow_model.YAML_ANCHOR_PATTERN
+YAML_KEY_PATTERN = workflow_model.YAML_KEY_PATTERN
 SELF_AUTHORIZING_SECRETS_INHERIT_RE = re.compile(
     rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$"
 )
-YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
-YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
+YAML_STEP_ITEM_RE = workflow_model.YAML_STEP_ITEM_RE
+YAML_RUN_LINE_RE = workflow_model.YAML_RUN_LINE_RE
 YAML_FOLDED_RUN_LINE_RE = re.compile(
     rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*>[+-]?\s*(?:#.*)?$"
 )
@@ -11919,9 +11919,10 @@ def verify_test_harness_manifest(
         errors.append(f"{rel_path} is neither a harness root, a #[test]-bearing registered member, nor a declared test helper")
 
     for file_name, path in ((".github/workflows/ci.yml", workflow), ("justfile", justfile)):
-        if not path.exists():
-            continue
-        errors.extend(verify_test_harness_test_args(file_name, path.read_text(encoding="utf-8"), manifest))
+        if path.exists():
+            errors.extend(verify_test_harness_test_args(file_name, path.read_text(encoding="utf-8"), manifest))
+        else:
+            errors.append(f"{file_name} is required for explicit test harness governance")
 
     return errors
 
@@ -12085,18 +12086,18 @@ def verify_nextest_config(config_text: str, *, manifest: CiTestManifest | None =
     if manifest is None:
         manifest = build_test_manifest(REPO_ROOT / "Cargo.toml", REPO_ROOT / "tests")
 
-    groups = config.get("test-groups", {})
-    if not isinstance(groups, dict):
-        groups = {}
+    groups_value = config.get("test-groups")
+    groups = groups_value if isinstance(groups_value, dict) else {}
     live_node_group = groups.get(LIVE_NODE_TEST_GROUP)
     if not isinstance(live_node_group, dict):
         errors.append("nextest config missing live-node test group")
     elif live_node_group.get("max-threads") != 1:
         errors.append("nextest live-node test group max-threads must be 1")
 
-    profile = config.get("profile", {})
-    default_profile = profile.get("default", {}) if isinstance(profile, dict) else {}
-    overrides = default_profile.get("overrides", []) if isinstance(default_profile, dict) else []
+    profile_value = config.get("profile")
+    default_profile_value = profile_value.get("default") if isinstance(profile_value, dict) else None
+    overrides_value = default_profile_value.get("overrides") if isinstance(default_profile_value, dict) else None
+    overrides = overrides_value if isinstance(overrides_value, list) else []
     if not isinstance(overrides, list):
         overrides = []
     live_node_filters = [

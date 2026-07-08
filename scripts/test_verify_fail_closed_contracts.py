@@ -66,6 +66,11 @@ def config_text(
     broad_except_pass = "FLC002"
     broad_sentinel_return = "FLC003"
     broad_logged_sentinel_return = "FLC004"
+    loaded_input_empty_dict_fallback = "FLC005"
+    loaded_input_empty_list_fallback = "FLC006"
+    config_get_default = "FLC007"
+    missing_path_return = "FLC008"
+    missing_path_continue = "FLC009"
     """
 
 
@@ -768,6 +773,120 @@ def test_classified_degradation_requires_central_exception() -> None:
     assert findings_with_exception == [], findings_with_exception
 
 
+def test_silent_fallback_shape_fixtures_fail_with_stable_rule_ids() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/silent_fallbacks.py",
+            """
+            def loaded_mapping(text):
+                data = tomllib.loads(text) or {}
+                return data
+            def loaded_list(text):
+                items = json.loads(text) or []
+                return items
+            def config_default(policy):
+                return policy.get("commands", [])
+            def missing_return(path):
+                if not path.exists():
+                    return {}
+                return {"ok": True}
+            def missing_continue(paths):
+                for path in paths:
+                    if not path.exists():
+                        continue
+                    yield path
+            """,
+        )
+
+        findings = verifier.collect_findings(
+            root,
+            root / "ci" / "fail-closed-contracts.toml",
+            strict_silent_fallback_paths=frozenset({"pkg/silent_fallbacks.py"}),
+        )
+
+    assert findings == [
+        "FLC005:pkg/silent_fallbacks.py:2: loaded input falls back to an empty mapping",
+        "FLC006:pkg/silent_fallbacks.py:5: loaded input falls back to an empty list",
+        "FLC007:pkg/silent_fallbacks.py:8: config table lookup uses a silent default",
+        "FLC008:pkg/silent_fallbacks.py:10: missing enforcement input returns a silent fallback",
+        "FLC009:pkg/silent_fallbacks.py:15: missing enforcement input is skipped silently",
+    ], findings
+
+
+def test_silent_fallback_rules_fire_on_pr_prefixed_sites() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/pr_prefixed.py",
+            """
+            def parsed_payload(stdout):
+                payload = json.loads(stdout) or {}
+                return payload
+            def selected_rules(order_findings_by_selector, selector):
+                return order_findings_by_selector.get(selector, ())
+            def governed_artifacts(root, artifact_paths):
+                for rel_path in artifact_paths:
+                    path = root / rel_path
+                    if not path.is_file():
+                        continue
+                    yield path
+            """,
+        )
+
+        findings = verifier.collect_findings(
+            root,
+            root / "ci" / "fail-closed-contracts.toml",
+            strict_silent_fallback_paths=frozenset({"pkg/pr_prefixed.py"}),
+        )
+
+    assert findings == [
+        "FLC005:pkg/pr_prefixed.py:2: loaded input falls back to an empty mapping",
+        "FLC007:pkg/pr_prefixed.py:5: config table lookup uses a silent default",
+        "FLC009:pkg/pr_prefixed.py:9: missing enforcement input is skipped silently",
+    ], findings
+
+
+def test_silent_fallback_ratchet_allows_non_touched_debt_only_to_decrease() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/legacy.py",
+            """
+            def legacy(policy):
+                return policy.get("commands", [])
+            """,
+        )
+
+        allowed = verifier.collect_findings(
+            root,
+            root / "ci" / "fail-closed-contracts.toml",
+            silent_fallback_ratchet_baseline=1,
+            strict_silent_fallback_paths=frozenset(),
+        )
+        increased = verifier.collect_findings(
+            root,
+            root / "ci" / "fail-closed-contracts.toml",
+            silent_fallback_ratchet_baseline=0,
+            strict_silent_fallback_paths=frozenset(),
+        )
+
+    assert allowed == [], allowed
+    assert increased == [
+        "FLC099: silent fallback ratchet increased: 1 current > 0 baseline",
+        "FLC007:pkg/legacy.py:2: config table lookup uses a silent default",
+    ], increased
+
+
 def test_stale_central_exception_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1186,6 +1305,9 @@ def main() -> int:
         test_source_fence_static_parser_stops_at_top_level_non_recipe_lines,
         test_source_fence_static_parser_ignores_malformed_top_level_colon_lines,
         test_classified_degradation_requires_central_exception,
+        test_silent_fallback_shape_fixtures_fail_with_stable_rule_ids,
+        test_silent_fallback_rules_fire_on_pr_prefixed_sites,
+        test_silent_fallback_ratchet_allows_non_touched_debt_only_to_decrease,
         test_stale_central_exception_fails_closed,
         test_dot_prefixed_exception_path_is_normalized,
         test_exception_config_rejects_invalid_shapes,

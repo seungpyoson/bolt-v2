@@ -4695,17 +4695,17 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
     if clean:
         raise AssertionError(f"real ci.yml must satisfy the sccache fail-open contract, got: {clean}")
     required_pr_read_fragments = [
-        '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]',
-        "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
-        'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then',
-        'cache_mode="read_only"',
-        'role_arn="$PR_READONLY_ROLE_ARN"',
-        "echo \"cache_mode=$cache_mode\" >> \"$GITHUB_OUTPUT\"",
-        "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}",
+        "uses: ./.github/actions/sccache-setup",
+        "role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
+        "write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}",
+        "write-enabled: ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}",
+        "bucket: ${{ vars.CI_SCCACHE_BUCKET }}",
+        "region: ${{ vars.CI_SCCACHE_REGION }}",
+        "key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
     ]
     for fragment in required_pr_read_fragments:
         if fragment not in workflow:
-            raise AssertionError(f"real ci.yml must configure PR read-only sccache role path: missing {fragment!r}")
+            raise AssertionError(f"real ci.yml must use the shared sccache action: missing {fragment!r}")
     cases = [
         (
             "test-archive sccache opt-in must stay conditional",
@@ -4716,50 +4716,24 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
-            "Resolve sccache eligibility' must be continue-on-error",
+            "test-archive sccache setup must route through the shared sccache action",
             replace_once(
                 workflow,
-                "        id: sccache-eligible\n"
-                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n"
-                "        continue-on-error: true\n",
-                "        id: sccache-eligible\n"
-                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n",
+                "uses: ./.github/actions/sccache-setup",
+                "uses: ./.github/actions/not-sccache-setup",
             ),
         ),
         (
-            "Configure AWS credentials for sccache' must be continue-on-error",
+            "test-archive sccache setup must include",
             replace_once(
                 workflow,
-                "        id: sccache-aws\n"
-                "        if: steps.sccache-eligible.outputs.eligible == 'true'\n"
-                "        continue-on-error: true\n",
-                "        id: sccache-aws\n"
-                "        if: steps.sccache-eligible.outputs.eligible == 'true'\n",
+                "          active: ${{ steps.nextest-archive-cache.outputs.cache-hit != 'true' && 'true' || 'false' }}\n",
+                "",
             ),
         ),
         (
-            "Resolve sccache enablement' must be continue-on-error",
-            replace_once(
-                workflow,
-                "        id: sccache\n"
-                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n"
-                "        continue-on-error: true\n",
-                "        id: sccache\n"
-                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n",
-            ),
-        ),
-        (
-            "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
-            replace_once(workflow, '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n', ""),
-        ),
-        (
-            # Value spoof: flipping the flag to "0" disables in-flight fail-open.
-            "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
-            replace_once(
-                workflow,
-                '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n',
-                '      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"\n',
-            ),
+            "test-archive sccache setup must include",
+            replace_once(workflow, "          key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}\n", ""),
         ),
         (
             # Dropping the without-sccache retry removes the only cover for a
@@ -4772,73 +4746,20 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
-            "must require CI_SCCACHE_S3_KEY_PREFIX",
+            "test-archive sccache setup must include",
             replace_once(
                 workflow,
-                '          [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false',
-                '          [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" ]] || vars_present=false',
+                "          write-enabled: ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}\n",
+                "          write-enabled: true\n",
             ),
         ),
         (
-            "must gate write-cache use exactly to main push/dispatch refs",
+            "write role must only be passed to the shared sccache action",
             replace_once(
                 workflow,
-                '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi\n',
-                '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then trusted=true; fi\n',
-            ),
-        ),
-        (
-            # Adding a fourth trusted arm must fail even if the required arms
-            # remain present.
-            "must gate write-cache use exactly to main push/dispatch refs",
-            replace_once(
-                workflow,
-                "          trusted=false\n",
-                '          trusted=false\n'
-                '          if [[ "$GITHUB_EVENT_NAME" == "pull_request_target" ]];'
-                ' then trusted=true; fi\n',
-            ),
-        ),
-        (
-            "must pin bucket/region/prefix to the bolt-v2 CI cache",
-            replace_once(
-                workflow,
-                '"bolt-v2-ci-cache-675819144420-us-east-2"',
-                '"some-other-cache"',
-            ),
-        ),
-        (
-            "must configure PR read-only sccache role path",
-            replace_once(
-                workflow,
-                "          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
-                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n"
-                "          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}\n"
-                "          REGION: ${{ vars.CI_SCCACHE_REGION }}\n"
-                "          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
-                "          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
-                "          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}\n"
-                "          REGION: ${{ vars.CI_SCCACHE_REGION }}\n"
-                "          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
-            ),
-        ),
-        (
-            "must configure PR read-only sccache role path",
-            replace_once(
-                workflow,
-                '          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n'
-                '            cache_mode="read_only"\n'
-                '            role_arn="$PR_READONLY_ROLE_ARN"\n'
-                "          fi\n",
-                "",
-            ),
-        ),
-        (
-            "must assume the resolved sccache role",
-            replace_once(
-                workflow,
-                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
-                "          role-to-assume: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+                "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+                "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
+                "          extra-write-role: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
             ),
         ),
         (
@@ -9038,29 +8959,11 @@ def assert_debug_test_workflow_contract() -> None:
             ),
         ),
         (
-            "Resolve sccache eligibility' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var",
-            replace_once_after(
-                workflow,
-                "      - name: Resolve sccache eligibility\n",
-                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
-                "          PR_READONLY_ROLE_ARN: ${{ vars.CI_SCCACHE_BUCKET }}\n",
-            ),
-        ),
-        (
             "Resolve debug archive cache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
             replace_once(
                 workflow,
                 '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
                 '          echo "role_arn=arn:aws:iam::123456789012:role/debug-archive-hijack" >> "$GITHUB_OUTPUT"\n',
-            ),
-        ),
-        (
-            "Resolve sccache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
-            replace_once_after(
-                workflow,
-                "      - name: Resolve sccache eligibility\n",
-                '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
-                '          echo "role_arn=arn:aws:iam::123456789012:role/sccache-hijack" >> "$GITHUB_OUTPUT"\n',
             ),
         ),
         (
@@ -9072,11 +8975,19 @@ def assert_debug_test_workflow_contract() -> None:
             ),
         ),
         (
-            "Configure AWS credentials for sccache' must assume the resolved sccache role",
+            "debug-test workflow must route sccache through the shared read-only setup action",
             replace_once(
                 workflow,
-                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
-                "          role-to-assume: arn:aws:iam::123456789012:role/sccache-hijack\n",
+                "uses: ./.github/actions/sccache-setup",
+                "uses: ./.github/actions/not-sccache-setup",
+            ),
+        ),
+        (
+            "debug-test workflow must route sccache through the shared read-only setup action",
+            replace_once(
+                workflow,
+                "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "",
             ),
         ),
         (
@@ -9133,6 +9044,11 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         ".github/workflows/flaky-test-smoke.yml": repo_workflow_text(".github/workflows/flaky-test-smoke.yml"),
     }
     bvs_policy = repo_source_text("crates/backtesting-vertical-slice/ci/rust-verification.toml")
+    if not (REPO_ROOT / ".github" / "actions" / "sccache-setup" / "action.yml").exists():
+        raise AssertionError("debug lanes must route sccache setup through the shared sccache action")
+    for workflow_name, workflow_text in workflows.items():
+        if "uses: ./.github/actions/sccache-setup" not in workflow_text:
+            raise AssertionError(f"{workflow_name} must use the shared sccache setup action")
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
@@ -9178,17 +9094,17 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must use only the PR-readonly sccache role",
         ),
         (
-            "flaky smoke must print stats",
+            "flaky smoke must use the shared action",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
-                    '"$SCCACHE_PATH" --show-stats || true',
-                    "true",
+                    "uses: ./.github/actions/sccache-setup",
+                    "uses: ./.github/actions/not-sccache-setup",
                     1,
                 ),
             },
             bvs_policy,
-            "must print sccache --show-stats",
+            "must route read-only sccache through the shared sccache action",
         ),
         (
             "flaky smoke must opt into the managed wrapper",
@@ -9204,20 +9120,17 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile step must opt into managed sccache conditionally",
         ),
         (
-            "debug sccache steps must stay fail-open",
+            "debug sccache setup must use the read-only role",
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    "        id: sccache-aws\n"
-                    "        if: steps.sccache-eligible.outputs.eligible == 'true'\n"
-                    "        continue-on-error: true\n",
-                    "        id: sccache-aws\n"
-                    "        if: steps.sccache-eligible.outputs.eligible == 'true'\n",
+                    "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                    "",
                     1,
                 ),
             },
             bvs_policy,
-            "sccache step 'Configure AWS credentials for sccache' must be continue-on-error",
+            "must route read-only sccache through the shared sccache action",
         ),
         (
             "debug compile step must retry cache-infra failures without sccache",
@@ -9272,30 +9185,44 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile preflight must use --no-run",
         ),
         (
-            "sccache summary must run under always",
+            "debug test execution must keep sccache disabled after preflight",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    "BOLT_RUST_VERIFICATION_SCCACHE=0 just debug-test",
+                    "just debug-test",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "test execution must disable sccache after compile preflight",
+        ),
+        (
+            "rust-probe test modes must split compile from execution",
             {
                 **workflows,
                 ".github/workflows/rust-probe.yml": workflows[".github/workflows/rust-probe.yml"].replace(
-                    "      - name: Summarize sccache state\n        if: always()\n",
-                    "      - name: Summarize sccache state\n",
+                    "RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any \"$RUNNER_TEMP/rust-probe-compile.log\" bash .github/scripts/run-rust-probe.sh\n"
+                    "              BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh",
+                    "bash .github/scripts/sccache-fail-open.sh --on any \"$RUNNER_TEMP/rust-probe.log\" bash .github/scripts/run-rust-probe.sh",
                     1,
                 ),
             },
             bvs_policy,
-            "Summarize sccache state must run under always()",
+            "Rust Probe test modes must compile with fail-open before unwrapped execution with sccache disabled",
         ),
         (
-            "flaky smoke must surface disabled sccache state",
+            "flaky smoke execution must keep sccache disabled after preflight",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
-                    "      - name: Summarize sccache state\n",
-                    "      - name: Summarize cache state\n",
+                    "BOLT_RUST_VERIFICATION_SCCACHE=0 just test",
+                    "just test",
                     1,
                 ),
             },
             bvs_policy,
-            "must summarize sccache state",
+            "test execution must disable sccache after compile preflight",
         ),
         (
             "BVS policy must activate the remote compile cache",
@@ -9344,10 +9271,53 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         if not any(expected in error for error in errors):
             raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
 
+    action_text = repo_source_text(".github/actions/sccache-setup/action.yml")
+    config_text = repo_source_text("ci/sccache-readonly.toml")
+    action_cases = (
+        (
+            "shared action must keep AWS/install setup fail-open",
+            action_text.replace("      continue-on-error: true\n", "", 1),
+            config_text,
+            "must keep AWS credential and sccache install steps fail-open",
+        ),
+        (
+            "shared action must summarize cache state",
+            action_text.replace("        echo \"sccache cache:", "        echo \"cache:", 1),
+            config_text,
+            "must include 'sccache cache:'",
+        ),
+        (
+            "shared action must print stats",
+            action_text.replace('"$SCCACHE_PATH" --show-stats || true', "true", 1),
+            config_text,
+            "must include '\"$SCCACHE_PATH\" --show-stats || true'",
+        ),
+        (
+            "shared action must set sccache ignore I/O",
+            action_text.replace("SCCACHE_IGNORE_SERVER_IO_ERROR=1", "SCCACHE_IGNORE_SERVER_IO_ERROR=0", 1),
+            config_text,
+            "must include 'SCCACHE_IGNORE_SERVER_IO_ERROR=1'",
+        ),
+        (
+            "sccache location config owns the prefix",
+            action_text,
+            config_text.replace('key_prefix = "sccache/bolt-v2/arm64/root-nextest/"', 'key_prefix = "other/"', 1),
+            "location.key_prefix='sccache/bolt-v2/arm64/root-nextest/'",
+        ),
+    )
+    for label, mutated_action, mutated_config, expected in action_cases:
+        errors = verifier.sccache_setup_action_contract_errors(mutated_action, mutated_config)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
+
 
 def assert_cache_docs_cover_debug_schedule_consumers() -> None:
     text = repo_source_text("docs/ci/nextest-artifact-cache.md")
+    sccache_config = REPO_ROOT / "ci" / "sccache-readonly.toml"
+    if not sccache_config.exists():
+        raise AssertionError("ci/sccache-readonly.toml must own the shared sccache location contract")
     required_fragments = (
+        "ci/sccache-readonly.toml",
         "CI_SCCACHE_S3_KEY_PREFIX",
         "nextest-archive restores",
         "sccache read-only access",
@@ -13161,6 +13131,12 @@ def run_verifier_main_with_no_mistakes(
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
         action_path.write_text(BASE_ACTION)
+        sccache_action_path = tmp_path / ".github" / "actions" / "sccache-setup" / "action.yml"
+        sccache_action_path.parent.mkdir(parents=True)
+        sccache_action_path.write_text(repo_source_text(".github/actions/sccache-setup/action.yml"))
+        sccache_config_path = tmp_path / "ci" / "sccache-readonly.toml"
+        sccache_config_path.parent.mkdir(parents=True, exist_ok=True)
+        sccache_config_path.write_text(repo_source_text("ci/sccache-readonly.toml"))
 
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
@@ -16568,6 +16544,8 @@ def assert_github_scripts_are_repo_automation_fenced() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     if ".github/scripts/*.sh" not in justfile:
         raise AssertionError("ci-lint-workflow must scan .github/scripts/*.sh")
+    if ".github/actions/sccache-setup/action.yml" not in justfile:
+        raise AssertionError("ci-lint-workflow must scan the shared sccache setup action")
 
     raw_cargo_message = "repo automation raw Cargo must use managed rust_verification wrapper"
     probe_script = (REPO_ROOT / ".github" / "scripts" / "run-rust-probe.sh").read_text(encoding="utf-8")

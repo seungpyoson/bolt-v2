@@ -1,0 +1,180 @@
+name: Governed sccache setup
+description: Configure the governed CI sccache path and fail open to local compiles.
+
+inputs:
+  active:
+    description: Whether this job has a compile step that can use sccache.
+    required: false
+    default: "true"
+  role-arn:
+    description: Read-only AWS role ARN for untrusted sccache consumers.
+    required: false
+    default: ""
+  write-role-arn:
+    description: Read/write AWS role ARN for trusted sccache writers.
+    required: false
+    default: ""
+  write-enabled:
+    description: Whether to use the trusted read/write role.
+    required: false
+    default: "false"
+  bucket:
+    description: Runtime SCCACHE_BUCKET value from repository variables.
+    required: false
+    default: ""
+  region:
+    description: Runtime SCCACHE_REGION value from repository variables.
+    required: false
+    default: ""
+  key-prefix:
+    description: Runtime SCCACHE_S3_KEY_PREFIX value from repository variables.
+    required: false
+    default: ""
+  config-path:
+    description: Repository TOML file that owns the expected sccache location.
+    required: false
+    default: ci/sccache-readonly.toml
+
+outputs:
+  enabled:
+    description: "true when sccache is installed and its server started."
+    value: ${{ steps.enable.outputs.enabled }}
+  eligible:
+    description: "true when inputs match the governed sccache location."
+    value: ${{ steps.eligibility.outputs.eligible }}
+  cache-mode:
+    description: Cache access mode selected by this action.
+    value: ${{ steps.eligibility.outputs.cache_mode }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve sccache eligibility
+      id: eligibility
+      shell: bash
+      env:
+        SCCACHE_ACTIVE: ${{ inputs.active }}
+        READ_ROLE_ARN: ${{ inputs.role-arn }}
+        WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}
+        WRITE_ENABLED: ${{ inputs.write-enabled }}
+        BUCKET: ${{ inputs.bucket }}
+        REGION: ${{ inputs.region }}
+        PREFIX: ${{ inputs.key-prefix }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+      run: |
+        python3 - <<'PY'
+        import os
+        import pathlib
+        import tomllib
+
+        def write_line(path: str, line: str) -> None:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{line}\n")
+
+        config_path = pathlib.Path(os.environ["CONFIG_PATH"])
+        try:
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            print(f"::warning::unable to read {config_path}: {exc}; compiling without sccache")
+            config = {}
+        except tomllib.TOMLDecodeError as exc:
+            print(f"::warning::{config_path} is invalid TOML: {exc}; compiling without sccache")
+            config = {}
+
+        location = config.get("location") if isinstance(config, dict) else None
+        expected = location if isinstance(location, dict) else {}
+        active = os.environ.get("SCCACHE_ACTIVE") == "true"
+        write_enabled = os.environ.get("WRITE_ENABLED") == "true"
+        read_role_arn = os.environ.get("READ_ROLE_ARN", "")
+        write_role_arn = os.environ.get("WRITE_ROLE_ARN", "")
+        role_arn = write_role_arn if write_enabled else read_role_arn
+        cache_mode = "read_write" if write_enabled else "read_only"
+        bucket = os.environ.get("BUCKET", "")
+        region = os.environ.get("REGION", "")
+        prefix = os.environ.get("PREFIX", "")
+        vars_present = all((role_arn, bucket, region, prefix))
+        location_matches = (
+            bucket == expected.get("bucket")
+            and region == expected.get("region")
+            and prefix == expected.get("key_prefix")
+        )
+        eligible = active and vars_present and location_matches
+
+        output_path = os.environ["GITHUB_OUTPUT"]
+        write_line(output_path, f"eligible={str(eligible).lower()}")
+        write_line(output_path, f"role_arn={role_arn}")
+        write_line(output_path, f"cache_mode={cache_mode}")
+
+        env_path = os.environ["GITHUB_ENV"]
+        write_line(env_path, f"SCCACHE_BUCKET={bucket}")
+        write_line(env_path, f"SCCACHE_REGION={region}")
+        write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={prefix}")
+        write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
+        write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
+
+        print(
+            "sccache cache "
+            f"active={str(active).lower()} "
+            f"cache_mode={cache_mode} "
+            f"vars_present={str(vars_present).lower()} "
+            f"location_matches={str(location_matches).lower()}"
+        )
+        PY
+
+    - name: Configure AWS credentials for sccache
+      id: aws
+      if: steps.eligibility.outputs.eligible == 'true'
+      continue-on-error: true
+      uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+      with:
+        role-to-assume: ${{ steps.eligibility.outputs.role_arn }}
+        aws-region: ${{ inputs.region }}
+
+    - name: Install sccache
+      id: install
+      if: steps.eligibility.outputs.eligible == 'true' && steps.aws.outcome == 'success'
+      continue-on-error: true
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
+      with:
+        version: "v0.10.0"
+
+    - name: Resolve sccache enablement
+      id: enable
+      if: always()
+      shell: bash
+      run: |
+        enabled=false
+        if [[ "${{ steps.eligibility.outputs.eligible }}" == "true" \
+              && "${{ steps.aws.outcome }}" == "success" \
+              && "${{ steps.install.outcome }}" == "success" \
+              && -n "${SCCACHE_PATH:-}" ]]; then
+          if "$SCCACHE_PATH" --start-server; then
+            "$SCCACHE_PATH" --zero-stats || true
+            enabled=true
+          else
+            echo "sccache server failed to start; building without cache"
+          fi
+        fi
+        echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+        echo "sccache enabled=$enabled"
+
+    - name: Summarize sccache state
+      if: always()
+      shell: bash
+      env:
+        SCCACHE_ACTIVE: ${{ inputs.active }}
+        SCCACHE_ELIGIBLE: ${{ steps.eligibility.outputs.eligible || 'false' }}
+        SCCACHE_ENABLED: ${{ steps.enable.outputs.enabled || 'false' }}
+        SCCACHE_AWS_OUTCOME: ${{ steps.aws.outcome || 'skipped' }}
+        SCCACHE_INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
+        SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'read_only' }}
+      run: |
+        echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+        if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+          echo "::notice::sccache cache disabled; compiling without remote cache"
+        fi
+
+    - name: Print sccache stats
+      if: always() && steps.enable.outputs.enabled == 'true'
+      shell: bash
+      run: '"$SCCACHE_PATH" --show-stats || true'

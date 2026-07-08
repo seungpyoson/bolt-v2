@@ -13,6 +13,9 @@ archive payloads do not write to the branch-scoped Actions cache.
 - `CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX` selects the S3 prefix for archive objects.
 - `CI_SCCACHE_BUCKET` and `CI_SCCACHE_REGION` select the shared CI cache bucket.
 - `CI_SCCACHE_S3_KEY_PREFIX` selects the shared sccache prefix.
+- `ci/sccache-readonly.toml` owns the expected shared sccache bucket, region,
+  and prefix; the setup action enables sccache only when workflow variables
+  match that contract.
 - `AWS_CI_CACHE_ROLE_ARN` is used only by `push` runs on `refs/heads/main`.
 - `AWS_CI_CACHE_PR_READONLY_ROLE_ARN` is the read-only cache consumer role. It
   is used for nextest-archive restores by PR, merge queue, and manual dispatch

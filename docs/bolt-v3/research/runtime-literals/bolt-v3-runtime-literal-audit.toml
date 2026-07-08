@@ -965,6 +965,16 @@ classification = "startup_watchdog_shutdown_reason_label"
 reason = "Stable log label naming the stop-and-grace path for an already-shutting-down startup deadline race; the timeout duration remains config-owned."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 live-node startup shutdown grace elapsed after {trigger} \
+                 ({shutdown_grace:?}); node_state={node_state}; \
+                 registered_client_labels={}"'''
+context = '''"bolt-v3 live-node startup shutdown grace elapsed after {trigger} \'''
+classification = "startup_watchdog_shutdown_grace_timeout_diagnostic"
+reason = "Display template for a fail-loud startup shutdown-grace timeout diagnostic; trigger, grace duration, node state, and client labels are derived from runtime state and TOML-owned Nautilus timeout fields."
+
+[[allowed]]
 path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''

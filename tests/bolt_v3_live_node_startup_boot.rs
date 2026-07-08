@@ -96,7 +96,22 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         assert!(!registered.execution);
 
         let startup_bound = Duration::from_secs(3);
-        let shutdown_grace_bound = Duration::from_secs(2);
+        let reconnect_timeout_ms = loaded
+            .root
+            .clients
+            .get("chainlink_reference")
+            .and_then(|client| client.data.as_ref())
+            .and_then(toml::Value::as_table)
+            .and_then(|data| data.get("reconnect_timeout_ms"))
+            .and_then(toml::Value::as_integer)
+            .expect("fixture Chainlink reconnect_timeout_ms should be configured");
+        let reconnect_timeout_ms = u64::try_from(reconnect_timeout_ms)
+            .expect("fixture Chainlink reconnect_timeout_ms should be positive");
+        assert!(
+            Duration::from_millis(reconnect_timeout_ms) > startup_bound,
+            "smoke must keep Chainlink reconnect timeout above startup bound so the watchdog fires first"
+        );
+        let shutdown_grace_bound = Duration::from_secs(3);
         let expected_failure_bound =
             startup_bound + shutdown_grace_bound + Duration::from_secs(2);
         let smoke_guard = Duration::from_secs(30);

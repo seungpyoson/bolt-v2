@@ -127,6 +127,45 @@ async fn startup_watchdog_capture_failure_after_running_still_awaits_runner_resu
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_capture_failure_during_shutdown_preserves_runner_result() {
+    let (capture_failure_sender, capture_failure_receiver) = tokio::sync::oneshot::channel();
+    capture_failure_sender
+        .send(())
+        .expect("capture failure signal should send");
+    let run_future = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Ok(())
+    };
+    tokio::pin!(run_future);
+    let stop_called = Cell::new(false);
+    let mut capture_failure_receiver = Some(capture_failure_receiver);
+
+    let outcome = live_node_run_startup_watchdog(
+        run_future.as_mut(),
+        &mut capture_failure_receiver,
+        || NodeState::ShuttingDown,
+        || stop_called.set(true),
+        LiveNodeStartupWatchdogBounds {
+            startup_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(25),
+        },
+        vec!["data:chainlink_reference".to_string()],
+    )
+    .await;
+
+    assert!(
+        !stop_called.get(),
+        "capture failure during shutdown should stay on the normal runner/capture shutdown path"
+    );
+    match outcome {
+        LiveNodeRunStartupOutcome::Finished(Ok(())) => {}
+        other => panic!(
+            "capture failure during shutdown should preserve runner result instead of timeout, got {other:?}"
+        ),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shutdown_grace() {
     let (capture_failure_sender, capture_failure_receiver) = tokio::sync::oneshot::channel();
     capture_failure_sender
@@ -166,11 +205,16 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
         "pre-Running capture failure should return after shutdown grace {shutdown_grace:?}, elapsed {elapsed:?}"
     );
     match outcome {
-        LiveNodeRunStartupOutcome::RuntimeCaptureStartupShutdownTimeout {
+        LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
+            trigger,
             shutdown_grace: observed_shutdown_grace,
             node_state,
             registered_client_labels,
         } => {
+            assert_eq!(
+                trigger,
+                LiveNodeStartupShutdownGraceTrigger::RuntimeCaptureFailure
+            );
             assert_eq!(observed_shutdown_grace, shutdown_grace);
             assert_eq!(node_state, "Starting");
             assert_eq!(
@@ -214,6 +258,65 @@ async fn startup_watchdog_deadline_during_shutdown_preserves_runner_result() {
         other => panic!(
             "deadline during shutdown should preserve runner result instead of timeout, got {other:?}"
         ),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace() {
+    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
+    tokio::pin!(run_future);
+    let stop_called = Cell::new(false);
+    let mut capture_failure_receiver = None;
+    let shutdown_grace = Duration::from_millis(25);
+    let started = std::time::Instant::now();
+
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(150),
+        live_node_run_startup_watchdog(
+            run_future.as_mut(),
+            &mut capture_failure_receiver,
+            || NodeState::ShuttingDown,
+            || stop_called.set(true),
+            LiveNodeStartupWatchdogBounds {
+                startup_timeout: Duration::from_millis(1),
+                shutdown_grace,
+            },
+            vec!["data:chainlink_reference".to_string()],
+        ),
+    )
+    .await
+    .expect("deadline during shutdown must return after shutdown grace");
+    let elapsed = started.elapsed();
+
+    assert!(
+        stop_called.get(),
+        "deadline during shutdown should request stop idempotently"
+    );
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "shutdown timeout should return after grace {shutdown_grace:?}, elapsed {elapsed:?}"
+    );
+    match outcome {
+        LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
+            trigger,
+            shutdown_grace: observed_shutdown_grace,
+            node_state,
+            registered_client_labels,
+        } => {
+            assert_eq!(
+                trigger,
+                LiveNodeStartupShutdownGraceTrigger::StartupDeadline
+            );
+            assert_eq!(observed_shutdown_grace, shutdown_grace);
+            assert_eq!(node_state, "ShuttingDown");
+            assert_eq!(
+                registered_client_labels,
+                vec!["data:chainlink_reference".to_string()]
+            );
+        }
+        other => {
+            panic!("deadline during shutdown should name shutdown-grace timeout, got {other:?}")
+        }
     }
 }
 
@@ -265,6 +368,23 @@ fn strategy_free_timeout_sums_fail_closed_on_overflow() {
             BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow
         ),
         "expected stop timeout overflow rejection, got {stop_error:?}"
+    );
+}
+
+#[test]
+fn live_node_startup_shutdown_grace_exceeds_nt_stop_budget_by_derived_slack() {
+    let loaded = fixture_loaded_config();
+    let stop_budget =
+        nautilus_stop_budget_secs(&loaded).expect("fixture NT stop budget should derive");
+    let slack = live_node_startup_shutdown_grace_slack_secs(&loaded);
+    let startup_shutdown_grace = live_node_startup_shutdown_grace_secs(&loaded)
+        .expect("fixture startup shutdown grace should derive");
+
+    assert_eq!(slack, loaded.root.nautilus.timeout_connection_secs);
+    assert_eq!(startup_shutdown_grace, stop_budget + slack);
+    assert!(
+        stop_budget < startup_shutdown_grace,
+        "startup shutdown grace must exceed NT stop budget: stop={stop_budget}s grace={startup_shutdown_grace}s"
     );
 }
 

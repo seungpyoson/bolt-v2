@@ -1094,20 +1094,6 @@ fn chainlink_reference_remove_input_health_report_liveness_for_subscription(
     }
 }
 
-fn chainlink_reference_refresh_input_health_report_liveness(
-    config: &ChainlinkReferencePriceClientConfig,
-    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
-    updates: &[ReferencePriceUpdate],
-    received_ts_ms: u64,
-) {
-    let sources = chainlink_reference_recovered_input_health_sources(config, updates);
-    chainlink_reference_seed_input_health_report_liveness_for_sources(
-        report_liveness,
-        sources.iter(),
-        received_ts_ms,
-    );
-}
-
 fn chainlink_reference_input_health_sources_for_report_instrument(
     config: &ChainlinkReferencePriceClientConfig,
     provider_instrument: &str,
@@ -1447,19 +1433,6 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
                     );
                     chainlink_reference_emit_recovered_input_health_for_sources(recovery, sources);
                 }
-                if !updates.is_empty() {
-                    if let Some(recovery) = &input_health_recovery {
-                        chainlink_reference_refresh_input_health_report_liveness(
-                            &recovery.config,
-                            &recovery.input_health_report_liveness,
-                            &updates,
-                            received_ts_ms,
-                        );
-                    }
-                }
-                if let Some(recovery) = &input_health_recovery {
-                    chainlink_reference_emit_recovered_input_health_for_updates(recovery, &updates);
-                }
                 for update in updates {
                     if let Err(error) =
                         data_sender.send(DataEvent::Data(Data::Custom(update.to_custom_data())))
@@ -1471,17 +1444,6 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
             Err(error) => log::warn!("Chainlink reference frame dropped: {error}"),
         }
     })
-}
-
-fn chainlink_reference_emit_recovered_input_health_for_updates(
-    recovery: &ChainlinkReferenceInputHealthRecovery,
-    updates: &[ReferencePriceUpdate],
-) {
-    if updates.is_empty() {
-        return;
-    }
-    let sources = chainlink_reference_recovered_input_health_sources(&recovery.config, updates);
-    chainlink_reference_emit_recovered_input_health_for_sources(recovery, sources);
 }
 
 fn chainlink_reference_emit_recovered_input_health_for_sources(
@@ -1521,36 +1483,6 @@ fn chainlink_reference_emit_recovered_input_health_for_sources(
             },
         );
     }
-}
-
-fn chainlink_reference_recovered_input_health_sources(
-    config: &ChainlinkReferencePriceClientConfig,
-    updates: &[ReferencePriceUpdate],
-) -> Vec<BoltV3MissingInputSource> {
-    let mut sources = BTreeMap::new();
-    for update in updates {
-        for source in &config.input_health_sources {
-            if source.asset == update.asset()
-                && source.source_id == update.source_id()
-                && source.provider == update.provider()
-                && source.provider_instrument == update.provider_instrument()
-            {
-                let mut recovered = source.clone();
-                recovered.reason = CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED.to_string();
-                sources.insert(
-                    (
-                        recovered.strategy_instance_id.clone(),
-                        recovered.source_id.clone(),
-                        recovered.asset.clone(),
-                        recovered.provider.clone(),
-                        recovered.provider_instrument.clone(),
-                    ),
-                    recovered,
-                );
-            }
-        }
-    }
-    sources.into_values().collect()
 }
 
 struct ChainlinkReferenceReportFrameUpdates {
@@ -2985,69 +2917,6 @@ mod tests {
         );
         assert!(!recorded[0].1.missing);
         assert_eq!(recorded[0].1.source.source_id.as_str(), TEST_SOURCE_ID);
-        assert!(
-            input_health_missing_sources
-                .lock()
-                .expect("missing source set should be available")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn recovered_input_health_clears_only_matching_missing_source() {
-        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
-        let eth_source =
-            input_health_source(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
-        let transitions = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&transitions);
-        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
-            recorded
-                .lock()
-                .expect("transition recorder should be available")
-                .push((reason, transition));
-        });
-        let mut config = fixture_config();
-        config.input_health_transition_emitter = Some(emitter);
-        config.input_health_sources = vec![btc_source.clone(), eth_source.clone()];
-        let input_health_missing_sources =
-            input_health_missing_sources_with(vec![&btc_source, &eth_source]);
-        let recovery = ChainlinkReferenceInputHealthRecovery {
-            config,
-            input_health_report_liveness: Arc::new(Mutex::new(BTreeMap::new())),
-            input_health_missing_sources: Arc::clone(&input_health_missing_sources),
-        };
-        let btc_update = reference_price_update(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
-        let eth_update =
-            reference_price_update(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
-
-        chainlink_reference_emit_recovered_input_health_for_updates(&recovery, &[btc_update]);
-
-        {
-            let recorded = transitions
-                .lock()
-                .expect("transition recorder should be available");
-            assert_eq!(recorded.len(), 1);
-            assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ASSET);
-        }
-        {
-            let missing_sources = input_health_missing_sources
-                .lock()
-                .expect("missing source set should be available");
-            assert!(!missing_sources.contains(
-                &ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source)
-            ));
-            assert!(missing_sources.contains(
-                &ChainlinkReferenceInputHealthSourceKey::from_source(&eth_source)
-            ));
-        }
-
-        chainlink_reference_emit_recovered_input_health_for_updates(&recovery, &[eth_update]);
-
-        let recorded = transitions
-            .lock()
-            .expect("transition recorder should be available");
-        assert_eq!(recorded.len(), 2);
-        assert_eq!(recorded[1].1.source.asset.as_str(), TEST_ETH_ASSET);
         assert!(
             input_health_missing_sources
                 .lock()

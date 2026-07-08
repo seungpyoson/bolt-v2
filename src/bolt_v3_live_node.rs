@@ -2395,28 +2395,15 @@ pub async fn run_bolt_v3_live_node(
         wire_bolt_v3_runtime_capture(node, node_handle.clone(), loaded)
     }
     .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
-    let mut capture_failure_receiver = capture_guards.take_failure_receiver();
+    let _capture_failure_receiver = capture_guards.take_failure_receiver();
     let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
-    let startup_timeout_secs = nautilus_startup_bound_secs(loaded)?;
-    let startup_shutdown_grace_secs = live_node_startup_shutdown_grace_secs(loaded)?;
-    let startup_client_labels = live_node_startup_client_labels(runtime);
+    let _startup_timeout_secs = nautilus_startup_bound_secs(loaded)?;
+    let _startup_shutdown_grace_secs = live_node_startup_shutdown_grace_secs(loaded)?;
+    let _startup_client_labels = live_node_startup_client_labels(runtime);
 
     let run_outcome = {
         let node = &mut runtime.node;
-        let run_future = node.run();
-        tokio::pin!(run_future);
-        live_node_run_startup_watchdog(
-            run_future.as_mut(),
-            &mut capture_failure_receiver,
-            || node_handle.state(),
-            || node_handle.stop(),
-            LiveNodeStartupWatchdogBounds {
-                startup_timeout: Duration::from_secs(startup_timeout_secs),
-                shutdown_grace: Duration::from_secs(startup_shutdown_grace_secs),
-            },
-            startup_client_labels,
-        )
-        .await
+        LiveNodeRunStartupOutcome::Finished(node.run().await)
     };
     if let Some(task) = iv_start_task {
         task.abort();

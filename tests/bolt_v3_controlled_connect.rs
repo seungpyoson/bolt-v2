@@ -670,7 +670,7 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
         .find("let run_future = node.run();")
         .expect("production run wrapper must contain the first NT runner call");
     let capture_index = live_run_body
-        .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")
+        .find("wire_bolt_v3_runtime_capture(node, node_handle.clone(), loaded)")
         .expect("run wrapper must wire NT runtime capture from bolt-v3 persistence config");
     assert!(
         capture_index < live_run_index,

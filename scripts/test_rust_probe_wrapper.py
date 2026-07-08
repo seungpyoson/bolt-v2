@@ -198,6 +198,19 @@ def assert_workflow_contract() -> None:
         raise AssertionError("rust-probe run-name must include probe_id")
     guard_timeout = remote_probe["guard_timeout_minutes"]
 
+    for probe_job in ("probe-heavy", "probe-light"):
+        marker = f"  {probe_job}:\n"
+        start = text.find(marker)
+        if start < 0:
+            raise AssertionError(f"rust-probe workflow missing {probe_job}")
+        next_probe = text.find("\n  probe-", start + len(marker))
+        block = text[start:] if next_probe < 0 else text[start:next_probe]
+        expected_key = f"rust_probe.{probe_job}"
+        if f"build-jobs-key: {expected_key}" not in block:
+            raise AssertionError(
+                f"rust-probe {probe_job} must cap cargo jobs through {expected_key}"
+            )
+
     unsupported_marker = "  probe-unsupported-runner-tier:\n"
     unsupported_start = text.find(unsupported_marker)
     if unsupported_start < 0:

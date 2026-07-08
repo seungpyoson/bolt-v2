@@ -45,6 +45,7 @@ def test_registered_payloads_require_reasons_and_suppress_hits() -> None:
         root = pathlib.Path(tmp)
         scripts = root / "scripts"
         write(scripts / "strict.py", 'VALUE = "managed_light"\n')
+        write(scripts / "other.py", 'VALUE = "managed_light"\n')
 
         try:
             verifier.registered_payloads((verifier.RegisteredPayload("managed_light", ""),))
@@ -59,12 +60,18 @@ def test_registered_payloads_require_reasons_and_suppress_hits() -> None:
             scripts_dir=scripts,
             strict_paths=frozenset({"scripts/strict.py"}),
             registered=verifier.registered_payloads(
-                (verifier.RegisteredPayload("managed_light", "synthetic malformed payload"),)
+                (
+                    verifier.RegisteredPayload(
+                        "managed_light",
+                        "synthetic malformed payload",
+                        paths=("scripts/strict.py",),
+                    ),
+                )
             ),
             protected=protected("managed_light"),
         )
 
-    if hits:
+    if len(hits) != 1 or hits[0].path != "scripts/other.py":
         raise AssertionError(hits)
 
 
@@ -93,14 +100,41 @@ def test_ratchet_mode_allows_only_non_increasing_counts() -> None:
 def test_config_lines_and_table_values_are_protected() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
-        write(root / "synthetic.toml", "managed_value = \"alpha\"\n")
+        write(root / "synthetic.toml", "[synthetic]\n  managed_value = \"alpha\"\nvalues = [\n]\n")
         config_values = verifier.config_line_values(root, ("synthetic.toml",))
         flattened = set(verifier.flatten_string_values({"checks": ("managed_gate",)}))
 
-    if 'managed_value = "alpha"' not in {entry.value for entry in config_values}:
+    protected_values = {entry.value for entry in config_values}
+    if "]" in protected_values:
+        raise AssertionError(config_values)
+    if "[synthetic]" not in protected_values:
+        raise AssertionError(config_values)
+    if '  managed_value = "alpha"' not in protected_values:
+        raise AssertionError(config_values)
+    if 'managed_value = "alpha"' not in protected_values:
         raise AssertionError(config_values)
     if flattened != {"managed_gate"}:
         raise AssertionError(flattened)
+
+
+def test_strict_file_retype_fails_on_stripped_config_line() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        scripts = root / "scripts"
+        write(root / "synthetic.toml", "  queue_command = \"@mergifyio queue\"\n")
+        write(scripts / "strict.py", 'VALUE = "queue_command = \\"@mergifyio queue\\""\n')
+
+        hits = verifier.scan_literals(
+            root=root,
+            scripts_dir=scripts,
+            strict_paths=frozenset({"scripts/strict.py"}),
+            registered={},
+            protected=verifier.config_line_values(root, ("synthetic.toml",)),
+        )
+        errors, _ratchet_count = verifier.evaluate_hits(hits, ratchet_baseline=0)
+
+    if len(errors) != 1 or "queue_command" not in errors[0]:
+        raise AssertionError(errors)
 
 
 def test_missing_governed_artifact_is_loud() -> None:
@@ -143,6 +177,7 @@ def main() -> int:
     test_registered_payloads_require_reasons_and_suppress_hits()
     test_ratchet_mode_allows_only_non_increasing_counts()
     test_config_lines_and_table_values_are_protected()
+    test_strict_file_retype_fails_on_stripped_config_line()
     test_missing_governed_artifact_is_loud()
     test_flatten_string_values_is_closed_world()
     print("OK: config retype verifier self-tests passed.")

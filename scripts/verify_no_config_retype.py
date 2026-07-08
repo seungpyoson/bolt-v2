@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import pathlib
+import re
 import sys
 from collections.abc import Iterator
 from typing import Any
@@ -66,7 +67,7 @@ STRICT_SCRIPT_PATHS = frozenset(
     }
 )
 
-RATCHET_BASELINE = 1563
+RATCHET_BASELINE = 1467
 
 
 @dataclasses.dataclass(frozen=True)
@@ -269,28 +270,24 @@ REGISTERED_VIOLATION_PAYLOADS: tuple[RegisteredPayload, ...] = (
     *registered_payload_group(
         "Legacy touched verifier literal predates this fence; path-scoped so new files cannot reuse it silently.",
         (
-            "scripts/ci_provenance.py",
-            "scripts/contract_engine.py",
-            "scripts/test_merge_queue_preflight.py",
-            "scripts/test_verify_ci_workflow_hygiene.py",
-            "scripts/verify_ci_workflow_hygiene.py",
-        ),
-        (
-            "]",
-        ),
-    ),
-    *registered_payload_group(
-        "Legacy touched verifier literal predates this fence; path-scoped so new files cannot reuse it silently.",
-        (
             "scripts/test_merge_queue_preflight.py",
             "scripts/test_verify_ci_workflow_hygiene.py",
             "scripts/verify_ci_workflow_hygiene.py",
         ),
         (
             "backtester-gate",
-            "default",
             "gate",
             "tag",
+        ),
+    ),
+    RegisteredPayload(
+        "default",
+        "Legacy queue-rule fixture value and Python AST keyword-name check collide with a governed table value; path-scoped until callers derive it from source tables or grammar helpers.",
+        (
+            "scripts/test_merge_queue_preflight.py",
+            "scripts/test_verify_ci_workflow_hygiene.py",
+            "scripts/verify_ci_workflow_hygiene.py",
+            "scripts/verify_fail_closed_contracts.py",
         ),
     ),
     *registered_payload_group(
@@ -410,22 +407,50 @@ def single_source_table_values() -> tuple[ProtectedString, ...]:
     return tuple(values)
 
 
+CONFIG_LINE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\"'/-]+$")
+CONFIG_LINE_KEY_RE = re.compile(r"^-?\s*[\"']?[A-Za-z0-9_.-]+[\"']?\s*:")
+
+
+def config_line_has_information(raw_line: str) -> bool:
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return False
+    if not any(char.isalnum() for char in line):
+        return False
+    if "=" in line:
+        left, _right = line.split("=", maxsplit=1)
+        return any(char.isalnum() for char in left)
+    if line.startswith("[") and line.endswith("]"):
+        return any(char.isalnum() for char in line.strip("[]"))
+    if CONFIG_LINE_KEY_RE.match(line):
+        return True
+    list_value = line.removeprefix("-").strip().rstrip(",").strip("\"'")
+    return len(list_value) >= 3 and CONFIG_LINE_NAME_RE.match(list_value) is not None
+
+
 def config_line_values(
     root: pathlib.Path,
     artifact_paths: tuple[str, ...] = GOVERNED_CONFIG_ARTIFACTS,
 ) -> tuple[ProtectedString, ...]:
     values: list[ProtectedString] = []
     seen: set[str] = set()
+
+    def add_value(value: str, source: str) -> None:
+        if value not in seen:
+            values.append(ProtectedString(value=value, source=source))
+            seen.add(value)
+
     for rel_path in artifact_paths:
         path = root / rel_path
         if not path.is_file():
             raise ValueError(f"declared governed config artifact missing: {rel_path}")
         for raw_line in path.read_text(encoding="utf-8").splitlines():
-            if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            if not config_line_has_information(raw_line):
                 continue
-            if raw_line not in seen:
-                values.append(ProtectedString(value=raw_line, source=rel_path))
-                seen.add(raw_line)
+            add_value(raw_line, rel_path)
+            stripped_line = raw_line.strip()
+            if stripped_line != raw_line:
+                add_value(stripped_line, rel_path)
     return tuple(values)
 
 

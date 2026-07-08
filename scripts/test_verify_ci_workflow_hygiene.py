@@ -6477,10 +6477,13 @@ def assert_mergify_config_gaps_are_reported() -> None:
         return f"  - {key}:\n" + "".join(f"      - {value}\n" for value in values)
 
     def merge_conditions_block(indent: str) -> str:
-        return (
-            f"{indent}merge_conditions:\n"
-            f"{indent}  - approved-reviews-by = {required_reviewer}\n"
-            + "".join(f"{indent}  - check-success = {check_name}\n" for check_name in required_checks)
+        return sequence_block(
+            indent,
+            "merge_conditions",
+            (
+                f"approved-reviews-by = {required_reviewer}",
+                *(f"check-success = {check_name}" for check_name in required_checks),
+            ),
         )
 
     def queue_rule_fixture(

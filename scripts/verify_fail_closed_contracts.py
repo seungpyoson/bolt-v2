@@ -142,7 +142,7 @@ RATCHET_RULE_ID = "FLC099"
 LOGGER_RECEIVER_NAMES = frozenset({"log", "logger", "logging"})
 LOGGER_FACTORY_NAMES = frozenset({"get_log", "get_logger", "get_logging", "getLogger"})
 LOADED_INPUT_CALL_SUFFIXES = frozenset({"load", "loads", "parse", "read_text"})
-CONFIG_TABLE_RECEIVER_MARKERS = frozenset({"config", "policy", "rules", "selector", "settings", "table"})
+CONFIG_TABLE_RECEIVER_MARKERS = frozenset({"config", "policy", "profile", "rules", "selector", "settings", "table"})
 PATH_RECEIVER_MARKERS = frozenset({"file", "path"})
 
 
@@ -213,7 +213,7 @@ def load_config(path: Path) -> Config:
 
 def load_exceptions(path: Path, valid_rule_ids: frozenset[str]) -> Exceptions:
     if not path.exists():
-        return Exceptions({})
+        raise FileNotFoundError(f"fail-closed exceptions config missing: {path}")
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     table = data[EXCEPTIONS_TABLE]
     require_keys(EXCEPTIONS_TABLE, frozenset(table), EXCEPTIONS_KEYS)
@@ -482,9 +482,13 @@ def loaded_input_empty_fallbacks(rel_path: str, node: ast.BoolOp) -> list[Silent
 
 def receiver_leaf(node: ast.AST) -> str | None:
     name = dotted_name(node)
-    if name is None:
-        return None
-    return name.rsplit(".", maxsplit=1)[-1].lower()
+    if name is not None:
+        return name.rsplit(".", maxsplit=1)[-1].lower()
+    if isinstance(node, ast.Call):
+        call_name = dotted_name(node.func)
+        if call_name is not None:
+            return call_name.rsplit(".", maxsplit=1)[-1].lower()
+    return None
 
 
 def receiver_has_marker(node: ast.AST, markers: frozenset[str]) -> bool:
@@ -493,7 +497,8 @@ def receiver_has_marker(node: ast.AST, markers: frozenset[str]) -> bool:
 
 
 def config_get_default_fallback(rel_path: str, node: ast.Call) -> SilentFallbackFacts | None:
-    if not isinstance(node.func, ast.Attribute) or node.func.attr != "get" or len(node.args) < 2:
+    has_explicit_default = len(node.args) >= 2 or any(keyword.arg == "default" for keyword in node.keywords)
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "get" or not has_explicit_default:
         return None
     if not receiver_has_marker(node.func.value, CONFIG_TABLE_RECEIVER_MARKERS):
         return None
@@ -516,8 +521,23 @@ def is_missing_path_test(node: ast.AST) -> bool:
     return receiver_has_marker(call.func.value, PATH_RECEIVER_MARKERS)
 
 
+def return_value_is_explicit_failure(node: ast.AST | None) -> bool:
+    match node:
+        case ast.Constant(value=str()):
+            return True
+        case ast.JoinedStr():
+            return True
+        case ast.List(elts=elts) | ast.Tuple(elts=elts) | ast.Set(elts=elts):
+            return bool(elts) and all(return_value_is_explicit_failure(elt) for elt in elts)
+        case _:
+            return False
+
+
 def if_body_has_silent_return(node: ast.If) -> bool:
-    return any(isinstance(stmt, ast.Return) and sentinel_shape(stmt.value) is not None for stmt in node.body)
+    return any(
+        isinstance(stmt, ast.Return) and not return_value_is_explicit_failure(stmt.value)
+        for stmt in node.body
+    )
 
 
 def if_body_has_continue(node: ast.If) -> bool:

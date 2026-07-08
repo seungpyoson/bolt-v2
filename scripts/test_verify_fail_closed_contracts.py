@@ -48,6 +48,7 @@ def write_justfile(root: Path, *, include_harness: bool = True, extra_commands: 
 def config_text(
     *,
     version: str = "1",
+    include_globs: str = '["pkg/**/*.py"]',
     exclude_globs: str = "[]",
     logging_call_names: str = '["logger.exception", "logging.exception"]',
     extra_settings: str = "",
@@ -55,7 +56,7 @@ def config_text(
     return f"""
     [fail_closed_contracts]
     version = {version}
-    include_globs = ["pkg/**/*.py"]
+    include_globs = {include_globs}
     exclude_globs = {exclude_globs}
     broad_exception_names = ["Exception", "BaseException"]
     logging_call_names = {logging_call_names}
@@ -75,7 +76,7 @@ def config_text(
 
 
 def exceptions_text(*entries: str, version: str = "1") -> str:
-    body = "\n".join(entries)
+    body = "\n".join(entries) if entries else "exceptions = []"
     return f"""
     [fail_closed_exceptions]
     version = {version}
@@ -96,6 +97,7 @@ def exception_entry(*, rule_id: str = "FLC003", path: str, line: str = "4",
 
 def write_config(root: Path) -> None:
     write_file(root, "ci/fail-closed-contracts.toml", config_text())
+    write_file(root, "ci/fail-closed-exceptions.toml", exceptions_text())
     write_justfile(root)
 
 
@@ -595,6 +597,7 @@ def test_config_excludes_nested_test_files() -> None:
             "ci/fail-closed-contracts.toml",
             config_text(exclude_globs='["pkg/test_*.py", "pkg/**/test_*.py"]'),
         )
+        write_file(root, "ci/fail-closed-exceptions.toml", exceptions_text())
         write_justfile(root)
         write_file(
             root,
@@ -790,10 +793,19 @@ def test_silent_fallback_shape_fixtures_fail_with_stable_rule_ids() -> None:
                 return items
             def config_default(policy):
                 return policy.get("commands", [])
+            def config_default_keyword(config):
+                return config.get("commands", default=[])
+            def config_default_from_parser(text):
+                return parse_config(text).get("commands", [])
             def missing_return(path):
                 if not path.exists():
                     return {}
                 return {"ok": True}
+            def missing_accumulated_findings(path):
+                findings = []
+                if not path.exists():
+                    return findings
+                return findings
             def missing_continue(paths):
                 for path in paths:
                     if not path.exists():
@@ -812,8 +824,11 @@ def test_silent_fallback_shape_fixtures_fail_with_stable_rule_ids() -> None:
         "FLC005:pkg/silent_fallbacks.py:2: loaded input falls back to an empty mapping",
         "FLC006:pkg/silent_fallbacks.py:5: loaded input falls back to an empty list",
         "FLC007:pkg/silent_fallbacks.py:8: config table lookup uses a silent default",
-        "FLC008:pkg/silent_fallbacks.py:10: missing enforcement input returns a silent fallback",
-        "FLC009:pkg/silent_fallbacks.py:15: missing enforcement input is skipped silently",
+        "FLC007:pkg/silent_fallbacks.py:10: config table lookup uses a silent default",
+        "FLC007:pkg/silent_fallbacks.py:12: config table lookup uses a silent default",
+        "FLC008:pkg/silent_fallbacks.py:14: missing enforcement input returns a silent fallback",
+        "FLC008:pkg/silent_fallbacks.py:19: missing enforcement input returns a silent fallback",
+        "FLC009:pkg/silent_fallbacks.py:24: missing enforcement input is skipped silently",
     ], findings
 
 
@@ -822,34 +837,56 @@ def test_silent_fallback_rules_fire_on_pr_prefixed_sites() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
+        write_file(root, "ci/fail-closed-contracts.toml", config_text(include_globs='["scripts/**/*.py"]'))
         write_file(
             root,
-            "pkg/pr_prefixed.py",
+            "scripts/verify_ci_workflow_hygiene.py",
             """
-            def parsed_payload(stdout):
-                payload = json.loads(stdout) or {}
-                return payload
-            def selected_rules(order_findings_by_selector, selector):
-                return order_findings_by_selector.get(selector, ())
-            def governed_artifacts(root, artifact_paths):
-                for rel_path in artifact_paths:
-                    path = root / rel_path
-                    if not path.is_file():
+            def verify_test_harness_manifest(workflow, justfile, manifest):
+                errors = []
+                for file_name, path in ((".github/workflows/ci.yml", workflow), ("justfile", justfile)):
+                    if not path.exists():
                         continue
-                    yield path
+                    errors.extend(verify_test_harness_test_args(file_name, path.read_text(encoding="utf-8"), manifest))
+                return errors
+
+            def verify_nextest_config(config):
+                groups = config.get("test-groups", {})
+                profile = config.get("profile", {})
+                default_profile = profile.get("default", {})
+                overrides = default_profile.get("overrides", [])
+                return groups, overrides
+            """,
+        )
+        write_file(
+            root,
+            "scripts/contract_engine.py",
+            """
+            def evaluate(order_findings_by_selector, selector):
+                findings = []
+                findings.extend(order_findings_by_selector.get(selector, ()))
+                return findings
             """,
         )
 
         findings = verifier.collect_findings(
             root,
             root / "ci" / "fail-closed-contracts.toml",
-            strict_silent_fallback_paths=frozenset({"pkg/pr_prefixed.py"}),
+            strict_silent_fallback_paths=frozenset(
+                {
+                    "scripts/verify_ci_workflow_hygiene.py",
+                    "scripts/contract_engine.py",
+                }
+            ),
         )
 
     assert findings == [
-        "FLC005:pkg/pr_prefixed.py:2: loaded input falls back to an empty mapping",
-        "FLC007:pkg/pr_prefixed.py:5: config table lookup uses a silent default",
-        "FLC009:pkg/pr_prefixed.py:9: missing enforcement input is skipped silently",
+        "FLC007:scripts/contract_engine.py:3: config table lookup uses a silent default",
+        "FLC009:scripts/verify_ci_workflow_hygiene.py:4: missing enforcement input is skipped silently",
+        "FLC007:scripts/verify_ci_workflow_hygiene.py:10: config table lookup uses a silent default",
+        "FLC007:scripts/verify_ci_workflow_hygiene.py:11: config table lookup uses a silent default",
+        "FLC007:scripts/verify_ci_workflow_hygiene.py:12: config table lookup uses a silent default",
+        "FLC007:scripts/verify_ci_workflow_hygiene.py:13: config table lookup uses a silent default",
     ], findings
 
 

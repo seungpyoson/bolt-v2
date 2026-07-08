@@ -1,0 +1,474 @@
+Review PR #1286: https://github.com/seungpyoson/bolt-v2/pull/1286
+
+  Focus: adversarial review of fail-closed verifier discovery floors.
+
+  Context:
+  - This PR addresses #1016 / #1068 scope without closing keywords.
+  - It adds `require_nonempty(...)` in `scripts/verifier_io.py`.
+  - It wires empty-discovery floors into CI hygiene, Bolt v3 verifier/fence scripts, RA boundaries, BTE
+  topology, doc/fail-closed/outcome verifiers.
+  - It also changes AI model freshness `--live --advisory --github-notice` so stale/warning advisory
+  output exits non-zero.
+  - Follow-up commit addressed internal review findings:
+    - `configured_ci_provenance_dispatch_names()` now uses the shared required runner-config path.
+    - Added direct empty-discovery tests for previously under-tested sweep floors.
+
+  Review goals:
+  1. Find any verifier path that still silently passes when its enforcement discovery set is missing or
+  empty.
+  2. Find any new floor that can crash instead of producing a normal verifier finding.
+  3. Check whether any optional/parser/allowlist path was incorrectly converted into a required
+  enforcement floor.
+  4. Check whether CLI output and helper-level behavior are consistent.
+  5. Check whether test coverage proves empty-set behavior for every newly wired required discovery floor.
+  6. Check for overbroad scope, unrelated refactors, or behavior changes outside fail-closed verifier
+  hardening.
+
+  Evidence already run locally:
+  - Targeted RED for missed CI runner-config path before the follow-up fix.
+  - `python3.12 scripts/test_verify_ci_workflow_hygiene.py`
+  - Focused affected test twins
+  - `python3.12 -m py_compile ...`
+  - `git diff --check`
+  - `just fmt-check`
+  - `just source-fence-static`
+
+  Known caveat:
+  - `just ci-lint-workflow` still hits a pre-existing clean-main `/usr/bin/python3 -S` TOML parser issue:
+    `ci/rust-verification.toml:53: unsupported value`
+  - Do not treat that as caused by this PR unless you can tie it to this diff.
+
+  Return findings first, with file/line references and severity.
+
+---
+
+<task-notification>
+<task-id>btyys8zvt</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/655f1a19-cdeb-4060-ba07-f0c588aa980e/tasks/btyys8zvt.output</output-file>
+<status>completed</status>
+<summary>Background command "Full twin+real regression at new head (background)" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Review PR #1286: “Fail closed verifier discovery floors”
+  URL: https://github.com/seungpyoson/bolt-v2/pull/1286
+  Base: 694893aea93341d063d30689fc3c84030f126382
+  Head: 5f2e6efef1f0b5a04968f926aee7b2e9257b36b2
+
+  Conduct an adversarial, read-only review of the PR diff. Do not mutate the
+  worktree.
+
+  Primary invariant to verify:
+  All required discovery must happen first. If any required discovery floor
+  fires, the verifier must return immediately with only the relevant floor
+  finding(s). No scan, stale allowlist, stale exception, ledger, snippet,
+  dependency, runtime missing-file, or entrypoint checks may run after a
+  required discovery floor fires.
+
+  Review tasks:
+  1. Enumerate every `require_nonempty(...)` call site in the PR.
+  2. Classify each as:
+     - terminal floor, or
+     - intentional aggregate-then-terminal floor.
+  3. For each terminal/aggregate floor, prove control flow returns before
+  downstream work.
+  4. Specifically re-probe prior fragile areas:
+     - `verify_bolt_v3_pure_rust_runtime.py`
+     - `test_verify_bolt_v3_pure_rust_runtime.py`
+     - `verify_bolt_v3_naming.py`
+     - `verify_bolt_v3_runtime_literals.py`
+     - `verify_doc_decoupling_residuals.py`
+     - `verify_fail_closed_contracts.py`
+     - `verify_bolt_v3_dependency_direction.py`
+     - `verify_ci_workflow_hygiene.py`
+  5. Do not rely on regex/grep prediction alone. Use grep only to enumerate,
+  then read control flow and run minimal behavioral probes.
+  6. Pay special attention to import-time globals and monkeypatch fixtures.
+  Tests must patch every path/global needed to reproduce the real failure
+  shape.
+
+  Expected probes:
+  - Empty pure-Rust temp root with `REPO_ROOT`, `CARGO_TOML`, and `MAIN_RS`
+  patched must emit exactly:
+    `FAIL: Cargo manifests: enforcement set is empty`
+  - Naming empty audit-rule floor with a stale misnomer allowlist fixture must
+  emit only the naming audit floor.
+  - Runtime-literals empty scan universe must emit only the runtime-literal
+  scan floor.
+  - Doc-decoupling empty scan universe with stale ledger entries must emit only
+  the source floor.
+  - Fail-closed contracts empty selected paths with stale exception fixture
+  must emit only the selected-paths floor.
+  - Dependency-direction empty scan universe must not emit stale allowance
+  noise.
+  - CI runner-config missing/empty floor must be deduped.
+
+  Report:
+  - Findings first, with severity and file:line references.
+  - Separate true PR defects from pre-existing/out-of-scope observations.
+  - Include exact commands/probes run and results.
+  - If no defects remain in the discovery-floor terminality class, say that
+  explicitly.
+
+---
+
+<task-notification>
+<task-id>b00ry8our</task-id>
+<tool-use-id>toolu_01JKutYsTsW6sJXBsbd164Tc</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/655f1a19-cdeb-4060-ba07-f0c588aa980e/tasks/b00ry8our.output</output-file>
+<status>completed</status>
+<summary>Background command "Full twin+real regression at round-3 head (background)" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Review PR #1286: “Fail closed verifier discovery floors”
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1286
+  Base: 694893aea93341d063d30689fc3c84030f126382
+  Head: 469e5ab62a5238995466c73b1debaa490c70fecf
+
+  You are conducting an adversarial, read-only code review. Do not mutate the
+  checkout.
+
+  Goal: verify that every newly wired required-discovery floor fails closed
+  cleanly and terminally. A floor is correct only if empty/missing required
+  discovery produces normal verifier findings, not silent pass, not traceback,
+  and not misleading downstream scan/stale/noise findings.
+
+  Review tasks:
+  1. Enumerate every `require_nonempty(...)` call site in `scripts/verify_*.py`
+  and classify it:
+     - terminal
+     - aggregate-then-terminal
+     - helper-only but entrypoint-terminal
+     - defective/non-terminal
+  2. For each floor, prove control flow from the real verifier entrypoint, not
+  just helper tests.
+  3. Probe adversarial empty/missing shapes:
+     - empty repo/root
+     - missing configured source roots
+     - empty source tree with otherwise-valid config
+     - stale allowlist / stale exception / stale ledger entries that must be
+     suppressed by the floor
+     - import-time path globals patched to temp roots
+  4. Check that tests assert exact floor-only output where downstream noise is
+  possible; substring-only tests are insufficient.
+  5. Check that tests do not bypass real discovery with monkeypatches that hide
+  missing-root or path-resolution failures.
+  6. Check CLI/helper consistency: no duplicate floor output, no helper-only
+  floor that the full verifier masks.
+  7. Check scope discipline: do not raise unrelated pre-existing verifiers
+  unless this PR touched the behavior or claims to solve that class.
+  8. Check no optional/parser/allowlist result was wrongly promoted to a
+  required discovery floor.
+
+  Focus especially on the previously fragile areas:
+  - `verify_bolt_v3_boundary_evidence.py`
+  - `verify_outcome_group_nt_reuse.py`
+  - `verify_bolt_v3_strategy_policy_fence.py`
+  - `verify_bte_test_topology.py`
+  - `verify_bolt_v3_naming.py`
+  - stale/noise paths in dependency-direction, runtime-literals, doc-
+  decoupling, fail-closed-contracts, pure-rust-runtime
+
+  Useful commands:
+  ```bash
+  git diff --stat
+  694893aea93341d063d30689fc3c84030f126382..469e5ab62a5238995466c73b1debaa490c7
+  0fecf
+  git diff
+  694893aea93341d063d30689fc3c84030f126382..469e5ab62a5238995466c73b1debaa490c7
+  0fecf
+  rg -n "require_nonempty|enforcement set is empty|stale|allowlist|ledger|
+  source_set_files" scripts/verify_*.py scripts/test_verify_*.py
+
+  Local verification already reported green, but do not trust it without
+  inspection:
+
+  - affected verifier twins passed
+  - affected production verifiers passed
+  - python3.12 -m py_compile ... passed
+  - git diff --check passed
+  - just fmt-check passed
+  - just source-fence-static passed
+
+  Output format:
+
+  - Findings first, ordered by severity.
+  - For each finding: file:line, exact failure mode, why it matters, and
+    concrete fix.
+
+  - If clean, say “No findings” and include the specific probes/control-flow
+    checks that justify it.
+
+  - Keep out-of-scope/pre-existing observations separate from PR defects.
+
+---
+
+<task-notification>
+<task-id>brs3wpel3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/655f1a19-cdeb-4060-ba07-f0c588aa980e/tasks/brs3wpel3.output</output-file>
+<status>completed</status>
+<summary>Background command "Full twin+real regression at round-4 head (background)" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Review PR #1286: “Fail closed verifier discovery floors”
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1286
+  Base: 694893aea93341d063d30689fc3c84030f126382
+  Head: 506cf7a609a3ab6f06fa07a10b857a1e45a41cef
+
+  Conduct a read-only adversarial review. Do not mutate the checkout.
+
+  Primary question:
+  Do all required-discovery floors fail closed from the real verifier entrypoint, before any scan, stale
+  check, allowlist load, ledger validation, source-fence wiring, missing-file check, supplemental scan, or
+  other noisy downstream/preflight work?
+
+  Why this review needs to be stricter:
+  Earlier rounds found new defects because tests used helper-only checks, monkeypatched discovery to [],
+  substring assertions, or valid preflight fixtures that hid noise. Do not repeat that mistake. Prove
+  behavior from real entrypoints and adversarial filesystem shapes.
+
+  Required checks:
+  1. Enumerate every `require_nonempty(...)` call in `scripts/verify_*.py`.
+  2. Classify each as:
+     - entrypoint-terminal
+     - aggregate-then-terminal
+     - helper-only but entrypoint-terminal
+     - defective/non-terminal
+  3. For every floor, trace from the real public entrypoint:
+     - `main()`
+     - `scan_root()`
+     - `collect_findings()`
+     - `collect_violations()`
+     - `verify_root()`
+  4. For each floor, identify all work that could run before or after it:
+     - scan loops
+     - stale allowlist/exception/ledger checks
+     - allowlist/config/ledger parsing
+     - source-fence/justfile wiring checks
+     - missing-file checks
+     - supplemental broad scans
+     - root membership checks
+  5. A floor is correct only if, when it fires, output contains only the relevant floor finding(s), with
+  no traceback and no unrelated noise.
+  6. Probe real filesystem cases, not just monkeypatched `[]`:
+     - empty root
+     - missing configured source roots
+     - partially missing configured roots with supplemental files present
+     - empty primary scan but stale allowlist present
+     - empty scan with invalid ledger/config/justfile present
+     - missing allowlist/config that should be behind a discovery floor
+  7. Check exact-output tests. Substring-only assertions are insufficient where any noise can leak.
+  8. Check that tests do not hide real behavior by replacing discovery with `lambda: []` unless a separate
+  real-entrypoint test covers the same floor.
+  9. Do not raise out-of-scope pre-existing issues unless this PR touches the same control-flow assumption
+  or claims to close that class.
+
+  Focus files:
+  - `scripts/verify_bolt_v3_strategy_policy_fence.py`
+  - `scripts/verify_bolt_v3_naming.py`
+  - `scripts/verify_doc_decoupling_residuals.py`
+  - `scripts/verify_fail_closed_contracts.py`
+  - `scripts/verify_bolt_v3_dependency_direction.py`
+  - plus all other `require_nonempty(...)` sites
+
+  Useful commands:
+  ```bash
+  git diff --stat 694893aea93341d063d30689fc3c84030f126382..506cf7a609a3ab6f06fa07a10b857a1e45a41cef
+  git diff 694893aea93341d063d30689fc3c84030f126382..506cf7a609a3ab6f06fa07a10b857a1e45a41cef
+  rg -n "require_nonempty|enforcement set is empty|stale|allowlist|ledger|source_fence|source_set_files|
+  production_rust_files_under" scripts/verify_*.py scripts/test_verify_*.py
+
+  Output format:
+
+  - Findings first, ordered by severity.
+  - Each finding must include file:line, exact reproduction shape, why existing tests missed it, and the
+    concrete fix.
+
+  - If clean, say “No findings” and list the specific adversarial probes/control-flow proofs used.
+  - If you find a new issue, explicitly name which invariant above failed to catch it.
+
+---
+
+Review PR #1286: “Fail closed verifier discovery floors”
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1286
+  Base: 694893aea93341d063d30689fc3c84030f126382
+  Head: 7509a7135cecf64782af2e9c5846a2aeff407e08
+
+  Conduct a read-only adversarial review. Do not mutate the checkout.
+
+  Primary invariant:
+  Required discovery floors are preflight-terminal. If a required discovery set is empty or missing, the
+  verifier must emit only the relevant floor finding(s) and return before scan work, stale checks,
+  allowlist/config/ledger validation, source-fence wiring, missing-file checks, or supplemental broad
+  scans.
+
+  This invariant is now centrally declared in:
+  - `scripts/verifier_io.py`
+  - `scripts/test_verifier_io.py`
+
+  Review tasks:
+  1. Verify `REQUIRED_DISCOVERY_FLOOR_INVARIANT` is clear and complete.
+  2. Verify `REQUIRED_DISCOVERY_FLOOR_CONTRACTS` covers every live `require_nonempty(...)` call site in
+  `scripts/verify_*.py`.
+  3. Confirm each contract has the right classification, entrypoint, call count, and proof.
+  4. Check that `scripts/test_verifier_io.py` would fail if a new floor is added without registration.
+  5. Re-test the previously fragile cases:
+     - partial missing configured roots plus supplemental strategy files
+     - empty misnomer scan before naming scan / allowlist load
+     - empty doc-decoupling source before invalid ledger validation
+     - empty fail-closed selected paths before source-fence wiring
+     - exact dependency-direction floor output
+  6. Check that `run_fences.py` now runs `test_verifier_io.py`, and that `test_lane_governor.py` digest
+  was correctly updated for the reviewed runner change.
+  7. Look for any remaining substring-only or helper-only tests that claim terminality without real
+  entrypoint coverage.
+
+  Useful commands:
+  ```bash
+  git diff --stat 694893aea93341d063d30689fc3c84030f126382..7509a7135cecf64782af2e9c5846a2aeff407e08
+  git diff 694893aea93341d063d30689fc3c84030f126382..7509a7135cecf64782af2e9c5846a2aeff407e08
+  rg -n "require_nonempty|REQUIRED_DISCOVERY_FLOOR|enforcement set is empty|preflight-terminal|source-
+  fence wiring|supplemental" scripts
+  python3.12 scripts/test_verifier_io.py
+  python3.12 scripts/test_run_fences.py
+  python3.12 scripts/test_verify_lane_governance.py
+  python3.12 scripts/test_lane_governor.py
+
+  Output format:
+
+  - Findings first, ordered by severity.
+  - For each finding: file:line, exact failure mode, why the invariant/test registry missed it, and
+    concrete fix.
+
+  - If clean, say “No findings” and list the specific registry, AST, and adversarial-entrypoint checks
+    used.
+
+---
+
+<task-notification>
+<task-id>b9xfl5fne</task-id>
+<tool-use-id>toolu_01Ew3ruatvqVGLozA8LZdpZw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/655f1a19-cdeb-4060-ba07-f0c588aa980e/tasks/b9xfl5fne.output</output-file>
+<status>completed</status>
+<summary>Background command "Full twin+real regression at round-6 head (background)" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Review PR #1286 at exact head 1d479ae75.
+
+  Context: this PR hardens verifier discovery floors so required discovery sets fail closed. Prior review
+  rounds kept finding new issues because the invariant was applied too narrowly: first to empty sets, then
+  terminality, then real entrypoints, then upstream/downstream config, ledger, allowlist, source-fence,
+  missing-file, and supplemental checks. Do not only count require_nonempty() calls. Review the full
+  control flow from each real entrypoint.
+
+  Primary invariant:
+  A required discovery floor must be preflight-terminal. If the required discovery set is empty or
+  unavailable, the verifier must emit only the relevant floor finding(s) or a normal prerequisite-config
+  finding, exit non-zero, and must not run scan work, stale checks, allowlist validation, ledger
+  validation, source-fence wiring, missing-file checks, supplemental scans, or downstream config
+  validation.
+
+  Review tasks:
+  1. Verify scripts/verifier_io.py states this invariant clearly, including downstream config validation,
+  and require_nonempty() references it.
+  2. Verify the REQUIRED_DISCOVERY_FLOOR_CONTRACTS registry covers every live require_nonempty() call in
+  scripts/verify_*.py with correct call_count, classification, entrypoint, and proof.
+  3. Confirm scripts/test_verifier_io.py would fail for:
+     - an unregistered require_nonempty() floor,
+     - an incorrect call_count,
+     - a non-literal/non-module-constant label,
+     - missing invariant terms.
+  4. Re-check the latest fixes specifically:
+     - verify_bolt_v3_runtime_literals.py: empty scan paths must return the runtime-literal scan floor
+     before loading/parsing the runtime literal audit.
+     - verify_fail_closed_contracts.py: empty selected_paths must return the selected-paths floor before
+     loading/parsing exception config.
+     - verify_bolt_v3_naming.py: missing/invalid naming audit must be a normal FAIL, not a traceback.
+  5. Run adversarial probes using real entrypoints, not helper-only monkeypatches:
+     - empty runtime-literal scan + missing/invalid audit,
+     - empty fail-closed selected paths + invalid exceptions,
+     - missing naming audit,
+     - invalid naming audit,
+     - empty/missing roots for the previously fragile verifiers.
+  6. Confirm exact-output tests exist where downstream noise is possible.
+  7. Confirm run_fences.py includes test_verifier_io.py and the lane-governor digest matches.
+  8. Distinguish true PR defects from pre-existing/out-of-scope observations.
+
+  Report findings first. For each finding include severity, file:line, exact failure mode, why the
+  invariant/registry missed it, and the smallest concrete fix. If no findings remain, say that plainly and
+  list the commands/probes used as evidence.
+
+---
+
+<task-notification>
+<task-id>b02b9jdkw</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/655f1a19-cdeb-4060-ba07-f0c588aa980e/tasks/b02b9jdkw.output</output-file>
+<status>completed</status>
+<summary>Background command "Round-7 governance suite + changed twins + digest + full regression (background)" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Review PR #1286 at exact head 3bd56bfa3a1433df4cd5f08eb0ad7f6b2799ca18.
+
+  Focus: fail-closed required-discovery floors and the invariant registry. Review from real verifier
+  entrypoints, not helper-only paths.
+
+  Primary invariant:
+  Required discovery floors are preflight-terminal. If an enforced discovery set is empty or missing, the
+  verifier must emit only the relevant floor finding(s), exit non-zero, and must not run scan work, stale
+  checks, allowlist validation, downstream config validation, ledger validation, source-fence wiring,
+  missing-file checks, or supplemental broad scans. Required discovery config needed to compute the set
+  must fail as a normal finding, not a traceback.
+
+  Specific latest fix to scrutinize:
+  - scripts/verify_bolt_v3_naming.py now adds a schema boundary for the naming audit.
+  - Confirm `main()` consumes only normalized audit rows, not raw YAML.
+  - Probe malformed valid-YAML cases:
+    - top-level list/scalar
+    - row field is scalar/mapping instead of list
+    - row item is scalar
+    - `from`, `to`, `reason` are non-string
+    - `include_globs` is scalar or contains non-string items
+    Expected: normal `FAIL: invalid Bolt-v3 naming audit file: ...`, no traceback.
+
+  Review tasks:
+  1. Enumerate every live `require_nonempty(...)` in `scripts/verify_*.py` and compare against
+  `REQUIRED_DISCOVERY_FLOOR_CONTRACTS`.
+  2. Verify registry `call_count`, labels, classifications, entrypoints, and proof strings are accurate.
+  3. Confirm `scripts/test_verifier_io.py` catches unregistered floors, wrong call counts, non-literal
+  labels, missing invariant terms, and registry drift.
+  4. Re-run or manually probe fragile paths:
+     - naming audit malformed schema before discovery floors
+     - runtime-literals empty scan before audit load
+     - fail-closed empty selected paths before exception config
+     - doc-decoupling empty source before ledger validation
+     - strategy-policy missing configured roots before supplemental scan
+     - dependency-direction empty source before stale allowances
+  5. Check exact-output tests where downstream noise is possible.
+  6. Confirm `scripts/run_fences.py` includes `test_verifier_io.py` and lane-governor digest matches.
+  7. Separate true PR defects from pre-existing/out-of-scope observations.
+
+  Report findings first. For each finding include severity, file:line, exact failure mode, why the
+  invariant/registry/tests missed it, and the smallest systematic fix. If clean, say “No findings” and
+  list the commands/probes used.
+
+---
+
+<task-notification>
+<task-id>b35g7e174</task-id>
+<tool-use-id>toolu_01BBYNX8j7kkrXnxnaDxvYJG</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/655f1a19-cdeb-4060-ba07-f0c588aa980e/tasks/b35g7e174.output</output-file>
+<status>killed</status>
+<summary>Background command "Naming twin + full regression at round-8 head (background)" was stopped</summary>
+</task-notification>

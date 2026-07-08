@@ -170,6 +170,27 @@ def test_extensionless_strict_script_is_scanned() -> None:
             raise AssertionError(f"expected extensionless script violation, got {findings!r}")
 
 
+def test_extensionless_strict_script_syntax_error_is_loud() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write(root / "ci" / "github-actions-runners.toml", """
+        [ci_provenance]
+        protected_value = "single-source-value"
+        """)
+        write(root / "scripts" / "cargo-shim", """
+        VALUE = "single-source-value"
+        if broken python:
+        """)
+        findings = VERIFIER.collect_findings(
+            root,
+            governed_config_artifacts=("ci/github-actions-runners.toml",),
+            strict_paths=frozenset({"scripts/cargo-shim"}),
+            ratchet_baseline_count=0,
+        )
+        if not any("no-config-retype verifier failed:" in finding for finding in findings):
+            raise AssertionError(f"expected strict extensionless syntax failure, got {findings!r}")
+
+
 def test_registered_payload_assignment_skip_is_limited_to_verifier_file() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -244,6 +265,7 @@ def main() -> int:
         test_registered_payload_allows_strict_retype_with_reason,
         test_wildcard_registered_payload_is_rejected,
         test_extensionless_strict_script_is_scanned,
+        test_extensionless_strict_script_syntax_error_is_loud,
         test_registered_payload_assignment_skip_is_limited_to_verifier_file,
         test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline,
         test_registered_payload_literals_do_not_self_violate,

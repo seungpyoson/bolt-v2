@@ -682,14 +682,14 @@ def script_source_paths(root: Path) -> tuple[Path, ...]:
     )
 
 
-def script_literals(root: Path) -> Iterable[LiteralHit]:
+def script_literals(root: Path, *, strict_paths: frozenset[str] = STRICT_RETYPE_PATHS) -> Iterable[LiteralHit]:
     for path in script_source_paths(root):
         rel = rel_path(path, root)
         source = path.read_text(encoding="utf-8")
         try:
             tree = ast.parse(source, filename=rel)
         except SyntaxError:
-            if path.suffix == "":
+            if path.suffix == "" and rel not in strict_paths:
                 continue
             raise
         skipped_ranges = (
@@ -729,6 +729,7 @@ def collect_violations(
     *,
     governed_config_artifacts: tuple[str, ...] = GOVERNED_CONFIG_ARTIFACTS,
     registered_retypes: tuple[RegisteredRetype, ...] = REGISTERED_RETYPE_PAYLOADS,
+    strict_paths: frozenset[str] = STRICT_RETYPE_PATHS,
 ) -> tuple[tuple[LiteralHit, ProtectedString], ...]:
     protected = protected_strings(root, governed_config_artifacts)
     protected_by_value: dict[str, ProtectedString] = {}
@@ -736,7 +737,7 @@ def collect_violations(
         protected_by_value.setdefault(item.value, item)
     registered = registration_index(registered_retypes)
     violations: list[tuple[LiteralHit, ProtectedString]] = []
-    for hit in script_literals(root):
+    for hit in script_literals(root, strict_paths=strict_paths):
         if is_registered(hit, registered):
             continue
         protected_source = protected_by_value.get(hit.value)
@@ -759,6 +760,7 @@ def collect_findings(
             root,
             governed_config_artifacts=governed_config_artifacts,
             registered_retypes=registered_retypes,
+            strict_paths=strict_paths,
         )
     except FileNotFoundError as exc:
         return [str(exc)]

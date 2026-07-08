@@ -36,7 +36,11 @@ RUST_TYPE_PATH_TOKEN_RE = re.compile(
     r"(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*"
 )
 MACRO_RULES_START_RE = re.compile(r"\bmacro_rules!\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
-DEFAULT_IMPL_TEMPLATE_RE = re.compile(r"\bimpl\b(?s:.*?)\bDefault\b(?s:.*?)\bfor\b")
+MACRO_MATCHER_VAR_RE = re.compile(r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:")
+DEFAULT_IMPL_TARGET_VAR_RE = re.compile(
+    r"\bimpl\b(?s:.*?)\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
+    r"Default\s+for\s+\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
+)
 REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE = re.compile(
     r"\bimpl\b[^{};]*?\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
     r"Default\s+for\s+"
@@ -497,16 +501,35 @@ def balanced_span(source: str, start: int, open_char: str, close_char: str) -> t
     return None
 
 
-def default_generating_macro_names(source: str) -> set[str]:
-    names: set[str] = set()
+def macro_matcher_variables(body: str) -> list[str]:
+    variables: list[str] = []
+    seen: set[str] = set()
+    for match in MACRO_MATCHER_VAR_RE.finditer(body):
+        name = match.group("name")
+        if name not in seen:
+            seen.add(name)
+            variables.append(name)
+    return variables
+
+
+def default_generating_macro_target_indexes(source: str) -> dict[str, tuple[int, ...]]:
+    macros: dict[str, tuple[int, ...]] = {}
     for match in MACRO_RULES_START_RE.finditer(source):
         span = balanced_span(source, match.end() - 1, "{", "}")
         if span is None:
             continue
         body = source[span[0]:span[1]]
-        if DEFAULT_IMPL_TEMPLATE_RE.search(body):
-            names.add(match.group("name"))
-    return names
+        matcher_variables = macro_matcher_variables(body)
+        target_indexes = sorted(
+            {
+                matcher_variables.index(target.group("name"))
+                for target in DEFAULT_IMPL_TARGET_VAR_RE.finditer(body)
+                if target.group("name") in matcher_variables
+            }
+        )
+        if target_indexes:
+            macros[match.group("name")] = tuple(target_indexes)
+    return macros
 
 
 def macro_invocation_arguments(source: str, macro_name: str) -> list[str]:
@@ -520,6 +543,39 @@ def macro_invocation_arguments(source: str, macro_name: str) -> list[str]:
         if span is not None:
             arguments.append(source[span[0] + 1:span[1] - 1])
     return arguments
+
+
+def split_macro_arguments(arguments: str) -> list[str]:
+    chunks: list[str] = []
+    start = 0
+    round_depth = square_depth = brace_depth = angle_depth = 0
+    for index, char in enumerate(arguments):
+        if char == "(":
+            round_depth += 1
+        elif char == ")" and round_depth:
+            round_depth -= 1
+        elif char == "[":
+            square_depth += 1
+        elif char == "]" and square_depth:
+            square_depth -= 1
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}" and brace_depth:
+            brace_depth -= 1
+        elif char == "<":
+            angle_depth += 1
+        elif char == ">" and angle_depth:
+            angle_depth -= 1
+        elif (
+            char == ","
+            and round_depth == square_depth == brace_depth == angle_depth == 0
+        ):
+            chunks.append(arguments[start:index].strip())
+            start = index + 1
+    tail = arguments[start:].strip()
+    if tail:
+        chunks.append(tail)
+    return chunks
 
 
 def registered_type_for_token(
@@ -538,9 +594,10 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
         return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
     registered_aliases = registered_financial_value_aliases(root, registered_types)
     source_items = tuple(rust_sources(root))
-    default_macro_names: set[str] = set()
+    default_macro_targets: dict[str, set[int]] = {}
     for _, source in source_items:
-        default_macro_names.update(default_generating_macro_names(source))
+        for macro_name, target_indexes in default_generating_macro_target_indexes(source).items():
+            default_macro_targets.setdefault(macro_name, set()).update(target_indexes)
     for relative_path, source in source_items:
         for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):
             registered_type = registered_type_for_token(match.group("type"), registered_types, registered_aliases)
@@ -557,19 +614,23 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
                         f"{relative_path}: registered FinancialValue Default impl/derive "
                         f"for {type_name} is forbidden"
                     )
-        for macro_name in default_macro_names:
+        for macro_name, target_indexes in default_macro_targets.items():
             for arguments in macro_invocation_arguments(source, macro_name):
-                for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(arguments):
-                    registered_type = registered_type_for_token(
-                        token_match.group(0),
-                        registered_types,
-                        registered_aliases,
-                    )
-                    if registered_type is not None:
-                        findings.append(
-                            f"{relative_path}: registered FinancialValue Default impl/derive "
-                            f"for {registered_type} is forbidden"
+                argument_chunks = split_macro_arguments(arguments)
+                for target_index in sorted(target_indexes):
+                    if target_index >= len(argument_chunks):
+                        continue
+                    for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(argument_chunks[target_index]):
+                        registered_type = registered_type_for_token(
+                            token_match.group(0),
+                            registered_types,
+                            registered_aliases,
                         )
+                        if registered_type is not None:
+                            findings.append(
+                                f"{relative_path}: registered FinancialValue Default impl/derive "
+                                f"for {registered_type} is forbidden"
+                            )
     return sorted(set(findings))
 
 

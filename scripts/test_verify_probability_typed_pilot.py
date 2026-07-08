@@ -690,6 +690,30 @@ default_for!(crate::bolt_v3_numeric::Probability);
             raise AssertionError(f"expected macro-generated Default finding, got {findings!r}")
 
 
+def test_verify_ignores_macro_default_marker_argument() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/macro_default_marker.rs": """
+macro_rules! default_for {
+    ($marker:ident, $target:ty) => {
+        impl Default for $target {
+            fn default() -> Self { todo!() }
+        }
+    }
+}
+
+default_for!(Probability, crate::other::NotProbability);
+""",
+            },
+        )
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
+        if any("registered FinancialValue Default impl/derive" in finding for finding in findings):
+            raise AssertionError(f"expected marker argument to be ignored, got {findings!r}")
+
+
 def test_registered_default_fence_fails_closed_when_registry_is_empty() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -942,6 +966,7 @@ def main() -> int:
         test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
         test_verify_rejects_multiline_cfg_attr_default_derive,
         test_verify_rejects_cfg_inactive_macro_generated_registered_default_impl,
+        test_verify_ignores_macro_default_marker_argument,
         test_registered_default_fence_fails_closed_when_registry_is_empty,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,

@@ -1461,6 +1461,50 @@ def assert_mergify_config_snapshot_uses_base_blob() -> None:
         assert mergify_config_valid_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
 
 
+def assert_mergify_config_validation_uses_legacy_verifier_contract() -> None:
+    module = load_preflight_module()
+    calls: list[tuple[str, str]] = []
+
+    def fake_verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
+        calls.append((config_text, config_name))
+        return ["synthetic Mergify contract error"]
+
+    original_verify = module.verify_mergify_config
+    try:
+        module.verify_mergify_config = fake_verify_mergify_config
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = GitFixture(pathlib.Path(tmp))
+            base_blob = git(fixture.repo, "rev-parse", f"{fixture.base}:.mergify.yml")
+            finding = module.mergify_config_validation_finding(
+                repo=fixture.repo,
+                base_sha=fixture.base,
+                blob_sha=base_blob,
+                input_timeout_seconds=5,
+            )
+    finally:
+        module.verify_mergify_config = original_verify
+
+    if calls != [(MERGIFY_YML, ".mergify.yml")]:
+        raise AssertionError(f"preflight must call verify_mergify_config with legacy signature, got {calls!r}")
+    expected = {
+        "lane": "mergify_config",
+        "scope": "run",
+        "status": "inconclusive",
+        "reason_code": "mergify_config_invalid",
+        "message": ".mergify.yml snapshot does not satisfy Mergify config contract",
+        "evidence": {
+            "path": ".mergify.yml",
+            "base_sha": fixture.base,
+            "blob_sha": base_blob,
+            "validator": "verify_ci_workflow_hygiene.verify_mergify_config",
+            "git_returncode": 0,
+            "git_stderr": "",
+            "errors": ["synthetic Mergify contract error"],
+        },
+    }
+    assert_equal(finding, expected, "preflight verifier contract finding")
+
+
 def assert_fetches_use_private_refs_without_fetch_head() -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
     if "FETCH_HEAD" in source:
@@ -4462,6 +4506,7 @@ def main() -> int:
     assert_preflight_artifact_finding_uses_classification_table()
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
+    assert_mergify_config_validation_uses_legacy_verifier_contract()
     assert_fetches_use_private_refs_without_fetch_head()
     assert_private_fetches_do_not_write_checkout_refs()
     assert_private_fetches_resolve_checkout_remote_names()

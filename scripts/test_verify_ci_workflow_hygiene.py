@@ -90,6 +90,20 @@ def load_provenance(
     return module
 
 
+def load_script_module(module_name: str):
+    path = REPO_ROOT / "scripts" / f"{module_name}.py"
+    loaded_module = sys.modules.get(module_name)
+    if loaded_module is not None and pathlib.Path(getattr(loaded_module, "__file__", "")).resolve() == path:
+        return loaded_module
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_sync_ci_debug_ssh_script(
     path: pathlib.Path = SYNC_CI_DEBUG_SSH_PATH, module_name: str = "sync_ci_debug_ssh_secret"
 ):
@@ -3184,6 +3198,342 @@ def mergify_max_batch_size(batch_size: object) -> int:
     return batch_size
 
 
+def contract_rule_field(rule: object, name: str) -> object:
+    if isinstance(rule, dict):
+        return rule[name]
+    return getattr(rule, name)
+
+
+def contract_rule_selector(rule: object) -> tuple[object, ...]:
+    selector = contract_rule_field(rule, "selector")
+    if isinstance(selector, tuple):
+        return selector
+    if isinstance(selector, list):
+        return tuple(selector)
+    raise AssertionError(f"contract rule selector must be tuple/list, got {selector!r}")
+
+
+def contract_finding_rule_id(finding: object) -> str:
+    if isinstance(finding, dict):
+        rule_id = finding.get("rule_id")
+    else:
+        rule_id = getattr(finding, "rule_id", None)
+    if not isinstance(rule_id, str):
+        raise AssertionError(f"contract finding must carry string rule_id, got {finding!r}")
+    return rule_id
+
+
+def contract_finding_message(finding: object) -> str:
+    if isinstance(finding, dict):
+        message = finding.get("message")
+    else:
+        message = getattr(finding, "message", None)
+    if not isinstance(message, str):
+        raise AssertionError(f"contract finding must carry string message, got {finding!r}")
+    return message
+
+
+def alternate_mergify_scalar(value: object) -> object:
+    if value is None:
+        return "sp-reviewer"
+    if value is True:
+        return False
+    if value is False:
+        return True
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, str):
+        if value == "merge":
+            return "queue"
+        if value == "squash":
+            return "merge"
+        if value.endswith("seconds"):
+            return "60 minutes"
+        if value.endswith("minutes"):
+            return "30 seconds"
+        return f"{value}-drift"
+    raise AssertionError(f"cannot synthesize alternate Mergify scalar for {value!r}")
+
+
+def mergify_rule_anchor(selector: tuple[object, ...]) -> str:
+    if selector[0] == "queue_rules":
+        return f"  - name: {selector[1]}\n"
+    if selector[0] == "priority_rules":
+        return f"priority_rules:\n  - name: {selector[1]}\n"
+    raise AssertionError(f"selector has no named-rule anchor: {selector!r}")
+
+
+def mutate_mergify_scalar_rule(config: str, selector: tuple[object, ...], expected: object) -> str:
+    key = str(selector[-1])
+    new_line = mergify_scalar_line("    " if selector[0] in {"queue_rules", "priority_rules"} else "  ", key, alternate_mergify_scalar(expected))
+    if selector[0] == "merge_queue":
+        return replace_once(config, mergify_scalar_line("  ", key, expected), new_line)
+    if selector[0] in {"queue_rules", "priority_rules"}:
+        return replace_once_after(config, mergify_rule_anchor(selector), mergify_scalar_line("    ", key, expected), new_line)
+    raise AssertionError(f"unsupported scalar selector: {selector!r}")
+
+
+def mutate_mergify_mapping_rule(config: str, selector: tuple[object, ...], expected: object) -> str:
+    if selector == ("root",) and expected == "mapping":
+        return "[]\n"
+    if selector[:2] == ("queue_rules", "default") and selector[-1] == "batch_size" and isinstance(expected, dict):
+        return replace_once_after(
+            config,
+            mergify_rule_anchor(selector),
+            f"      max: {expected['max']}\n",
+            f"      max: {mergify_max_batch_size(expected) - 1}\n",
+        )
+    if selector[0] in {"queue_rules", "priority_rules"} and isinstance(expected, tuple):
+        if not expected and selector[0] == "queue_rules":
+            return replace_once_after(
+                config,
+                mergify_rule_anchor(selector),
+                "    queue_conditions: []\n",
+                "    queue_conditions:\n      - label = generated-drift\n",
+            )
+        first = expected[0] if expected else "label = hotfix"
+        return replace_once_after(
+            config,
+            mergify_rule_anchor(selector),
+            f"      - {first}\n",
+            f"      - {first}\n      - label = generated-drift\n",
+        )
+    raise AssertionError(f"unsupported mapping selector: {selector!r}")
+
+
+def mutate_mergify_required_membership_rule(config: str, selector: tuple[object, ...]) -> str:
+    return replace_once_after(
+        config,
+        mergify_rule_anchor(selector),
+        "      - check-success = gate\n",
+        "",
+    )
+
+
+def mutate_mergify_forbidden_key_rule(config: str, selector: tuple[object, ...]) -> str:
+    if selector == ("root", "manual_queueing_only"):
+        return config + "\npull_request_rules:\n  - name: generated-autoqueue\n"
+    if selector == ("root", "supported_keys"):
+        return config + "\nshared:\n  queue_branch_prefix: custom/merge-queue/\n"
+    if selector == ("merge_queue",):
+        return replace_once(
+            config,
+            "merge_queue:\n",
+            "merge_queue:\n  skip_intermediate_results: true\n",
+        )
+    if selector[:2] == ("queue_rules", "default") and selector[-1] == "batch_size":
+        return replace_once_after(
+            config,
+            mergify_rule_anchor(selector),
+            "      max: 6\n",
+            "      max: 6\n      spread: true\n",
+        )
+    if selector[0] == "queue_rules":
+        return replace_once_after(
+            config,
+            mergify_rule_anchor(selector),
+            "    queue_conditions:",
+            "    autoqueue: true\n    queue_conditions:",
+        )
+    if selector[0] == "priority_rules":
+        return replace_once_after(
+            config,
+            mergify_rule_anchor(selector),
+            "    conditions:",
+            "    route: hotfix\n    conditions:",
+        )
+    raise AssertionError(f"unsupported forbidden-key selector: {selector!r}")
+
+
+def mutate_mergify_required_rule_order(config: str, selector: tuple[object, ...]) -> str:
+    if selector == ("queue_rules",):
+        hotfix_rule_start = config.index("  # Exceptional path only. Normal merge sessions use the default queue below.\n")
+        default_rule_start = config.index("  - name: default\n")
+        priority_rules_start = config.index("\npriority_rules:\n")
+        hotfix_rule_block = config[hotfix_rule_start:default_rule_start]
+        default_rule_block = config[default_rule_start:priority_rules_start]
+        return config[:hotfix_rule_start] + default_rule_block + hotfix_rule_block + config[priority_rules_start:]
+    if selector == ("priority_rules",):
+        priority_rules_start = config.index("\npriority_rules:\n")
+        return config[:priority_rules_start] + "\n"
+    raise AssertionError(f"unsupported required-rule/order selector: {selector!r}")
+
+
+def mutate_mergify_config_for_rule(rule: object, config: str) -> str:
+    kind = contract_rule_field(rule, "kind")
+    selector = contract_rule_selector(rule)
+    expected = contract_rule_field(rule, "expected")
+    if kind == "scalar-EQ":
+        return mutate_mergify_scalar_rule(config, selector, expected)
+    if kind == "mapping-EQ":
+        return mutate_mergify_mapping_rule(config, selector, expected)
+    if kind == "required-membership":
+        return mutate_mergify_required_membership_rule(config, selector)
+    if kind == "forbidden-unknown-key":
+        return mutate_mergify_forbidden_key_rule(config, selector)
+    if kind == "required-rule-presence/order":
+        return mutate_mergify_required_rule_order(config, selector)
+    raise AssertionError(f"unsupported Mergify contract rule kind: {kind!r}")
+
+
+def expected_mergify_generated_rule_ids(rule_id: str) -> list[str]:
+    if rule_id == "mergify.queue_rules.default.batch_size.supported_keys":
+        return [
+            "mergify.queue_rules.default.batch_size.supported_keys",
+            "mergify.queue_rules.default.batch_size",
+        ]
+    if rule_id == "mergify.priority_rules.order":
+        return [
+            "mergify.priority_rules.order",
+            "mergify.priority_rules.order",
+        ]
+    return [rule_id]
+
+
+def assert_mergify_contract_rules_are_structured_and_falsifiable() -> None:
+    verifier = load_verifier()
+    contract_rules = load_script_module("contract_rules")
+    rules = tuple(contract_rules.MERGIFY_RULES)
+    if not rules:
+        raise AssertionError("MERGIFY_RULES must not be empty")
+
+    rule_ids = [contract_rule_field(rule, "rule_id") for rule in rules]
+    if not all(isinstance(rule_id, str) and rule_id for rule_id in rule_ids):
+        raise AssertionError(f"every Mergify contract rule must carry a nonempty rule_id: {rule_ids!r}")
+    duplicate_ids = sorted({rule_id for rule_id in rule_ids if rule_ids.count(rule_id) > 1})
+    if duplicate_ids:
+        raise AssertionError(f"Mergify contract rule_ids must be unique: {duplicate_ids}")
+
+    legacy_family_ledger = getattr(contract_rules, "MERGIFY_LEGACY_ERROR_FAMILY_RULE_IDS", None)
+    if not isinstance(legacy_family_ledger, dict):
+        raise AssertionError("MERGIFY_LEGACY_ERROR_FAMILY_RULE_IDS must be the zero-rules-lost ledger")
+    rule_id_set = set(rule_ids)
+    template_set = {contract_rule_field(rule, "message_template") for rule in rules}
+    if template_set - set(legacy_family_ledger):
+        raise AssertionError(
+            "every legacy Mergify error-string family must map to a rule_id, missing: "
+            f"{sorted(template_set - set(legacy_family_ledger))}"
+        )
+    allowed_ledger_rule_ids = rule_id_set | {"mergify.yaml.parse"}
+    for template, mapped_rule_ids in legacy_family_ledger.items():
+        mapped = set(mapped_rule_ids)
+        if not mapped or mapped - allowed_ledger_rule_ids:
+            raise AssertionError(f"legacy family {template!r} maps to invalid rule ids {mapped_rule_ids!r}")
+
+    mergify_config = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
+    baseline_findings = verifier.verify_mergify_config_findings(mergify_config)
+    if baseline_findings:
+        raise AssertionError(f"real .mergify.yml must be clean, got findings: {baseline_findings}")
+    baseline_errors = verifier.verify_mergify_config(mergify_config)
+    if baseline_errors:
+        raise AssertionError(f"real .mergify.yml must render clean legacy errors, got: {baseline_errors}")
+
+    for rule in rules:
+        rule_id = contract_rule_field(rule, "rule_id")
+        mutated = mutate_mergify_config_for_rule(rule, mergify_config)
+        findings = verifier.verify_mergify_config_findings(mutated)
+        fired_rule_ids = [contract_finding_rule_id(finding) for finding in findings]
+        expected_rule_ids = expected_mergify_generated_rule_ids(rule_id)
+        if fired_rule_ids != expected_rule_ids:
+            raise AssertionError(
+                f"generated Mergify mutation for {rule_id} must fire exactly {expected_rule_ids}; "
+                f"fired {fired_rule_ids} with findings {findings}"
+            )
+
+        rendered_errors = verifier.verify_mergify_config(mutated)
+        rule_messages = [
+            contract_finding_message(finding)
+            for finding in findings
+            if contract_finding_rule_id(finding) == rule_id
+        ]
+        if not rule_messages:
+            raise AssertionError(f"structured finding for {rule_id} must carry a rendered legacy message")
+        missing_messages = [message for message in rule_messages if message not in rendered_errors]
+        if missing_messages:
+            raise AssertionError(
+                f"verify_mergify_config must render structured findings for {rule_id}; "
+                f"missing {missing_messages}, got {rendered_errors}"
+            )
+
+
+def assert_mergify_contract_preserves_legacy_error_lists() -> None:
+    verifier = load_verifier()
+    mergify_config = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
+    cases = {
+        "missing merge_queue": (
+            replace_once(
+                mergify_config,
+                "merge_queue:\n  max_parallel_checks: 1\n  reset_on_external_merge: always\n\n",
+                "",
+            ),
+            [".mergify.yml must define merge_queue"],
+            ["mergify.merge_queue.supported_keys"],
+        ),
+        "non-mapping merge_queue": (
+            replace_once(
+                mergify_config,
+                "merge_queue:\n  max_parallel_checks: 1\n  reset_on_external_merge: always\n",
+                "merge_queue: []\n",
+            ),
+            [".mergify.yml merge_queue must be a mapping"],
+            ["mergify.merge_queue.supported_keys"],
+        ),
+        "batch unsupported key before equality drift": (
+            replace_once(
+                mergify_config,
+                "      max: 6\n",
+                "      max: 5\n      spread: true\n",
+            ),
+            [
+                ".mergify.yml default batch_size must not define unsupported key spread",
+                ".mergify.yml default batch_size must be min 2 max 6",
+            ],
+            [
+                "mergify.queue_rules.default.batch_size.supported_keys",
+                "mergify.queue_rules.default.batch_size",
+            ],
+        ),
+    }
+    for label, (mutated, expected_errors, expected_rule_ids) in cases.items():
+        findings = verifier.verify_mergify_config_findings(mutated)
+        actual_rule_ids = [contract_finding_rule_id(finding) for finding in findings]
+        actual_errors = verifier.verify_mergify_config(mutated)
+        if actual_rule_ids != expected_rule_ids:
+            raise AssertionError(f"{label} rule ids changed: {actual_rule_ids}")
+        if actual_errors != expected_errors:
+            raise AssertionError(f"{label} legacy errors changed: {actual_errors}")
+
+
+def assert_workflow_model_helpers_are_shared_and_cached() -> None:
+    verifier = load_verifier()
+    workflow_model = load_script_module("workflow_model")
+    helper_names = (
+        "strip_comment",
+        "parse_jobs",
+        "step_blocks",
+        "uncommented_text",
+        "block_run_body_lines",
+        "block_run_body",
+        "block_run_body_matches",
+        "named_step_block",
+        "block_top_level_items",
+        "block_nested_mapping_items",
+        "top_level_mapping_items",
+        "job_top_level_items",
+    )
+    for helper_name in helper_names:
+        verifier_helper = getattr(verifier, helper_name, None)
+        model_helper = getattr(workflow_model, helper_name, None)
+        if verifier_helper is not model_helper:
+            raise AssertionError(f"verifier must re-export workflow_model.{helper_name}")
+
+    workflow_text = "name: generated\njobs:\n  one:\n    steps:\n      - run: echo one\n"
+    first_parse = workflow_model.parse_jobs(workflow_text)
+    second_parse = workflow_model.parse_jobs(workflow_text)
+    if first_parse is not second_parse:
+        raise AssertionError("workflow_model.parse_jobs must memoize parses per workflow text")
+
+
 def mutate_named_step_after(
     text: str,
     anchor: str,
@@ -5814,17 +6164,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
 def assert_mergify_config_gaps_are_reported() -> None:
     verifier = load_verifier()
-    provenance = load_provenance()
-    expectations = provenance.MERGIFY_CONFIG_EXPECTATIONS
-    merge_queue_scalars = expectations["merge_queue"]
-    queue_rules = expectations["queue_rules"]
-    priority_rules = expectations["priority_rules"]
-    required_reviewer = expectations["required_reviewer"]
-    required_checks = expectations["required_checks"]
-    hotfix_queue = queue_rules["hotfix"]
-    default_queue = queue_rules["default"]
-    hotfix_priority = priority_rules["hotfix"]
-    mergify_config = (REPO_ROOT / ".mergify.yml").read_text()
+    mergify_config = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
     baseline_errors = verifier.verify_mergify_config(mergify_config)
     if baseline_errors:
         raise AssertionError(f"real .mergify.yml must be clean, got: {baseline_errors}")
@@ -5847,455 +6187,30 @@ def assert_mergify_config_gaps_are_reported() -> None:
         + hotfix_rule_block
         + mergify_config[priority_rules_start:]
     )
+    swapped_findings = verifier.verify_mergify_config_findings(swapped_queue_rules)
+    if "mergify.queue_rules.order" not in {
+        contract_finding_rule_id(finding) for finding in swapped_findings
+    }:
+        raise AssertionError(f"swapped queue-rule block must fire queue order rule, got: {swapped_findings}")
+    swapped_errors = verifier.verify_mergify_config(swapped_queue_rules)
+    expected_order_error = ".mergify.yml queue_rules must define exactly hotfix followed by default"
+    if expected_order_error not in swapped_errors:
+        raise AssertionError(f"swapped queue-rule block must render legacy error, got: {swapped_errors}")
 
-    mutations = [
-        (
-            "missing max_parallel_checks",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("  ", "max_parallel_checks", merge_queue_scalars["max_parallel_checks"]),
-                "",
-            ),
-            f"merge_queue.max_parallel_checks must be {merge_queue_scalars['max_parallel_checks']}",
-        ),
-        (
-            "reset disabled",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("  ", "reset_on_external_merge", merge_queue_scalars["reset_on_external_merge"]),
-                "  reset_on_external_merge: never\n",
-            ),
-            f"merge_queue.reset_on_external_merge must be {merge_queue_scalars['reset_on_external_merge']}",
-        ),
-        (
-            "autoqueue enabled",
-            replace_once(
-                mergify_config,
-                "  - name: default\n",
-                "  - name: default\n    autoqueue: true\n",
-            ),
-            "default must not define unsupported key autoqueue",
-        ),
-        (
-            "pull request rules enabled",
-            mergify_config + "\npull_request_rules:\n  - name: autoqueue\n",
-            "manual queueing only",
-        ),
-        (
-            "merge protections enabled",
-            mergify_config + "\nmerge_protections:\n  - name: autoqueue\n",
-            "manual queueing only",
-        ),
-        (
-            "defaults override enabled",
-            mergify_config + "\ndefaults:\n  queue_rule:\n    batch_size: 1\n",
-            "manual queueing only",
-        ),
-        (
-            "remote config inheritance enabled",
-            mergify_config + "\nextends: shared/mergify-config\n",
-            "manual queueing only",
-        ),
-        (
-            "commands restrictions inheritance enabled",
-            mergify_config + "\ncommands_restrictions:\n  queue:\n    conditions: []\n",
-            "manual queueing only",
-        ),
-        (
-            "unknown top-level key enabled",
-            mergify_config + "\nshared:\n  queue_branch_prefix: custom/merge-queue/\n",
-            "unsupported top-level key shared",
-        ),
-        (
-            "yaml merge key enabled",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                "    queue_conditions: []\n",
-                "    <<: *default_queue\n    queue_conditions: []\n",
-            ),
-            "YAML merge key is forbidden",
-        ),
-        (
-            "duplicate queue_rules top level",
-            mergify_config + "\nqueue_rules:\n  - name: default\n",
-            "duplicate key queue_rules",
-        ),
-        (
-            "queue rule order swapped",
-            swapped_queue_rules,
-            "queue_rules must define exactly hotfix followed by default",
-        ),
-        (
-            "quoted-name extra queue rule",
-            replace_once(
-                mergify_config,
-                "  - name: default\n",
-                "  - \"name\": sneaky\n"
-                "    queue_conditions: []\n"
-                "    merge_conditions: []\n"
-                "    branch_protection_injection_mode: merge\n"
-                "    batch_size: 1\n"
-                "    batch_max_wait_time: 30 seconds\n"
-                "    batch_max_failure_resolution_attempts: 0\n"
-                "    checks_timeout: 150 minutes\n"
-                "    draft_bot_account: null\n"
-                "    merge_method: squash\n\n"
-                "  - name: default\n",
-            ),
-            "queue_rules must define exactly hotfix followed by default",
-        ),
-        (
-            "name-not-first extra queue rule",
-            replace_once(
-                mergify_config,
-                "  - name: default\n",
-                "  - queue_conditions: []\n"
-                "    name: sneaky\n"
-                "    merge_conditions: []\n"
-                "    branch_protection_injection_mode: merge\n"
-                "    batch_size: 1\n"
-                "    batch_max_wait_time: 30 seconds\n"
-                "    batch_max_failure_resolution_attempts: 0\n"
-                "    checks_timeout: 150 minutes\n"
-                "    draft_bot_account: null\n"
-                "    merge_method: squash\n\n"
-                "  - name: default\n",
-            ),
-            "queue_rules must define exactly hotfix followed by default",
-        ),
-        (
-            "duplicate default queue conditions",
-            replace_once(
-                mergify_config,
-                "  - name: default\n    queue_conditions: []\n",
-                "  - name: default\n    queue_conditions: []\n    queue_conditions:\n      - check-success = gate\n",
-            ),
-            "duplicate key queue_conditions",
-        ),
-        (
-            "quoted duplicate default queue conditions",
-            replace_once(
-                mergify_config,
-                "  - name: default\n    queue_conditions: []\n",
-                "  - name: default\n    queue_conditions: []\n    \"queue_conditions\":\n      - check-success = gate\n",
-            ),
-            "duplicate key queue_conditions",
-        ),
-        (
-            "wide-indent merge queue unsupported key",
-            replace_once(
-                mergify_config,
-                "merge_queue:\n"
-                + mergify_scalar_line("  ", "max_parallel_checks", merge_queue_scalars["max_parallel_checks"])
-                + mergify_scalar_line("  ", "reset_on_external_merge", merge_queue_scalars["reset_on_external_merge"]),
-                "merge_queue:\n"
-                + mergify_scalar_line("    ", "max_parallel_checks", merge_queue_scalars["max_parallel_checks"])
-                + mergify_scalar_line("    ", "reset_on_external_merge", merge_queue_scalars["reset_on_external_merge"])
-                + "    skip_intermediate_results: true\n",
-            ),
-            "merge_queue must not define unsupported key skip_intermediate_results",
-        ),
-        (
-            "default custom queue branch prefix",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                "    queue_conditions: []\n",
-                "    queue_conditions: []\n    queue_branch_prefix: custom/merge-queue/\n",
-            ),
-            "default must not define unsupported key queue_branch_prefix",
-        ),
-        (
-            "default editable queue branch",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                "    queue_conditions: []\n",
-                "    queue_conditions: []\n    allow_queue_branch_edit: true\n",
-            ),
-            "default must not define unsupported key allow_queue_branch_edit",
-        ),
-        (
-            "queue conditions require gate",
-            replace_once(
-                mergify_config,
-                "    queue_conditions: []\n",
-                "    queue_conditions:\n      - check-success = gate\n",
-            ),
-            "default queue_conditions must be []",
-        ),
-        (
-            "hotfix queue conditions changed",
-            replace_once_after(
-                mergify_config,
-                "  - name: hotfix\n    queue_conditions:\n",
-                "      - label = hotfix\n",
-                "      - label = urgent\n",
-            ),
-            "hotfix queue_conditions must be ['label = hotfix']",
-        ),
-        (
-            "default missing gate merge condition",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                "      - check-success = gate\n",
-                "",
-            ),
-            f"default merge_conditions must require {required_reviewer} and all {len(required_checks)} gates",
-        ),
-        (
-            "hotfix missing gate merge condition",
-            replace_once(mergify_config, "      - check-success = gate\n", ""),
-            f"hotfix merge_conditions must require {required_reviewer} and all {len(required_checks)} gates",
-        ),
-        (
-            "default extra merge condition",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                "      - check-success = host-health\n",
-                "      - check-success = host-health\n      - label = queue-proof\n",
-            ),
-            f"default merge_conditions must require {required_reviewer} and all {len(required_checks)} gates",
-        ),
-        (
-            "queue-time injection",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line(
-                    "    ",
-                    "branch_protection_injection_mode",
-                    hotfix_queue["branch_protection_injection_mode"],
-                ),
-                "    branch_protection_injection_mode: queue\n",
-            ),
-            f"hotfix branch_protection_injection_mode must be {hotfix_queue['branch_protection_injection_mode']}",
-        ),
-        (
-            "default batch min lowered",
-            replace_once(mergify_config, f"      min: {default_queue['batch_size']['min']}\n", "      min: 1\n"),
-            mergify_queue_batch_size_error("default", default_queue["batch_size"]),
-        ),
-        (
-            "default batch max narrowed",
-            replace_once(
-                mergify_config,
-                f"      max: {default_queue['batch_size']['max']}\n",
-                f"      max: {mergify_max_batch_size(default_queue['batch_size']) - 1}\n",
-            ),
-            mergify_queue_batch_size_error("default", default_queue["batch_size"]),
-        ),
-        (
-            "default batch max duplicated",
-            replace_once(
-                mergify_config,
-                f"      max: {default_queue['batch_size']['max']}\n",
-                f"      max: {default_queue['batch_size']['max']}\n"
-                f"      max: {mergify_max_batch_size(default_queue['batch_size']) - 1}\n",
-            ),
-            "duplicate key max",
-        ),
-        (
-            "default batch unknown nested key",
-            replace_once(
-                mergify_config,
-                f"      max: {default_queue['batch_size']['max']}\n",
-                f"      max: {default_queue['batch_size']['max']}\n      spread: true\n",
-            ),
-            "default batch_size must not define unsupported key spread",
-        ),
-        (
-            "hotfix batch widened",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "batch_size", hotfix_queue["batch_size"]),
-                mergify_scalar_line("    ", "batch_size", hotfix_queue["batch_size"] + 1),
-            ),
-            mergify_queue_batch_size_error("hotfix", hotfix_queue["batch_size"]),
-        ),
-        (
-            "default wait shortened",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "batch_max_wait_time", default_queue["batch_max_wait_time"]),
-                "    batch_max_wait_time: 30 seconds\n",
-            ),
-            f"default batch_max_wait_time must be {default_queue['batch_max_wait_time']}",
-        ),
-        (
-            "hotfix wait lengthened",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "batch_max_wait_time", hotfix_queue["batch_max_wait_time"]),
-                "    batch_max_wait_time: 60 minutes\n",
-            ),
-            f"hotfix batch_max_wait_time must be {hotfix_queue['batch_max_wait_time']}",
-        ),
-        (
-            "hotfix failure split enabled",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line(
-                    "    ",
-                    "batch_max_failure_resolution_attempts",
-                    hotfix_queue["batch_max_failure_resolution_attempts"],
-                ),
-                mergify_scalar_line(
-                    "    ",
-                    "batch_max_failure_resolution_attempts",
-                    default_queue["batch_max_failure_resolution_attempts"],
-                ),
-            ),
-            f"hotfix batch_max_failure_resolution_attempts must be {hotfix_queue['batch_max_failure_resolution_attempts']}",
-        ),
-        (
-            "default failure split disabled",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                mergify_scalar_line(
-                    "    ",
-                    "batch_max_failure_resolution_attempts",
-                    default_queue["batch_max_failure_resolution_attempts"],
-                ),
-                mergify_scalar_line(
-                    "    ",
-                    "batch_max_failure_resolution_attempts",
-                    hotfix_queue["batch_max_failure_resolution_attempts"],
-                ),
-            ),
-            f"default batch_max_failure_resolution_attempts must be {default_queue['batch_max_failure_resolution_attempts']}",
-        ),
-        (
-            "duplicate default wait",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                mergify_scalar_line("    ", "batch_max_wait_time", default_queue["batch_max_wait_time"]),
-                mergify_scalar_line("    ", "batch_max_wait_time", default_queue["batch_max_wait_time"])
-                + "    batch_max_wait_time: 30 seconds\n",
-            ),
-            "duplicate key batch_max_wait_time",
-        ),
-        (
-            "unbounded timeout",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "checks_timeout", hotfix_queue["checks_timeout"]),
-                "    checks_timeout: auto\n",
-            ),
-            f"hotfix checks_timeout must be {hotfix_queue['checks_timeout']}",
-        ),
-        (
-            "default timeout lowered",
-            replace_once_after(
-                mergify_config,
-                "  - name: default\n",
-                mergify_scalar_line("    ", "checks_timeout", default_queue["checks_timeout"]),
-                "    checks_timeout: 60 minutes\n",
-            ),
-            f"default checks_timeout must be {default_queue['checks_timeout']}",
-        ),
-        (
-            "draft impersonation",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "draft_bot_account", hotfix_queue["draft_bot_account"]),
-                '    draft_bot_account: "{{ author }}"\n',
-            ),
-            f"hotfix draft_bot_account must be {yaml_scalar_literal(hotfix_queue['draft_bot_account'])}",
-        ),
-        (
-            "non-squash merge",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "merge_method", hotfix_queue["merge_method"]),
-                "    merge_method: merge\n",
-            ),
-            f"hotfix merge_method must be {hotfix_queue['merge_method']}",
-        ),
-        (
-            "duplicate hotfix merge method",
-            replace_once(
-                mergify_config,
-                "    merge_method: squash\n",
-                "    merge_method: squash\n    merge_method: merge\n",
-            ),
-            "duplicate key merge_method",
-        ),
-        (
-            "priority rules removed",
-            replace_once(
-                mergify_config,
-                "\npriority_rules:\n"
-                "  - name: hotfix\n"
-                "    conditions:\n"
-                "      - label = hotfix\n"
-                + mergify_scalar_line("    ", "priority", hotfix_priority["priority"])
-                + mergify_scalar_line(
-                    "    ",
-                    "allow_checks_interruption",
-                    hotfix_priority["allow_checks_interruption"],
-                ),
-                "\n",
-            ),
-            "must define priority_rules",
-        ),
-        (
-            "hotfix priority condition changed",
-            replace_once_after(
-                mergify_config,
-                "priority_rules:\n  - name: hotfix\n    conditions:\n",
-                "      - label = hotfix\n",
-                "      - label = urgent\n",
-            ),
-            "hotfix priority conditions must be ['label = hotfix']",
-        ),
-        (
-            "hotfix priority lowered",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line("    ", "priority", hotfix_priority["priority"]),
-                "    priority: high\n",
-            ),
-            f"hotfix priority must be {hotfix_priority['priority']}",
-        ),
-        (
-            "hotfix interruption disabled",
-            replace_once(
-                mergify_config,
-                mergify_scalar_line(
-                    "    ",
-                    "allow_checks_interruption",
-                    hotfix_priority["allow_checks_interruption"],
-                ),
-                "    allow_checks_interruption: false\n",
-            ),
-            f"hotfix allow_checks_interruption must be {yaml_scalar_literal(hotfix_priority['allow_checks_interruption'])}",
-        ),
-        (
-            "quoted extra priority rule",
-            replace_once(
-                mergify_config,
-                "priority_rules:\n  - name: hotfix\n",
-                "priority_rules:\n  - \"name\": sneaky\n"
-                "    conditions:\n"
-                "      - label = hotfix\n"
-                "    priority: 1\n"
-                "    allow_checks_interruption: false\n"
-                "  - name: hotfix\n",
-            ),
-            "priority_rules must define exactly hotfix",
-        ),
-    ]
-    for label, mutated, expected in mutations:
-        errors = verifier.verify_mergify_config(mutated)
-        if not any(expected in error for error in errors):
-            raise AssertionError(
-                f"expected .mergify.yml {label} error containing {expected!r}, got: {errors}"
-            )
+    original_run = verifier.subprocess.run
+    try:
+        def raise_missing_ruby(*_args: object, **_kwargs: object) -> object:
+            raise FileNotFoundError("ruby")
+
+        verifier.subprocess.run = raise_missing_ruby
+        ruby_findings = verifier.verify_mergify_config_findings(mergify_config)
+    finally:
+        verifier.subprocess.run = original_run
+    if [
+        (contract_finding_rule_id(finding), contract_finding_message(finding))
+        for finding in ruby_findings
+    ] != [("mergify.yaml.parse", ".mergify.yml requires Ruby/Psych to parse YAML")]:
+        raise AssertionError(f"missing Ruby/Psych must fail closed as a parse finding, got: {ruby_findings}")
 
 
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
@@ -10402,14 +10317,26 @@ def assert_command_parse_cache_is_transparent() -> None:
         "      - run: cargo build --target-dir /tmp/raw # inline comment\n      - run: just fmt-check",
     )
     cached_strip_fn = verifier.strip_comment
+    cached_parse_jobs_fn = verifier.parse_jobs
     cached_token_fn = verifier._command_tokens_cached
+    workflow_model = verifier.workflow_model
     findings_live = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
     if not findings_live:
         raise AssertionError("verifier-level differential probe must produce a finding to be meaningful")
     hits_before = cached_strip_fn.cache_info().hits + cached_token_fn.cache_info().hits
-    verifier.strip_comment = cached_strip_fn.__wrapped__
-    verifier._command_tokens_cached = cached_token_fn.__wrapped__
-    findings_bypassed = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    try:
+        verifier.strip_comment = cached_strip_fn.__wrapped__
+        verifier.parse_jobs = cached_parse_jobs_fn.__wrapped__
+        verifier._command_tokens_cached = cached_token_fn.__wrapped__
+        workflow_model.strip_comment = cached_strip_fn.__wrapped__
+        workflow_model.parse_jobs = cached_parse_jobs_fn.__wrapped__
+        findings_bypassed = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    finally:
+        verifier.strip_comment = cached_strip_fn
+        verifier.parse_jobs = cached_parse_jobs_fn
+        verifier._command_tokens_cached = cached_token_fn
+        workflow_model.strip_comment = cached_strip_fn
+        workflow_model.parse_jobs = cached_parse_jobs_fn
     hits_after = cached_strip_fn.cache_info().hits + cached_token_fn.cache_info().hits
     if findings_live != findings_bypassed:
         raise AssertionError(
@@ -19183,6 +19110,7 @@ def main() -> int:
     assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow()
     assert_reuse_neutral_env_comment_states_fail_closed_classification_rule()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
+    assert_workflow_model_helpers_are_shared_and_cached()
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()
     assert_ci_policy_rejects_literal_event_sender_id_argument()
@@ -19205,6 +19133,8 @@ def main() -> int:
     assert_ci_base_ref_archives_use_scripts_directory()
     assert_ci_detector_docs_only_archive_includes_lane_policy()
     assert_merge_group_support_gaps_are_reported()
+    assert_mergify_contract_rules_are_structured_and_falsifiable()
+    assert_mergify_contract_preserves_legacy_error_lists()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_cache_persistence_audit_gaps_are_reported()

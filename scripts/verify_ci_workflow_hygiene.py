@@ -23,7 +23,6 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from ci_provenance import (
     GATE_NAME_KEYS,
-    MERGIFY_CONFIG_EXPECTATIONS,
     MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
@@ -66,6 +65,9 @@ from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_man
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 import ci_storage_tripwire
 import ci_input_sets
+import contract_engine
+import workflow_model
+from contract_rules import MERGIFY_RULES
 from verifier_io import require_nonempty
 
 
@@ -77,6 +79,23 @@ COMMAND_UNDERSTANDING_PARITY_EXPORTS = (
     python_command_string,
     python_constant_string,
 )
+
+strip_comment = workflow_model.strip_comment
+parse_jobs = workflow_model.parse_jobs
+step_blocks = workflow_model.step_blocks
+uncommented_text = workflow_model.uncommented_text
+block_run_body_lines = workflow_model.block_run_body_lines
+line_indent = workflow_model.line_indent
+unquote_yaml_scalar = workflow_model.unquote_yaml_scalar
+normalize_script_text = workflow_model.normalize_script_text
+block_run_body = workflow_model.block_run_body
+block_run_body_matches = workflow_model.block_run_body_matches
+block_step_property_indent = workflow_model.block_step_property_indent
+block_top_level_items = workflow_model.block_top_level_items
+block_nested_mapping_items = workflow_model.block_nested_mapping_items
+top_level_mapping_items = workflow_model.top_level_mapping_items
+job_top_level_items = workflow_model.job_top_level_items
+named_step_block = workflow_model.named_step_block
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1316,31 +1335,6 @@ CI_INSTALL_ACTION_COMMANDS = {
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 
 
-# verify_text re-parses the same shell strings tens of thousands of times across
-# a run (e.g. `fi`, `exit 1`); these helpers are pure functions of a single str,
-# so memoize. An unbounded cache is safe: the distinct-string set is bounded by
-# the workflow corpus and the process is a short-lived CLI/test invocation.
-@functools.cache
-def strip_comment(line: str) -> str:
-    quote: str | None = None
-    escaped = False
-    for index, char in enumerate(line):
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif char == "\\" and quote == '"':
-                escaped = True
-            elif char == quote:
-                quote = None
-            continue
-        if char in {"'", '"'}:
-            quote = char
-            continue
-        if char == "#" and (index == 0 or line[index - 1].isspace()):
-            return line[:index].rstrip()
-    return line.rstrip()
-
-
 def extract_paths_ignore_for_trigger(
     workflow_text: str, trigger: str
 ) -> tuple[str, ...] | None:
@@ -1381,39 +1375,6 @@ def extract_paths_ignore_for_trigger(
         if stripped.startswith("- "):
             items.append(stripped[2:].strip().strip("'").strip('"'))
     return tuple(items)
-
-
-def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
-    """Parse this repo's strict GitHub Actions job subset.
-
-    Top-level job ids must be indented by exactly two spaces under `jobs:`.
-    The verifier reports required job ids that drift to another indentation.
-    """
-
-    lines = workflow_text.splitlines()
-    jobs: dict[str, list[str]] = {}
-    in_jobs = False
-    current: str | None = None
-
-    for line in lines:
-        clean = strip_comment(line)
-        if clean == "jobs:":
-            in_jobs = True
-            current = None
-            continue
-        if not in_jobs:
-            continue
-        if clean and not clean.startswith((" ", "\t")):
-            break
-        match = re.match(r"^  ([^ \t:#][^:#]*):(?:\s+&[A-Za-z0-9_.-]+)?\s*$", clean)
-        if match:
-            current = match.group(1).strip().strip("'\"")
-            jobs[current] = []
-            continue
-        if current is not None:
-            jobs[current].append(clean)
-
-    return jobs
 
 
 def top_level_block(workflow_text: str, key: str) -> list[str]:
@@ -2445,45 +2406,6 @@ def extract_needs(job_lines: list[str]) -> set[str]:
     return needs
 
 
-def step_blocks(job_lines: list[str]) -> list[list[str]]:
-    blocks: list[list[str]] = []
-    current: list[str] | None = None
-    in_steps = False
-    steps_indent: int | None = None
-    step_indent: int | None = None
-
-    for line in job_lines:
-        clean = strip_comment(line)
-        stripped = clean.lstrip()
-        if not in_steps:
-            if re.match(r"^\s*steps:\s*$", clean):
-                in_steps = True
-                steps_indent = len(clean) - len(stripped)
-            continue
-        if not stripped:
-            if current is not None:
-                current.append(line)
-            continue
-        indent = len(clean) - len(stripped)
-        is_step_item = YAML_STEP_ITEM_RE.match(stripped) is not None
-        if steps_indent is not None and indent <= steps_indent and not (
-            indent == steps_indent and is_step_item
-        ):
-            break
-        if step_indent is None and is_step_item:
-            step_indent = indent
-        if step_indent is not None and indent == step_indent and is_step_item:
-            if current is not None:
-                blocks.append(current)
-            current = [line]
-            continue
-        if current is not None:
-            current.append(line)
-    if current is not None:
-        blocks.append(current)
-    return blocks
-
-
 def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
@@ -2626,13 +2548,6 @@ def workflow_run_command_count(workflow_text: str, command: str) -> int:
 
 def block_has_target_dir_opt_in(block: list[str]) -> bool:
     return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
-
-
-def unquote_yaml_scalar(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
 
 
 def block_input_items(block: list[str]) -> list[tuple[str, str]]:
@@ -2936,10 +2851,6 @@ def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
     return any(block_has_target_dir_opt_in(block) for block in setup_action_blocks(job_lines))
 
 
-def uncommented_text(lines: list[str]) -> str:
-    return "\n".join(strip_comment(line) for line in lines)
-
-
 def append_missing_text_requirements(
     errors: list[str],
     text: str,
@@ -2952,37 +2863,6 @@ def append_missing_text_requirements(
 
 def append_failed_contracts(errors: list[str], contracts: Iterable[tuple[str, bool]]) -> None:
     errors.extend(error for error, passed in contracts if not passed)
-
-
-def block_run_body_lines(block: list[str]) -> list[str]:
-    for index, line in enumerate(block):
-        clean = strip_comment(line).rstrip()
-        match = YAML_RUN_LINE_RE.match(clean)
-        if match is None:
-            continue
-        value = match.group(2).strip().strip("'\"")
-        if value not in {"|", ">"}:
-            return [value] if value else []
-        run_indent = len(clean) - len(clean.lstrip(" "))
-        body_indent: int | None = None
-        body: list[str] = []
-        for nested in block[index + 1:]:
-            nested_clean = strip_comment(nested).rstrip()
-            if not nested_clean.strip():
-                body.append("")
-                continue
-            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
-            if indent <= run_indent:
-                break
-            if body_indent is None:
-                body_indent = indent
-            body.append(nested_clean[body_indent:] if indent >= body_indent else nested_clean.lstrip())
-        return body
-    return []
-
-
-def line_indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
 
 
 def top_level_shell_commands(lines: list[str]) -> list[str]:
@@ -3167,178 +3047,6 @@ def append_cache_persistence_audit_contract_errors(errors: list[str], jobs: dict
     append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
 
 
-def normalize_script_text(text: str) -> str:
-    text = re.sub(r"\\\s*\n\s*", " ", text)
-    lines = [line.rstrip() for line in text.strip("\n").splitlines()]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    indents = [len(line) - len(line.lstrip(" ")) for line in lines if line.strip()]
-    margin = min(indents) if indents else 0
-    normalized_lines = [line[margin:] if line.strip() else "" for line in lines]
-    return "\n".join(re.sub(r"(?<=\S) {2,}(?=\S)", " ", line) for line in normalized_lines)
-
-
-def block_run_body(block: list[str]) -> str:
-    for index, line in enumerate(block):
-        clean = strip_comment(line).rstrip()
-        match = YAML_RUN_LINE_RE.match(clean)
-        if match is None:
-            continue
-        scalar = match.group(2).strip()
-        if not scalar.startswith(("|", ">")):
-            return unquote_yaml_scalar(scalar)
-        run_indent = len(match.group(1))
-        body_lines: list[str] = []
-        for nested in block[index + 1 :]:
-            nested_clean = strip_comment(nested).rstrip()
-            if not nested_clean.strip():
-                body_lines.append("")
-                continue
-            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
-            if indent <= run_indent:
-                break
-            body_lines.append(nested_clean)
-        return normalize_script_text("\n".join(body_lines))
-    return ""
-
-
-def block_run_body_matches(block: list[str], expected: str) -> bool:
-    return normalize_script_text(block_run_body(block)) == normalize_script_text(expected)
-
-
-def block_step_property_indent(block: list[str]) -> int | None:
-    for line in block:
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        match = re.match(
-            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?{YAML_KEY_PATTERN}\s*:\s*.*$",
-            clean,
-        )
-        if match is None:
-            return None
-        return len(match.group(1)) + 2
-    return None
-
-
-def block_top_level_items(block: list[str]) -> dict[str, str] | None:
-    property_indent = block_step_property_indent(block)
-    if property_indent is None:
-        return None
-    step_item_indent = property_indent - 2
-    items: dict[str, str] = {}
-    for line in block:
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        step_match = re.match(
-            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$",
-            clean,
-        )
-        if step_match is not None:
-            if len(step_match.group(1)) != step_item_indent:
-                continue
-            key = unquote_yaml_scalar(step_match.group(2))
-            value = step_match.group(3)
-        else:
-            indent = len(clean) - len(clean.lstrip(" "))
-            if indent != property_indent:
-                continue
-            item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-            if item_match is None:
-                return None
-            key = unquote_yaml_scalar(item_match.group(1))
-            value = item_match.group(2)
-        if key in items:
-            return None
-        items[key] = unquote_yaml_scalar(value)
-    return items
-
-
-def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, str] | None:
-    property_indent = block_step_property_indent(block)
-    if property_indent is None:
-        return None
-    parent_indent: int | None = None
-    item_indent: int | None = None
-    items: dict[str, str] = {}
-    for line in block:
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        indent = len(clean) - len(clean.lstrip(" "))
-        if parent_indent is None:
-            parent_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-            if (
-                parent_match is not None
-                and indent == property_indent
-                and unquote_yaml_scalar(parent_match.group(1)) == parent_key
-                and unquote_yaml_scalar(parent_match.group(2)) == ""
-            ):
-                parent_indent = indent
-            continue
-        if indent <= parent_indent:
-            break
-        if item_indent is None:
-            item_indent = indent
-        if indent != item_indent:
-            continue
-        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-        if item_match is None:
-            return None
-        key = unquote_yaml_scalar(item_match.group(1))
-        if key in items:
-            return None
-        items[key] = unquote_yaml_scalar(item_match.group(2))
-    return items
-
-
-def top_level_mapping_items(workflow_text: str, top_key: str) -> dict[str, str] | None:
-    lines = workflow_text.splitlines()
-    top_index: int | None = None
-    for index, line in enumerate(lines):
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        indent = len(clean) - len(clean.lstrip(" "))
-        if indent != 0:
-            continue
-        top_match = re.match(rf"^({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-        if top_match is None:
-            continue
-        if unquote_yaml_scalar(top_match.group(1)) != top_key:
-            continue
-        if top_index is not None or unquote_yaml_scalar(top_match.group(2)) != "":
-            return None
-        top_index = index
-    if top_index is None:
-        return None
-
-    item_indent: int | None = None
-    items: dict[str, str] = {}
-    for line in lines[top_index + 1 :]:
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        indent = len(clean) - len(clean.lstrip(" "))
-        if indent == 0:
-            break
-        if item_indent is None:
-            item_indent = indent
-        if indent != item_indent:
-            return None
-        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-        if item_match is None:
-            return None
-        key = unquote_yaml_scalar(item_match.group(1))
-        if key in items:
-            return None
-        items[key] = unquote_yaml_scalar(item_match.group(2))
-    return items
-
-
 def block_has_canonical_step_envelope(
     block: list[str],
     allowed_keys: frozenset[str],
@@ -3369,25 +3077,6 @@ def block_has_raw_top_level_scalar(block: list[str], name: str, value: str) -> b
         return False
     expected = f"{' ' * property_indent}{name}: {value}"
     return any(strip_comment(line).rstrip() == expected for line in block)
-
-
-def job_top_level_items(job_lines: list[str]) -> dict[str, str] | None:
-    items: dict[str, str] = {}
-    for line in job_lines:
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        indent = len(clean) - len(clean.lstrip(" "))
-        if indent != 4:
-            continue
-        item_match = re.match(rf"^\s{{4}}({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-        if item_match is None:
-            return None
-        key = unquote_yaml_scalar(item_match.group(1))
-        if key in items:
-            return None
-        items[key] = unquote_yaml_scalar(item_match.group(2))
-    return items
 
 
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
@@ -3671,14 +3360,6 @@ def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tu
     for index, block in enumerate(step_blocks(job_lines)):
         if block_uses_pinned_install_action(block) and block_has_input(block, "tool", expected_tool):
             return index, block
-    return None
-
-
-def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
-    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
-    for block in step_blocks(lines):
-        if any(name_re.match(strip_comment(line)) for line in block):
-            return block
     return None
 
 
@@ -6558,48 +6239,6 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
     return errors
 
 
-MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
-    {
-        f"approved-reviews-by = {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']}",
-        *(
-            f"check-success = {check_name}"
-            for check_name in MERGIFY_CONFIG_EXPECTATIONS["required_checks"]
-        ),
-    }
-)
-
-
-MERGIFY_REQUIRED_QUEUE_RULES = MERGIFY_CONFIG_EXPECTATIONS["queue_rule_order"]
-MERGIFY_REQUIRED_PRIORITY_RULES = MERGIFY_CONFIG_EXPECTATIONS["priority_rule_order"]
-MERGIFY_TOP_LEVEL_KEYS = frozenset({"merge_queue", "queue_rules", "priority_rules"})
-MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS = frozenset(
-    {
-        "auto_merge_conditions",
-        "commands_restrictions",
-        "defaults",
-        "extends",
-        "merge_protections",
-        "merge_protections_settings",
-        "pull_request_rules",
-    }
-)
-MERGIFY_MERGE_QUEUE_KEYS = frozenset({"max_parallel_checks", "reset_on_external_merge"})
-MERGIFY_QUEUE_RULE_KEYS = frozenset(
-    {
-        "name",
-        "queue_conditions",
-        "merge_conditions",
-        "branch_protection_injection_mode",
-        "batch_size",
-        "batch_max_wait_time",
-        "batch_max_failure_resolution_attempts",
-        "checks_timeout",
-        "draft_bot_account",
-        "merge_method",
-    }
-)
-MERGIFY_DYNAMIC_BATCH_KEYS = frozenset({"min", "max"})
-MERGIFY_PRIORITY_RULE_KEYS = frozenset({"name", "conditions", "priority", "allow_checks_interruption"})
 MERGIFY_YAML_PARSER_RUBY = r"""
 require "yaml"
 require "json"
@@ -6683,214 +6322,24 @@ def parse_mergify_yaml(config_text: str, config_name: str) -> tuple[Any | None, 
     return payload.get("data"), []
 
 
-def scalar_equals(actual: Any, expected: Any) -> bool:
-    return type(actual) is type(expected) and actual == expected
-
-
-def yaml_display(value: Any) -> str:
-    if value is None:
-        return "null"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    return str(value)
-
-
-def unsupported_mapping_keys(mapping: dict[str, Any], allowed: frozenset[str]) -> list[str]:
-    return [key for key in mapping if key not in allowed]
-
-
-def mergify_mapping(value: Any, config_name: str, path: str, errors: list[str]) -> dict[str, Any] | None:
-    if isinstance(value, dict):
-        return value
-    errors.append(f"{config_name} {path} must be a mapping")
-    return None
-
-
-def mergify_list(value: Any, config_name: str, path: str, errors: list[str]) -> list[Any] | None:
-    if isinstance(value, list):
-        return value
-    errors.append(f"{config_name} {path} must be a list")
-    return None
-
-
-def required_mergify_mapping(
-    parent: dict[str, Any], key: str, config_name: str, errors: list[str]
-) -> dict[str, Any] | None:
-    if key not in parent:
-        errors.append(f"{config_name} must define {key}")
-        return None
-    return mergify_mapping(parent[key], config_name, key, errors)
-
-
-def required_mergify_list(parent: dict[str, Any], key: str, config_name: str, errors: list[str]) -> list[Any] | None:
-    if key not in parent:
-        errors.append(f"{config_name} must define {key}")
-        return None
-    return mergify_list(parent[key], config_name, key, errors)
-
-
-def named_mergify_rules(
-    parent: dict[str, Any],
-    key: str,
-    expected_names: tuple[str, ...],
-    order_error: str,
-    config_name: str,
-    errors: list[str],
-) -> dict[str, dict[str, Any]]:
-    values = required_mergify_list(parent, key, config_name, errors)
-    if values is None:
-        return {}
-    names: list[Any] = []
-    by_name: dict[str, dict[str, Any]] = {}
-    for index, value in enumerate(values):
-        rule = mergify_mapping(value, config_name, f"{key}[{index}]", errors)
-        name = rule.get("name") if rule is not None else None
-        names.append(name)
-        if isinstance(name, str) and rule is not None:
-            by_name[name] = rule
-    if tuple(names) != expected_names:
-        errors.append(f"{config_name} {order_error}")
-    return by_name
-
-
-def mergify_condition_list(value: Any, expected: list[str], config_name: str, path: str, errors: list[str]) -> None:
-    values = mergify_list(value, config_name, path, errors)
-    if values is None:
-        return
-    if values != expected:
-        errors.append(f"{config_name} {path} must be {expected!r}")
-
-
-def mergify_required_conditions(value: Any, config_name: str, path: str, errors: list[str]) -> None:
-    values = mergify_list(value, config_name, path, errors)
-    if values is None:
-        return
-    if set(values) != MERGIFY_REQUIRED_MERGE_CONDITIONS or len(values) != len(MERGIFY_REQUIRED_MERGE_CONDITIONS):
-        errors.append(
-            f"{config_name} {path} must require {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']} "
-            f"and all {len(MERGIFY_CONFIG_EXPECTATIONS['required_checks'])} gates"
-        )
-
-
-def expect_scalar(value: Any, expected: Any, config_name: str, path: str, errors: list[str]) -> None:
-    if not scalar_equals(value, expected):
-        errors.append(f"{config_name} {path} must be {yaml_display(expected)}")
+def verify_mergify_config_findings(
+    config_text: str,
+    config_name: str = ".mergify.yml",
+) -> list[contract_engine.ContractFinding]:
+    config, errors = parse_mergify_yaml(config_text, config_name)
+    if errors:
+        return [
+            contract_engine.ContractFinding(
+                rule_id="mergify.yaml.parse",
+                message=error,
+            )
+            for error in errors
+        ]
+    return list(contract_engine.evaluate(MERGIFY_RULES, config, config_name=config_name))
 
 
 def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
-    config, errors = parse_mergify_yaml(config_text, config_name)
-    if errors:
-        return errors
-    root = mergify_mapping(config, config_name, "root", errors)
-    if root is None:
-        return errors
-    for key in root:
-        if key in MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS:
-            errors.append(f"{config_name} must keep manual queueing only; remove {key}")
-        elif key not in MERGIFY_TOP_LEVEL_KEYS:
-            errors.append(f"{config_name} must not define unsupported top-level key {key}")
-
-    merge_queue = required_mergify_mapping(root, "merge_queue", config_name, errors)
-    if merge_queue is not None:
-        for key in unsupported_mapping_keys(merge_queue, MERGIFY_MERGE_QUEUE_KEYS):
-            errors.append(f"{config_name} merge_queue must not define unsupported key {key}")
-        for key, expected in MERGIFY_CONFIG_EXPECTATIONS["merge_queue"].items():
-            expect_scalar(merge_queue.get(key), expected, config_name, f"merge_queue.{key}", errors)
-
-    rules_by_name = named_mergify_rules(
-        root,
-        "queue_rules",
-        MERGIFY_REQUIRED_QUEUE_RULES,
-        "queue_rules must define exactly hotfix followed by default",
-        config_name,
-        errors,
-    )
-
-    for rule_name in MERGIFY_REQUIRED_QUEUE_RULES:
-        expectation = MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][rule_name]
-        rule = rules_by_name.get(rule_name)
-        if rule is None:
-            errors.append(f"{config_name} must define {rule_name} queue rule")
-            continue
-        for key in unsupported_mapping_keys(rule, MERGIFY_QUEUE_RULE_KEYS):
-            errors.append(f"{config_name} {rule_name} must not define unsupported key {key}")
-        mergify_condition_list(
-            rule.get("queue_conditions"),
-            list(expectation["queue_conditions"]),
-            config_name,
-            f"{rule_name} queue_conditions",
-            errors,
-        )
-        mergify_required_conditions(
-            rule.get("merge_conditions"),
-            config_name,
-            f"{rule_name} merge_conditions",
-            errors,
-        )
-        for key in (
-            "branch_protection_injection_mode",
-            "batch_max_wait_time",
-            "batch_max_failure_resolution_attempts",
-            "checks_timeout",
-            "draft_bot_account",
-            "merge_method",
-        ):
-            expected = expectation[key]
-            expect_scalar(rule.get(key), expected, config_name, f"{rule_name} {key}", errors)
-        expected_batch_size = expectation["batch_size"]
-        batch_size = rule.get("batch_size")
-        if isinstance(expected_batch_size, dict):
-            batch_size_mapping = mergify_mapping(batch_size, config_name, f"{rule_name} batch_size", errors)
-            if batch_size_mapping is None:
-                continue
-            for key in unsupported_mapping_keys(batch_size_mapping, MERGIFY_DYNAMIC_BATCH_KEYS):
-                errors.append(f"{config_name} {rule_name} batch_size must not define unsupported key {key}")
-            if batch_size_mapping != expected_batch_size:
-                errors.append(
-                    f"{config_name} {rule_name} batch_size must be min {expected_batch_size['min']} max {expected_batch_size['max']}"
-                )
-        elif not scalar_equals(batch_size, expected_batch_size):
-            errors.append(f"{config_name} {rule_name} batch_size must be {expected_batch_size}")
-
-    priority_by_name = named_mergify_rules(
-        root,
-        "priority_rules",
-        MERGIFY_REQUIRED_PRIORITY_RULES,
-        "priority_rules must define exactly hotfix",
-        config_name,
-        errors,
-    )
-
-    hotfix_priority = priority_by_name.get("hotfix")
-    if hotfix_priority is None:
-        errors.append(f"{config_name} must define hotfix priority rule")
-        return errors
-    for key in unsupported_mapping_keys(hotfix_priority, MERGIFY_PRIORITY_RULE_KEYS):
-        errors.append(f"{config_name} hotfix priority must not define unsupported key {key}")
-    mergify_condition_list(
-        hotfix_priority.get("conditions"),
-        list(MERGIFY_CONFIG_EXPECTATIONS["priority_rules"]["hotfix"]["conditions"]),
-        config_name,
-        "hotfix priority conditions",
-        errors,
-    )
-    expect_scalar(
-        hotfix_priority.get("priority"),
-        MERGIFY_CONFIG_EXPECTATIONS["priority_rules"]["hotfix"]["priority"],
-        config_name,
-        "hotfix priority",
-        errors,
-    )
-    expect_scalar(
-        hotfix_priority.get("allow_checks_interruption"),
-        MERGIFY_CONFIG_EXPECTATIONS["priority_rules"]["hotfix"]["allow_checks_interruption"],
-        config_name,
-        "hotfix allow_checks_interruption",
-        errors,
-    )
-    return errors
+    return [finding.message for finding in verify_mergify_config_findings(config_text, config_name)]
 
 
 def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[str]]]:

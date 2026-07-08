@@ -1,0 +1,105 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "cf0e6a8dec83",
+  "session_id": "7d50cdab-51c2-48f6-84c1-22ac12de1ffa",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-08T06:01:26.295525Z",
+  "branch": "chore/mergify-batch-bisection",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    "scripts/rust_verification.py",
+    "scripts/test_merge_queue_preflight.py",
+    "scripts/test_rust_verification.py",
+    "scripts/test_verify_ci_workflow_hygiene.py",
+    "scripts/verify_ci_workflow_hygiene.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b7c41045ce22",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 231806,
+    "cache_creation_tokens": 10429575,
+    "cache_read_tokens": 372594677,
+    "output_tokens": 1971023,
+    "api_call_count": 840
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01S6tJy5RQb7aDirMGrDNHvd",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "visual-explainer:visual-explainer"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b7c41045ce22",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 158,
+        "end": 159,
+        "entry_ids": [
+          "7b94bbf6-0d18-4008-8770-9ccd54426d0e"
+        ],
+        "tool_use_id": "toolu_01S6tJy5RQb7aDirMGrDNHvd"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01S6tJy5RQb7aDirMGrDNHvd"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: visual-explainer:visual-explainer",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-08T06:01:25.71078Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 16,
+    "total_committed": 0,
+    "total_lines_changed": 16,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 67,
+      "user_lines_removed": 16,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "scripts/rust_verification.py": 21,
+        "scripts/test_merge_queue_preflight.py": 4,
+        "scripts/test_rust_verification.py": 24,
+        "scripts/test_verify_ci_workflow_hygiene.py": 8,
+        "scripts/verify_ci_workflow_hygiene.py": 10
+      },
+      "user_removed_per_file": {
+        "scripts/test_merge_queue_preflight.py": 4,
+        "scripts/test_verify_ci_workflow_hygiene.py": 8,
+        "scripts/verify_ci_workflow_hygiene.py": 4
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 67,
+      "agent_lines_removed": 16
+    }
+  ]
+}

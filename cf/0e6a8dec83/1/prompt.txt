@@ -1,0 +1,45 @@
+a lot has landed - can we check where we stand and what are the remaining work?
+
+---
+
+so which lane does F3 sit?
+
+---
+
+what's F3?
+
+---
+
+which one do you suggest to work on?
+
+---
+
+yes for both F3, Lane A
+
+---
+
+are they the best prompts you can come up with?
+
+---
+
+which Prs do you own? can you review the open PRs?
+
+---
+
+all of the Prs we discussed merged - what's next
+
+---
+
+explain this overall in plain english and make this concise
+
+---
+
+what's #4 and why is the hard deadline on july 31?
+
+---
+
+when are we actually doing the tech debt fix - a lot of conditional fallbacks
+
+---
+
+I don't think so - a lot of .py still seem to have these conditional fallbacks

@@ -3493,6 +3493,34 @@ def assert_mergify_contract_preserves_legacy_error_lists() -> None:
                 "mergify.queue_rules.default.batch_size",
             ],
         ),
+        "renamed queue_rules keeps root errors before missing section errors": (
+            replace_once(mergify_config, "\nqueue_rules:\n", "\nqueue_rules_missing:\n"),
+            [
+                ".mergify.yml must not define unsupported top-level key queue_rules_missing",
+                ".mergify.yml must define queue_rules",
+                ".mergify.yml must define hotfix queue rule",
+                ".mergify.yml must define default queue rule",
+            ],
+            [
+                "mergify.root.supported_keys",
+                "mergify.queue_rules.order",
+                "mergify.queue_rules.order",
+                "mergify.queue_rules.order",
+            ],
+        ),
+        "renamed priority_rules keeps root errors before missing section errors": (
+            replace_once(mergify_config, "\npriority_rules:\n", "\npriority_rules_missing:\n"),
+            [
+                ".mergify.yml must not define unsupported top-level key priority_rules_missing",
+                ".mergify.yml must define priority_rules",
+                ".mergify.yml must define hotfix priority rule",
+            ],
+            [
+                "mergify.root.supported_keys",
+                "mergify.priority_rules.order",
+                "mergify.priority_rules.order",
+            ],
+        ),
     }
     for label, (mutated, expected_errors, expected_rule_ids) in cases.items():
         findings = verifier.verify_mergify_config_findings(mutated)

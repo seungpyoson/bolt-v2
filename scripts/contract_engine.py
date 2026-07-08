@@ -174,8 +174,12 @@ def queue_rule_context(
     root: dict[str, Any],
     rules: tuple[object, ...],
     config_name: str,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], tuple[ContractFinding, ...]]:
-    findings: list[ContractFinding] = []
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[tuple[str, ...], tuple[ContractFinding, ...]],
+]:
+    findings_by_selector: dict[tuple[str, ...], tuple[ContractFinding, ...]] = {}
     order_rules = {rule_selector(rule): rule for rule in rules if rule_field(rule, "kind") == "required-rule-presence/order"}
 
     queue_rules: dict[str, dict[str, Any]] = {}
@@ -189,7 +193,7 @@ def queue_rule_context(
             order_rule=queue_order_rule,
             config_name=config_name,
         )
-        findings.extend(queue_findings)
+        findings_by_selector[("queue_rules",)] = queue_findings
     priority_order_rule = order_rules.get(("priority_rules",))
     if priority_order_rule is not None:
         priority_rules, priority_findings = named_rules(
@@ -199,8 +203,8 @@ def queue_rule_context(
             order_rule=priority_order_rule,
             config_name=config_name,
         )
-        findings.extend(priority_findings)
-    return queue_rules, priority_rules, tuple(findings)
+        findings_by_selector[("priority_rules",)] = priority_findings
+    return queue_rules, priority_rules, findings_by_selector
 
 
 def selector_parent(
@@ -438,17 +442,18 @@ def evaluate(
             return ()
         return (finding(root_rule, config_name),)
 
-    queue_rules, priority_rules, order_findings = queue_rule_context(
+    queue_rules, priority_rules, order_findings_by_selector = queue_rule_context(
         root=parsed,
         rules=rules,
         config_name=config_name,
     )
-    findings: list[ContractFinding] = list(order_findings)
+    findings: list[ContractFinding] = []
 
     for rule in rules:
         kind = rule_field(rule, "kind")
         selector = rule_selector(rule)
         if kind == "required-rule-presence/order":
+            findings.extend(order_findings_by_selector.get(selector, ()))
             continue
         if kind == "mapping-EQ" and selector == ("root",):
             continue

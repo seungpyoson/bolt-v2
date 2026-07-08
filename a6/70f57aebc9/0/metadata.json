@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "a670f57aebc9",
+  "session_id": "655f1a19-cdeb-4060-ba07-f0c588aa980e",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-08T05:19:49.326703Z",
+  "branch": "chore/mergify-batch-bisection",
+  "checkpoints_count": 6,
+  "files_touched": [
+    ".mergify.yml"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "ebe9a8410134",
+  "checkpoint_transcript_start": 812,
+  "transcript_lines_at_start": 812,
+  "compact_transcript_start": 157,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-08T05:19:49.224849Z",
+    "agent_lines": 2,
+    "agent_removed": 2,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2,
+    "total_lines_changed": 4,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

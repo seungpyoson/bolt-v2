@@ -1108,21 +1108,6 @@ fn chainlink_reference_refresh_input_health_report_liveness(
     );
 }
 
-fn chainlink_reference_refresh_input_health_report_liveness_for_instrument(
-    config: &ChainlinkReferencePriceClientConfig,
-    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
-    provider_instrument: &str,
-    received_ts_ms: u64,
-) {
-    let sources =
-        chainlink_reference_input_health_sources_for_report_instrument(config, provider_instrument);
-    chainlink_reference_seed_input_health_report_liveness_for_sources(
-        report_liveness,
-        sources.iter(),
-        received_ts_ms,
-    );
-}
-
 fn chainlink_reference_input_health_sources_for_report_instrument(
     config: &ChainlinkReferencePriceClientConfig,
     provider_instrument: &str,
@@ -1453,11 +1438,18 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
                 if report_observed {
                     last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
                     if let Some(recovery) = &input_health_recovery {
-                        chainlink_reference_refresh_input_health_report_liveness_for_instrument(
-                            &recovery.config,
+                        let sources =
+                            chainlink_reference_input_health_sources_for_report_instrument(
+                                &recovery.config,
+                                &instrument_id,
+                            );
+                        chainlink_reference_seed_input_health_report_liveness_for_sources(
                             &recovery.input_health_report_liveness,
-                            &instrument_id,
+                            sources.iter(),
                             received_ts_ms,
+                        );
+                        chainlink_reference_emit_recovered_input_health_for_sources(
+                            recovery, sources,
                         );
                     }
                 }
@@ -1494,13 +1486,20 @@ fn chainlink_reference_emit_recovered_input_health_for_updates(
     if updates.is_empty() {
         return;
     }
-    let Some(emitter) = recovery.config.input_health_transition_emitter.as_ref() else {
-        return;
-    };
     let sources = chainlink_reference_recovered_input_health_sources(&recovery.config, updates);
+    chainlink_reference_emit_recovered_input_health_for_sources(recovery, sources);
+}
+
+fn chainlink_reference_emit_recovered_input_health_for_sources(
+    recovery: &ChainlinkReferenceInputHealthRecovery,
+    sources: Vec<BoltV3MissingInputSource>,
+) {
     if sources.is_empty() {
         return;
     }
+    let Some(emitter) = recovery.config.input_health_transition_emitter.as_ref() else {
+        return;
+    };
     let recovered_sources = {
         let mut missing_sources = match recovery.input_health_missing_sources.lock() {
             Ok(missing_sources) => missing_sources,
@@ -2640,10 +2639,19 @@ mod tests {
         config.websocket_endpoint = format!("ws://{local_addr}");
         config.transport_backend = TransportBackend::Tungstenite;
         config.idle_timeout_ms = 60_000;
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&transitions);
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
+            recorded
+                .lock()
+                .expect("transition recorder should be available")
+                .push((reason, transition));
+        });
+        config.input_health_transition_emitter = Some(emitter);
         config.input_health_sources = vec![btc_source.clone()];
         let last_report = test_last_report_clock();
         let report_liveness = Arc::new(Mutex::new(BTreeMap::new()));
-        let missing_sources = Arc::new(Mutex::new(BTreeSet::new()));
+        let missing_sources = input_health_missing_sources_with(vec![&btc_source]);
 
         let websocket = chainlink_reference_connect_websocket(
             &config,
@@ -2686,6 +2694,25 @@ mod tests {
                 "valid configured reports must refresh source liveness before NT subscriptions exist"
             );
         }
+        {
+            let recorded = transitions
+                .lock()
+                .expect("transition recorder should be available");
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(
+                recorded[0].0,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED
+            );
+            assert!(!recorded[0].1.missing);
+            assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ASSET);
+        }
+        assert!(
+            missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty(),
+            "valid configured reports must clear matching source-health missing state before subscriptions exist"
+        );
         let error = data_receiver
             .try_recv()
             .expect_err("pre-subscription Chainlink report must not emit data");

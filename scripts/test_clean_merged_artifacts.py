@@ -873,6 +873,121 @@ class InfraTests(unittest.TestCase):
         self.assertEqual(summaries[-1].get("count"), len(warning))
         self.assertEqual(summaries[-1].get("by_label"), {"main-worktree-list": len(warning)})
 
+    def test_best_effort_warning_never_crashes_when_audit_log_unavailable(self) -> None:
+        common = git_common_dir_compat(self.work)
+        blocker = common / "audit-parent-is-file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(
+                config.logging,
+                audit_path=str(blocker / "clean-merged.log"),
+            ),
+        )
+
+        cm._reset_best_effort_warnings()
+        try:
+            cm._record_best_effort_warning(
+                "audit-unavailable-probe",
+                "audit path cannot be opened",
+                repo_root=self.work,
+                config=config,
+            )
+            cm._write_best_effort_warning_summary(self.work, config)
+        except OSError as exc:
+            raise AssertionError("best-effort warning logging must not crash cleanup") from exc
+        finally:
+            cm._reset_best_effort_warnings()
+
+    def test_best_effort_warning_reason_uses_configured_report_limit(self) -> None:
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(config.logging, report_error_max_chars=7),
+        )
+        log = git_common_dir_compat(self.work) / "clean-merged.log"
+
+        cm._reset_best_effort_warnings()
+        try:
+            cm._record_best_effort_warning(
+                "immediate-warning",
+                "x" * 50,
+                repo_root=self.work,
+                config=config,
+            )
+            cm._record_best_effort_warning("pending-warning", "y" * 50)
+            cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warning_reasons = {
+            record["label"]: record["reason"]
+            for record in records
+            if record.get("action") == "best-effort-warning"
+        }
+        self.assertEqual(warning_reasons["immediate-warning"], "x" * 7)
+        self.assertEqual(warning_reasons["pending-warning"], "y" * 7)
+
+    def test_rotating_log_prune_and_rotate_failures_emit_best_effort_warnings(self) -> None:
+        common = git_common_dir_compat(self.work)
+        config = cm.load_config(self.work)
+        log_path = common / "rotating.log"
+        log_path.write_text("x" * 20, encoding="utf-8")
+        rotated = common / "rotating.log.1"
+        rotated.write_text("old", encoding="utf-8")
+        old_ts = time.time() - 31 * 86400
+        os.utime(rotated, (old_ts, old_ts))
+        audit_log = common / "clean-merged.log"
+        real_unlink = cm.pathlib.Path.unlink
+        real_rename = cm.pathlib.Path.rename
+
+        def fail_rotated_unlink(path: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+            if path == rotated:
+                raise OSError("prune boom")
+            return real_unlink(path, *args, **kwargs)
+
+        def fail_log_rename(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+            if path == log_path:
+                raise OSError("rotate boom")
+            return real_rename(path, target)
+
+        cm._reset_best_effort_warnings()
+        try:
+            with mock.patch.object(cm.pathlib.Path, "unlink", fail_rotated_unlink):
+                cm._prune_expired_rotated_logs(
+                    log_path,
+                    config.logging.rotated_log_retention_days,
+                    repo_root=self.work,
+                    config=config,
+                )
+            with mock.patch.object(cm.pathlib.Path, "rename", fail_log_rename):
+                cm._rotate_log_if_needed(
+                    log_path,
+                    1,
+                    repo_root=self.work,
+                    config=config,
+                )
+            cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+
+        records = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
+        labels = [
+            record.get("label")
+            for record in records
+            if record.get("action") == "best-effort-warning"
+        ]
+        self.assertIn("rotating-log-prune", labels)
+        self.assertIn("rotating-log-rotate", labels)
+        summaries = [record for record in records if record.get("action") == "best-effort-warning-summary"]
+        self.assertTrue(summaries, records)
+        self.assertEqual(summaries[-1].get("by_label"), {
+            "rotating-log-prune": 1,
+            "rotating-log-rotate": 1,
+        })
+
     def test_backup_ref_is_sha_addressed(self) -> None:
         _run(["git", "checkout", "-b", "feat/sha"], cwd=self.work)
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)

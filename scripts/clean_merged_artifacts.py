@@ -2582,11 +2582,31 @@ def delete_branch_ref_cas(
 
 _BEST_EFFORT_WARNING_COUNTS: dict[str, int] = {}
 _BEST_EFFORT_PENDING_WARNINGS: list[dict[str, Any]] = []
+_BEST_EFFORT_AUDIT_WRITE_DEPTH = 0
 
 
 def _reset_best_effort_warnings() -> None:
     _BEST_EFFORT_WARNING_COUNTS.clear()
     _BEST_EFFORT_PENDING_WARNINGS.clear()
+
+
+def _best_effort_warning_record(raw: dict[str, Any], config: Config) -> dict[str, Any]:
+    reason = str(raw["reason"])
+    fields = {key: value for key, value in raw.items() if key not in {"label", "reason"}}
+    return {
+        "action": "best-effort-warning",
+        "label": raw["label"],
+        "reason": _safe_report_error(reason, limit=config.logging.report_error_max_chars),
+        **fields,
+    }
+
+
+def _write_audit_best_effort(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> bool:
+    try:
+        write_audit(repo_root, config, record)
+    except OSError:
+        return False
+    return True
 
 
 def _record_best_effort_warning(
@@ -2598,30 +2618,31 @@ def _record_best_effort_warning(
     **fields: Any,
 ) -> None:
     _BEST_EFFORT_WARNING_COUNTS[label] = _BEST_EFFORT_WARNING_COUNTS.get(label, 0) + 1
-    record = {
-        "action": "best-effort-warning",
+    pending = {
         "label": label,
-        "reason": _safe_report_error(reason, limit=2000),
+        "reason": reason,
         **fields,
     }
-    if repo_root is not None and config is not None:
-        write_audit(repo_root, config, record)
+    if repo_root is not None and config is not None and _BEST_EFFORT_AUDIT_WRITE_DEPTH == 0:
+        record = _best_effort_warning_record(pending, config)
+        if not _write_audit_best_effort(repo_root, config, record):
+            _BEST_EFFORT_PENDING_WARNINGS.append(pending)
     else:
-        _BEST_EFFORT_PENDING_WARNINGS.append(record)
+        _BEST_EFFORT_PENDING_WARNINGS.append(pending)
 
 
 def _flush_best_effort_warning_records(repo_root: pathlib.Path, config: Config) -> None:
     pending = list(_BEST_EFFORT_PENDING_WARNINGS)
     _BEST_EFFORT_PENDING_WARNINGS.clear()
-    for record in pending:
-        write_audit(repo_root, config, record)
+    for raw in pending:
+        _write_audit_best_effort(repo_root, config, _best_effort_warning_record(raw, config))
 
 
 def _write_best_effort_warning_summary(repo_root: pathlib.Path, config: Config) -> None:
     _flush_best_effort_warning_records(repo_root, config)
     total = sum(_BEST_EFFORT_WARNING_COUNTS.values())
     if total:
-        write_audit(repo_root, config, {
+        _write_audit_best_effort(repo_root, config, {
             "action": "best-effort-warning-summary",
             "count": total,
             "by_label": dict(sorted(_BEST_EFFORT_WARNING_COUNTS.items())),
@@ -2664,23 +2685,48 @@ def _rotated_log_paths(log_path: pathlib.Path) -> list[pathlib.Path]:
     )
 
 
-def _prune_expired_rotated_logs(log_path: pathlib.Path, retention_days: int) -> None:
+def _prune_expired_rotated_logs(
+    log_path: pathlib.Path,
+    retention_days: int,
+    *,
+    repo_root: pathlib.Path | None = None,
+    config: Config | None = None,
+) -> None:
     cutoff = time.time() - retention_days * 86400
     for rotated in _rotated_log_paths(log_path):
         try:
             if rotated.stat().st_mtime < cutoff:
                 rotated.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            _record_best_effort_warning(
+                "rotating-log-prune",
+                str(exc),
+                repo_root=repo_root,
+                config=config,
+                log_path=str(log_path),
+                rotated_path=str(rotated),
+            )
 
 
-def _rotate_log_if_needed(log_path: pathlib.Path, max_bytes: int) -> None:
-    if log_path.exists() and log_path.stat().st_size > max_bytes:
-        rotated = _next_rotated_log_path(log_path)
-        try:
+def _rotate_log_if_needed(
+    log_path: pathlib.Path,
+    max_bytes: int,
+    *,
+    repo_root: pathlib.Path | None = None,
+    config: Config | None = None,
+) -> None:
+    try:
+        if log_path.exists() and log_path.stat().st_size > max_bytes:
+            rotated = _next_rotated_log_path(log_path)
             log_path.rename(rotated)
-        except OSError:
-            pass
+    except OSError as exc:
+        _record_best_effort_warning(
+            "rotating-log-rotate",
+            str(exc),
+            repo_root=repo_root,
+            config=config,
+            log_path=str(log_path),
+        )
 
 
 def _next_rotated_log_path(log_path: pathlib.Path) -> pathlib.Path:
@@ -2698,14 +2744,24 @@ def _log_lock_path(log_path: pathlib.Path) -> pathlib.Path:
 
 
 def _open_rotating_log(
-    log_path: pathlib.Path, max_bytes: int, *, rotated_retention_days: int,
+    log_path: pathlib.Path,
+    max_bytes: int,
+    *,
+    rotated_retention_days: int,
+    repo_root: pathlib.Path | None = None,
+    config: Config | None = None,
 ) -> Any:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fd = _acquire_lock(_log_lock_path(log_path))
     try:
         if fd is not None:
-            _prune_expired_rotated_logs(log_path, rotated_retention_days)
-            _rotate_log_if_needed(log_path, max_bytes)
+            _prune_expired_rotated_logs(
+                log_path,
+                rotated_retention_days,
+                repo_root=repo_root,
+                config=config,
+            )
+            _rotate_log_if_needed(log_path, max_bytes, repo_root=repo_root, config=config)
         return log_path.open("a", encoding="utf-8", buffering=1)
     finally:
         if fd is not None:
@@ -2737,21 +2793,31 @@ def _rotated_log_usage(repo_root: pathlib.Path, config: Config) -> tuple[int, in
 
 
 def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> None:
-    log_path = _resolve_path(repo_root, config.logging.audit_path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = _log_lock_path(log_path)
-    fd = _acquire_lock(lock_path)
-    if fd is None:
-        # best-effort; never break the op over logging
-        return
+    global _BEST_EFFORT_AUDIT_WRITE_DEPTH
+    _BEST_EFFORT_AUDIT_WRITE_DEPTH += 1
+    fd: int | None = None
     try:
-        _prune_expired_rotated_logs(log_path, config.logging.rotated_log_retention_days)
-        _rotate_log_if_needed(log_path, config.logging.max_log_bytes)
+        log_path = _resolve_path(repo_root, config.logging.audit_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = _log_lock_path(log_path)
+        fd = _acquire_lock(lock_path)
+        if fd is None:
+            # best-effort; never break the op over logging
+            return
+        _prune_expired_rotated_logs(
+            log_path,
+            config.logging.rotated_log_retention_days,
+            repo_root=repo_root,
+            config=config,
+        )
+        _rotate_log_if_needed(log_path, config.logging.max_log_bytes, repo_root=repo_root, config=config)
         record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record_with_ts, ensure_ascii=False, sort_keys=True) + "\n")
     finally:
-        _release_lock(fd)
+        if fd is not None:
+            _release_lock(fd)
+        _BEST_EFFORT_AUDIT_WRITE_DEPTH -= 1
 
 
 def _atomic_write_text(path: pathlib.Path, text: str) -> None:
@@ -4605,9 +4671,21 @@ def _python_runtime_status() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} ({toml_status})"
 
 
-def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_days: int) -> Any:
+def _redirect_output_to(
+    path: pathlib.Path,
+    max_bytes: int,
+    rotated_retention_days: int,
+    *,
+    repo_root: pathlib.Path | None = None,
+    config: Config | None = None,
+) -> Any:
     handle = _open_rotating_log(
-        path, max_bytes, rotated_retention_days=rotated_retention_days)
+        path,
+        max_bytes,
+        rotated_retention_days=rotated_retention_days,
+        repo_root=repo_root,
+        config=config,
+    )
     # dup2 gives stdout/stderr independent descriptors; the returned handle
     # only keeps the target open until the dup has completed.
     os.dup2(handle.fileno(), sys.stdout.fileno())
@@ -5216,6 +5294,8 @@ def main(argv: list[str] | None = None) -> int:
                 _resolve_path(repo_root, config.logging.lane_r_log_path),
                 config.logging.max_log_bytes,
                 config.logging.rotated_log_retention_days,
+                repo_root=repo_root,
+                config=config,
             )
         except OSError as exc:
             _record_best_effort_warning(

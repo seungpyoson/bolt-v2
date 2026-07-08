@@ -24,6 +24,28 @@ class PatternCheck:
 
 
 FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
+REGISTERED_FINANCIAL_VALUE_TYPES = (
+    "Probability",
+    "UsableMu",
+    "ValidRealizedVol",
+    "ReadyRealizedVol",
+)
+REGISTERED_FINANCIAL_VALUE_TYPE_PATTERN = "|".join(
+    re.escape(type_name) for type_name in REGISTERED_FINANCIAL_VALUE_TYPES
+)
+REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE = re.compile(
+    rf"\bimpl(?:\s*<[^>{{}}]*>)?\s+(?:::\s*)?(?:std\s*::\s*default\s*::\s*)?"
+    rf"Default\s+for\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*"
+    rf"(?P<type>{REGISTERED_FINANCIAL_VALUE_TYPE_PATTERN})\b",
+    re.DOTALL,
+)
+REGISTERED_FINANCIAL_VALUE_DEFAULT_DERIVE_RE = re.compile(
+    rf"#\s*\[\s*derive\s*\([^\]]*\bDefault\b[^\]]*\)\s*\]\s*"
+    rf"(?:#\s*\[[^\]]*\]\s*)*"
+    rf"(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum)\s+"
+    rf"(?P<type>{REGISTERED_FINANCIAL_VALUE_TYPE_PATTERN})\b",
+    re.DOTALL,
+)
 FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
     r"\b(?:FinancialValue|financial_value_private|Sealed)\b"
 )
@@ -428,6 +450,21 @@ def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
     ]
 
 
+def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
+    findings = []
+    for relative_path, source in rust_sources(root):
+        for pattern in (
+            REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE,
+            REGISTERED_FINANCIAL_VALUE_DEFAULT_DERIVE_RE,
+        ):
+            for match in pattern.finditer(source):
+                findings.append(
+                    f"{relative_path}: registered FinancialValue Default impl/derive "
+                    f"for {match.group('type')} is forbidden"
+                )
+    return sorted(set(findings))
+
+
 def verify(root: Path) -> list[str]:
     findings = []
     findings.extend(missing_required(root, REQUIRED_PATTERNS))
@@ -435,6 +472,7 @@ def verify(root: Path) -> list[str]:
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
     findings.extend(verify_financial_value_marker_allowlist(root))
     findings.extend(verify_financial_value_owner_risk_surface(root))
+    findings.extend(verify_registered_financial_value_default_surface(root))
     return findings
 
 

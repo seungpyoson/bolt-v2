@@ -22,6 +22,8 @@ RUNTIME_SURFACE_PATTERNS = (
     ".github/actions/**/*.yml",
     ".github/workflows/*.yaml",
     ".github/workflows/*.yml",
+    "scripts/cargo-shim",
+    "scripts/install-cargo-shim",
     "scripts/*.py",
     "scripts/*.sh",
     "tests/*.sh",
@@ -33,6 +35,8 @@ REQUIRED_RUNTIME_SURFACES = (
     ".github/workflows/stale.yml",
     ".github/workflows/summary.yml",
     ".githooks/post-checkout",
+    "scripts/cargo-shim",
+    "scripts/install-cargo-shim",
 )
 FORBIDDEN_RUNTIME_FRAGMENTS = (
     "CLAUDE_CONFIG_READ_TOKEN",

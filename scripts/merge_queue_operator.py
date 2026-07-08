@@ -22,14 +22,13 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import config_validators as _cv  # noqa: E402
+from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, VERDICT_SPLIT_ADVISED  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
 PREFLIGHT_SCRIPT = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-QUEUE_READY_VERDICT = "queue_as_one_wave"
-SPLIT_VERDICT = "split_advised"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -273,7 +272,7 @@ def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> 
         runner=runner,
     )
     verdict = payload.get("verdict")
-    if preflight_returncode == 0 and verdict == QUEUE_READY_VERDICT:
+    if preflight_returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
         if args.dry_run:
             for pr in args.prs:
                 print(f"would queue PR #{pr}")
@@ -286,7 +285,7 @@ def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> 
                 operator_config.queue_timeout_seconds,
             )
         return 0
-    if verdict == SPLIT_VERDICT:
+    if verdict == VERDICT_SPLIT_ADVISED:
         print_split_advice(payload.get("batches"))
     else:
         print(f"merge queue preflight did not queue: verdict={verdict!r}")

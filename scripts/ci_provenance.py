@@ -1247,6 +1247,50 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
 
 
 MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
+MERGIFY_CONFIG_EXPECTATIONS = {
+    "required_reviewer": "sp-reviewer",
+    "required_checks": (
+        "gate",
+        "backtester-gate",
+        "actionlint",
+        "host-health",
+    ),
+    "merge_queue": {
+        "max_parallel_checks": 1,
+        "reset_on_external_merge": "always",
+    },
+    "queue_rule_order": ("hotfix", "default"),
+    "queue_rules": {
+        "hotfix": {
+            "queue_conditions": ("label = hotfix",),
+            "branch_protection_injection_mode": "merge",
+            "batch_size": 1,
+            "batch_max_wait_time": "30 seconds",
+            "batch_max_failure_resolution_attempts": 0,
+            "checks_timeout": "150 minutes",
+            "draft_bot_account": None,
+            "merge_method": "squash",
+        },
+        "default": {
+            "queue_conditions": (),
+            "branch_protection_injection_mode": "merge",
+            "batch_size": {"min": 2, "max": 6},
+            "batch_max_wait_time": "5 minutes",
+            "batch_max_failure_resolution_attempts": 3,
+            "checks_timeout": "150 minutes",
+            "draft_bot_account": None,
+            "merge_method": "squash",
+        },
+    },
+    "priority_rule_order": ("hotfix",),
+    "priority_rules": {
+        "hotfix": {
+            "conditions": ("label = hotfix",),
+            "priority": 10000,
+            "allow_checks_interruption": True,
+        },
+    },
+}
 
 # Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>".
 # `tmp-` is a documented transient form (docs/ci/merge-queue-evidence.md); the

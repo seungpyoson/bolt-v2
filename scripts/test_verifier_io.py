@@ -11,6 +11,7 @@ import verifier_io
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
+DISCOVERY_CONTRACT_HELPERS = {"require_nonempty", "require_declared_source_files"}
 
 
 def module_string_constants(tree: ast.Module) -> dict[str, str]:
@@ -42,10 +43,10 @@ def require_nonempty_contract_counts() -> Counter[tuple[str, str]]:
                 name = function.id
             elif isinstance(function, ast.Attribute):
                 name = function.attr
-            if name != "require_nonempty":
+            if name not in DISCOVERY_CONTRACT_HELPERS:
                 continue
             if len(node.args) < 2:
-                raise AssertionError(f"{path.name}:{node.lineno}: require_nonempty missing label")
+                raise AssertionError(f"{path.name}:{node.lineno}: discovery contract helper missing label")
             label_node = node.args[1]
             if isinstance(label_node, ast.Constant) and isinstance(label_node.value, str):
                 label = label_node.value
@@ -53,7 +54,7 @@ def require_nonempty_contract_counts() -> Counter[tuple[str, str]]:
                 label = constants[label_node.id]
             else:
                 raise AssertionError(
-                    f"{path.name}:{node.lineno}: require_nonempty label must be a string "
+                    f"{path.name}:{node.lineno}: discovery contract helper label must be a string "
                     "literal or module-level string constant"
                 )
             counts[(path.name, label)] += 1
@@ -115,11 +116,34 @@ def test_required_discovery_floor_contracts_are_classified_and_proven() -> None:
             raise AssertionError(f"{contract}: call_count must be positive")
 
 
+def test_rust_snippet_requirements_ignore_comments_and_literals() -> None:
+    findings: list[str] = []
+    verifier_io.require_rust_snippets(
+        Path("src/probe.rs"),
+        "\n".join(
+            (
+                "// fn required_runtime_call() {}",
+                'const _LABEL: &str = "RequiredType";',
+                "fn real_runtime_call() {}",
+            )
+        ),
+        ("required_runtime_call", "RequiredType", "real_runtime_call"),
+        findings,
+    )
+    expected = [
+        "src/probe.rs: missing `required_runtime_call`",
+        "src/probe.rs: missing `RequiredType`",
+    ]
+    if findings != expected:
+        raise AssertionError(f"Rust snippet stripping did not reject comments/literals: {findings}")
+
+
 def main() -> int:
     tests = [
         test_required_discovery_floor_invariant_is_marked_next_to_helper,
         test_required_discovery_floor_contract_registry_matches_live_call_sites,
         test_required_discovery_floor_contracts_are_classified_and_proven,
+        test_rust_snippet_requirements_ignore_comments_and_literals,
     ]
     for test in tests:
         test()

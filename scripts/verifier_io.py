@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from collections.abc import Sized
 from pathlib import Path
 
+from rust_source_scanner import strip_rust_comments_and_literals
+
 
 REQUIRED_DISCOVERY_FLOOR_INVARIANT = (
     "Required discovery floors are preflight-terminal: when an enforced "
@@ -37,6 +39,13 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "scan_root",
         "scan_root checks the source floor before registry, exemption, fixture, and static checks; scan_wire_boundary repeats the helper guard.",
         call_count=2,
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_bolt_v3_core_boundary.py",
+        "Bolt-v3 core boundary target files",
+        "entrypoint-terminal",
+        "main",
+        "collect_findings validates the target-file floor and returns missing-file findings before core-boundary pattern scans.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_bolt_v3_dependency_direction.py",
@@ -210,17 +219,59 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_notebook_read_only_boundary.py",
-        "RA notebook read-only code files",
-        "entrypoint-terminal",
+        "RA notebook read-only notebooks code files",
+        "aggregate-then-terminal",
         "scan_root",
-        "scan_root returns the source floor before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_ra_notebook_read_only_boundary.py",
+        "RA notebook read-only research code files",
+        "aggregate-then-terminal",
+        "scan_root",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_ra_notebook_read_only_boundary.py",
+        "RA notebook read-only analytics code files",
+        "aggregate-then-terminal",
+        "scan_root",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_ra_notebook_read_only_boundary.py",
+        "RA notebook read-only scripts code files",
+        "aggregate-then-terminal",
+        "scan_root",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_single_engine_import_boundary.py",
-        "RA single-engine code files",
-        "entrypoint-terminal",
+        "RA single-engine notebooks code files",
+        "aggregate-then-terminal",
         "scan_root",
-        "scan_root returns the source floor before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_ra_single_engine_import_boundary.py",
+        "RA single-engine research code files",
+        "aggregate-then-terminal",
+        "scan_root",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_ra_single_engine_import_boundary.py",
+        "RA single-engine analytics code files",
+        "aggregate-then-terminal",
+        "scan_root",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_ra_single_engine_import_boundary.py",
+        "RA single-engine scripts code files",
+        "aggregate-then-terminal",
+        "scan_root",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
 )
 
@@ -241,6 +292,31 @@ def require_nonempty(items: Sized, what: str, findings: list[str]) -> bool:
     return True
 
 
+DECLARED_SOURCE_PRESENT = "present"
+DECLARED_SOURCE_ABSENT = "absent"
+
+
+def require_declared_source_files(
+    items: Sized | None,
+    what: str,
+    source_path: str,
+    declared_state: str,
+    findings: list[str],
+) -> bool:
+    """Validate declared source state before scanning to preserve the preflight-terminal invariant."""
+    if declared_state == DECLARED_SOURCE_PRESENT:
+        if items is None:
+            findings.append(f"{what}: configured source path {source_path} is declared present but is not present")
+            return False
+        return require_nonempty(items, what, findings)
+    if declared_state == DECLARED_SOURCE_ABSENT:
+        if items is not None:
+            findings.append(f"{what}: configured source path {source_path} is declared absent; flip the declaration consciously")
+        return False
+    findings.append(f"{what}: configured source path {source_path} has invalid declaration {declared_state!r}")
+    return False
+
+
 def require_snippets(
     rel_path: Path,
     text: str | None,
@@ -252,3 +328,14 @@ def require_snippets(
     for snippet in snippets:
         if snippet not in text:
             findings.append(f"{rel_path}: missing `{snippet}`")
+
+
+def require_rust_snippets(
+    rel_path: Path,
+    text: str | None,
+    snippets: tuple[str, ...],
+    findings: list[str],
+) -> None:
+    if text is None:
+        return
+    require_snippets(rel_path, strip_rust_comments_and_literals(text), snippets, findings)

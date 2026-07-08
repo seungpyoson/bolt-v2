@@ -23,6 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from ci_provenance import (
     GATE_NAME_KEYS,
+    MERGIFY_CONFIG_EXPECTATIONS,
     MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
@@ -6559,17 +6560,17 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
 
 MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
     {
-        "approved-reviews-by = sp-reviewer",
-        "check-success = gate",
-        "check-success = backtester-gate",
-        "check-success = actionlint",
-        "check-success = host-health",
+        f"approved-reviews-by = {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']}",
+        *(
+            f"check-success = {check_name}"
+            for check_name in MERGIFY_CONFIG_EXPECTATIONS["required_checks"]
+        ),
     }
 )
 
 
-MERGIFY_REQUIRED_QUEUE_RULES = ("hotfix", "default")
-MERGIFY_REQUIRED_PRIORITY_RULES = ("hotfix",)
+MERGIFY_REQUIRED_QUEUE_RULES = MERGIFY_CONFIG_EXPECTATIONS["queue_rule_order"]
+MERGIFY_REQUIRED_PRIORITY_RULES = MERGIFY_CONFIG_EXPECTATIONS["priority_rule_order"]
 MERGIFY_TOP_LEVEL_KEYS = frozenset({"merge_queue", "queue_rules", "priority_rules"})
 MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS = frozenset(
     {
@@ -6767,7 +6768,10 @@ def mergify_required_conditions(value: Any, config_name: str, path: str, errors:
     if values is None:
         return
     if set(values) != MERGIFY_REQUIRED_MERGE_CONDITIONS or len(values) != len(MERGIFY_REQUIRED_MERGE_CONDITIONS):
-        errors.append(f"{config_name} {path} must require sp-reviewer and all four gates")
+        errors.append(
+            f"{config_name} {path} must require {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']} "
+            f"and all {len(MERGIFY_CONFIG_EXPECTATIONS['required_checks'])} gates"
+        )
 
 
 def expect_scalar(value: Any, expected: Any, config_name: str, path: str, errors: list[str]) -> None:
@@ -6792,14 +6796,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     if merge_queue is not None:
         for key in unsupported_mapping_keys(merge_queue, MERGIFY_MERGE_QUEUE_KEYS):
             errors.append(f"{config_name} merge_queue must not define unsupported key {key}")
-        expect_scalar(merge_queue.get("max_parallel_checks"), 1, config_name, "merge_queue.max_parallel_checks", errors)
-        expect_scalar(
-            merge_queue.get("reset_on_external_merge"),
-            "always",
-            config_name,
-            "merge_queue.reset_on_external_merge",
-            errors,
-        )
+        for key, expected in MERGIFY_CONFIG_EXPECTATIONS["merge_queue"].items():
+            expect_scalar(merge_queue.get(key), expected, config_name, f"merge_queue.{key}", errors)
 
     rules_by_name = named_mergify_rules(
         root,
@@ -6810,17 +6808,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
         errors,
     )
 
-    rule_expectations = (
-        ("default", [], {"min": 2, "max": 6}, "5 minutes", 3),
-        ("hotfix", ["label = hotfix"], 1, "30 seconds", 0),
-    )
-    for (
-        rule_name,
-        expected_queue_conditions,
-        expected_batch_size,
-        expected_wait,
-        expected_failure_resolution_attempts,
-    ) in rule_expectations:
+    for rule_name in MERGIFY_REQUIRED_QUEUE_RULES:
+        expectation = MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][rule_name]
         rule = rules_by_name.get(rule_name)
         if rule is None:
             errors.append(f"{config_name} must define {rule_name} queue rule")
@@ -6829,7 +6818,7 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
             errors.append(f"{config_name} {rule_name} must not define unsupported key {key}")
         mergify_condition_list(
             rule.get("queue_conditions"),
-            expected_queue_conditions,
+            list(expectation["queue_conditions"]),
             config_name,
             f"{rule_name} queue_conditions",
             errors,
@@ -6840,16 +6829,17 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
             f"{rule_name} merge_conditions",
             errors,
         )
-        expected_scalars = {
-            "branch_protection_injection_mode": "merge",
-            "batch_max_wait_time": expected_wait,
-            "batch_max_failure_resolution_attempts": expected_failure_resolution_attempts,
-            "checks_timeout": "150 minutes",
-            "draft_bot_account": None,
-            "merge_method": "squash",
-        }
-        for key, expected in expected_scalars.items():
+        for key in (
+            "branch_protection_injection_mode",
+            "batch_max_wait_time",
+            "batch_max_failure_resolution_attempts",
+            "checks_timeout",
+            "draft_bot_account",
+            "merge_method",
+        ):
+            expected = expectation[key]
             expect_scalar(rule.get(key), expected, config_name, f"{rule_name} {key}", errors)
+        expected_batch_size = expectation["batch_size"]
         batch_size = rule.get("batch_size")
         if isinstance(expected_batch_size, dict):
             batch_size_mapping = mergify_mapping(batch_size, config_name, f"{rule_name} batch_size", errors)
@@ -6881,15 +6871,21 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
         errors.append(f"{config_name} hotfix priority must not define unsupported key {key}")
     mergify_condition_list(
         hotfix_priority.get("conditions"),
-        ["label = hotfix"],
+        list(MERGIFY_CONFIG_EXPECTATIONS["priority_rules"]["hotfix"]["conditions"]),
         config_name,
         "hotfix priority conditions",
         errors,
     )
-    expect_scalar(hotfix_priority.get("priority"), 10000, config_name, "hotfix priority", errors)
+    expect_scalar(
+        hotfix_priority.get("priority"),
+        MERGIFY_CONFIG_EXPECTATIONS["priority_rules"]["hotfix"]["priority"],
+        config_name,
+        "hotfix priority",
+        errors,
+    )
     expect_scalar(
         hotfix_priority.get("allow_checks_interruption"),
-        True,
+        MERGIFY_CONFIG_EXPECTATIONS["priority_rules"]["hotfix"]["allow_checks_interruption"],
         config_name,
         "hotfix allow_checks_interruption",
         errors,

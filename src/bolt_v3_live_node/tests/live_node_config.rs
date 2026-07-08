@@ -262,6 +262,62 @@ async fn startup_watchdog_deadline_during_shutdown_preserves_runner_result() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_deadline_during_hung_startup_timeout_names_shutdown_grace() {
+    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
+    tokio::pin!(run_future);
+    let stop_called = Cell::new(false);
+    let mut capture_failure_receiver = None;
+    let shutdown_grace = Duration::from_millis(25);
+    let started = std::time::Instant::now();
+
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(150),
+        live_node_run_startup_watchdog(
+            run_future.as_mut(),
+            &mut capture_failure_receiver,
+            || NodeState::Starting,
+            || stop_called.set(true),
+            LiveNodeStartupWatchdogBounds {
+                startup_timeout: Duration::from_millis(1),
+                shutdown_grace,
+            },
+            vec!["data:chainlink_reference".to_string()],
+        ),
+    )
+    .await
+    .expect("deadline during hung startup must return after shutdown grace");
+    let elapsed = started.elapsed();
+
+    assert!(stop_called.get(), "deadline during startup must request stop");
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "startup shutdown timeout should return after grace {shutdown_grace:?}, elapsed {elapsed:?}"
+    );
+    match outcome {
+        LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
+            trigger,
+            shutdown_grace: observed_shutdown_grace,
+            node_state,
+            registered_client_labels,
+        } => {
+            assert_eq!(
+                trigger,
+                LiveNodeStartupShutdownGraceTrigger::StartupDeadline
+            );
+            assert_eq!(observed_shutdown_grace, shutdown_grace);
+            assert_eq!(node_state, "Starting");
+            assert_eq!(
+                registered_client_labels,
+                vec!["data:chainlink_reference".to_string()]
+            );
+        }
+        other => {
+            panic!("deadline during hung startup should name shutdown-grace timeout, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace() {
     let run_future = std::future::pending::<Result<(), anyhow::Error>>();
     tokio::pin!(run_future);

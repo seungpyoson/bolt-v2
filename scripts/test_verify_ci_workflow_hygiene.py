@@ -6026,21 +6026,21 @@ def assert_mergify_config_gaps_are_reported() -> None:
         (
             "default batch min lowered",
             replace_once(mergify_config, "      min: 2\n", "      min: 1\n"),
-            "default batch_size must be min 2 max 10",
+            "default batch_size must be min 2 max 6",
         ),
         (
             "default batch max narrowed",
-            replace_once(mergify_config, "      max: 10\n", "      max: 5\n"),
-            "default batch_size must be min 2 max 10",
+            replace_once(mergify_config, "      max: 6\n", "      max: 5\n"),
+            "default batch_size must be min 2 max 6",
         ),
         (
             "default batch max duplicated",
-            replace_once(mergify_config, "      max: 10\n", "      max: 10\n      max: 5\n"),
+            replace_once(mergify_config, "      max: 6\n", "      max: 6\n      max: 5\n"),
             "duplicate key max",
         ),
         (
             "default batch unknown nested key",
-            replace_once(mergify_config, "      max: 10\n", "      max: 10\n      spread: true\n"),
+            replace_once(mergify_config, "      max: 6\n", "      max: 6\n      spread: true\n"),
             "default batch_size must not define unsupported key spread",
         ),
         (
@@ -6068,14 +6068,14 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "hotfix batch_max_failure_resolution_attempts must be 0",
         ),
         (
-            "default failure split enabled",
+            "default failure split disabled",
             replace_once_after(
                 mergify_config,
                 "  - name: default\n",
-                "    batch_max_failure_resolution_attempts: 0\n",
                 "    batch_max_failure_resolution_attempts: 3\n",
+                "    batch_max_failure_resolution_attempts: 0\n",
             ),
-            "default batch_max_failure_resolution_attempts must be 0",
+            "default batch_max_failure_resolution_attempts must be 3",
         ),
         (
             "duplicate default wait",

@@ -6811,10 +6811,16 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     )
 
     rule_expectations = (
-        ("default", [], {"min": 2, "max": 10}, "5 minutes"),
-        ("hotfix", ["label = hotfix"], 1, "30 seconds"),
+        ("default", [], {"min": 2, "max": 6}, "5 minutes", 3),
+        ("hotfix", ["label = hotfix"], 1, "30 seconds", 0),
     )
-    for rule_name, expected_queue_conditions, expected_batch_size, expected_wait in rule_expectations:
+    for (
+        rule_name,
+        expected_queue_conditions,
+        expected_batch_size,
+        expected_wait,
+        expected_failure_resolution_attempts,
+    ) in rule_expectations:
         rule = rules_by_name.get(rule_name)
         if rule is None:
             errors.append(f"{config_name} must define {rule_name} queue rule")
@@ -6837,7 +6843,7 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
         expected_scalars = {
             "branch_protection_injection_mode": "merge",
             "batch_max_wait_time": expected_wait,
-            "batch_max_failure_resolution_attempts": 0,
+            "batch_max_failure_resolution_attempts": expected_failure_resolution_attempts,
             "checks_timeout": "150 minutes",
             "draft_bot_account": None,
             "merge_method": "squash",

@@ -34,9 +34,9 @@ queue_rules:
     branch_protection_injection_mode: merge
     batch_size:
       min: 2
-      max: 10
+      max: 6
     batch_max_wait_time: 5 minutes
-    batch_max_failure_resolution_attempts: 0
+    batch_max_failure_resolution_attempts: 3
     # merge_conditions intentionally differ from queue_conditions, which makes
     # Mergify use a queue proof context instead of in-place checks.
     checks_timeout: 150 minutes

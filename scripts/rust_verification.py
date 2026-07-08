@@ -232,6 +232,27 @@ def parse_minimal_toml(path: pathlib.Path) -> dict[str, Any]:
                     raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid array") from exc
                 if not all(isinstance(item, str) for item in value):
                     raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported array")
+            elif value_text == "[":
+                value = []
+                for array_lineno, raw_array_line in lines:
+                    item_text = raw_array_line.strip()
+                    if not item_text or item_text.startswith("#"):
+                        continue
+                    if item_text == "]":
+                        break
+                    if item_text.endswith(","):
+                        item_text = item_text[:-1].strip()
+                    if not item_text.startswith('"') or not item_text.endswith('"'):
+                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{array_lineno}: unsupported array")
+                    try:
+                        item = json.loads(item_text)
+                    except json.JSONDecodeError as exc:
+                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{array_lineno}: invalid string") from exc
+                    if not isinstance(item, str):
+                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{array_lineno}: unsupported array")
+                    value.append(item)
+                else:
+                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unterminated array")
             elif value_text in ("true", "false"):
                 value = value_text == "true"
             elif value_text.isdigit():

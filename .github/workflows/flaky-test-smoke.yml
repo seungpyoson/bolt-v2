@@ -1,6 +1,7 @@
 name: Flaky Test Smoke
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 */12 * * 1-5'  # Every 12 hours, Monday-Friday
 
@@ -104,7 +105,10 @@ jobs:
 
       - name: Stage JUnit report
         if: success() || failure()
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -217,7 +221,10 @@ jobs:
 
       - name: Stage JUnit report
         if: success() || failure()
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -329,7 +336,10 @@ jobs:
 
       - name: Stage JUnit report
         if: success() || failure()
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()

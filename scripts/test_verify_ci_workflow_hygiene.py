@@ -7760,8 +7760,8 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "schedule:" in full_workflow:
         raise AssertionError("flaky-test-detection.yml must remain manual-only")
-    if "workflow_dispatch:" in smoke_workflow:
-        raise AssertionError("flaky-test-smoke.yml must remain schedule-only")
+    if "workflow_dispatch:" not in smoke_workflow:
+        raise AssertionError("flaky-test-smoke.yml must remain schedule-driven and manually dispatchable")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
         (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
@@ -7805,6 +7805,7 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     if full_issue_runs != (1, 2, 3, 4, 5):
         raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
     smoke_fragments = (
+        "workflow_dispatch:",
         "schedule:",
         "cron: '0 */12 * * 1-5'",
         "flaky-smoke-rust-root:",
@@ -7887,7 +7888,10 @@ jobs:
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -7927,6 +7931,7 @@ jobs:
     good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 */12 * * 1-5'
 
@@ -7973,7 +7978,10 @@ jobs:
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -8010,6 +8018,10 @@ jobs:
           job_name: bvs-test issue-789
           report_path: "junit-*.xml"
 """
+    smoke_bvs_stage_step = """        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi"""
     good_errors = verifier.verify_flaky_test_detection_workflows(
         {
             full_workflow_name: good_full_workflow,
@@ -8423,7 +8435,7 @@ jobs:
             f"got: {dead_only_partition_smoke_errors}"
         )
     changed_stage_shell_smoke_workflow = good_smoke_workflow.replace(
-        '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+        smoke_bvs_stage_step,
         """        run: |
           if false; then
           echo "skip an unrelated staging branch"
@@ -8438,7 +8450,7 @@ jobs:
             f"got: {changed_stage_shell_smoke_errors}"
         )
     cross_step_bte_smoke_workflow = good_smoke_workflow.replace(
-        '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+        smoke_bvs_stage_step,
         """        run: |
           just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl
           cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
@@ -8461,7 +8473,7 @@ jobs:
         ),
     ):
         cross_step_extra_work_smoke_workflow = good_smoke_workflow.replace(
-            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            smoke_bvs_stage_step,
             f"""        run: |
           {extra_command}
           cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
@@ -8505,10 +8517,10 @@ jobs:
     ):
         extra_step_smoke_workflow = good_smoke_workflow.replace(
             '      - name: Stage JUnit report\n'
-            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            + smoke_bvs_stage_step,
             extra_step
             + '      - name: Stage JUnit report\n'
-            + '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            + smoke_bvs_stage_step,
             1,
         )
         extra_step_smoke_errors = flaky_detection_errors(smoke_workflow=extra_step_smoke_workflow)
@@ -8570,9 +8582,9 @@ jobs:
             good_smoke_workflow,
         ),
         (
-            "workflow triggers must be ['schedule']",
+            "workflow triggers must be ['schedule', 'workflow_dispatch']",
             good_full_workflow,
-            good_smoke_workflow.replace("on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
+            good_smoke_workflow.replace("on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
         ),
         (
             "root smoke job missing 'if: success() || failure()'",
@@ -9065,8 +9077,12 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             raise AssertionError(f"{workflow_name} must use the shared sccache setup action")
         if "uses: ./.github/actions/sccache-stats" not in workflow_text:
             raise AssertionError(f"{workflow_name} must use the shared sccache stats action after compile")
+    if "workflow_dispatch:" not in workflows[".github/workflows/flaky-test-smoke.yml"]:
+        raise AssertionError("flaky smoke workflow must be manually dispatchable for exact-head evidence")
     if workflows[".github/workflows/flaky-test-smoke.yml"].count('exit "$rc"') != 3:
         raise AssertionError("flaky smoke run steps must exit with the captured rc")
+    if 'run: cp "' in workflows[".github/workflows/flaky-test-smoke.yml"]:
+        raise AssertionError("flaky smoke JUnit staging must tolerate missing reports")
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
@@ -9216,6 +9232,22 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "flaky smoke run step must exit with captured rc",
         ),
         (
+            "flaky smoke JUnit staging must tolerate missing reports",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    '        run: |\n'
+                    '          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then\n'
+                    '            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"\n'
+                    "          fi\n",
+                    '        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"\n',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "JUnit staging must tolerate missing reports",
+        ),
+        (
             "debug test execution must not retry test execution",
             {
                 **workflows,
@@ -9227,6 +9259,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             },
             bvs_policy,
             "test execution must not be wrapped in sccache fail-open",
+        ),
+        (
+            "debug test execution must not retry test execution via cache-error helper",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    'bash .github/scripts/sccache-fail-open.sh --on cache-error "$log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "compile preflight must use --no-run",
         ),
         (
             "debug test execution must not force sccache off",

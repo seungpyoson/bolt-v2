@@ -12942,8 +12942,10 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
         '> "$RUNNER_TEMP/nextest-junit.toml"',
     ),
     "Stage JUnit report": (
+        'if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then',
         'cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" '
         '"junit-unit-${{ matrix.run_number }}.xml"',
+        "fi",
     ),
 }
 BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
@@ -13122,7 +13124,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
         ),
     },
     ".github/workflows/flaky-test-smoke.yml": {
-        "workflow_triggers": frozenset({"schedule"}),
+        "workflow_triggers": frozenset({"schedule", "workflow_dispatch"}),
         "required_workflow_fragments": (),
         "forbidden_workflow_fragments": (),
         "jobs": (
@@ -13472,7 +13474,13 @@ def debug_lane_sccache_job_errors(
             errors.append(f"{label} test execution must not force sccache off")
         if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' in compile_lines and 'exit "$rc"' not in compile_lines:
             errors.append(f"{label} flaky smoke run step must exit with captured rc")
+        stage_block = named_step_block(job_lines, "Stage JUnit report")
+        stage_lines = simple_shell_lines(uncommented_text(stage_block) if stage_block is not None else "")
+        if not stage_lines or not any(line.startswith("if [[ -f ") for line in stage_lines):
+            errors.append(f"{label} JUnit staging must tolerate missing reports")
     if workflow_name.endswith("debug-test.yml"):
+        if any("--no-run" not in line for line in real_helper_lines):
+            errors.append(f"{label} compile preflight must use --no-run")
         if not any("just debug-test" in line and "--no-run" in line for line in real_helper_lines):
             errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just debug-test",))

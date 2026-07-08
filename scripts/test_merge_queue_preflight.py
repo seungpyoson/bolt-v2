@@ -58,7 +58,7 @@ SOURCE_PR_CHECK_WORKFLOWS = {
     "host-health": "CI",
 }
 SOURCE_CHECK_ALIASES: dict[str, str] = {}
-MERGIFY_QUEUE_MAX_BATCH_SIZE = {"hotfix": 1, "default": 10}
+MERGIFY_QUEUE_MAX_BATCH_SIZE = {"hotfix": 1, "default": 6}
 
 
 def expected_head_sha_args(
@@ -1992,10 +1992,10 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
         assert_equal(
             [batch["prs"] for batch in payload["batches"]],
-            [list(range(1, 11)), [11]],
+            [list(range(1, 7)), list(range(7, 12))],
             "default queue above max size-valid batches",
         )
-        assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]
+        assert mergify_queue_batch_above_max_finding("default", list(heads), 6) in payload["findings"], payload["findings"]
 
 
 def assert_default_queue_below_min_reports_wait_behavior() -> None:
@@ -2692,7 +2692,7 @@ def assert_fallback_recombines_survivors_after_batch_max_split() -> None:
         payload = parse_json(result.stdout)
         assert_equal(
             [batch["prs"] for batch in payload["batches"]],
-            [[1, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
+            [[1, 3, 4, 5, 6, 7], [8, 9, 10, 11]],
             "poison fallback max split batches",
         )
         blocked = payload["blocked_prs"]

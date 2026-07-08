@@ -595,6 +595,12 @@ impl ReadyRealizedVol {
 impl<T: Into<f64>> Default for ::crate::bolt_v3_numeric::Probability {
     fn default() -> Self { Self::clamped(0.5).unwrap() }
 }
+
+#[cfg(target_os = "windows")]
+impl Default for ::crate::bolt_v3_numeric::
+    Probability {
+    fn default() -> Self { Self::clamped(0.5).unwrap() }
+}
 """,
             },
         )
@@ -616,6 +622,63 @@ impl<T: Into<f64>> Default for ::crate::bolt_v3_numeric::Probability {
         }
         if missing:
             raise AssertionError(f"missing registered Default findings for {sorted(missing)!r}: {findings!r}")
+
+
+def test_verify_rejects_multiline_cfg_attr_default_derive() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, ZERO_F64};
+
+#[cfg_attr(
+    target_os = "windows",
+    derive(Default)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl ValidRealizedVol {
+    pub fn new(value: f64) -> Option<Self> { Some(Self(value)) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+impl ReadyRealizedVol {
+    pub fn get(self) -> f64 { self.0.get() }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any(
+            "registered FinancialValue Default impl/derive" in finding
+            and "for ValidRealizedVol" in finding
+            for finding in findings
+        ):
+            raise AssertionError(f"expected multiline cfg_attr Default derive finding, got {findings!r}")
+
+
+def test_registered_default_fence_fails_closed_when_registry_is_empty() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        owner = root / "src" / "bolt_v3_numeric.rs"
+        owner.write_text(
+            owner.read_text(encoding="utf-8").replace(
+                "    let _ = <Probability as AmbiguousIfDefault<_>>::_check;\n"
+                "    let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;\n"
+                "    let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;\n"
+                "    let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;\n",
+                "",
+            ),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
+        if not any("Default fence cannot run" in finding for finding in findings):
+            raise AssertionError(f"expected empty-registry fail-closed finding, got {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:
@@ -848,6 +911,8 @@ def main() -> int:
         test_verify_accepts_unrelated_default_derive,
         test_verify_rejects_cfg_gated_registered_financial_value_default_impl,
         test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
+        test_verify_rejects_multiline_cfg_attr_default_derive,
+        test_registered_default_fence_fails_closed_when_registry_is_empty,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

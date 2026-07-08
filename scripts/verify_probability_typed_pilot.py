@@ -450,7 +450,7 @@ def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
 
 
 def path_type_name(type_name: str) -> str:
-    return type_name.replace(" ", "").lstrip(":").split("::")[-1]
+    return re.sub(r"\s+", "", type_name).lstrip(":").split("::")[-1]
 
 
 def registered_financial_value_types(root: Path) -> set[str]:
@@ -482,6 +482,8 @@ def registered_financial_value_aliases(root: Path, registered_types: set[str]) -
 def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
     findings = []
     registered_types = registered_financial_value_types(root)
+    if not registered_types:
+        return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
     registered_aliases = registered_financial_value_aliases(root, registered_types)
     for relative_path, source in rust_sources(root):
         for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):

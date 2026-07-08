@@ -1823,13 +1823,11 @@ pub enum BoltV3LiveNodeError {
         drain_error: anyhow::Error,
     },
     /// The bolt-v3 controlled-connect boundary
-    /// ([`connect_bolt_v3_clients`]) bounds the dispatched
-    /// `NautilusKernel::connect_data_clients` and
-    /// `NautilusKernel::connect_exec_clients` calls by the
-    /// `nautilus.timeout_connection_secs` value from the loaded
-    /// bolt-v3 config. A `ConnectTimeout` is surfaced when that bound
-    /// elapses before NT's engine-level connect dispatchers return,
-    /// instead of the controlled-connect call hanging indefinitely.
+    /// ([`connect_bolt_v3_clients`]) and production live-node startup
+    /// watchdog bound NT client connection/startup by config-owned Nautilus
+    /// timeout fields. A `ConnectTimeout` is surfaced when that bound elapses
+    /// before NT reaches the expected connected/running state, instead of
+    /// client startup hanging indefinitely.
     /// The wrapped value is the configured timeout the boundary
     /// applied (in seconds), captured so log/audit consumers can
     /// distinguish a 1-second test timeout from a 30-second
@@ -1983,8 +1981,8 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             ),
             BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => write!(
                 f,
-                "bolt-v3 controlled-connect exceeded the configured \
-                 nautilus.timeout_connection_secs bound ({timeout_secs}s)"
+                "bolt-v3 live-node startup/connect exceeded the configured Nautilus timeout \
+                 bound ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::ConnectIncomplete => write!(
                 f,
@@ -2151,27 +2149,65 @@ pub async fn run_bolt_v3_live_node(
     let node_handle = runtime.node.handle();
     let mut capture_guards = {
         let node = &runtime.node;
-        wire_bolt_v3_runtime_capture(node, node_handle, loaded)
+        wire_bolt_v3_runtime_capture(node, node_handle.clone(), loaded)
     }
     .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
     let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
+    let startup_timeout_secs = live_node_startup_timeout_secs(loaded)?;
+    let startup_deadline = tokio::time::sleep(Duration::from_secs(startup_timeout_secs));
+    tokio::pin!(startup_deadline);
 
-    let run_result = {
+    enum LiveNodeRunStartupOutcome {
+        Finished(Result<(), anyhow::Error>),
+        StartupTimeout { timeout_secs: u64 },
+    }
+
+    let run_outcome = {
         let node = &mut runtime.node;
         let run_future = node.run();
         tokio::pin!(run_future);
 
         if let Some(receiver) = capture_failure_receiver.as_mut() {
             tokio::select! {
-                result = &mut run_future => result,
+                result = &mut run_future => LiveNodeRunStartupOutcome::Finished(result),
+                _ = &mut startup_deadline => {
+                    if matches!(node_handle.state(), NodeState::Running) {
+                        LiveNodeRunStartupOutcome::Finished(run_future.await)
+                    } else {
+                        log::error!(
+                            "LiveNode startup exceeded configured startup bound \
+                             ({startup_timeout_secs}s); requesting stop"
+                        );
+                        node_handle.stop();
+                        LiveNodeRunStartupOutcome::StartupTimeout {
+                            timeout_secs: startup_timeout_secs,
+                        }
+                    }
+                }
                 _ = receiver => {
                     log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");
-                    run_future.await
+                    LiveNodeRunStartupOutcome::Finished(run_future.await)
                 }
             }
         } else {
-            run_future.await
+            tokio::select! {
+                result = &mut run_future => LiveNodeRunStartupOutcome::Finished(result),
+                _ = &mut startup_deadline => {
+                    if matches!(node_handle.state(), NodeState::Running) {
+                        LiveNodeRunStartupOutcome::Finished(run_future.await)
+                    } else {
+                        log::error!(
+                            "LiveNode startup exceeded configured startup bound \
+                             ({startup_timeout_secs}s); requesting stop"
+                        );
+                        node_handle.stop();
+                        LiveNodeRunStartupOutcome::StartupTimeout {
+                            timeout_secs: startup_timeout_secs,
+                        }
+                    }
+                }
+            }
         }
     };
     if let Some(task) = iv_start_task {
@@ -2180,8 +2216,17 @@ pub async fn run_bolt_v3_live_node(
     let iv_stop_result = runtime.stop_iv_engine_lifecycle(&loaded.root);
     let shutdown_result = capture_guards.shutdown().await;
 
-    let run_and_capture_result =
-        classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
+    let run_and_capture_result = match run_outcome {
+        LiveNodeRunStartupOutcome::Finished(run_result) => {
+            classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+        }
+        LiveNodeRunStartupOutcome::StartupTimeout { timeout_secs } => {
+            if let Err(error) = shutdown_result {
+                log::error!("NT runtime capture shutdown failed after startup timeout: {error}");
+            }
+            Err(BoltV3LiveNodeError::ConnectTimeout { timeout_secs })
+        }
+    };
     let producer_guards =
         runtime.decision_evidence_producer_guards_for_shutdown(loss_protection_guards);
     let drain_result = runtime
@@ -2211,6 +2256,10 @@ fn strategy_free_start_timeout_secs(
         .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
         .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
         .ok_or(BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow)
+}
+
+fn live_node_startup_timeout_secs(loaded: &LoadedBoltV3Config) -> Result<u64, BoltV3LiveNodeError> {
+    strategy_free_start_timeout_secs(loaded)
 }
 
 fn strategy_free_stop_timeout_secs(

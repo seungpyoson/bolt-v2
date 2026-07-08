@@ -256,7 +256,7 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
         _record_best_effort_warning(
             "main-worktree-list",
             exc.stderr or str(exc),
-            repo_root=str(repo_root),
+            repo_root_path=str(repo_root),
         )
     # Fallback for normal repos / linked worktrees (not submodules).
     try:
@@ -276,7 +276,7 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
         _record_best_effort_warning(
             "main-worktree-common-dir",
             exc.stderr or str(exc),
-            repo_root=str(repo_root),
+            repo_root_path=str(repo_root),
         )
     return repo_root
 
@@ -2592,7 +2592,11 @@ def _reset_best_effort_warnings() -> None:
 
 def _best_effort_warning_record(raw: dict[str, Any], config: Config) -> dict[str, Any]:
     reason = str(raw["reason"])
-    fields = {key: value for key, value in raw.items() if key not in {"label", "reason"}}
+    fields = {
+        key: value
+        for key, value in raw.items()
+        if key not in {"label", "reason", "_stderr_fallback_emitted"}
+    }
     return {
         "action": "best-effort-warning",
         "label": raw["label"],
@@ -2601,12 +2605,40 @@ def _best_effort_warning_record(raw: dict[str, Any], config: Config) -> dict[str
     }
 
 
+def _best_effort_warning_record_without_config(raw: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        key: value
+        for key, value in raw.items()
+        if key not in {"label", "reason", "_stderr_fallback_emitted"}
+    }
+    return {
+        "action": "best-effort-warning",
+        "label": raw["label"],
+        "reason": str(raw["reason"]),
+        **fields,
+    }
+
+
+def _emit_best_effort_audit_fallback(record: dict[str, Any]) -> None:
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+
+
+def _emit_raw_best_effort_warning_fallback(raw: dict[str, Any], config: Config | None = None) -> None:
+    if raw.get("_stderr_fallback_emitted"):
+        return
+    if config is None:
+        record = _best_effort_warning_record_without_config(raw)
+    else:
+        record = _best_effort_warning_record(raw, config)
+    _emit_best_effort_audit_fallback(record)
+    raw["_stderr_fallback_emitted"] = True
+
+
 def _write_audit_best_effort(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> bool:
     try:
-        write_audit(repo_root, config, record)
-    except OSError:
+        return write_audit(repo_root, config, record)
+    except (OSError, subprocess.CalledProcessError, TypeError, ValueError):
         return False
-    return True
 
 
 def _record_best_effort_warning(
@@ -2626,27 +2658,48 @@ def _record_best_effort_warning(
     if repo_root is not None and config is not None and _BEST_EFFORT_AUDIT_WRITE_DEPTH == 0:
         record = _best_effort_warning_record(pending, config)
         if not _write_audit_best_effort(repo_root, config, record):
+            _emit_raw_best_effort_warning_fallback(pending, config)
             _BEST_EFFORT_PENDING_WARNINGS.append(pending)
     else:
         _BEST_EFFORT_PENDING_WARNINGS.append(pending)
 
 
 def _flush_best_effort_warning_records(repo_root: pathlib.Path, config: Config) -> None:
+    processed_batches = 0
+    max_batches = len(_BEST_EFFORT_PENDING_WARNINGS) + 1
+    while _BEST_EFFORT_PENDING_WARNINGS and processed_batches <= max_batches:
+        pending = list(_BEST_EFFORT_PENDING_WARNINGS)
+        _BEST_EFFORT_PENDING_WARNINGS.clear()
+        for raw in pending:
+            record = _best_effort_warning_record(raw, config)
+            if not _write_audit_best_effort(repo_root, config, record):
+                _emit_raw_best_effort_warning_fallback(raw, config)
+        processed_batches += 1
+    if _BEST_EFFORT_PENDING_WARNINGS:
+        pending = list(_BEST_EFFORT_PENDING_WARNINGS)
+        _BEST_EFFORT_PENDING_WARNINGS.clear()
+        for raw in pending:
+            _emit_raw_best_effort_warning_fallback(raw, config)
+
+
+def _flush_best_effort_warning_records_to_stderr(config: Config | None = None) -> None:
     pending = list(_BEST_EFFORT_PENDING_WARNINGS)
     _BEST_EFFORT_PENDING_WARNINGS.clear()
     for raw in pending:
-        _write_audit_best_effort(repo_root, config, _best_effort_warning_record(raw, config))
+        _emit_raw_best_effort_warning_fallback(raw, config)
 
 
 def _write_best_effort_warning_summary(repo_root: pathlib.Path, config: Config) -> None:
     _flush_best_effort_warning_records(repo_root, config)
     total = sum(_BEST_EFFORT_WARNING_COUNTS.values())
     if total:
-        _write_audit_best_effort(repo_root, config, {
+        record = {
             "action": "best-effort-warning-summary",
             "count": total,
             "by_label": dict(sorted(_BEST_EFFORT_WARNING_COUNTS.items())),
-        })
+        }
+        if not _write_audit_best_effort(repo_root, config, record):
+            _emit_best_effort_audit_fallback(record)
 
 
 def _resolve_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
@@ -2792,7 +2845,7 @@ def _rotated_log_usage(repo_root: pathlib.Path, config: Config) -> tuple[int, in
     return len(rotated_paths), total_bytes
 
 
-def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> None:
+def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> bool:
     global _BEST_EFFORT_AUDIT_WRITE_DEPTH
     _BEST_EFFORT_AUDIT_WRITE_DEPTH += 1
     fd: int | None = None
@@ -2803,7 +2856,7 @@ def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any])
         fd = _acquire_lock(lock_path)
         if fd is None:
             # best-effort; never break the op over logging
-            return
+            return False
         _prune_expired_rotated_logs(
             log_path,
             config.logging.rotated_log_retention_days,
@@ -2814,6 +2867,7 @@ def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any])
         record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record_with_ts, ensure_ascii=False, sort_keys=True) + "\n")
+        return True
     finally:
         if fd is not None:
             _release_lock(fd)
@@ -5273,6 +5327,7 @@ def main(argv: list[str] | None = None) -> int:
         # Don't crash the hook chain on config or git-resolution errors.
         # If the operator explicitly asked for diagnostics, surface the
         # problem and exit non-zero.
+        _flush_best_effort_warning_records_to_stderr()
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] error: {exc}", file=sys.stderr)
         if args.install_hooks:

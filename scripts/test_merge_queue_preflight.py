@@ -1739,7 +1739,7 @@ def assert_github_actions_auth_helper_fails_without_actions_identity() -> None:
                 env,
             )
         except RuntimeError as exc:
-            if "GITHUB_TOKEN and GITHUB_REPOSITORY are required in GitHub Actions" not in str(exc):
+            if "GITHUB_TOKEN and GITHUB_REPOSITORY are both required in GitHub Actions" not in str(exc):
                 raise AssertionError(f"unexpected missing identity error: {exc}") from exc
         else:
             raise AssertionError(f"GitHub Actions identity must fail closed for {env!r}")

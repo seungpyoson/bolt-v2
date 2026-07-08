@@ -130,7 +130,7 @@ def load(
                     _fail(error_cls, f"{shown}:{lineno}: unterminated array")
             elif value_text in ("true", "false"):
                 value = value_text == "true"
-            elif value_text.isdigit():
+            elif value_text.isascii() and value_text.isdigit():
                 value = int(value_text)
             else:
                 _fail(error_cls, f"{shown}:{lineno}: unsupported value")

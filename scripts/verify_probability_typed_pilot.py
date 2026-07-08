@@ -24,28 +24,27 @@ class PatternCheck:
 
 
 FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
-REGISTERED_FINANCIAL_VALUE_TYPES = (
-    "Probability",
-    "UsableMu",
-    "ValidRealizedVol",
-    "ReadyRealizedVol",
+REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE = re.compile(
+    r"<\s*(?P<type>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+    r"\s+as\s+AmbiguousIfDefault\s*<\s*_\s*>\s*>\s*::\s*_check"
 )
-REGISTERED_FINANCIAL_VALUE_TYPE_PATTERN = "|".join(
-    re.escape(type_name) for type_name in REGISTERED_FINANCIAL_VALUE_TYPES
+TYPE_ALIAS_RE = re.compile(
+    r"\btype\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?P<target>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
 REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE = re.compile(
-    rf"\bimpl(?:\s*<[^>{{}}]*>)?\s+(?:::\s*)?(?:std\s*::\s*default\s*::\s*)?"
-    rf"Default\s+for\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*"
-    rf"(?P<type>{REGISTERED_FINANCIAL_VALUE_TYPE_PATTERN})\b",
+    r"\bimpl\b[^{};]*?\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
+    r"Default\s+for\s+"
+    r"(?P<type>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\b",
     re.DOTALL,
 )
-REGISTERED_FINANCIAL_VALUE_DEFAULT_DERIVE_RE = re.compile(
-    rf"#\s*\[\s*derive\s*\([^\]]*\bDefault\b[^\]]*\)\s*\]\s*"
-    rf"(?:#\s*\[[^\]]*\]\s*)*"
-    rf"(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum)\s+"
-    rf"(?P<type>{REGISTERED_FINANCIAL_VALUE_TYPE_PATTERN})\b",
+TYPE_WITH_ATTRS_RE = re.compile(
+    r"(?P<attrs>(?:\s*#\s*\[[^\]]*\]\s*)*)"
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum)\s+"
+    r"(?P<type>[A-Za-z_][A-Za-z0-9_]*)\b",
     re.DOTALL,
 )
+DEFAULT_DERIVE_ATTR_RE = re.compile(r"\bderive\s*\([^)]*\bDefault\b", re.DOTALL)
 FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
     r"\b(?:FinancialValue|financial_value_private|Sealed)\b"
 )
@@ -450,18 +449,57 @@ def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
     ]
 
 
+def path_type_name(type_name: str) -> str:
+    return type_name.replace(" ", "").lstrip(":").split("::")[-1]
+
+
+def registered_financial_value_types(root: Path) -> set[str]:
+    source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
+    return {
+        path_type_name(match.group("type"))
+        for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE.finditer(source)
+    }
+
+
+def registered_financial_value_aliases(root: Path, registered_types: set[str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for _, source in rust_sources(root):
+        for match in TYPE_ALIAS_RE.finditer(source):
+            aliases[match.group("alias")] = path_type_name(match.group("target"))
+
+    resolved: dict[str, str] = {}
+    for alias in aliases:
+        seen: set[str] = set()
+        current = alias
+        while current in aliases and current not in seen:
+            seen.add(current)
+            current = aliases[current]
+        if current in registered_types:
+            resolved[alias] = current
+    return resolved
+
+
 def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
     findings = []
+    registered_types = registered_financial_value_types(root)
+    registered_aliases = registered_financial_value_aliases(root, registered_types)
     for relative_path, source in rust_sources(root):
-        for pattern in (
-            REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE,
-            REGISTERED_FINANCIAL_VALUE_DEFAULT_DERIVE_RE,
-        ):
-            for match in pattern.finditer(source):
+        for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):
+            target = path_type_name(match.group("type"))
+            registered_type = target if target in registered_types else registered_aliases.get(target)
+            if registered_type is not None:
                 findings.append(
                     f"{relative_path}: registered FinancialValue Default impl/derive "
-                    f"for {match.group('type')} is forbidden"
+                    f"for {registered_type} is forbidden"
                 )
+        for match in TYPE_WITH_ATTRS_RE.finditer(source):
+            if DEFAULT_DERIVE_ATTR_RE.search(match.group("attrs")):
+                type_name = path_type_name(match.group("type"))
+                if type_name in registered_types:
+                    findings.append(
+                        f"{relative_path}: registered FinancialValue Default impl/derive "
+                        f"for {type_name} is forbidden"
+                    )
     return sorted(set(findings))
 
 

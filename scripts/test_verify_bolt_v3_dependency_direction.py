@@ -1023,14 +1023,26 @@ def test_dependency_shrink_only_ci_invocation_carries_github_identity() -> None:
 
     if "python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main" not in just_text:
         raise AssertionError("source-fence must invoke dependency shrink-only verification")
-    source_fence_step = ci_text.split("      - name: source-fence", 1)[1].split("      - name:", 1)[0]
-    for required in (
-        "GITHUB_TOKEN: ${{ github.token }}",
-        "GITHUB_REPOSITORY: ${{ github.repository }}",
-        "just source-fence",
+
+    def named_step(name: str) -> str:
+        marker = f"      - name: {name}\n"
+        if marker not in ci_text:
+            raise AssertionError(f"missing CI step {name}")
+        return ci_text.split(marker, 1)[1].split("      - name:", 1)[0]
+
+    source_fence_step = named_step("source-fence")
+    source_fence_static_step = named_step("source-fence-static")
+    for step_name, step, command in (
+        ("source-fence", source_fence_step, "\n            just source-fence\n"),
+        ("source-fence-static", source_fence_static_step, "run: just source-fence-static"),
     ):
-        if required not in source_fence_step:
-            raise AssertionError(f"source-fence CI step must carry {required}")
+        for required in (
+            "GITHUB_TOKEN: ${{ github.token }}",
+            "GITHUB_REPOSITORY: ${{ github.repository }}",
+            command,
+        ):
+            if required not in step:
+                raise AssertionError(f"{step_name} CI step must carry {required}")
 
 
 def test_justfile_dependency_baseline_fetch_is_not_checkout_mutation() -> None:

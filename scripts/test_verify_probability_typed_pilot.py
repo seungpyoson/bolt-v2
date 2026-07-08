@@ -547,6 +547,77 @@ impl std::default::Default for UsableMu {
             raise AssertionError(f"expected registered Default impl finding, got {findings!r}")
 
 
+def test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_maker_mu_estimator.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, sanitize_probability};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(f64);
+impl UsableMu {
+    fn new(value: f64) -> Self { Self(value) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[cfg(target_os = "windows")]
+impl core::default::Default for UsableMu {
+    fn default() -> Self { Self(0.0) }
+}
+""",
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, ZERO_F64};
+
+#[cfg_attr(target_os = "windows", derive(Default))]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl ValidRealizedVol {
+    pub fn new(value: f64) -> Option<Self> { Some(Self(value)) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+type ReadyRealizedVolAlias = ReadyRealizedVol;
+#[cfg(target_os = "windows")]
+impl Default for ReadyRealizedVolAlias {
+    fn default() -> Self { ReadyRealizedVol(ValidRealizedVol(0.0)) }
+}
+impl ReadyRealizedVol {
+    pub fn get(self) -> f64 { self.0.get() }
+}
+""",
+                "src/cfg_inactive_probability_default.rs": """
+#[cfg(target_os = "windows")]
+impl<T: Into<f64>> Default for ::crate::bolt_v3_numeric::Probability {
+    fn default() -> Self { Self::clamped(0.5).unwrap() }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        expected_types = {
+            "Probability",
+            "UsableMu",
+            "ValidRealizedVol",
+            "ReadyRealizedVol",
+        }
+        missing = {
+            type_name
+            for type_name in expected_types
+            if not any(
+                "registered FinancialValue Default impl/derive" in finding
+                and f"for {type_name} " in f"{finding} "
+                for finding in findings
+            )
+        }
+        if missing:
+            raise AssertionError(f"missing registered Default findings for {sorted(missing)!r}: {findings!r}")
+
+
 def test_verify_rejects_public_financial_value_field() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -776,6 +847,7 @@ def main() -> int:
         test_verify_rejects_split_financial_value_owner_use,
         test_verify_accepts_unrelated_default_derive,
         test_verify_rejects_cfg_gated_registered_financial_value_default_impl,
+        test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

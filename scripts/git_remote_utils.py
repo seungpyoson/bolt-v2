@@ -87,7 +87,7 @@ def github_actions_git_auth_env(
     repository = source_env.get("GITHUB_REPOSITORY", "").removesuffix(".git")
     if not token or not repository:
         if source_env.get("GITHUB_ACTIONS") == "true":
-            raise RuntimeError("GITHUB_TOKEN and GITHUB_REPOSITORY are required in GitHub Actions")
+            raise RuntimeError("GITHUB_TOKEN and GITHUB_REPOSITORY are both required in GitHub Actions")
         return {}
     remote_repository = github_repository_slug(remote_url)
     if remote_repository is None or remote_repository.lower() != repository.lower():

@@ -145,6 +145,25 @@ def assert_minimal_toml_matches_tomllib_for_rust_policy() -> None:
         raise AssertionError("minimal_toml.py must match tomllib for ci/rust-verification.toml")
 
 
+def assert_minimal_toml_rejects_non_ascii_bare_digits() -> None:
+    minimal_toml_path = REPO_ROOT / "scripts" / "minimal_toml.py"
+    spec = importlib.util.spec_from_file_location("minimal_toml_under_test", minimal_toml_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load scripts/minimal_toml.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "policy.toml"
+        path.write_text("schema_version = \u00b2\n", encoding="utf-8")
+        try:
+            module.load(path, error_cls=RuntimeError)
+        except RuntimeError as exc:
+            if "unsupported value" not in str(exc):
+                raise AssertionError(f"unexpected minimal TOML error: {exc}") from exc
+        else:
+            raise AssertionError("non-ASCII bare digits must stay in the parser error path")
+
+
 def same_path(left: str, right: pathlib.Path) -> bool:
     return pathlib.Path(left).resolve() == right.resolve()
 
@@ -1755,6 +1774,7 @@ def main() -> int:
     assert_minimal_toml_accepts_quoted_keys()
     assert_minimal_toml_accepts_multiline_string_arrays()
     assert_minimal_toml_matches_tomllib_for_rust_policy()
+    assert_minimal_toml_rejects_non_ascii_bare_digits()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
     assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()

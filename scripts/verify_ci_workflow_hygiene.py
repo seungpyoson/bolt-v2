@@ -12939,6 +12939,39 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
     "Compute BVS cache input hash": (
         'echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
     ),
+    "Resolve sccache eligibility": (
+        "vars_present=true",
+        '[[ -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false',
+        "location_matches=true",
+        '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false',
+        'if [[ "$vars_present" == "true" && "$location_matches" == "true" ]]; then',
+        'echo "eligible=true" >> "$GITHUB_OUTPUT"',
+        "else",
+        'echo "eligible=false" >> "$GITHUB_OUTPUT"',
+        "fi",
+        'echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"',
+        'echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"',
+        'echo "cache_mode=read_only vars_present=$vars_present location_matches=$location_matches"',
+    ),
+    "Resolve sccache enablement": (
+        "enabled=false",
+        'if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\',
+        '&& "${{ steps.sccache-aws.outcome }}" == "success" \\',
+        '&& "${{ steps.sccache-install.outcome }}" == "success" \\',
+        '&& -n "${SCCACHE_PATH:-}" ]]; then',
+        'if "$SCCACHE_PATH" --start-server; then',
+        '"$SCCACHE_PATH" --zero-stats || true',
+        "enabled=true",
+        "else",
+        'echo "sccache server failed to start; building without cache"',
+        "fi",
+        "fi",
+        'echo "enabled=$enabled" >> "$GITHUB_OUTPUT"',
+        'echo "sccache enabled=$enabled"',
+    ),
+    "Print sccache stats": (
+        '\'"$SCCACHE_PATH" --show-stats || true\'',
+    ),
     "Configure nextest JUnit output": (
         "printf '%s\\n' \\",
         "'[profile.default.junit]' \\",
@@ -12959,6 +12992,8 @@ BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
         (None, "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4"),
         ("Restore test target cache", "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"),
         ("Install cargo-nextest", "taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538"),
+        ("Configure AWS credentials for sccache", "aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b"),
+        ("Install sccache", "mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696"),
         ("Upload test results to Mergify", "mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3"),
     )
 )
@@ -13221,6 +13256,184 @@ def verify_flaky_test_detection_workflows(texts: dict[str, str]) -> list[str]:
         )
     ]
     return missing_errors + contract_errors
+
+
+DEBUG_LANE_SCCACHE_OPT_IN = "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}"
+DEBUG_LANE_SCCACHE_LOCATION_MATCH = (
+    '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" '
+    '&& "$REGION" == "us-east-2" '
+    '&& "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]'
+)
+DEBUG_TEST_SCCACHE_COMPILE_IF = "steps.debug-archive-ready.outputs.value != 'true' || inputs.package != ''"
+
+
+def debug_lane_sccache_workflow_env_errors(workflow_name: str, workflow_text: str) -> list[str]:
+    workflow_clean = uncommented_text(workflow_text.splitlines())
+    required_fragments = (
+        "SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}",
+        "SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}",
+        "SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
+        'SCCACHE_S3_SERVER_SIDE_ENCRYPTION: "true"',
+        'SCCACHE_IGNORE_SERVER_IO_ERROR: "1"',
+    )
+    return [
+        f"{workflow_name} debug-lane sccache env must include {fragment}"
+        for fragment in required_fragments
+        if fragment not in workflow_clean
+    ]
+
+
+def debug_lane_sccache_job_errors(
+    workflow_name: str,
+    job_name: str,
+    job_lines: list[str],
+    *,
+    compile_step_name: str,
+    require_managed_target_dir: bool,
+    require_debug_archive_compile_condition: bool = False,
+) -> list[str]:
+    label = f"{workflow_name} {job_name}"
+    job_text = uncommented_text(job_lines)
+    errors: list[str] = []
+    if not job_permission_has(job_lines, "id-token", "write"):
+        errors.append(f"{label} must grant id-token: write for read-only sccache OIDC")
+    if not job_has_setup_input(job_lines, "install-rust-linker", "true"):
+        errors.append(f"{label} must install configured Rust linker")
+    if require_managed_target_dir and not job_has_setup_input(job_lines, "include-managed-target-dir", "true"):
+        errors.append(f"{label} must opt into the managed target dir")
+    for step_name in (
+        "Resolve sccache eligibility",
+        "Configure AWS credentials for sccache",
+        "Install sccache",
+        "Resolve sccache enablement",
+        "Print sccache stats",
+    ):
+        if named_step_block(job_lines, step_name) is None:
+            errors.append(f"{label} must include step {step_name!r}")
+
+    resolve_block = named_step_block(job_lines, "Resolve sccache eligibility")
+    resolve_text = uncommented_text(resolve_block) if resolve_block is not None else ""
+    for fragment in (
+        "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
+        "BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}",
+        "REGION: ${{ vars.CI_SCCACHE_REGION }}",
+        "PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
+        DEBUG_LANE_SCCACHE_LOCATION_MATCH,
+        'echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"',
+        'echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"',
+    ):
+        if fragment not in resolve_text:
+            errors.append(f"{label} Resolve sccache eligibility must include {fragment!r}")
+    if "AWS_CI_CACHE_ROLE_ARN" in resolve_text:
+        errors.append(f"{label} must use only the PR-readonly sccache role")
+    if require_debug_archive_compile_condition and DEBUG_TEST_SCCACHE_COMPILE_IF not in resolve_text:
+        errors.append(f"{label} sccache must also run for package debug-test compiles")
+
+    aws_block = named_step_block(job_lines, "Configure AWS credentials for sccache")
+    aws_text = uncommented_text(aws_block) if aws_block is not None else ""
+    if "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}" not in aws_text:
+        errors.append(f"{label} Configure AWS credentials for sccache must assume the resolved read-only role")
+
+    install_block = named_step_block(job_lines, "Install sccache")
+    install_text = uncommented_text(install_block) if install_block is not None else ""
+    if "uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696" not in install_text:
+        errors.append(f"{label} must install pinned sccache-action")
+    if 'version: "v0.10.0"' not in install_text:
+        errors.append(f"{label} must pin sccache v0.10.0")
+
+    enable_block = named_step_block(job_lines, "Resolve sccache enablement")
+    enable_text = uncommented_text(enable_block) if enable_block is not None else ""
+    for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
+        if fragment not in enable_text:
+            errors.append(f"{label} Resolve sccache enablement must include {fragment!r}")
+    if require_debug_archive_compile_condition and DEBUG_TEST_SCCACHE_COMPILE_IF not in enable_text:
+        errors.append(f"{label} sccache enablement must also run for package debug-test compiles")
+
+    compile_block = named_step_block(job_lines, compile_step_name)
+    compile_text = uncommented_text(compile_block) if compile_block is not None else ""
+    if DEBUG_LANE_SCCACHE_OPT_IN not in compile_text:
+        errors.append(f"{label} compile step must opt into managed sccache conditionally")
+    stats_block = named_step_block(job_lines, "Print sccache stats")
+    stats_text = uncommented_text(stats_block) if stats_block is not None else ""
+    if '"$SCCACHE_PATH" --show-stats || true' not in stats_text:
+        errors.append(f"{label} must print sccache --show-stats")
+    if "RUSTC_WRAPPER:" in job_text:
+        errors.append(f"{label} must not bypass managed_env with a direct RUSTC_WRAPPER env")
+    return errors
+
+
+def bvs_debug_lane_cache_policy_errors(policy_text: str) -> list[str]:
+    policy_clean = uncommented_text(policy_text.splitlines())
+    required_fragments = (
+        "[remote_compile_cache]",
+        "enabled = true",
+        'enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"',
+        'ci_env = "GITHUB_ACTIONS"',
+        'wrapper_env = "SCCACHE_PATH"',
+        'wrapper_program = "sccache"',
+        "[remote_fast_linker]",
+        'linker_env = "BOLT_RUST_FAST_LINKER"',
+        'programs = ["mold", "lld"]',
+    )
+    return [
+        f"backtesting-vertical-slice rust policy must include {fragment} for flaky smoke cache parity"
+        for fragment in required_fragments
+        if fragment not in policy_clean
+    ]
+
+
+def verify_debug_lane_compile_cache_parity(
+    workflows: dict[str, str],
+    bvs_policy_text: str,
+) -> list[str]:
+    workflow_specs = (
+        (
+            ".github/workflows/debug-test.yml",
+            (
+                ("debug-test", "Run debug test", True, True),
+            ),
+        ),
+        (
+            ".github/workflows/rust-probe.yml",
+            (
+                ("probe-heavy", "Run Rust Probe", True, False),
+                ("probe-light", "Run Rust Probe", True, False),
+            ),
+        ),
+        (
+            ".github/workflows/flaky-test-smoke.yml",
+            (
+                ("flaky-smoke-rust-root", "Run tests", True, False),
+                ("flaky-smoke-rust-backtester", "Run tests", False, False),
+                ("flaky-smoke-rust-backtester-issue-789", "Run tests", False, False),
+            ),
+        ),
+    )
+    errors: list[str] = []
+    for workflow_name, job_specs in workflow_specs:
+        workflow_text = workflows.get(workflow_name)
+        if workflow_text is None:
+            errors.append(f"{workflow_name} must exist for debug-lane sccache parity")
+            continue
+        errors.extend(debug_lane_sccache_workflow_env_errors(workflow_name, workflow_text))
+        jobs = parse_jobs(workflow_text)
+        for job_name, compile_step_name, require_managed_target_dir, require_debug_archive_condition in job_specs:
+            job_lines = jobs.get(job_name)
+            if job_lines is None:
+                errors.append(f"{workflow_name} must define {job_name} for debug-lane sccache parity")
+                continue
+            errors.extend(
+                debug_lane_sccache_job_errors(
+                    workflow_name,
+                    job_name,
+                    job_lines,
+                    compile_step_name=compile_step_name,
+                    require_managed_target_dir=require_managed_target_dir,
+                    require_debug_archive_compile_condition=require_debug_archive_condition,
+                )
+            )
+    errors.extend(bvs_debug_lane_cache_policy_errors(bvs_policy_text))
+    return errors
 
 
 def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]:
@@ -16416,6 +16629,11 @@ def main() -> int:
     workflow_texts = repo_workflow_texts()
     action_text = DEFAULT_SETUP_ACTION.read_text()
     nextest_config_text = DEFAULT_NEXTEST_CONFIG.read_text()
+    bvs_policy_text = (
+        DEFAULT_BVS_RUST_VERIFICATION_POLICY.read_text()
+        if DEFAULT_BVS_RUST_VERIFICATION_POLICY.exists()
+        else ""
+    )
     repo_automation_texts = {
         path.relative_to(REPO_ROOT).as_posix(): path.read_text()
         for path in DEFAULT_REPO_AUTOMATION_FILES
@@ -16442,6 +16660,7 @@ def main() -> int:
             DEFAULT_MERGIFY_CONFIG.read_text() if DEFAULT_MERGIFY_CONFIG.exists() else "",
         )
     )
+    errors.extend(verify_debug_lane_compile_cache_parity(workflow_texts, bvs_policy_text))
     errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
     ci_workflow = workflow_texts.get(".github/workflows/ci.yml")
     if ci_workflow is not None:

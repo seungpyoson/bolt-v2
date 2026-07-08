@@ -35,6 +35,19 @@ break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
 refused_managed_commands = ["test", "clippy", "build"]
 refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 
+[remote_compile_cache]
+enabled = true
+enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+ci_env = "GITHUB_ACTIONS"
+wrapper_env = "SCCACHE_PATH"
+wrapper_program = "sccache"
+
+[remote_fast_linker]
+enabled = true
+ci_env = "GITHUB_ACTIONS"
+linker_env = "BOLT_RUST_FAST_LINKER"
+programs = ["mold", "lld"]
+
 [local_lane_policy]
 enabled = true
 allowed_ci_env = "GITHUB_ACTIONS"

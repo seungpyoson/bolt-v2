@@ -46,6 +46,14 @@ jobs:
       NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
       NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
       NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+      # Read the same warm S3 sccache namespace as full CI. The PR-read-only
+      # role below is the write boundary; debug lanes must not write main cache
+      # objects.
+      SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+      SCCACHE_S3_SERVER_SIDE_ENCRYPTION: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       DEBUG_TEST_FILTER: ${{ inputs.filter }}
       DEBUG_TEST_PACKAGE: ${{ inputs.package || '' }}
     steps:
@@ -69,6 +77,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: debug_test.debug-test
 
       - name: Resolve debug nextest fingerprint
@@ -253,7 +262,7 @@ jobs:
 
       - name: Resolve sccache eligibility
         id: sccache-eligible
-        if: steps.debug-archive-ready.outputs.value != 'true'
+        if: steps.debug-archive-ready.outputs.value != 'true' || inputs.package != ''
         continue-on-error: true
         env:
           PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
@@ -293,7 +302,7 @@ jobs:
 
       - name: Resolve sccache enablement
         id: sccache
-        if: steps.debug-archive-ready.outputs.value != 'true'
+        if: steps.debug-archive-ready.outputs.value != 'true' || inputs.package != ''
         continue-on-error: true
         run: |
           enabled=false

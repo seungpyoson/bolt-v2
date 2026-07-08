@@ -11,11 +11,21 @@ env:
   JUST_VERSION: "1.49.0"
   CARGO_TERM_COLOR: always
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+  # Scheduled smoke runs read the full-CI warm compile cache through the
+  # PR-read-only role. They never write main's sccache prefix.
+  SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+  SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+  SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+  SCCACHE_S3_SERVER_SIDE_ENCRYPTION: "true"
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 jobs:
   flaky-smoke-rust-root:
     name: Root Rust Tests - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +40,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-root
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -54,6 +65,64 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Resolve sccache eligibility
+        id: sccache-eligible
+        continue-on-error: true
+        env:
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+        run: |
+          vars_present=true
+          [[ -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          location_matches=true
+          [[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false
+          if [[ "$vars_present" == "true" && "$location_matches" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only vars_present=$vars_present location_matches=$location_matches"
+
+      - name: Configure AWS credentials for sccache
+        id: sccache-aws
+        if: steps.sccache-eligible.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Install sccache
+        id: sccache-install
+        if: steps.sccache-eligible.outputs.eligible == 'true' && steps.sccache-aws.outcome == 'success'
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.10.0"
+
+      - name: Resolve sccache enablement
+        id: sccache
+        continue-on-error: true
+        run: |
+          enabled=false
+          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
+                && "${{ steps.sccache-aws.outcome }}" == "success" \
+                && "${{ steps.sccache-install.outcome }}" == "success" \
+                && -n "${SCCACHE_PATH:-}" ]]; then
+            if "$SCCACHE_PATH" --start-server; then
+              "$SCCACHE_PATH" --zero-stats || true
+              enabled=true
+            else
+              echo "sccache server failed to start; building without cache"
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "sccache enabled=$enabled"
+
       - name: Configure nextest JUnit output
         run: |
           cp .config/nextest.toml "$RUNNER_TEMP/nextest-junit.toml"
@@ -66,6 +135,8 @@ jobs:
             >> "$RUNNER_TEMP/nextest-junit.toml"
 
       - name: Run tests
+        env:
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           rc=0
           set +e
@@ -73,6 +144,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Print sccache stats
+        if: always() && steps.sccache.outputs.enabled == 'true'
+        run: '"$SCCACHE_PATH" --show-stats || true'
 
       - name: Stage JUnit report
         run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
@@ -90,6 +165,9 @@ jobs:
   flaky-smoke-rust-backtester:
     name: Backtester Rust Tests - Flaky Smoke (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +182,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester
 
       - name: Resolve crate managed target dir
@@ -140,6 +219,64 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Resolve sccache eligibility
+        id: sccache-eligible
+        continue-on-error: true
+        env:
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+        run: |
+          vars_present=true
+          [[ -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          location_matches=true
+          [[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false
+          if [[ "$vars_present" == "true" && "$location_matches" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only vars_present=$vars_present location_matches=$location_matches"
+
+      - name: Configure AWS credentials for sccache
+        id: sccache-aws
+        if: steps.sccache-eligible.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Install sccache
+        id: sccache-install
+        if: steps.sccache-eligible.outputs.eligible == 'true' && steps.sccache-aws.outcome == 'success'
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.10.0"
+
+      - name: Resolve sccache enablement
+        id: sccache
+        continue-on-error: true
+        run: |
+          enabled=false
+          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
+                && "${{ steps.sccache-aws.outcome }}" == "success" \
+                && "${{ steps.sccache-install.outcome }}" == "success" \
+                && -n "${SCCACHE_PATH:-}" ]]; then
+            if "$SCCACHE_PATH" --start-server; then
+              "$SCCACHE_PATH" --zero-stats || true
+              enabled=true
+            else
+              echo "sccache server failed to start; building without cache"
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "sccache enabled=$enabled"
+
       - name: Configure nextest JUnit output
         run: |
           printf '%s\n' \
@@ -150,6 +287,8 @@ jobs:
             > "$RUNNER_TEMP/nextest-junit.toml"
 
       - name: Run tests
+        env:
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           rc=0
           set +e
@@ -157,6 +296,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Print sccache stats
+        if: always() && steps.sccache.outputs.enabled == 'true'
+        run: '"$SCCACHE_PATH" --show-stats || true'
 
       - name: Stage JUnit report
         run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
@@ -174,6 +317,9 @@ jobs:
   flaky-smoke-rust-backtester-issue-789:
     name: Backtester Issue 789 - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -187,6 +333,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester-issue-789
 
       - name: Resolve crate managed target dir
@@ -223,6 +370,64 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Resolve sccache eligibility
+        id: sccache-eligible
+        continue-on-error: true
+        env:
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+        run: |
+          vars_present=true
+          [[ -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          location_matches=true
+          [[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false
+          if [[ "$vars_present" == "true" && "$location_matches" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only vars_present=$vars_present location_matches=$location_matches"
+
+      - name: Configure AWS credentials for sccache
+        id: sccache-aws
+        if: steps.sccache-eligible.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Install sccache
+        id: sccache-install
+        if: steps.sccache-eligible.outputs.eligible == 'true' && steps.sccache-aws.outcome == 'success'
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.10.0"
+
+      - name: Resolve sccache enablement
+        id: sccache
+        continue-on-error: true
+        run: |
+          enabled=false
+          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
+                && "${{ steps.sccache-aws.outcome }}" == "success" \
+                && "${{ steps.sccache-install.outcome }}" == "success" \
+                && -n "${SCCACHE_PATH:-}" ]]; then
+            if "$SCCACHE_PATH" --start-server; then
+              "$SCCACHE_PATH" --zero-stats || true
+              enabled=true
+            else
+              echo "sccache server failed to start; building without cache"
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "sccache enabled=$enabled"
+
       - name: Configure nextest JUnit output
         run: |
           printf '%s\n' \
@@ -233,6 +438,8 @@ jobs:
             > "$RUNNER_TEMP/nextest-junit.toml"
 
       - name: Run tests
+        env:
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           rc=0
           set +e
@@ -240,6 +447,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Print sccache stats
+        if: always() && steps.sccache.outputs.enabled == 'true'
+        run: '"$SCCACHE_PATH" --show-stats || true'
 
       - name: Stage JUnit report
         run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"

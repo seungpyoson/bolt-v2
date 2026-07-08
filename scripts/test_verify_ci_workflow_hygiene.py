@@ -1986,6 +1986,20 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+
+[remote_compile_cache]
+enabled = true
+enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+ci_env = "GITHUB_ACTIONS"
+wrapper_env = "SCCACHE_PATH"
+wrapper_program = "sccache"
+
+[remote_fast_linker]
+enabled = true
+ci_env = "GITHUB_ACTIONS"
+linker_env = "BOLT_RUST_FAST_LINKER"
+programs = ["mold", "lld"]
+
 {LOCAL_LANE_POLICY_TOML}
 """
 
@@ -9107,6 +9121,103 @@ def assert_debug_test_workflow_contract() -> None:
     guard_errors = verifier.verify_debug_test_workflow(workflows, unguarded_justfile)
     if not any("justfile debug-test recipe must fail closed on an empty filter" in error for error in guard_errors):
         raise AssertionError(f"empty debug-test filter guard must be rejected, got: {guard_errors}")
+
+
+def assert_debug_lane_compile_cache_parity_contract() -> None:
+    verifier = load_verifier()
+    workflows = {
+        ".github/workflows/debug-test.yml": repo_workflow_text(".github/workflows/debug-test.yml"),
+        ".github/workflows/rust-probe.yml": repo_workflow_text(".github/workflows/rust-probe.yml"),
+        ".github/workflows/flaky-test-smoke.yml": repo_workflow_text(".github/workflows/flaky-test-smoke.yml"),
+    }
+    bvs_policy = repo_source_text("crates/backtesting-vertical-slice/ci/rust-verification.toml")
+    clean = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
+    if clean:
+        raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {clean}")
+
+    cases = (
+        (
+            "debug-test package compiles must keep sccache active",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    "steps.debug-archive-ready.outputs.value != 'true' || inputs.package != ''",
+                    "steps.debug-archive-ready.outputs.value != 'true'",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "package debug-test compiles",
+        ),
+        (
+            "rust-probe must keep the configured linker",
+            {
+                **workflows,
+                ".github/workflows/rust-probe.yml": workflows[".github/workflows/rust-probe.yml"].replace(
+                    '          install-rust-linker: "true"\n',
+                    "",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "probe-heavy must install configured Rust linker",
+        ),
+        (
+            "rust-probe must use the read-only role",
+            {
+                **workflows,
+                ".github/workflows/rust-probe.yml": workflows[".github/workflows/rust-probe.yml"].replace(
+                    "AWS_CI_CACHE_PR_READONLY_ROLE_ARN",
+                    "AWS_CI_CACHE_ROLE_ARN",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "must use only the PR-readonly sccache role",
+        ),
+        (
+            "flaky smoke must print stats",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    '"$SCCACHE_PATH" --show-stats || true',
+                    "true",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "must print sccache --show-stats",
+        ),
+        (
+            "flaky smoke must opt into the managed wrapper",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+                    'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "compile step must opt into managed sccache conditionally",
+        ),
+        (
+            "BVS policy must activate the remote compile cache",
+            workflows,
+            bvs_policy.replace("[remote_compile_cache]\n", "", 1),
+            "backtesting-vertical-slice rust policy must include [remote_compile_cache]",
+        ),
+        (
+            "BVS policy must activate the remote fast linker",
+            workflows,
+            bvs_policy.replace("[remote_fast_linker]\n", "", 1),
+            "backtesting-vertical-slice rust policy must include [remote_fast_linker]",
+        ),
+    )
+    for label, mutated_workflows, mutated_policy, expected in cases:
+        errors = verifier.verify_debug_lane_compile_cache_parity(mutated_workflows, mutated_policy)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
 
 
 def assert_bootstrap_uses_onepassword_key_generation() -> None:
@@ -19045,6 +19156,7 @@ def main() -> int:
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_debug_test_workflow_contract()
+    assert_debug_lane_compile_cache_parity_contract()
     assert_bootstrap_uses_onepassword_key_generation()
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()

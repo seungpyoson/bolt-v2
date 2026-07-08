@@ -173,14 +173,11 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
         LiveNodeRunStartupOutcome::StartupTimeout {
             timeout_secs,
             node_state,
-            not_connected_clients,
+            client_labels,
         } => {
             assert_eq!(timeout_secs, 1);
             assert_eq!(node_state, "Starting");
-            assert_eq!(
-                not_connected_clients,
-                vec!["data:chainlink_reference".to_string()]
-            );
+            assert_eq!(client_labels, vec!["data:chainlink_reference".to_string()]);
         }
         other => panic!(
             "expected bounded startup timeout after pre-Running capture failure, got {other:?}"

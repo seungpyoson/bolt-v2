@@ -120,15 +120,15 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
             BoltV3LiveNodeError::ConnectTimeout {
                 timeout_secs,
                 node_state,
-                not_connected_clients,
+                client_labels,
             } => {
                 assert_eq!(timeout_secs, 3);
                 assert_eq!(node_state, "Starting");
                 assert!(
-                    not_connected_clients
+                    client_labels
                         .iter()
                         .any(|client| client == "data:chainlink_reference"),
-                    "timeout must name the Chainlink client that never reached Running: {not_connected_clients:?}"
+                    "timeout must name the Chainlink startup client: {client_labels:?}"
                 );
             }
             other => panic!("expected ConnectTimeout for hanging Chainlink boot, got {other}"),

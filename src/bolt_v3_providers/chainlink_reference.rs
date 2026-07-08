@@ -1108,6 +1108,47 @@ fn chainlink_reference_refresh_input_health_report_liveness(
     );
 }
 
+fn chainlink_reference_refresh_input_health_report_liveness_for_instrument(
+    config: &ChainlinkReferencePriceClientConfig,
+    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
+    provider_instrument: &str,
+    received_ts_ms: u64,
+) {
+    let sources =
+        chainlink_reference_input_health_sources_for_report_instrument(config, provider_instrument);
+    chainlink_reference_seed_input_health_report_liveness_for_sources(
+        report_liveness,
+        sources.iter(),
+        received_ts_ms,
+    );
+}
+
+fn chainlink_reference_input_health_sources_for_report_instrument(
+    config: &ChainlinkReferencePriceClientConfig,
+    provider_instrument: &str,
+) -> Vec<BoltV3MissingInputSource> {
+    let mut sources = BTreeMap::new();
+    for source in &config.input_health_sources {
+        if source.provider == REFERENCE_PRICE_PROVIDER_KEY
+            && source.provider_instrument == provider_instrument
+        {
+            let mut recovered = source.clone();
+            recovered.reason = CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED.to_string();
+            sources.insert(
+                (
+                    recovered.strategy_instance_id.clone(),
+                    recovered.source_id.clone(),
+                    recovered.asset.clone(),
+                    recovered.provider.clone(),
+                    recovered.provider_instrument.clone(),
+                ),
+                recovered,
+            );
+        }
+    }
+    sources.into_values().collect()
+}
+
 fn chainlink_reference_stale_input_health_sources(
     config: &ChainlinkReferencePriceClientConfig,
     subscriptions: &Arc<
@@ -1404,9 +1445,21 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
         };
         match frame_updates {
             Ok(frame_updates) => {
-                let updates = frame_updates.updates;
-                if frame_updates.report_observed {
+                let ChainlinkReferenceReportFrameUpdates {
+                    report_observed,
+                    instrument_id,
+                    updates,
+                } = frame_updates;
+                if report_observed {
                     last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
+                    if let Some(recovery) = &input_health_recovery {
+                        chainlink_reference_refresh_input_health_report_liveness_for_instrument(
+                            &recovery.config,
+                            &recovery.input_health_report_liveness,
+                            &instrument_id,
+                            received_ts_ms,
+                        );
+                    }
                 }
                 if !updates.is_empty() {
                     if let Some(recovery) = &input_health_recovery {
@@ -1509,6 +1562,7 @@ fn chainlink_reference_recovered_input_health_sources(
 
 struct ChainlinkReferenceReportFrameUpdates {
     report_observed: bool,
+    instrument_id: String,
     updates: Vec<ReferencePriceUpdate>,
 }
 
@@ -1562,6 +1616,7 @@ fn chainlink_reference_updates_from_report_frame(
         .collect::<Result<Vec<_>, String>>()?;
     Ok(ChainlinkReferenceReportFrameUpdates {
         report_observed: true,
+        instrument_id,
         updates,
     })
 }

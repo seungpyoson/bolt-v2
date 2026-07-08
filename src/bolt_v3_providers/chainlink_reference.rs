@@ -1962,6 +1962,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use futures_util::SinkExt;
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::identifiers::InstrumentId;
     use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -2103,6 +2104,15 @@ mod tests {
             missing_sources.insert(ChainlinkReferenceInputHealthSourceKey::from_source(source));
         }
         Arc::new(Mutex::new(missing_sources))
+    }
+
+    #[derive(Debug)]
+    struct ChainlinkReferenceHandshakeProbe {
+        uri: String,
+        has_authorization: bool,
+        has_authorization_timestamp: bool,
+        has_authorization_signature: bool,
+        has_user_agent: bool,
     }
 
     fn reference_price_update(
@@ -2522,6 +2532,144 @@ mod tests {
             matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
             "unsubscribed report should leave the data channel open and empty, got {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_connect_path_refreshes_source_liveness_before_subscription() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local Chainlink WebSocket fixture should bind");
+        let local_addr = listener
+            .local_addr()
+            .expect("local Chainlink WebSocket fixture should expose its address");
+        let report_frame = chainlink_report_frame_json();
+        let (handshake_sender, handshake_receiver) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("runtime Chainlink client should connect to the local fixture");
+            let mut websocket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      response| {
+                    let headers = request.headers();
+                    let probe = ChainlinkReferenceHandshakeProbe {
+                        uri: request.uri().to_string(),
+                        has_authorization: headers.contains_key("authorization"),
+                        has_authorization_timestamp: headers
+                            .contains_key("x-authorization-timestamp"),
+                        has_authorization_signature: headers
+                            .contains_key("x-authorization-signature-sha256"),
+                        has_user_agent: headers.contains_key("user-agent"),
+                    };
+                    let _ = handshake_sender.send(probe);
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("runtime Chainlink client should complete the WebSocket handshake");
+            websocket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    report_frame.into(),
+                ))
+                .await
+                .expect("local fixture should send a Chainlink report frame");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        });
+
+        let (client, mut data_receiver) = fixture_client();
+        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
+        let btc_key = ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source);
+        let mut config = client.config.clone();
+        config.websocket_endpoint = format!("ws://{local_addr}");
+        config.transport_backend = TransportBackend::Tungstenite;
+        config.idle_timeout_ms = 60_000;
+        config.input_health_sources = vec![btc_source.clone()];
+        let last_report = test_last_report_clock();
+        let report_liveness = Arc::new(Mutex::new(BTreeMap::new()));
+        let missing_sources = Arc::new(Mutex::new(BTreeSet::new()));
+
+        let websocket = chainlink_reference_connect_websocket(
+            &config,
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            Arc::clone(&last_report),
+            Arc::clone(&report_liveness),
+            Arc::clone(&missing_sources),
+        )
+        .await
+        .expect("runtime Chainlink connect path should complete against the local fixture");
+        assert_eq!(websocket.connection_mode(), ConnectionMode::Active);
+        let handshake = handshake_receiver
+            .await
+            .expect("local fixture should capture the Chainlink handshake");
+        assert_eq!(handshake.uri, format!("/api/v1/ws?feedIDs={TEST_FEED_ID}"));
+        assert!(handshake.has_authorization);
+        assert!(handshake.has_authorization_timestamp);
+        assert!(handshake.has_authorization_signature);
+        assert!(handshake.has_user_agent);
+
+        let report_ms = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let report_ms = last_report.load(Ordering::SeqCst);
+                if report_ms > 0 {
+                    break report_ms;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("valid configured report should refresh client-level liveness");
+        {
+            let report_liveness = report_liveness
+                .lock()
+                .expect("report liveness should be available");
+            assert_eq!(
+                report_liveness.get(&btc_key).copied(),
+                Some(report_ms),
+                "valid configured reports must refresh source liveness before NT subscriptions exist"
+            );
+        }
+        let error = data_receiver
+            .try_recv()
+            .expect_err("pre-subscription Chainlink report must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "pre-subscription report should leave the data channel open and empty, got {error:?}"
+        );
+
+        let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
+        let tick = chainlink_reference_liveness_supervisor_tick(
+            ChainlinkReferenceLivenessTickContext {
+                config: &config,
+                subscriptions: &client.subscriptions,
+                input_health_report_liveness: &report_liveness,
+                input_health_missing_sources: &missing_sources,
+                last_report_unix_ms: last_report.as_ref(),
+            },
+            report_ms.saturating_sub(1),
+            &mut supervisor_state,
+            report_ms + 1,
+            Some(ConnectionMode::Active),
+        );
+
+        assert!(!tick.reconnect);
+        assert!(!tick.stream_stale);
+        assert!(!tick.source_stale);
+        assert!(!tick.source_reconnect);
+        assert!(!tick.transport_dead);
+        assert!(
+            missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty()
+        );
+
+        websocket.disconnect().await;
+        server
+            .await
+            .expect("local Chainlink WebSocket fixture should finish cleanly");
     }
 
     #[test]

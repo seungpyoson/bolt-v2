@@ -258,9 +258,6 @@ jobs:
         with:
           active: ${{ (steps.debug-archive-ready.outputs.value != 'true' || inputs.package != '') && 'true' || 'false' }}
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          bucket: ${{ vars.CI_SCCACHE_BUCKET }}
-          region: ${{ vars.CI_SCCACHE_REGION }}
-          key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
 
       - name: Run debug test
         id: run-debug-test
@@ -274,13 +271,13 @@ jobs:
           compile_log="$RUNNER_TEMP/debug-test-compile.log"
           set +e
           if [[ -s "${NEXTEST_ARCHIVE_PATH:-}" && -z "$DEBUG_TEST_PACKAGE" ]]; then
-            BOLT_RUST_VERIFICATION_SCCACHE=0 just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"
+            just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"
             rc="${PIPESTATUS[0]}"
           else
-            bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run
+            bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run
             compile_rc="$?"
             if [[ "$compile_rc" -eq 0 ]]; then
-              BOLT_RUST_VERIFICATION_SCCACHE=0 just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"
+              just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"
               rc="${PIPESTATUS[0]}"
             else
               cat "$compile_log" >> "$log"
@@ -301,3 +298,9 @@ jobs:
             tail -120 "$log"
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}

@@ -971,7 +971,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "5c098b0536ca19fd995b272f4fdd48ef0cffda9e322135dbc184b50a9b1e3a2a"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "c47fdfd180ce4afd9b8b6a0995d0251c3b9d057b4f0bf09fc0475501f5861840"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -1076,11 +1076,10 @@ TEST_ARCHIVE_SCCACHE_OPT_IN = (
 )
 SCCACHE_SETUP_ACTION_PATH = "./.github/actions/sccache-setup"
 SCCACHE_SETUP_ACTION_FILE = ".github/actions/sccache-setup/action.yml"
-SCCACHE_LOCATION_CONFIG_PATH = "ci/sccache-readonly.toml"
+SCCACHE_STATS_ACTION_PATH = "./.github/actions/sccache-stats"
+SCCACHE_STATS_ACTION_FILE = ".github/actions/sccache-stats/action.yml"
+SCCACHE_LOCATION_CONFIG_PATH = "ci/sccache-location.toml"
 SCCACHE_LOCATION_CONFIG_DEFAULT = f"default: {SCCACHE_LOCATION_CONFIG_PATH}"
-SCCACHE_BUCKET_INPUT = "bucket: ${{ vars.CI_SCCACHE_BUCKET }}"
-SCCACHE_REGION_INPUT = "region: ${{ vars.CI_SCCACHE_REGION }}"
-SCCACHE_KEY_PREFIX_INPUT = "key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}"
 SCCACHE_READONLY_ROLE_INPUT = "role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}"
 # Value, not mere presence: the fail-open flag must be literally "1", and the build
 # must retry without sccache on failure, so a future edit cannot silently disable
@@ -1092,10 +1091,6 @@ TEST_ARCHIVE_SCCACHE_RETRY = (
 )
 TEST_ARCHIVE_SCCACHE_ACTIVE_INPUT = "active: ${{ steps.nextest-archive-cache.outputs.cache-hit != 'true' && 'true' || 'false' }}"
 TEST_ARCHIVE_SCCACHE_WRITE_ROLE_INPUT = "write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}"
-TEST_ARCHIVE_SCCACHE_WRITE_ENABLED_INPUT = (
-    "write-enabled: ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') "
-    "|| (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}"
-)
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
@@ -3676,6 +3671,19 @@ def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
         if any(name_re.match(strip_comment(line)) for line in block):
             return block
     return None
+
+
+def step_index(lines: list[str], step_name: str) -> int | None:
+    for index, block in enumerate(step_blocks(lines)):
+        if step_name_matches(block, step_name):
+            return index
+    return None
+
+
+def step_occurs_after(lines: list[str], later_step: str, earlier_step: str) -> bool:
+    later_index = step_index(lines, later_step)
+    earlier_index = step_index(lines, earlier_step)
+    return later_index is not None and earlier_index is not None and later_index > earlier_index
 
 
 def step_name_matches(block: list[str], step_name: str) -> bool:
@@ -11952,10 +11960,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 TEST_ARCHIVE_SCCACHE_ACTIVE_INPUT,
                 SCCACHE_READONLY_ROLE_INPUT,
                 TEST_ARCHIVE_SCCACHE_WRITE_ROLE_INPUT,
-                TEST_ARCHIVE_SCCACHE_WRITE_ENABLED_INPUT,
-                SCCACHE_BUCKET_INPUT,
-                SCCACHE_REGION_INPUT,
-                SCCACHE_KEY_PREFIX_INPUT,
             ):
                 if fragment not in sccache_setup_text:
                     errors.append(f"test-archive sccache setup must include {fragment!r}")
@@ -11971,6 +11975,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append("test-archive sccache must retry the build without sccache on failure (fail-open)")
             if "AWS_CI_CACHE_ROLE_ARN" in sccache_setup_text.replace(TEST_ARCHIVE_SCCACHE_WRITE_ROLE_INPUT, ""):
                 errors.append("test-archive sccache write role must only be passed to the shared sccache action")
+            stats_block = named_step_block(archive_lines, "Print sccache stats")
+            stats_text = uncommented_text(stats_block) if stats_block is not None else ""
+            if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
+                errors.append("test-archive sccache must print stats after the compile step")
+            elif not step_occurs_after(archive_lines, "Print sccache stats", "Build nextest archive"):
+                errors.append("test-archive sccache must print stats after the compile step")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:
@@ -12941,6 +12951,7 @@ BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
         (None, "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"),
         ("Setup environment", "./.github/actions/setup-environment"),
         ("Setup read-only sccache", SCCACHE_SETUP_ACTION_PATH),
+        ("Print sccache stats", SCCACHE_STATS_ACTION_PATH),
         (None, "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4"),
         ("Restore test target cache", "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"),
         ("Install cargo-nextest", "taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538"),
@@ -12986,51 +12997,67 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
         lines = lines[1:]
     if lines and lines[0].startswith('compile_log="$RUNNER_TEMP/'):
         lines = lines[1:]
+    expected_head = ("rc=0", "set +e")
+    if lines[: len(expected_head)] != expected_head:
+        return ()
+    lines = lines[len(expected_head) :]
+
+    run_prefix = (
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
+        '--partition "count:${{ matrix.shard }}/'
+    )
+    run_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
+    run_tee_suffix = f'{run_suffix} 2>&1 | tee -a "$log"'
+
+    def partition_denominator(command: str, prefix: str, suffix: str) -> str | None:
+        if not command.startswith(prefix) or not command.endswith(suffix):
+            return None
+        value = command[len(prefix) : -len(suffix)]
+        if not value or value[0] == "0" or not value.isdecimal():
+            return None
+        return value
+
+    old_execution_tails = (
+        (run_suffix, ("rc=$?", "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"")),
+        (
+            run_tee_suffix,
+            ('rc="${PIPESTATUS[0]}"', "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\""),
+        ),
+    )
+    for command_suffix, tail in old_execution_tails:
+        if len(lines) == 1 + len(tail) and lines[1:] == tail:
+            denominator = partition_denominator(lines[0], run_prefix, command_suffix)
+            return (int(denominator),) if denominator is not None else ()
+
     compile_prefix = (
-        'bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" '
+        'bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log" '
         'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run '
         '--partition "count:${{ matrix.shard }}/'
     )
     compile_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
-    if lines and lines[0].startswith(compile_prefix) and lines[0].endswith(compile_suffix):
-        lines = lines[1:]
-    expected_prefix = ("rc=0", "set +e")
-    expected_suffixes = (
-        (
-            "rc=$?",
-            "set -e",
-            "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
-        ),
-        (
-            'rc="${PIPESTATUS[0]}"',
-            "set -e",
-            "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
-        ),
-    )
-    suffix = next((candidate for candidate in expected_suffixes if lines[-len(candidate) :] == candidate), None)
-    if suffix is None or len(lines) != len(expected_prefix) + 1 + len(suffix):
-        return ()
-    if lines[: len(expected_prefix)] != expected_prefix:
-        return ()
 
-    command_prefixes = (
-        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
-        '--partition "count:${{ matrix.shard }}/',
-        'BOLT_RUST_VERIFICATION_SCCACHE=0 just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
-        '--partition "count:${{ matrix.shard }}/',
+    expected_tail = (
+        'compile_rc="$?"',
+        'if [[ "$compile_rc" -eq 0 ]]; then',
+        None,
+        'rc="${PIPESTATUS[0]}"',
+        "else",
+        'cat "$compile_log" >> "$log"',
+        'rc="$compile_rc"',
+        "fi",
+        "set -e",
+        "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
     )
-    command_suffixes = (
-        '" -- --skip issue_789_first_real_free_data_taker_pl',
-        '" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
-    )
-    command = lines[len(expected_prefix)]
-    command_prefix = next((prefix for prefix in command_prefixes if command.startswith(prefix)), None)
-    command_suffix = next((suffix for suffix in command_suffixes if command.endswith(suffix)), None)
-    if command_prefix is None or command_suffix is None:
+    if len(lines) != 1 + len(expected_tail):
         return ()
-
-    denominator = command[len(command_prefix) : -len(command_suffix)]
-    if not denominator or denominator[0] == "0" or not denominator.isdecimal():
+    compile_command = lines[0]
+    command = lines[3]
+    actual_tail = (*lines[1:3], None, *lines[4:])
+    if actual_tail != expected_tail:
+        return ()
+    compile_denominator = partition_denominator(compile_command, compile_prefix, compile_suffix)
+    denominator = partition_denominator(command, run_prefix, run_tee_suffix)
+    if compile_denominator is None or denominator is None or compile_denominator != denominator:
         return ()
     return (int(denominator),)
 
@@ -13239,7 +13266,8 @@ DEBUG_LANE_SCCACHE_OPT_IN = "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.o
 DEBUG_TEST_SCCACHE_ACTIVE_INPUT = (
     "active: ${{ (steps.debug-archive-ready.outputs.value != 'true' || inputs.package != '') && 'true' || 'false' }}"
 )
-DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh --on any"
+DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh --on cache-error"
+ANY_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh --on"
 
 
 def debug_lane_sccache_workflow_env_errors(workflow_name: str, workflow_text: str) -> list[str]:
@@ -13262,30 +13290,78 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     errors: list[str] = []
     if not action_text:
         return [f"{SCCACHE_SETUP_ACTION_FILE} must exist as the single sccache setup owner"]
+    action_lines = action_text.splitlines()
+    eligibility_block = named_step_block(action_lines, "Resolve sccache eligibility")
+    eligibility_text = uncommented_text(eligibility_block) if eligibility_block is not None else ""
+    aws_block = named_step_block(action_lines, "Configure AWS credentials for sccache")
+    aws_text = uncommented_text(aws_block) if aws_block is not None else ""
+    install_block = named_step_block(action_lines, "Install sccache")
+    install_text = uncommented_text(install_block) if install_block is not None else ""
+    enable_block = named_step_block(action_lines, "Resolve sccache enablement")
+    enable_text = uncommented_text(enable_block) if enable_block is not None else ""
+    summary_block = named_step_block(action_lines, "Summarize sccache state")
+    summary_text = uncommented_text(summary_block) if summary_block is not None else ""
+
+    for block, text, step_name in (
+        (eligibility_block, eligibility_text, "Resolve sccache eligibility"),
+        (aws_block, aws_text, "Configure AWS credentials for sccache"),
+        (install_block, install_text, "Install sccache"),
+        (enable_block, enable_text, "Resolve sccache enablement"),
+    ):
+        if block is None:
+            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include step {step_name!r}")
+        elif "continue-on-error: true" not in text:
+            errors.append(f"{step_name} must be continue-on-error")
+
+    action_clean = uncommented_text(action_lines)
+    if SCCACHE_LOCATION_CONFIG_DEFAULT not in action_clean:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must default to {SCCACHE_LOCATION_CONFIG_PATH}")
     for fragment in (
-        SCCACHE_LOCATION_CONFIG_DEFAULT,
         "tomllib.loads",
         "CONFIG_PATH: ${{ inputs.config-path }}",
-        "role-to-assume: ${{ steps.eligibility.outputs.role_arn }}",
-        "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
-        "uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696",
-        'version: "v0.10.0"',
         "SCCACHE_BUCKET=",
         "SCCACHE_REGION=",
         "SCCACHE_S3_KEY_PREFIX=",
         "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
         "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
-        '"$SCCACHE_PATH" --start-server',
-        '"$SCCACHE_PATH" --zero-stats || true',
-        "if: always()",
-        "sccache cache:",
-        "$GITHUB_STEP_SUMMARY",
-        '"$SCCACHE_PATH" --show-stats || true',
     ):
-        if fragment not in action_text:
+        if fragment not in eligibility_text:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
-    if action_text.count("continue-on-error: true") < 2:
-        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must keep AWS credential and sccache install steps fail-open")
+    if "python3.12 - <<'PY'" not in eligibility_text:
+        errors.append("Resolve sccache eligibility must run under python3.12")
+    for fragment in (
+        'event_name == "push" and github_ref == "refs/heads/main"',
+        'event_name == "workflow_dispatch" and github_ref == "refs/heads/main"',
+        'read_allowed = event_name in {"pull_request", "merge_group", "workflow_dispatch", "schedule"}',
+    ):
+        if fragment not in eligibility_text:
+            errors.append("sccache setup action must gate write access to main push/workflow_dispatch inside the action")
+    if "role-to-assume: ${{ steps.eligibility.outputs.role_arn }}" not in aws_text:
+        errors.append("Configure AWS credentials for sccache must assume the action-selected role")
+    if "aws-region: ${{ steps.eligibility.outputs.region }}" not in aws_text:
+        errors.append("Configure AWS credentials for sccache must use the TOML-selected region")
+    if "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b" not in aws_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned aws credentials action")
+    if "uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696" not in install_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned sccache action")
+    if 'version: "v0.10.0"' not in install_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pin sccache v0.10.0")
+    for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
+        if fragment not in enable_text:
+            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
+    if "if: always()" not in enable_text:
+        errors.append("Resolve sccache enablement must run under always()")
+    if (
+        "if: always()" not in summary_text
+        or "sccache cache:" not in summary_text
+        or "$GITHUB_STEP_SUMMARY" not in summary_text
+        or "SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}" not in summary_text
+    ):
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must summarize sccache state under always()")
+    if '"$SCCACHE_PATH" --show-stats || true' in action_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must not print stats before the compile step")
+    if "write-enabled:" in action_text or "WRITE_ENABLED" in action_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must not expose a caller-owned write-enabled path")
     if "bolt-v2-ci-cache-675819144420-us-east-2" in action_text or "sccache/bolt-v2/arm64/root-nextest/" in action_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must read the sccache location from {SCCACHE_LOCATION_CONFIG_PATH}")
     try:
@@ -13297,14 +13373,25 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     if not isinstance(location, dict):
         errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must define [location]")
         return errors
-    expected_location = {
-        "bucket": "bolt-v2-ci-cache-675819144420-us-east-2",
-        "region": "us-east-2",
-        "key_prefix": "sccache/bolt-v2/arm64/root-nextest/",
-    }
-    for key, expected in expected_location.items():
-        if location.get(key) != expected:
-            errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must set location.{key}={expected!r}")
+    for key in ("bucket", "region"):
+        if not isinstance(location.get(key), str) or not location.get(key):
+            errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must set location.{key} to a non-empty string")
+    key_prefix = location.get("key_prefix")
+    if not isinstance(key_prefix, str) or not key_prefix or not key_prefix.endswith("/"):
+        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must set location.key_prefix must be a non-empty string ending in '/'")
+    return errors
+
+
+def sccache_stats_action_contract_errors(action_text: str) -> list[str]:
+    errors: list[str] = []
+    if not action_text:
+        return [f"{SCCACHE_STATS_ACTION_FILE} must exist as the single sccache stats owner"]
+    action_clean = uncommented_text(action_text.splitlines())
+    for fragment in ('if [[ "$SCCACHE_ENABLED" == "true" && -n "${SCCACHE_PATH:-}" ]]; then', '"$SCCACHE_PATH" --show-stats || true'):
+        if fragment not in action_clean:
+            errors.append(f"{SCCACHE_STATS_ACTION_FILE} must include {fragment!r}")
+    if "SCCACHE_ENABLED: ${{ inputs.enabled }}" not in action_clean:
+        errors.append(f"{SCCACHE_STATS_ACTION_FILE} must be gated by the caller's enabled input")
     return errors
 
 
@@ -13343,13 +13430,17 @@ def debug_lane_sccache_job_errors(
         "id: sccache",
         f"uses: {SCCACHE_SETUP_ACTION_PATH}",
         SCCACHE_READONLY_ROLE_INPUT,
-        SCCACHE_BUCKET_INPUT,
-        SCCACHE_REGION_INPUT,
-        SCCACHE_KEY_PREFIX_INPUT,
     ):
         if fragment not in setup_text:
             errors.append(f"{label} must route read-only sccache through the shared sccache action with {fragment!r}")
-    if "AWS_CI_CACHE_ROLE_ARN" in setup_text or "write-role-arn:" in setup_text or "write-enabled:" in setup_text:
+    if (
+        "AWS_CI_CACHE_ROLE_ARN" in setup_text
+        or "write-role-arn:" in setup_text
+        or "write-enabled:" in setup_text
+        or "bucket:" in setup_text
+        or "region:" in setup_text
+        or "key-prefix:" in setup_text
+    ):
         errors.append(f"{label} must use only the PR-readonly sccache role")
     if require_debug_archive_compile_condition and DEBUG_TEST_SCCACHE_ACTIVE_INPUT not in setup_text:
         errors.append(f"{label} sccache must also run for package debug-test compiles")
@@ -13374,24 +13465,28 @@ def debug_lane_sccache_job_errors(
         if any("--no-run" not in line for line in real_helper_lines):
             errors.append(f"{label} compile preflight must use --no-run")
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just test ", "just bte-test "))
-        if any(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
+        if any(ANY_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
             errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
-        if any(not line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
-            errors.append(f"{label} test execution must disable sccache after compile preflight")
     if workflow_name.endswith("debug-test.yml"):
         if not any("just debug-test" in line and "--no-run" in line for line in real_helper_lines):
             errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just debug-test",))
-        if any(not line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
-            errors.append(f"{label} test execution must disable sccache after compile preflight")
+        if any(ANY_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
+            errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
     if workflow_name.endswith("rust-probe.yml"):
         split_fragments = (
-            'RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh',
-            "BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh",
+            'RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh',
+            "bash .github/scripts/run-rust-probe.sh",
             'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh',
         )
         if not all(fragment in compile_lines for fragment in split_fragments):
-            errors.append(f"{label} Rust Probe test modes must compile with fail-open before unwrapped execution with sccache disabled")
+            errors.append(f"{label} Rust Probe test modes must compile with fail-open before unwrapped execution")
+    stats_block = named_step_block(job_lines, "Print sccache stats")
+    stats_text = uncommented_text(stats_block) if stats_block is not None else ""
+    if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
+        errors.append(f"{label} must print sccache stats after compile")
+    elif not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
+        errors.append(f"{label} must print sccache stats after compile")
     if "RUSTC_WRAPPER:" in job_text:
         errors.append(f"{label} must not bypass managed_env with a direct RUSTC_WRAPPER env")
     return errors
@@ -13471,6 +13566,7 @@ def verify_debug_lane_compile_cache_parity(
             repo_text_or_empty(SCCACHE_LOCATION_CONFIG_PATH),
         )
     )
+    errors.extend(sccache_stats_action_contract_errors(repo_text_or_empty(SCCACHE_STATS_ACTION_FILE)))
     for workflow_name, job_specs in workflow_specs:
         workflow_text = workflows.get(workflow_name)
         if workflow_text is None:

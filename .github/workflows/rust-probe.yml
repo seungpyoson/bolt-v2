@@ -127,9 +127,6 @@ jobs:
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          bucket: ${{ vars.CI_SCCACHE_BUCKET }}
-          region: ${{ vars.CI_SCCACHE_REGION }}
-          key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
 
       - name: Run Rust Probe
         shell: bash
@@ -143,13 +140,19 @@ jobs:
         run: |
           case "$RUST_PROBE_MODE" in
             nextest-test-target|nextest-test-target-name)
-              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
-              BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh
+              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
+              bash .github/scripts/run-rust-probe.sh
               ;;
             *)
               bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
               ;;
           esac
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   probe-light:
     name: probe-light
@@ -188,9 +191,6 @@ jobs:
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          bucket: ${{ vars.CI_SCCACHE_BUCKET }}
-          region: ${{ vars.CI_SCCACHE_REGION }}
-          key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
 
       - name: Run Rust Probe
         shell: bash
@@ -204,10 +204,16 @@ jobs:
         run: |
           case "$RUST_PROBE_MODE" in
             nextest-test-target|nextest-test-target-name)
-              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
-              BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh
+              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
+              bash .github/scripts/run-rust-probe.sh
               ;;
             *)
               bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
               ;;
           esac
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}

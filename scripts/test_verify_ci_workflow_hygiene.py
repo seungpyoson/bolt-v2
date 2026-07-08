@@ -4698,10 +4698,6 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
         "uses: ./.github/actions/sccache-setup",
         "role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
         "write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}",
-        "write-enabled: ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}",
-        "bucket: ${{ vars.CI_SCCACHE_BUCKET }}",
-        "region: ${{ vars.CI_SCCACHE_REGION }}",
-        "key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
     ]
     for fragment in required_pr_read_fragments:
         if fragment not in workflow:
@@ -4733,7 +4729,11 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
         ),
         (
             "test-archive sccache setup must include",
-            replace_once(workflow, "          key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}\n", ""),
+            replace_once(
+                workflow,
+                "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+                "",
+            ),
         ),
         (
             # Dropping the without-sccache retry removes the only cover for a
@@ -4746,11 +4746,15 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
+            "test-archive sccache must print stats after the compile step",
+            workflow.replace("      - name: Print sccache stats\n", "      - name: Print early sccache stats\n", 1),
+        ),
+        (
             "test-archive sccache setup must include",
             replace_once(
                 workflow,
-                "          write-enabled: ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}\n",
-                "          write-enabled: true\n",
+                "          active: ${{ steps.nextest-archive-cache.outputs.cache-hit != 'true' && 'true' || 'false' }}\n",
+                "",
             ),
         ),
         (
@@ -9046,9 +9050,13 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     bvs_policy = repo_source_text("crates/backtesting-vertical-slice/ci/rust-verification.toml")
     if not (REPO_ROOT / ".github" / "actions" / "sccache-setup" / "action.yml").exists():
         raise AssertionError("debug lanes must route sccache setup through the shared sccache action")
+    if not (REPO_ROOT / ".github" / "actions" / "sccache-stats" / "action.yml").exists():
+        raise AssertionError("debug lanes must route post-compile stats through the shared sccache stats action")
     for workflow_name, workflow_text in workflows.items():
         if "uses: ./.github/actions/sccache-setup" not in workflow_text:
             raise AssertionError(f"{workflow_name} must use the shared sccache setup action")
+        if "uses: ./.github/actions/sccache-stats" not in workflow_text:
+            raise AssertionError(f"{workflow_name} must use the shared sccache stats action after compile")
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
@@ -9137,7 +9145,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    "bash .github/scripts/sccache-fail-open.sh --on any",
+                    "bash .github/scripts/sccache-fail-open.sh --on cache-error",
                     "bash .github/scripts/no-sccache-fail-open.sh",
                     1,
                 ),
@@ -9150,8 +9158,8 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    'bash .github/scripts/sccache-fail-open.sh --on any "$compile_log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
-                    'echo bash .github/scripts/sccache-fail-open.sh --on any "$compile_log"; just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
+                    'bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
+                    'echo bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log"; just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
                     1,
                 ),
             },
@@ -9185,44 +9193,44 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile preflight must use --no-run",
         ),
         (
-            "debug test execution must keep sccache disabled after preflight",
+            "debug test execution must not retry test execution",
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    "BOLT_RUST_VERIFICATION_SCCACHE=0 just debug-test",
-                    "just debug-test",
+                    'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    'bash .github/scripts/sccache-fail-open.sh --on any "$log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
                     1,
                 ),
             },
             bvs_policy,
-            "test execution must disable sccache after compile preflight",
+            "test execution must not be wrapped in sccache fail-open",
         ),
         (
             "rust-probe test modes must split compile from execution",
             {
                 **workflows,
                 ".github/workflows/rust-probe.yml": workflows[".github/workflows/rust-probe.yml"].replace(
-                    "RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on any \"$RUNNER_TEMP/rust-probe-compile.log\" bash .github/scripts/run-rust-probe.sh\n"
-                    "              BOLT_RUST_VERIFICATION_SCCACHE=0 bash .github/scripts/run-rust-probe.sh",
+                    "RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error \"$RUNNER_TEMP/rust-probe-compile.log\" bash .github/scripts/run-rust-probe.sh\n"
+                    "              bash .github/scripts/run-rust-probe.sh",
                     "bash .github/scripts/sccache-fail-open.sh --on any \"$RUNNER_TEMP/rust-probe.log\" bash .github/scripts/run-rust-probe.sh",
                     1,
                 ),
             },
             bvs_policy,
-            "Rust Probe test modes must compile with fail-open before unwrapped execution with sccache disabled",
+            "Rust Probe test modes must compile with fail-open before unwrapped execution",
         ),
         (
-            "flaky smoke execution must keep sccache disabled after preflight",
+            "flaky smoke execution must not retry test execution",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
-                    "BOLT_RUST_VERIFICATION_SCCACHE=0 just test",
-                    "just test",
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast',
+                    'bash .github/scripts/sccache-fail-open.sh --on any "$log" just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast',
                     1,
                 ),
             },
             bvs_policy,
-            "test execution must disable sccache after compile preflight",
+            "test execution must not be wrapped in sccache fail-open",
         ),
         (
             "BVS policy must activate the remote compile cache",
@@ -9272,25 +9280,38 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
 
     action_text = repo_source_text(".github/actions/sccache-setup/action.yml")
-    config_text = repo_source_text("ci/sccache-readonly.toml")
+    stats_action_text = repo_source_text(".github/actions/sccache-stats/action.yml")
+    config_text = repo_source_text("ci/sccache-location.toml")
     action_cases = (
         (
-            "shared action must keep AWS/install setup fail-open",
+            "shared action must keep eligibility setup fail-open",
             action_text.replace("      continue-on-error: true\n", "", 1),
             config_text,
-            "must keep AWS credential and sccache install steps fail-open",
+            "Resolve sccache eligibility must be continue-on-error",
+        ),
+        (
+            "shared action must use repo-pinned Python",
+            action_text.replace("python3.12 - <<'PY'", "python3 - <<'PY'", 1),
+            config_text,
+            "Resolve sccache eligibility must run under python3.12",
+        ),
+        (
+            "shared action must keep enablement fail-open",
+            action_text.replace("      id: enable\n      continue-on-error: true\n", "      id: enable\n", 1),
+            config_text,
+            "Resolve sccache enablement must be continue-on-error",
         ),
         (
             "shared action must summarize cache state",
             action_text.replace("        echo \"sccache cache:", "        echo \"cache:", 1),
             config_text,
-            "must include 'sccache cache:'",
+            "must summarize sccache state under always()",
         ),
         (
-            "shared action must print stats",
-            action_text.replace('"$SCCACHE_PATH" --show-stats || true', "true", 1),
+            "shared action must own trusted write policy",
+            action_text.replace('event_name == "push" and github_ref == "refs/heads/main"', 'event_name == "push"', 1),
             config_text,
-            "must include '\"$SCCACHE_PATH\" --show-stats || true'",
+            "must gate write access to main push/workflow_dispatch inside the action",
         ),
         (
             "shared action must set sccache ignore I/O",
@@ -9301,24 +9322,42 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         (
             "sccache location config owns the prefix",
             action_text,
-            config_text.replace('key_prefix = "sccache/bolt-v2/arm64/root-nextest/"', 'key_prefix = "other/"', 1),
-            "location.key_prefix='sccache/bolt-v2/arm64/root-nextest/'",
+            config_text.replace('key_prefix = "sccache/bolt-v2/arm64/root-nextest/"', 'key_prefix = ""', 1),
+            "location.key_prefix must be a non-empty string ending in '/'",
         ),
     )
     for label, mutated_action, mutated_config, expected in action_cases:
         errors = verifier.sccache_setup_action_contract_errors(mutated_action, mutated_config)
         if not any(expected in error for error in errors):
             raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
+    stats_cases = (
+        (
+            "stats action must show stats",
+            stats_action_text.replace('"$SCCACHE_PATH" --show-stats || true', "true", 1),
+            "must include '\"$SCCACHE_PATH\" --show-stats || true'",
+        ),
+        (
+            "stats action must be gated by enabled input",
+            stats_action_text.replace('SCCACHE_ENABLED: ${{ inputs.enabled }}', 'SCCACHE_ENABLED: "true"', 1),
+            "must be gated by the caller's enabled input",
+        ),
+    )
+    for label, mutated_action, expected in stats_cases:
+        errors = verifier.sccache_stats_action_contract_errors(mutated_action)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
 
 
 def assert_cache_docs_cover_debug_schedule_consumers() -> None:
     text = repo_source_text("docs/ci/nextest-artifact-cache.md")
-    sccache_config = REPO_ROOT / "ci" / "sccache-readonly.toml"
+    sccache_config = REPO_ROOT / "ci" / "sccache-location.toml"
     if not sccache_config.exists():
-        raise AssertionError("ci/sccache-readonly.toml must own the shared sccache location contract")
+        raise AssertionError("ci/sccache-location.toml must own the shared sccache location contract")
     required_fragments = (
-        "ci/sccache-readonly.toml",
-        "CI_SCCACHE_S3_KEY_PREFIX",
+        "ci/sccache-location.toml",
+        "key_prefix",
+        "CI test-archive",
+        "workflow_dispatch",
         "nextest-archive restores",
         "sccache read-only access",
         "Rust Probe",
@@ -9373,6 +9412,17 @@ def assert_sccache_fail_open_helper_contract() -> None:
                     fi
                     exit 88
                     ;;
+                  sccache-infra)
+                    if [[ "$count" -eq 1 ]]; then
+                      echo "sccache: server connection failed" >&2
+                      exit 86
+                    fi
+                    if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
+                      echo "retry did not disable sccache" >&2
+                      exit 87
+                    fi
+                    exit 0
+                    ;;
                   real-test-failure)
                     echo "test failed without cache marker" >&2
                     exit 42
@@ -9396,9 +9446,9 @@ def assert_sccache_fail_open_helper_contract() -> None:
         )
         fake_command.chmod(0o755)
 
-        def run_case(*, mode: str, sccache: str) -> tuple[int, int]:
+        def run_case(*, mode: str, sccache: str, retry_on: str = "any") -> tuple[int, int]:
             counter.unlink(missing_ok=True)
-            log = root / f"{mode}-{sccache}.log"
+            log = root / f"{mode}-{sccache}-{retry_on}.log"
             env = {
                 **os.environ,
                 "COUNT_FILE": str(counter),
@@ -9406,7 +9456,7 @@ def assert_sccache_fail_open_helper_contract() -> None:
                 "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
             }
             result = subprocess.run(
-                ["bash", str(helper), "--on", "any", str(log), str(fake_command)],
+                ["bash", str(helper), "--on", retry_on, str(log), str(fake_command)],
                 cwd=root,
                 env=env,
                 check=False,
@@ -9424,6 +9474,12 @@ def assert_sccache_fail_open_helper_contract() -> None:
             raise AssertionError("helper any-mode must own compile-only retry semantics")
         if run_case(mode="real-test-failure-mentions-sccache", sccache="1") != (44, 2):
             raise AssertionError("helper any-mode must not inspect broad log markers")
+        if run_case(mode="real-test-failure", sccache="1", retry_on="cache-error") != (42, 1):
+            raise AssertionError("helper cache-error mode must not retry ordinary compile failures")
+        if run_case(mode="real-test-failure-mentions-sccache", sccache="1", retry_on="cache-error") != (44, 1):
+            raise AssertionError("helper cache-error mode must not retry broad sccache mentions")
+        if run_case(mode="sccache-infra", sccache="1", retry_on="cache-error") != (0, 2):
+            raise AssertionError("helper cache-error mode must retry explicit sccache infrastructure failures")
         if run_case(mode="no-cache", sccache="0") != (43, 1):
             raise AssertionError("disabled sccache must not retry")
 
@@ -13134,9 +13190,12 @@ def run_verifier_main_with_no_mistakes(
         sccache_action_path = tmp_path / ".github" / "actions" / "sccache-setup" / "action.yml"
         sccache_action_path.parent.mkdir(parents=True)
         sccache_action_path.write_text(repo_source_text(".github/actions/sccache-setup/action.yml"))
-        sccache_config_path = tmp_path / "ci" / "sccache-readonly.toml"
+        sccache_stats_action_path = tmp_path / ".github" / "actions" / "sccache-stats" / "action.yml"
+        sccache_stats_action_path.parent.mkdir(parents=True)
+        sccache_stats_action_path.write_text(repo_source_text(".github/actions/sccache-stats/action.yml"))
+        sccache_config_path = tmp_path / "ci" / "sccache-location.toml"
         sccache_config_path.parent.mkdir(parents=True, exist_ok=True)
-        sccache_config_path.write_text(repo_source_text("ci/sccache-readonly.toml"))
+        sccache_config_path.write_text(repo_source_text("ci/sccache-location.toml"))
 
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
@@ -16546,6 +16605,8 @@ def assert_github_scripts_are_repo_automation_fenced() -> None:
         raise AssertionError("ci-lint-workflow must scan .github/scripts/*.sh")
     if ".github/actions/sccache-setup/action.yml" not in justfile:
         raise AssertionError("ci-lint-workflow must scan the shared sccache setup action")
+    if ".github/actions/sccache-stats/action.yml" not in justfile:
+        raise AssertionError("ci-lint-workflow must scan the shared sccache stats action")
 
     raw_cargo_message = "repo automation raw Cargo must use managed rust_verification wrapper"
     probe_script = (REPO_ROOT / ".github" / "scripts" / "run-rust-probe.sh").read_text(encoding="utf-8")

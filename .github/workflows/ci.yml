@@ -1165,10 +1165,6 @@ jobs:
           active: ${{ steps.nextest-archive-cache.outputs.cache-hit != 'true' && 'true' || 'false' }}
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
           write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
-          write-enabled: ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
-          bucket: ${{ vars.CI_SCCACHE_BUCKET }}
-          region: ${{ vars.CI_SCCACHE_REGION }}
-          key-prefix: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
 
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
@@ -1183,6 +1179,12 @@ jobs:
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" just test-archive "$NEXTEST_ARCHIVE_PATH"
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Save nextest archive to S3
         id: nextest-archive-cache-save

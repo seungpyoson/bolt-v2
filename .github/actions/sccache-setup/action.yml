@@ -14,26 +14,10 @@ inputs:
     description: Read/write AWS role ARN for trusted sccache writers.
     required: false
     default: ""
-  write-enabled:
-    description: Whether to use the trusted read/write role.
-    required: false
-    default: "false"
-  bucket:
-    description: Runtime SCCACHE_BUCKET value from repository variables.
-    required: false
-    default: ""
-  region:
-    description: Runtime SCCACHE_REGION value from repository variables.
-    required: false
-    default: ""
-  key-prefix:
-    description: Runtime SCCACHE_S3_KEY_PREFIX value from repository variables.
-    required: false
-    default: ""
   config-path:
     description: Repository TOML file that owns the expected sccache location.
     required: false
-    default: ci/sccache-readonly.toml
+    default: ci/sccache-location.toml
 
 outputs:
   enabled:
@@ -51,18 +35,15 @@ runs:
   steps:
     - name: Resolve sccache eligibility
       id: eligibility
+      continue-on-error: true
       shell: bash
       env:
         SCCACHE_ACTIVE: ${{ inputs.active }}
         READ_ROLE_ARN: ${{ inputs.role-arn }}
         WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}
-        WRITE_ENABLED: ${{ inputs.write-enabled }}
-        BUCKET: ${{ inputs.bucket }}
-        REGION: ${{ inputs.region }}
-        PREFIX: ${{ inputs.key-prefix }}
         CONFIG_PATH: ${{ inputs.config-path }}
       run: |
-        python3 - <<'PY'
+        python3.12 - <<'PY'
         import os
         import pathlib
         import tomllib
@@ -83,41 +64,64 @@ runs:
 
         location = config.get("location") if isinstance(config, dict) else None
         expected = location if isinstance(location, dict) else {}
+
+        def location_value(key: str) -> str:
+            value = expected.get(key)
+            if not isinstance(value, str) or not value:
+                return ""
+            if "\n" in value or "\r" in value:
+                return ""
+            return value
+
         active = os.environ.get("SCCACHE_ACTIVE") == "true"
-        write_enabled = os.environ.get("WRITE_ENABLED") == "true"
+        event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+        github_ref = os.environ.get("GITHUB_REF", "")
+        write_requested = bool(os.environ.get("WRITE_ROLE_ARN", ""))
+        trusted_write = write_requested and (
+            (event_name == "push" and github_ref == "refs/heads/main")
+            or (event_name == "workflow_dispatch" and github_ref == "refs/heads/main")
+        )
+        read_allowed = event_name in {"pull_request", "merge_group", "workflow_dispatch", "schedule"}
         read_role_arn = os.environ.get("READ_ROLE_ARN", "")
         write_role_arn = os.environ.get("WRITE_ROLE_ARN", "")
-        role_arn = write_role_arn if write_enabled else read_role_arn
-        cache_mode = "read_write" if write_enabled else "read_only"
-        bucket = os.environ.get("BUCKET", "")
-        region = os.environ.get("REGION", "")
-        prefix = os.environ.get("PREFIX", "")
+        if trusted_write:
+            role_arn = write_role_arn
+            cache_mode = "read_write"
+        elif read_allowed:
+            role_arn = read_role_arn
+            cache_mode = "read_only"
+        else:
+            role_arn = ""
+            cache_mode = "none"
+        bucket = location_value("bucket")
+        region = location_value("region")
+        prefix = location_value("key_prefix")
         vars_present = all((role_arn, bucket, region, prefix))
-        location_matches = (
-            bucket == expected.get("bucket")
-            and region == expected.get("region")
-            and prefix == expected.get("key_prefix")
-        )
-        eligible = active and vars_present and location_matches
+        location_valid = bool(bucket and region and prefix.endswith("/"))
+        eligible = active and vars_present and location_valid
 
         output_path = os.environ["GITHUB_OUTPUT"]
         write_line(output_path, f"eligible={str(eligible).lower()}")
         write_line(output_path, f"role_arn={role_arn}")
+        write_line(output_path, f"region={region}")
         write_line(output_path, f"cache_mode={cache_mode}")
 
-        env_path = os.environ["GITHUB_ENV"]
-        write_line(env_path, f"SCCACHE_BUCKET={bucket}")
-        write_line(env_path, f"SCCACHE_REGION={region}")
-        write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={prefix}")
-        write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
-        write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
+        if eligible:
+            env_path = os.environ["GITHUB_ENV"]
+            write_line(env_path, f"SCCACHE_BUCKET={bucket}")
+            write_line(env_path, f"SCCACHE_REGION={region}")
+            write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={prefix}")
+            write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
+            write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
 
         print(
             "sccache cache "
             f"active={str(active).lower()} "
+            f"event={event_name} "
+            f"ref={github_ref} "
             f"cache_mode={cache_mode} "
             f"vars_present={str(vars_present).lower()} "
-            f"location_matches={str(location_matches).lower()}"
+            f"location_valid={str(location_valid).lower()}"
         )
         PY
 
@@ -128,7 +132,7 @@ runs:
       uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
       with:
         role-to-assume: ${{ steps.eligibility.outputs.role_arn }}
-        aws-region: ${{ inputs.region }}
+        aws-region: ${{ steps.eligibility.outputs.region }}
 
     - name: Install sccache
       id: install
@@ -140,6 +144,7 @@ runs:
 
     - name: Resolve sccache enablement
       id: enable
+      continue-on-error: true
       if: always()
       shell: bash
       run: |
@@ -167,14 +172,9 @@ runs:
         SCCACHE_ENABLED: ${{ steps.enable.outputs.enabled || 'false' }}
         SCCACHE_AWS_OUTCOME: ${{ steps.aws.outcome || 'skipped' }}
         SCCACHE_INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
-        SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'read_only' }}
+        SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}
       run: |
         echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
         if [[ "$SCCACHE_ENABLED" != "true" ]]; then
           echo "::notice::sccache cache disabled; compiling without remote cache"
         fi
-
-    - name: Print sccache stats
-      if: always() && steps.enable.outputs.enabled == 'true'
-      shell: bash
-      run: '"$SCCACHE_PATH" --show-stats || true'

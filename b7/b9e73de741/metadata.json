@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "b7b9e73de741",
+  "strategy": "manual-commit",
+  "branch": "chore/mergify-batch-bisection",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "tests/bolt_v3_live_node_startup_boot.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b7/b9e73de741/0/metadata.json",
+      "transcript": "/b7/b9e73de741/0/full.jsonl",
+      "compact_transcript": "/b7/b9e73de741/0/transcript.jsonl",
+      "content_hash": "/b7/b9e73de741/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}

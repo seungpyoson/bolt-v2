@@ -12,6 +12,8 @@ import re
 import sys
 from pathlib import Path
 
+from verifier_io import require_nonempty, require_text_file
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -53,18 +55,30 @@ def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
-def main() -> int:
+def collect_findings(root: Path) -> list[str]:
     findings: list[str] = []
+    targets: list[tuple[str, list[str], str]] = []
     for rel, patterns in CHECKS:
-        path = REPO_ROOT / rel
-        text = path.read_text(encoding="utf-8")
+        text = require_text_file(root, Path(rel), findings)
+        if text is not None:
+            targets.append((rel, patterns, text))
+    if findings:
+        return findings
+    if not require_nonempty(targets, "Bolt-v3 core boundary target files", findings):
+        return findings
+
+    for rel, patterns, text in targets:
         for pattern in patterns:
             regex = re.compile(pattern)
             for match in regex.finditer(text):
                 findings.append(
                     f"{rel}:{line_number(text, match.start())}: forbidden pattern {pattern!r}"
                 )
+    return findings
 
+
+def main() -> int:
+    findings = collect_findings(REPO_ROOT)
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}", file=sys.stderr)

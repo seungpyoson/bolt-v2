@@ -175,6 +175,23 @@ def assert_split_advised_prints_subsets_without_queueing() -> None:
     assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
 
 
+def assert_operator_imports_preflight_verdict_constants() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    required_import = (
+        "from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, "
+        "VERDICT_SPLIT_ADVISED"
+    )
+    if required_import not in source:
+        raise AssertionError("merge_queue_operator must import queue verdict constants from merge_queue_preflight")
+    forbidden_literals = (
+        'QUEUE_READY_VERDICT = "queue_as_one_wave"',
+        'SPLIT_VERDICT = "split_advised"',
+    )
+    leaked = [literal for literal in forbidden_literals if literal in source]
+    if leaked:
+        raise AssertionError(f"merge_queue_operator redefines preflight verdict literal(s): {leaked}")
+
+
 def assert_blocked_verdict_does_not_queue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
@@ -337,6 +354,7 @@ def assert_ad_hoc_run_verifier_is_not_an_operator_flag() -> None:
 
 
 def main() -> int:
+    assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
     assert_preflight_owns_its_own_timeout()
     assert_split_advised_prints_subsets_without_queueing()

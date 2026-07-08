@@ -211,6 +211,10 @@ def assert_workflow_contract() -> None:
             raise AssertionError(
                 f"rust-probe {probe_job} must cap cargo jobs through {expected_key}"
             )
+        if 'install-rust-linker: "true"' not in block:
+            raise AssertionError(
+                f"rust-probe {probe_job} must install the configured Rust linker"
+            )
 
     unsupported_marker = "  probe-unsupported-runner-tier:\n"
     unsupported_start = text.find(unsupported_marker)

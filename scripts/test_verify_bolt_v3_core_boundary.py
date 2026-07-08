@@ -66,6 +66,21 @@ def test_forbidden_closed_identity_fails_with_line_number() -> None:
         raise AssertionError(f"unexpected stderr: {stderr!r}")
 
 
+def test_missing_target_file_is_clean_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(root)
+        missing = root / "src" / "bolt_v3_providers" / "mod.rs"
+        missing.unlink()
+        try:
+            code, stderr = run_with_root(root)
+        except FileNotFoundError as exc:
+            raise AssertionError("missing core-boundary target should be reported normally") from exc
+    expected = "FAIL: src/bolt_v3_providers/mod.rs: file is missing\n"
+    if code != 1 or stderr != expected:
+        raise AssertionError(f"expected missing-file finding, got code={code}, stderr={stderr!r}")
+
+
 def test_check_universe_names_required_core_files() -> None:
     checked_paths = {rel for rel, _patterns in VERIFIER.CHECKS}
     expected = {
@@ -83,6 +98,7 @@ def main() -> int:
     tests = [
         test_clean_fixture_passes,
         test_forbidden_closed_identity_fails_with_line_number,
+        test_missing_target_file_is_clean_finding,
         test_check_universe_names_required_core_files,
     ]
     for test in tests:

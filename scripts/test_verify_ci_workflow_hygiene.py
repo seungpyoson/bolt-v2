@@ -9131,9 +9131,9 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         ".github/workflows/flaky-test-smoke.yml": repo_workflow_text(".github/workflows/flaky-test-smoke.yml"),
     }
     bvs_policy = repo_source_text("crates/backtesting-vertical-slice/ci/rust-verification.toml")
-    clean = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
-    if clean:
-        raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {clean}")
+    errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
+    if errors:
+        raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
 
     cases = (
         (

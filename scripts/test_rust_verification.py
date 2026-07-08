@@ -105,6 +105,29 @@ def assert_minimal_toml_accepts_quoted_keys() -> None:
         raise AssertionError(workflows)
 
 
+def assert_minimal_toml_accepts_multiline_string_arrays() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "policy.toml"
+        path.write_text(
+            textwrap.dedent(
+                """\
+                [merge_queue_preflight]
+                source_fence_full_profile_pathspecs = [
+                  "scripts",
+                  "justfile",
+                  "ci/rust-verification.toml",
+                ]
+                """
+            ),
+            encoding="utf-8",
+        )
+        parsed = owner.parse_minimal_toml(path)
+    pathspecs = parsed["merge_queue_preflight"]["source_fence_full_profile_pathspecs"]
+    if pathspecs != ["scripts", "justfile", "ci/rust-verification.toml"]:
+        raise AssertionError(pathspecs)
+
+
 def same_path(left: str, right: pathlib.Path) -> bool:
     return pathlib.Path(left).resolve() == right.resolve()
 
@@ -1713,6 +1736,7 @@ def main() -> int:
     assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()
     assert_minimal_toml_accepts_quoted_keys()
+    assert_minimal_toml_accepts_multiline_string_arrays()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
     assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()

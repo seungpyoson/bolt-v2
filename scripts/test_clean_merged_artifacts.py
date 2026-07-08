@@ -824,6 +824,55 @@ class InfraTests(unittest.TestCase):
         # specifically NOT under a per-worktree .git/log path
         self.assertTrue(log.parent.samefile(common))
 
+    def test_best_effort_heartbeat_failure_logs_line_and_summary(self) -> None:
+        common = git_common_dir_compat(self.work)
+        heartbeat = common / "clean-merged.heartbeat"
+        log = common / "clean-merged.log"
+        real_write_text = cm.pathlib.Path.write_text
+
+        def fail_heartbeat(path: pathlib.Path, text: str, *args: Any, **kwargs: Any) -> int:
+            if path == heartbeat:
+                raise OSError("heartbeat boom")
+            return real_write_text(path, text, *args, **kwargs)
+
+        with mock.patch.object(cm.pathlib.Path, "write_text", fail_heartbeat):
+            rc = run_clean_inproc(self.work, "--lane", "h", "--quiet")
+
+        self.assertEqual(rc, 0)
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warning = [record for record in records if record.get("action") == "best-effort-warning"]
+        self.assertTrue(warning, records)
+        self.assertEqual(warning[0].get("label"), "heartbeat-write")
+        self.assertIn("heartbeat boom", warning[0].get("reason", ""))
+        summaries = [record for record in records if record.get("action") == "best-effort-warning-summary"]
+        self.assertTrue(summaries, records)
+        self.assertEqual(summaries[-1].get("count"), 1)
+        self.assertEqual(summaries[-1].get("by_label"), {"heartbeat-write": 1})
+
+    def test_best_effort_pending_warning_flushes_when_purge_quarantine_absent(self) -> None:
+        log = git_common_dir_compat(self.work) / "clean-merged.log"
+
+        def main_root_with_pending_warning(repo_root: pathlib.Path) -> pathlib.Path:
+            cm._record_best_effort_warning(
+                "main-worktree-list",
+                "pre-config warning",
+                repo_root=str(repo_root),
+            )
+            return repo_root
+
+        with mock.patch.object(cm, "_main_worktree_root", main_root_with_pending_warning):
+            rc = run_clean_inproc(self.work, "--purge-quarantine", "30", "--quiet")
+
+        self.assertEqual(rc, 0)
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warning = [record for record in records if record.get("action") == "best-effort-warning"]
+        self.assertTrue(warning, records)
+        self.assertEqual(warning[0].get("label"), "main-worktree-list")
+        summaries = [record for record in records if record.get("action") == "best-effort-warning-summary"]
+        self.assertTrue(summaries, records)
+        self.assertEqual(summaries[-1].get("count"), len(warning))
+        self.assertEqual(summaries[-1].get("by_label"), {"main-worktree-list": len(warning)})
+
     def test_backup_ref_is_sha_addressed(self) -> None:
         _run(["git", "checkout", "-b", "feat/sha"], cwd=self.work)
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)

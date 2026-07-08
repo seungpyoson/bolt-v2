@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -55,6 +56,18 @@ def write_policy(repo: pathlib.Path, *, remote: str = "origin") -> None:
         ),
         encoding="utf-8",
     )
+
+
+def assert_fallback_config_loader_matches_tomllib_for_full_policy() -> None:
+    helper = load_helper_module()
+    helper.tomllib = None
+    path = REPO_ROOT / "ci" / "rust-verification.toml"
+
+    with path.open("rb") as handle:
+        expected = tomllib.load(handle)
+    parsed = helper.load_config(REPO_ROOT)
+    if parsed != expected:
+        raise AssertionError("sandbox_safe_push fallback config loader must match tomllib for full policy")
 
 
 def init_work_repo(tmp: pathlib.Path, *, remote_path: pathlib.Path) -> pathlib.Path:
@@ -344,6 +357,7 @@ def assert_git_prompt_is_forced_off() -> None:
 
 
 def main() -> int:
+    assert_fallback_config_loader_matches_tomllib_for_full_policy()
     assert_push_uses_url_without_remote_tracking_write()
     assert_push_uses_configured_push_url()
     assert_multiple_push_urls_fail_closed()

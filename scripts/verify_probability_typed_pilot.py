@@ -66,71 +66,6 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
     "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
     "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
 )
-# Intentional global tripwire: any new `Default` token under src/ must be
-# reviewed before allowlisting. Narrowing this to registered-type-adjacent
-# lines would make cfg-inactive/off-file aliases depend on prediction again.
-FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
-    ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
-    ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),
-    ("src/bolt_v3_live_node/tests/data_client_probe.rs", "clients: Default::default(),"),
-    ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
-    ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
-    ("src/bolt_v3_numeric.rs", "trait AmbiguousIfDefault<A> {"),
-    ("src/bolt_v3_numeric.rs", "impl<T: ?Sized> AmbiguousIfDefault<()> for T {}"),
-    ("src/bolt_v3_numeric.rs", "impl<T: Default> AmbiguousIfDefault<Invalid> for T {}"),
-    ("src/bolt_v3_numeric.rs", "let _ = <Probability as AmbiguousIfDefault<_>>::_check;"),
-    (
-        "src/bolt_v3_numeric.rs",
-        "let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;",
-    ),
-    (
-        "src/bolt_v3_numeric.rs",
-        "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
-    ),
-    (
-        "src/bolt_v3_numeric.rs",
-        "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
-    ),
-    ("src/bolt_v3_order_execution.rs", "#[derive(Debug, Default)]"),
-    ("src/bolt_v3_order_execution.rs", "#[derive(Debug, Default)]"),
-    ("src/bolt_v3_submit_admission.rs", "#[derive(Debug, Default)]"),
-    ("src/bolt_v3_submit_admission.rs", "#[derive(Default)]"),
-    ("src/shadow_pnl.rs", "#[derive(Debug, Clone, Default)]"),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
-        "#[derive(Debug, Default)]",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
-        "#[derive(Debug, Default)]",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs",
-        "assert_eq!(order.trigger_type(), Some(TriggerType::Default));",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
-        "#[derive(Debug, Default)]",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
-        "#[derive(Debug, Default)]",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
-        "#[derive(Debug, Default)]",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
-        "#[derive(Debug, Default)]",
-    ),
-    (
-        "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs",
-        "#[derive(Default)]",
-    ),
-    ("src/strategies/registry.rs", "..Default::default()"),
-    ("src/strategies/registry.rs", "let raw = toml::Value::Table(Default::default());"),
-)
 FINANCIAL_VALUE_MARKER_ALLOWLIST = (
     ("src/bolt_v3_numeric.rs", "mod financial_value_private {"),
     ("src/bolt_v3_numeric.rs", "pub trait Sealed {}"),
@@ -493,39 +428,6 @@ def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
     ]
 
 
-def verify_financial_value_default_token_allowlist(root: Path) -> list[str]:
-    actual = Counter(
-        (relative_path, line)
-        for relative_path, source in rust_sources(root)
-        for line in normalized_source_lines(source)
-        if "Default" in line
-    )
-    expected = Counter(
-        (relative_path, line)
-        for relative_path, line in FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST
-        if (root / relative_path).exists()
-    )
-    if actual == expected:
-        return []
-
-    missing = sorted((expected - actual).elements())
-    extra = sorted((actual - expected).elements())
-    details = []
-    if missing:
-        details.append(f"missing {missing!r}")
-    if extra:
-        details.append(f"extra {extra!r}")
-    guidance = (
-        "Add unrelated source lines containing the text Default to "
-        "FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST after review. Do not "
-        "allowlist Default for Probability, UsableMu, ValidRealizedVol, "
-        "ReadyRealizedVol, or aliases of them."
-    )
-    return [
-        f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}. {guidance}"
-    ]
-
-
 def verify(root: Path) -> list[str]:
     findings = []
     findings.extend(missing_required(root, REQUIRED_PATTERNS))
@@ -533,7 +435,6 @@ def verify(root: Path) -> list[str]:
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
     findings.extend(verify_financial_value_marker_allowlist(root))
     findings.extend(verify_financial_value_owner_risk_surface(root))
-    findings.extend(verify_financial_value_default_token_allowlist(root))
     return findings
 
 

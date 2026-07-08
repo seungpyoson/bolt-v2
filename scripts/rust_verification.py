@@ -28,6 +28,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import config_validators as _cv
+import minimal_toml as _minimal_toml
 
 # Keep the former verifier-local helper families module-scoped so parity tests
 # prove the old helper surface now points at the shared path.
@@ -166,6 +167,18 @@ class PolicyError(RuntimeError):
     pass
 
 
+check_policy_size = functools.partial(
+    _minimal_toml.check_size,
+    max_bytes=MAX_POLICY_BYTES,
+    display_path=POLICY_RELATIVE_PATH,
+    error_cls=PolicyError,
+)
+parse_minimal_toml = functools.partial(
+    _minimal_toml.load,
+    max_bytes=MAX_POLICY_BYTES,
+    display_path=POLICY_RELATIVE_PATH,
+    error_cls=PolicyError,
+)
 require_positive_int = functools.partial(_cv.require_positive_int, error_cls=PolicyError)
 
 
@@ -175,90 +188,6 @@ class CacheLockTimeoutError(RuntimeError):
 
 class ProcessVisibilityError(RuntimeError):
     pass
-
-
-def check_policy_size(path: pathlib.Path) -> None:
-    size = path.stat().st_size
-    if size > MAX_POLICY_BYTES:
-        raise PolicyError(f"{POLICY_RELATIVE_PATH} exceeds maximum size of {MAX_POLICY_BYTES} bytes")
-
-
-def parse_minimal_toml(path: pathlib.Path) -> dict[str, Any]:
-    check_policy_size(path)
-    data: dict[str, Any] = {}
-    current: dict[str, Any] = data
-    with path.open("r", encoding="utf-8") as handle:
-        lines = enumerate(handle, start=1)
-        for lineno, raw_line in lines:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                current = data
-                for part in line[1:-1].split("."):
-                    if not part or not SAFE_IDENTIFIER_RE.match(part):
-                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported table name")
-                    child = current.setdefault(part, {})
-                    if not isinstance(child, dict):
-                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: table conflicts with scalar")
-                    current = child
-                continue
-            key, sep, value_text = line.partition("=")
-            if not sep:
-                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: expected key = value")
-            key = key.strip()
-            if key.startswith('"') and key.endswith('"'):
-                try:
-                    parsed_key = json.loads(key)
-                except json.JSONDecodeError as exc:
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid key") from exc
-                if not isinstance(parsed_key, str) or not parsed_key:
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid key")
-                key = parsed_key
-            elif not SAFE_IDENTIFIER_RE.match(key):
-                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported key")
-            value_text = value_text.strip()
-            if value_text.startswith('"') and value_text.endswith('"'):
-                try:
-                    value: Any = json.loads(value_text)
-                except json.JSONDecodeError as exc:
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid string") from exc
-            elif value_text.startswith("[") and value_text.endswith("]"):
-                try:
-                    value = json.loads(value_text)
-                except json.JSONDecodeError as exc:
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid array") from exc
-                if not all(isinstance(item, str) for item in value):
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported array")
-            elif value_text == "[":
-                value = []
-                for array_lineno, raw_array_line in lines:
-                    item_text = raw_array_line.strip()
-                    if not item_text or item_text.startswith("#"):
-                        continue
-                    if item_text == "]":
-                        break
-                    if item_text.endswith(","):
-                        item_text = item_text[:-1].strip()
-                    if not item_text.startswith('"') or not item_text.endswith('"'):
-                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{array_lineno}: unsupported array")
-                    try:
-                        item = json.loads(item_text)
-                    except json.JSONDecodeError as exc:
-                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{array_lineno}: invalid string") from exc
-                    if not isinstance(item, str):
-                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{array_lineno}: unsupported array")
-                    value.append(item)
-                else:
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unterminated array")
-            elif value_text in ("true", "false"):
-                value = value_text == "true"
-            elif value_text.isdigit():
-                value = int(value_text)
-            else:
-                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported value")
-            current[key] = value
-    return data
 
 
 def load_toml(path: pathlib.Path) -> dict[str, Any]:

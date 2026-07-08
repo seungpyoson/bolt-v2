@@ -246,10 +246,18 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
                             resolved = (candidate / worktree_val).resolve()
                             if (resolved / ".git").exists() or (resolved.is_dir() and (resolved / "config").exists()):
                                 return resolved
-                    except subprocess.CalledProcessError:
-                        pass
-    except subprocess.CalledProcessError:
-        pass
+                    except subprocess.CalledProcessError as exc:
+                        _record_best_effort_warning(
+                            "main-worktree-core-worktree-config",
+                            exc.stderr or str(exc),
+                            candidate=str(candidate),
+                        )
+    except subprocess.CalledProcessError as exc:
+        _record_best_effort_warning(
+            "main-worktree-list",
+            exc.stderr or str(exc),
+            repo_root=str(repo_root),
+        )
     # Fallback for normal repos / linked worktrees (not submodules).
     try:
         out = subprocess.run(
@@ -264,8 +272,12 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
         # Sanity check: parent should be a working tree, not inside .git/.
         if (candidate / ".git").exists() or (candidate.is_dir() and (candidate / "config").exists()):
             return candidate
-    except subprocess.CalledProcessError:
-        pass
+    except subprocess.CalledProcessError as exc:
+        _record_best_effort_warning(
+            "main-worktree-common-dir",
+            exc.stderr or str(exc),
+            repo_root=str(repo_root),
+        )
     return repo_root
 
 
@@ -2568,6 +2580,54 @@ def delete_branch_ref_cas(
 # Audit log + heartbeat
 
 
+_BEST_EFFORT_WARNING_COUNTS: dict[str, int] = {}
+_BEST_EFFORT_PENDING_WARNINGS: list[dict[str, Any]] = []
+
+
+def _reset_best_effort_warnings() -> None:
+    _BEST_EFFORT_WARNING_COUNTS.clear()
+    _BEST_EFFORT_PENDING_WARNINGS.clear()
+
+
+def _record_best_effort_warning(
+    label: str,
+    reason: str,
+    *,
+    repo_root: pathlib.Path | None = None,
+    config: Config | None = None,
+    **fields: Any,
+) -> None:
+    _BEST_EFFORT_WARNING_COUNTS[label] = _BEST_EFFORT_WARNING_COUNTS.get(label, 0) + 1
+    record = {
+        "action": "best-effort-warning",
+        "label": label,
+        "reason": _safe_report_error(reason, limit=2000),
+        **fields,
+    }
+    if repo_root is not None and config is not None:
+        write_audit(repo_root, config, record)
+    else:
+        _BEST_EFFORT_PENDING_WARNINGS.append(record)
+
+
+def _flush_best_effort_warning_records(repo_root: pathlib.Path, config: Config) -> None:
+    pending = list(_BEST_EFFORT_PENDING_WARNINGS)
+    _BEST_EFFORT_PENDING_WARNINGS.clear()
+    for record in pending:
+        write_audit(repo_root, config, record)
+
+
+def _write_best_effort_warning_summary(repo_root: pathlib.Path, config: Config) -> None:
+    _flush_best_effort_warning_records(repo_root, config)
+    total = sum(_BEST_EFFORT_WARNING_COUNTS.values())
+    if total:
+        write_audit(repo_root, config, {
+            "action": "best-effort-warning-summary",
+            "count": total,
+            "by_label": dict(sorted(_BEST_EFFORT_WARNING_COUNTS.items())),
+        })
+
+
 def _resolve_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
     if raw.startswith("<git-common-dir>/"):
         return git_common_dir(repo_root) / raw[len("<git-common-dir>/"):]
@@ -2666,8 +2726,13 @@ def _rotated_log_usage(repo_root: pathlib.Path, config: Config) -> tuple[int, in
             rotated_paths.add(rotated)
             try:
                 total_bytes += rotated.stat().st_size
-            except OSError:
-                pass
+            except OSError as exc:
+                _record_best_effort_warning(
+                    "rotating-log-usage-stat",
+                    str(exc),
+                    log_path=str(log_path),
+                    rotated_path=str(rotated),
+                )
     return len(rotated_paths), total_bytes
 
 
@@ -2719,8 +2784,14 @@ def write_heartbeat(repo_root: pathlib.Path, config: Config) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         path.write_text(dt.datetime.now(dt.timezone.utc).isoformat(), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        _record_best_effort_warning(
+            "heartbeat-write",
+            str(exc),
+            repo_root=repo_root,
+            config=config,
+            path=str(path),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2741,12 +2812,19 @@ def _load_gh_cache(path: pathlib.Path) -> tuple[dict[str, Any] | None, str | Non
     except FileNotFoundError:
         return {}, None
     except OSError as exc:
+        _record_best_effort_warning("gh-cache-load", str(exc), path=str(path))
         return None, f"gh cache unavailable: {exc}"
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
+        _record_best_effort_warning("gh-cache-load-json", str(exc), path=str(path))
         return None, f"gh cache invalid json: {exc}"
     if not isinstance(data, dict):
+        _record_best_effort_warning(
+            "gh-cache-load-root",
+            f"expected object, got {type(data).__name__}",
+            path=str(path),
+        )
         return None, f"gh cache invalid root: expected object, got {type(data).__name__}"
     return data, None
 
@@ -2768,7 +2846,13 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
         try:
             age = _gh_cache_entry_age(entry, now)
             prs = _gh_cache_entry_prs(entry)
-        except ValueError:
+        except ValueError as exc:
+            _record_best_effort_warning(
+                "gh-cache-save-prune-entry",
+                str(exc),
+                path=str(path),
+                cache_key=key,
+            )
             continue
         if age < ttl:
             assert isinstance(entry, dict)
@@ -2777,8 +2861,8 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
         tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
         tmp.write_text(json.dumps(pruned), encoding="utf-8")
         os.replace(str(tmp), str(path))
-    except OSError:
-        pass
+    except OSError as exc:
+        _record_best_effort_warning("gh-cache-save", str(exc), path=str(path))
 
 
 def gh_merged_pr_for_branch(
@@ -3530,7 +3614,11 @@ def _quarantine_target(config: Config, repo_root: pathlib.Path, name: str, sha: 
 
 
 def _archive_worktree(
-    wt_path: pathlib.Path, archive_path: pathlib.Path, config: Config,
+    wt_path: pathlib.Path,
+    archive_path: pathlib.Path,
+    config: Config,
+    *,
+    repo_root: pathlib.Path | None = None,
 ) -> tuple[bool, str]:
     """Tar the worktree dir to archive_path. Returns (ok, error)."""
     archive_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3555,8 +3643,15 @@ def _archive_worktree(
         if verify.returncode != 0:
             try:
                 archive_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                _record_best_effort_warning(
+                    "archive-cleanup-unlink",
+                    str(exc),
+                    repo_root=repo_root,
+                    config=config if repo_root is not None else None,
+                    archive_path=str(archive_path),
+                    worktree_path=str(wt_path),
+                )
             return False, (
                 "archive integrity check failed: "
                 f"{_safe_report_error(verify.stderr, limit=config.logging.report_error_max_chars)}"
@@ -3564,8 +3659,15 @@ def _archive_worktree(
     except subprocess.TimeoutExpired:
         try:
             archive_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            _record_best_effort_warning(
+                "archive-cleanup-unlink",
+                str(exc),
+                repo_root=repo_root,
+                config=config if repo_root is not None else None,
+                archive_path=str(archive_path),
+                worktree_path=str(wt_path),
+            )
         return False, "archive integrity check timed out (possible malformed archive)"
     return True, ""
 
@@ -3766,7 +3868,7 @@ def run_lane_w(
                     _atomic_write_text(quarantine / "clean-merged.manifest.json",
                         json.dumps(minimal_manifest, indent=2, sort_keys=True))
                     # tar the worktree to quarantine + verify integrity
-                    ok, err = _archive_worktree(wt.path, archive_path, config)
+                    ok, err = _archive_worktree(wt.path, archive_path, config, repo_root=repo_root)
                     if not ok:
                         rec = {"lane": "W", "branch": label, "tip_sha": wt.head,
                                 "worktree": str(wt.path), "action": "archive-failed",
@@ -4228,6 +4330,7 @@ def cmd_purge_quarantine(
 ) -> int:
     base = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     if not base.is_dir():
+        _write_best_effort_warning_summary(repo_root, config)
         if not quiet:
             print(f"[{SCRIPT_NAME}] quarantine absent: {base}")
         return 0
@@ -4239,6 +4342,7 @@ def cmd_purge_quarantine(
     lock_path = main_common / LOCK_FILE
     fd = _acquire_lock(lock_path)
     if fd is None:
+        _write_best_effort_warning_summary(repo_root, config)
         if not quiet:
             print(f"[{SCRIPT_NAME}] purge: another instance holds the lock; aborting",
                   file=sys.stderr)
@@ -4246,6 +4350,23 @@ def cmd_purge_quarantine(
     purged = 0
     skipped = 0
     total_bytes_freed = 0
+
+    def rmtree_best_effort(path: pathlib.Path, label: str, manifest: dict[str, Any]) -> None:
+        def onerror(function: Callable[..., Any], failed_path: str, exc_info: Any) -> None:
+            exc = exc_info[1]
+            _record_best_effort_warning(
+                label,
+                str(exc),
+                repo_root=repo_root,
+                config=config,
+                quarantine_path=str(path),
+                failed_path=str(failed_path),
+                function=getattr(function, "__name__", str(function)),
+                branch=manifest.get("branch"),
+            )
+
+        shutil.rmtree(path, onerror=onerror)
+
     try:
         for child in base.iterdir():
             if not child.is_dir():
@@ -4256,7 +4377,15 @@ def cmd_purge_quarantine(
                 continue
             try:
                 manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
+                _record_best_effort_warning(
+                    "purge-quarantine-manifest-read",
+                    str(exc),
+                    repo_root=repo_root,
+                    config=config,
+                    quarantine_path=str(child),
+                    manifest_path=str(manifest_file),
+                )
                 skipped += 1
                 continue
             if not manifest.get("worktree_remove_ok"):
@@ -4266,7 +4395,15 @@ def cmd_purge_quarantine(
                 # recovery surface for an already-removed worktree.
                 try:
                     mtime = child.stat().st_mtime
-                except OSError:
+                except OSError as exc:
+                    _record_best_effort_warning(
+                        "purge-quarantine-stat",
+                        str(exc),
+                        repo_root=repo_root,
+                        config=config,
+                        quarantine_path=str(child),
+                        branch=manifest.get("branch"),
+                    )
                     skipped += 1
                     continue
                 if mtime > cutoff:
@@ -4299,15 +4436,30 @@ def cmd_purge_quarantine(
                             # pinned archive.
                             try:
                                 os.utime(child, None)
-                            except OSError:
-                                pass
+                            except OSError as exc:
+                                _record_best_effort_warning(
+                                    "purge-quarantine-touch",
+                                    str(exc),
+                                    repo_root=repo_root,
+                                    config=config,
+                                    quarantine_path=str(child),
+                                    branch=manifest.get("branch"),
+                                )
                             try:
                                 manifest["verified_archive_at"] = (
                                     dt.datetime.now(dt.timezone.utc).isoformat())
                                 _atomic_write_text(manifest_file, json.dumps(
                                     manifest, indent=2, sort_keys=True))
-                            except (OSError, ValueError):
-                                pass
+                            except (OSError, ValueError) as exc:
+                                _record_best_effort_warning(
+                                    "purge-quarantine-manifest-update",
+                                    str(exc),
+                                    repo_root=repo_root,
+                                    config=config,
+                                    quarantine_path=str(child),
+                                    manifest_path=str(manifest_file),
+                                    branch=manifest.get("branch"),
+                                )
                             write_audit(repo_root, config, {
                                 "lane": "W", "branch": manifest.get("branch"),
                                 "action": "quarantine-cruft-skipped-verified-archive",
@@ -4329,9 +4481,17 @@ def cmd_purge_quarantine(
                 # No archive (archive-failed) or corrupt archive — safe to purge.
                 try:
                     size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
-                except OSError:
+                except OSError as exc:
+                    _record_best_effort_warning(
+                        "purge-quarantine-size-scan",
+                        str(exc),
+                        repo_root=repo_root,
+                        config=config,
+                        quarantine_path=str(child),
+                        branch=manifest.get("branch"),
+                    )
                     size = 0
-                shutil.rmtree(child, ignore_errors=True)
+                rmtree_best_effort(child, "purge-quarantine-rmtree", manifest)
                 total_bytes_freed += size
                 write_audit(repo_root, config, {
                     "lane": "W", "branch": manifest.get("branch"),
@@ -4344,15 +4504,31 @@ def cmd_purge_quarantine(
                 continue
             try:
                 mtime = child.stat().st_mtime
-            except OSError:
+            except OSError as exc:
+                _record_best_effort_warning(
+                    "purge-quarantine-stat",
+                    str(exc),
+                    repo_root=repo_root,
+                    config=config,
+                    quarantine_path=str(child),
+                    branch=manifest.get("branch"),
+                )
                 continue
             if mtime > cutoff:
                 continue
             try:
                 size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
-            except OSError:
+            except OSError as exc:
+                _record_best_effort_warning(
+                    "purge-quarantine-size-scan",
+                    str(exc),
+                    repo_root=repo_root,
+                    config=config,
+                    quarantine_path=str(child),
+                    branch=manifest.get("branch"),
+                )
                 size = 0
-            shutil.rmtree(child, ignore_errors=True)
+            rmtree_best_effort(child, "purge-quarantine-rmtree", manifest)
             total_bytes_freed += size
             write_audit(repo_root, config, {
                 "lane": "W", "branch": manifest.get("branch"),
@@ -4362,6 +4538,7 @@ def cmd_purge_quarantine(
             purged += 1
     finally:
         _release_lock(fd)
+    _write_best_effort_warning_summary(repo_root, config)
     if not quiet:
         print(f"[{SCRIPT_NAME}] purge: {purged} purged, {skipped} skipped "
               f"(no/failed manifest), {total_bytes_freed} bytes freed")
@@ -4989,6 +5166,7 @@ def _lane_steps(
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _reset_best_effort_warnings()
 
     # Resolve to the main worktree root, not the current worktree's root. If
     # the operator runs Lane W from inside a worktree that Lane W removes, a
@@ -5028,6 +5206,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.print_remote_name:
+        _write_best_effort_warning_summary(repo_root, config)
         print(config.remote_name)
         return 0
 
@@ -5039,14 +5218,22 @@ def main(argv: list[str] | None = None) -> int:
                 config.logging.rotated_log_retention_days,
             )
         except OSError as exc:
+            _record_best_effort_warning(
+                "lane-r-log-redirect",
+                str(exc),
+                repo_root=repo_root,
+                config=config,
+            )
             if not args.quiet:
                 print(f"[{SCRIPT_NAME}] lane R log redirect failed: {exc}", file=sys.stderr)
 
     if _is_disabled(os.environ.get("CLEAN_MERGED_DISABLED")) or not config.enabled:
+        _write_best_effort_warning_summary(repo_root, config)
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] disabled (kill switch)", file=sys.stderr)
         return 0
     if args.only_if_current_trunk and current_branch(invoke_root) != config.trunk_branch:
+        _write_best_effort_warning_summary(repo_root, config)
         return 0
 
     keep = set(args.keep)
@@ -5054,7 +5241,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Single-shot subcommands
     if args.doctor:
-        return cmd_doctor(repo_root, invoke_root, config)
+        result = cmd_doctor(repo_root, invoke_root, config)
+        _write_best_effort_warning_summary(repo_root, config)
+        return result
     if args.purge_quarantine is not None:
         grace = None if args.purge_quarantine == -1 else args.purge_quarantine
         cmd_purge_quarantine(repo_root, config, grace_days=grace, quiet=args.quiet)
@@ -5062,6 +5251,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune_backups is not None:
         days = config.backups.prune_after_days if args.prune_backups == -1 else args.prune_backups
         cmd_prune_backups(repo_root, config, days=days, quiet=args.quiet)
+        _write_best_effort_warning_summary(repo_root, config)
         return 0
 
     write_heartbeat(repo_root, config)
@@ -5097,6 +5287,7 @@ def main(argv: list[str] | None = None) -> int:
                                   "move-failed", "branch-delete-failed"):
             write_audit(repo_root, config, r)
 
+    _write_best_effort_warning_summary(repo_root, config)
     return 0
 
 

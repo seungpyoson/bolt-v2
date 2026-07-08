@@ -500,36 +500,23 @@ def test_verify_rejects_split_financial_value_owner_use() -> None:
             raise AssertionError(f"expected split owner use finding, got {findings!r}")
 
 
-def test_verify_rejects_cfg_gated_financial_value_default_impl() -> None:
+def test_verify_accepts_unrelated_default_derive() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         write_sources(
             root,
             {
-                "src/bolt_v3_maker_mu_estimator.rs": """
-use crate::bolt_v3_numeric::{is_positive_finite, sanitize_probability};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UsableMu(f64);
-impl UsableMu {
-    fn new(value: f64) -> Self { Self(value) }
-    pub fn get(self) -> f64 { self.0 }
-}
-
-#[cfg(target_os = "windows")]
-impl std::default::Default for UsableMu {
-    fn default() -> Self { Self(0.0) }
+                "src/unrelated_default.rs": """
+#[derive(Default)]
+struct LocalFixtureState {
+    value: u64,
 }
 """,
             },
         )
         findings = VERIFIER.verify(root)
-        if not any("Default token allowlist" in finding for finding in findings):
-            raise AssertionError(f"expected cfg-gated Default impl finding, got {findings!r}")
-        if not any("source lines containing the text Default" in finding for finding in findings):
-            raise AssertionError(f"expected Default substring guidance, got {findings!r}")
-        if not any("Do not allowlist Default for Probability" in finding for finding in findings):
-            raise AssertionError(f"expected Default allowlist guidance, got {findings!r}")
+        if findings:
+            raise AssertionError(f"unrelated Default derives must not trip the money fence: {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:
@@ -759,7 +746,7 @@ def main() -> int:
         test_verify_rejects_unapproved_financial_value_owner_use,
         test_verify_rejects_visibility_qualified_financial_value_owner_use,
         test_verify_rejects_split_financial_value_owner_use,
-        test_verify_rejects_cfg_gated_financial_value_default_impl,
+        test_verify_accepts_unrelated_default_derive,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

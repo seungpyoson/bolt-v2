@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 
 from test_fixtures import load_owner_module, rust_verification_policy_text, write_executable, write_policy
 
@@ -126,6 +127,22 @@ def assert_minimal_toml_accepts_multiline_string_arrays() -> None:
     pathspecs = parsed["merge_queue_preflight"]["source_fence_full_profile_pathspecs"]
     if pathspecs != ["scripts", "justfile", "ci/rust-verification.toml"]:
         raise AssertionError(pathspecs)
+
+
+def assert_minimal_toml_matches_tomllib_for_rust_policy() -> None:
+    minimal_toml_path = REPO_ROOT / "scripts" / "minimal_toml.py"
+    spec = importlib.util.spec_from_file_location("minimal_toml_under_test", minimal_toml_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load scripts/minimal_toml.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    policy = REPO_ROOT / "ci" / "rust-verification.toml"
+
+    with policy.open("rb") as handle:
+        expected = tomllib.load(handle)
+    parsed = module.load(policy)
+    if parsed != expected:
+        raise AssertionError("minimal_toml.py must match tomllib for ci/rust-verification.toml")
 
 
 def same_path(left: str, right: pathlib.Path) -> bool:
@@ -1737,6 +1754,7 @@ def main() -> int:
     assert_fmt_avoids_managed_cache_lock()
     assert_minimal_toml_accepts_quoted_keys()
     assert_minimal_toml_accepts_multiline_string_arrays()
+    assert_minimal_toml_matches_tomllib_for_rust_policy()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
     assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()

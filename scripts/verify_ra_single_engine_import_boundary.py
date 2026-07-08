@@ -11,7 +11,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from verifier_io import require_nonempty
+from verifier_io import (
+    DECLARED_SOURCE_ABSENT,
+    DECLARED_SOURCE_PRESENT,
+    require_declared_source_files,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -62,37 +66,47 @@ def script_python_files(directory: Path) -> list[Path] | None:
     )
 
 
-def research_code_files(root: Path, findings: list[str] | None = None) -> list[Path]:
+def research_code_files(root: Path, findings: list[str]) -> list[Path]:
     paths: set[Path] = set()
 
     notebooks = tree_python_files(root / "notebooks")
-    if findings is None:
-        if notebooks is not None:
-            paths.update(notebooks)
-    elif notebooks is not None and require_nonempty(notebooks, RA_NOTEBOOKS_CODE_FILES_LABEL, findings):
+    if require_declared_source_files(
+        notebooks,
+        RA_NOTEBOOKS_CODE_FILES_LABEL,
+        "notebooks",
+        DECLARED_SOURCE_ABSENT,
+        findings,
+    ):
         paths.update(notebooks)
 
     research = tree_python_files(root / "research")
-    if findings is None:
-        if research is not None:
-            paths.update(research)
-    elif research is not None and require_nonempty(research, RA_RESEARCH_CODE_FILES_LABEL, findings):
+    if require_declared_source_files(
+        research,
+        RA_RESEARCH_CODE_FILES_LABEL,
+        "research",
+        DECLARED_SOURCE_ABSENT,
+        findings,
+    ):
         paths.update(research)
 
     analytics = tree_python_files(root / "analytics")
-    if findings is None:
-        if analytics is not None:
-            paths.update(analytics)
-    elif analytics is not None and require_nonempty(analytics, RA_ANALYTICS_CODE_FILES_LABEL, findings):
+    if require_declared_source_files(
+        analytics,
+        RA_ANALYTICS_CODE_FILES_LABEL,
+        "analytics",
+        DECLARED_SOURCE_ABSENT,
+        findings,
+    ):
         paths.update(analytics)
 
     scripts = script_python_files(root / "scripts")
-    if findings is None:
-        if scripts is not None:
-            paths.update(scripts)
-    elif scripts is None:
-        findings.append(f"{RA_SCRIPTS_CODE_FILES_LABEL}: configured source path scripts is not present")
-    elif require_nonempty(scripts, RA_SCRIPTS_CODE_FILES_LABEL, findings):
+    if require_declared_source_files(
+        scripts,
+        RA_SCRIPTS_CODE_FILES_LABEL,
+        "scripts",
+        DECLARED_SOURCE_PRESENT,
+        findings,
+    ):
         paths.update(scripts)
     return sorted(paths)
 

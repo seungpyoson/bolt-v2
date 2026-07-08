@@ -222,56 +222,56 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "RA notebook read-only notebooks code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_notebook_read_only_boundary.py",
         "RA notebook read-only research code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_notebook_read_only_boundary.py",
         "RA notebook read-only analytics code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_notebook_read_only_boundary.py",
         "RA notebook read-only scripts code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_single_engine_import_boundary.py",
         "RA single-engine notebooks code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_single_engine_import_boundary.py",
         "RA single-engine research code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_single_engine_import_boundary.py",
         "RA single-engine analytics code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ra_single_engine_import_boundary.py",
         "RA single-engine scripts code files",
         "aggregate-then-terminal",
         "scan_root",
-        "scan_root aggregates per-source floors and returns before per-file boundary scanning.",
+        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
     ),
 )
 
@@ -290,6 +290,31 @@ def require_nonempty(items: Sized, what: str, findings: list[str]) -> bool:
         findings.append(f"{what}: enforcement set is empty")
         return False
     return True
+
+
+DECLARED_SOURCE_PRESENT = "present"
+DECLARED_SOURCE_ABSENT = "absent"
+
+
+def require_declared_source_files(
+    items: Sized | None,
+    what: str,
+    source_path: str,
+    declared_state: str,
+    findings: list[str],
+) -> bool:
+    """Validate declared source state before scanning to preserve the preflight-terminal invariant."""
+    if declared_state == DECLARED_SOURCE_PRESENT:
+        if items is None:
+            findings.append(f"{what}: configured source path {source_path} is declared present but is not present")
+            return False
+        return require_nonempty(items, what, findings)
+    if declared_state == DECLARED_SOURCE_ABSENT:
+        if items is not None:
+            findings.append(f"{what}: configured source path {source_path} is declared absent; flip the declaration consciously")
+        return False
+    findings.append(f"{what}: configured source path {source_path} has invalid declaration {declared_state!r}")
+    return False
 
 
 def require_snippets(

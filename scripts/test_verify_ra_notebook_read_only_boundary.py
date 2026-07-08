@@ -13,10 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_ra_notebook_read_only_boundary.py"
-REQUIRED_SOURCE_FILES = {
-    "notebooks/read_only.py": "def notebook_feature(row):\n    return row\n",
-    "research/features.py": "def research_feature(row):\n    return row\n",
-    "analytics/features.py": "def analytics_feature(row):\n    return row\n",
+PRESENT_SOURCE_FILES = {
     "scripts/leadlag_probe.py": "print('research helper')\n",
 }
 
@@ -41,7 +38,7 @@ def write_fixture(root: Path, files: dict[str, str]) -> None:
 
 
 def complete_fixture(files: dict[str, str] | None = None) -> dict[str, str]:
-    merged = dict(REQUIRED_SOURCE_FILES)
+    merged = dict(PRESENT_SOURCE_FILES)
     merged.update(files or {})
     return merged
 
@@ -65,10 +62,6 @@ def test_clean_research_surfaces_have_no_findings() -> None:
             root,
             complete_fixture(
                 {
-                    "research/features.py": (
-                        "def load_frame(con):\n"
-                        "    return con.execute('SELECT * FROM catalog').fetch_arrow_table()\n"
-                    ),
                     "scripts/leadlag_probe.py": (
                         "task.cancel()\n"
                         "con.execute('CREATE SECRET (TYPE s3, PROVIDER credential_chain)')\n"
@@ -86,7 +79,7 @@ def test_missing_research_sources_fail_individually() -> None:
         findings = verifier.scan_root(Path(tmp))
 
     assert findings == [
-        "RA notebook read-only scripts code files: configured source path scripts is not present",
+        "RA notebook read-only scripts code files: configured source path scripts is declared present but is not present",
     ], findings
 
 
@@ -94,17 +87,39 @@ def test_empty_research_sources_fail_individually() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        for rel in ("notebooks", "research", "analytics", "scripts"):
+        (root / "scripts").mkdir()
+        findings = verifier.scan_root(root)
+
+    assert findings == [
+        "RA notebook read-only scripts code files: enforcement set is empty",
+    ], findings
+
+
+def test_declared_absent_sources_are_findings_when_present() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(root, complete_fixture())
+        for rel in ("notebooks", "research", "analytics"):
             (root / rel).mkdir()
         findings = verifier.scan_root(root)
 
     expected = {
-        "RA notebook read-only notebooks code files: enforcement set is empty",
-        "RA notebook read-only research code files: enforcement set is empty",
-        "RA notebook read-only analytics code files: enforcement set is empty",
-        "RA notebook read-only scripts code files: enforcement set is empty",
+        "RA notebook read-only notebooks code files: configured source path notebooks is declared absent; flip the declaration consciously",
+        "RA notebook read-only research code files: configured source path research is declared absent; flip the declaration consciously",
+        "RA notebook read-only analytics code files: configured source path analytics is declared absent; flip the declaration consciously",
     }
     assert set(findings) == expected, findings
+
+
+def test_declared_absent_sources_are_clean_when_absent() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(root, complete_fixture())
+        findings = verifier.scan_root(root)
+
+    assert findings == [], findings
 
 
 def test_live_runtime_imports_are_findings() -> None:
@@ -115,7 +130,7 @@ def test_live_runtime_imports_are_findings() -> None:
             root,
             complete_fixture(
                 {
-                    "research/live_path.py": "\n".join(
+                    "scripts/leadlag_live_path.py": "\n".join(
                         [
                             "import nautilus_trader.live.node",
                             "from nautilus_trader.execution import client",
@@ -140,7 +155,7 @@ def test_production_mutation_calls_are_findings() -> None:
             root,
             complete_fixture(
                 {
-                    "research/mutate.py": "\n".join(
+                    "scripts/leadlag_mutate.py": "\n".join(
                         [
                             "trader.submit_order(order)",
                             "client.cancel_order(order_id)",
@@ -174,12 +189,14 @@ def test_notebook_code_cells_are_scanned_for_mutation() -> None:
     }
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_fixture(root, complete_fixture())
         path = root / "notebooks" / "probe.ipynb"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(notebook), encoding="utf-8")
 
-        findings = verifier.scan_root(root)
+        findings = [
+            finding.message(root)
+            for finding in verifier.file_findings(path)
+        ]
 
     assert len(findings) == 1
     assert "notebooks/probe.ipynb" in findings[0]
@@ -208,7 +225,7 @@ def test_specs_and_docs_are_not_research_code_surfaces() -> None:
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_fixture(root, complete_fixture({"research/bad.py": "client.submit_order(order)\n"}))
+        write_fixture(root, complete_fixture({"scripts/leadlag_bad.py": "client.submit_order(order)\n"}))
 
         result = run_script("--root", str(root))
 
@@ -222,6 +239,8 @@ def main() -> int:
         test_clean_research_surfaces_have_no_findings,
         test_missing_research_sources_fail_individually,
         test_empty_research_sources_fail_individually,
+        test_declared_absent_sources_are_findings_when_present,
+        test_declared_absent_sources_are_clean_when_absent,
         test_live_runtime_imports_are_findings,
         test_production_mutation_calls_are_findings,
         test_notebook_code_cells_are_scanned_for_mutation,

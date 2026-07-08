@@ -11,6 +11,7 @@ import verifier_io
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
+DISCOVERY_CONTRACT_HELPERS = {"require_nonempty", "require_declared_source_files"}
 
 
 def module_string_constants(tree: ast.Module) -> dict[str, str]:
@@ -42,10 +43,10 @@ def require_nonempty_contract_counts() -> Counter[tuple[str, str]]:
                 name = function.id
             elif isinstance(function, ast.Attribute):
                 name = function.attr
-            if name != "require_nonempty":
+            if name not in DISCOVERY_CONTRACT_HELPERS:
                 continue
             if len(node.args) < 2:
-                raise AssertionError(f"{path.name}:{node.lineno}: require_nonempty missing label")
+                raise AssertionError(f"{path.name}:{node.lineno}: discovery contract helper missing label")
             label_node = node.args[1]
             if isinstance(label_node, ast.Constant) and isinstance(label_node.value, str):
                 label = label_node.value
@@ -53,7 +54,7 @@ def require_nonempty_contract_counts() -> Counter[tuple[str, str]]:
                 label = constants[label_node.id]
             else:
                 raise AssertionError(
-                    f"{path.name}:{node.lineno}: require_nonempty label must be a string "
+                    f"{path.name}:{node.lineno}: discovery contract helper label must be a string "
                     "literal or module-level string constant"
                 )
             counts[(path.name, label)] += 1

@@ -1,0 +1,128 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "28cd1078ceba",
+  "session_id": "0668120b-cee8-4d2d-bdc5-69d670db2be8",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-08T05:00:45.584497Z",
+  "branch": "fix/chainlink-connect-boot-hang",
+  "checkpoints_count": 54,
+  "save_step_count": 12,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "ac1b2a1bab0c",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 84455,
+    "cache_creation_tokens": 4893708,
+    "cache_read_tokens": 194037164,
+    "output_tokens": 1280394,
+    "api_call_count": 556
+  },
+  "session_metrics": {
+    "turn_count": 54
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1592,
+      "agent_lines_removed": 119
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1592,
+      "agent_lines_removed": 119
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1807,
+      "agent_lines_removed": 135
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1907,
+      "agent_lines_removed": 135
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1907,
+      "agent_lines_removed": 135
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1907,
+      "agent_lines_removed": 135
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1907,
+      "agent_lines_removed": 135
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 56,
+      "user_lines_removed": 4,
+      "agent_lines_added": 1907,
+      "agent_lines_removed": 135,
+      "user_added_per_file": {
+        "scripts/test_lane_governor.py": 56
+      },
+      "user_removed_per_file": {
+        "scripts/test_lane_governor.py": 4
+      }
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 205,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 97,
+      "user_added_per_file": {
+        "src/bolt_v3_live_node/tests/mod.rs": 98,
+        "src/bolt_v3_live_node/tests/startup_boot.rs": 107
+      }
+    }
+  ]
+}

@@ -2621,13 +2621,40 @@ def _best_effort_warning_record_without_config(raw: dict[str, Any]) -> dict[str,
     }
 
 
-def _emit_best_effort_audit_fallback(record: dict[str, Any]) -> None:
+def _safe_audit_fallback_value(value: Any, *, limit: int) -> Any:
+    if isinstance(value, str):
+        return _safe_report_error(value, limit=limit)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {
+            _safe_report_error(str(key), limit=limit): _safe_audit_fallback_value(item, limit=limit)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_safe_audit_fallback_value(item, limit=limit) for item in value]
+    return _safe_report_error(str(value), limit=limit)
+
+
+def _safe_audit_fallback_record(record: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    return {
+        _safe_report_error(str(key), limit=limit): _safe_audit_fallback_value(value, limit=limit)
+        for key, value in record.items()
+    }
+
+
+def _emit_best_effort_audit_fallback(
+    record: dict[str, Any],
+    *,
+    report_error_max_chars: int = PRE_CONFIG_REPORT_ERROR_MAX_CHARS,
+) -> None:
     record_with_ts = (
         record
         if "ts" in record
         else {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
     )
-    print(json.dumps(record_with_ts, default=str, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+    safe_record = _safe_audit_fallback_record(record_with_ts, limit=report_error_max_chars)
+    print(json.dumps(safe_record, default=str, ensure_ascii=False, sort_keys=True), file=sys.stderr)
 
 
 def _emit_raw_best_effort_warning_fallback(raw: dict[str, Any], config: Config | None = None) -> None:
@@ -2637,7 +2664,12 @@ def _emit_raw_best_effort_warning_fallback(raw: dict[str, Any], config: Config |
         record = _best_effort_warning_record_without_config(raw)
     else:
         record = _best_effort_warning_record(raw, config)
-    _emit_best_effort_audit_fallback(record)
+    limit = (
+        config.logging.report_error_max_chars
+        if config is not None
+        else PRE_CONFIG_REPORT_ERROR_MAX_CHARS
+    )
+    _emit_best_effort_audit_fallback(record, report_error_max_chars=limit)
     raw["_stderr_fallback_emitted"] = True
 
 
@@ -2649,21 +2681,16 @@ def _write_audit_best_effort(repo_root: pathlib.Path, config: Config, record: di
 
 
 def _audit_record_for_stderr(record: dict[str, Any], config: Config) -> dict[str, Any]:
-    if "reason" not in record:
-        return record
-    return {
-        **record,
-        "reason": _safe_report_error(
-            str(record["reason"]),
-            limit=config.logging.report_error_max_chars,
-        ),
-    }
+    return _safe_audit_fallback_record(record, limit=config.logging.report_error_max_chars)
 
 
 def _write_audit_or_stderr(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> bool:
     if _write_audit_best_effort(repo_root, config, record):
         return True
-    _emit_best_effort_audit_fallback(_audit_record_for_stderr(record, config))
+    _emit_best_effort_audit_fallback(
+        _audit_record_for_stderr(record, config),
+        report_error_max_chars=config.logging.report_error_max_chars,
+    )
     return False
 
 

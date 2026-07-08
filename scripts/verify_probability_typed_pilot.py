@@ -32,6 +32,11 @@ TYPE_ALIAS_RE = re.compile(
     r"\btype\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"(?P<target>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
+RUST_TYPE_PATH_TOKEN_RE = re.compile(
+    r"(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*"
+)
+MACRO_RULES_START_RE = re.compile(r"\bmacro_rules!\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
+DEFAULT_IMPL_TEMPLATE_RE = re.compile(r"\bimpl\b(?s:.*?)\bDefault\b(?s:.*?)\bfor\b")
 REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE = re.compile(
     r"\bimpl\b[^{};]*?\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
     r"Default\s+for\s+"
@@ -479,16 +484,66 @@ def registered_financial_value_aliases(root: Path, registered_types: set[str]) -
     return resolved
 
 
+def balanced_span(source: str, start: int, open_char: str, close_char: str) -> tuple[int, int] | None:
+    depth = 0
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return start, index + 1
+    return None
+
+
+def default_generating_macro_names(source: str) -> set[str]:
+    names: set[str] = set()
+    for match in MACRO_RULES_START_RE.finditer(source):
+        span = balanced_span(source, match.end() - 1, "{", "}")
+        if span is None:
+            continue
+        body = source[span[0]:span[1]]
+        if DEFAULT_IMPL_TEMPLATE_RE.search(body):
+            names.add(match.group("name"))
+    return names
+
+
+def macro_invocation_arguments(source: str, macro_name: str) -> list[str]:
+    invocation_re = re.compile(rf"\b{re.escape(macro_name)}\s*!\s*(?P<open>[\(\{{\[])")
+    close_by_open = {"(": ")", "{": "}", "[": "]"}
+    arguments: list[str] = []
+    for match in invocation_re.finditer(source):
+        open_char = match.group("open")
+        close_char = close_by_open[open_char]
+        span = balanced_span(source, match.end() - 1, open_char, close_char)
+        if span is not None:
+            arguments.append(source[span[0] + 1:span[1] - 1])
+    return arguments
+
+
+def registered_type_for_token(
+    token: str,
+    registered_types: set[str],
+    registered_aliases: dict[str, str],
+) -> str | None:
+    target = path_type_name(token)
+    return target if target in registered_types else registered_aliases.get(target)
+
+
 def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
     findings = []
     registered_types = registered_financial_value_types(root)
     if not registered_types:
         return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
     registered_aliases = registered_financial_value_aliases(root, registered_types)
-    for relative_path, source in rust_sources(root):
+    source_items = tuple(rust_sources(root))
+    default_macro_names: set[str] = set()
+    for _, source in source_items:
+        default_macro_names.update(default_generating_macro_names(source))
+    for relative_path, source in source_items:
         for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):
-            target = path_type_name(match.group("type"))
-            registered_type = target if target in registered_types else registered_aliases.get(target)
+            registered_type = registered_type_for_token(match.group("type"), registered_types, registered_aliases)
             if registered_type is not None:
                 findings.append(
                     f"{relative_path}: registered FinancialValue Default impl/derive "
@@ -502,6 +557,19 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
                         f"{relative_path}: registered FinancialValue Default impl/derive "
                         f"for {type_name} is forbidden"
                     )
+        for macro_name in default_macro_names:
+            for arguments in macro_invocation_arguments(source, macro_name):
+                for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(arguments):
+                    registered_type = registered_type_for_token(
+                        token_match.group(0),
+                        registered_types,
+                        registered_aliases,
+                    )
+                    if registered_type is not None:
+                        findings.append(
+                            f"{relative_path}: registered FinancialValue Default impl/derive "
+                            f"for {registered_type} is forbidden"
+                        )
     return sorted(set(findings))
 
 

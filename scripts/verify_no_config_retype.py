@@ -38,6 +38,11 @@ GOVERNED_CONFIG_ARTIFACTS = (
     "config/strategies/binary_oracle_xrp.toml",
     "crates/backtesting-vertical-slice/ci/rust-verification.toml",
 )
+GOVERNED_CONFIG_ARTIFACT_PATTERNS = (
+    "ci/*.toml",
+    "config/**/*.toml",
+    "crates/backtesting-vertical-slice/ci/*.toml",
+)
 
 # Strict mode covers Python files touched by #1301 plus this PR. Non-strict
 # files stay under the ratchet so old debt can only shrink.
@@ -45,6 +50,7 @@ STRICT_RETYPE_PATHS = frozenset(
     {
         "scripts/ci_provenance.py",
         "scripts/clean_merged_artifacts.py",
+        "scripts/cargo-shim",
         "scripts/git_remote_utils.py",
         "scripts/merge_queue_operator.py",
         "scripts/minimal_toml.py",
@@ -82,6 +88,8 @@ STRICT_RETYPE_PATHS = frozenset(
     }
 )
 
+# Recompute by running verify_no_config_retype.py after intentional ratchet
+# removals/additions; this value is the exact current non-strict count.
 RATCHET_BASELINE_COUNT = 2573
 
 
@@ -141,6 +149,10 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
     ),
     "scripts/clean_merged_artifacts.py": (
         "]",
+    ),
+    "scripts/cargo-shim": (
+        "]",
+        "ci",
     ),
     "scripts/merge_queue_operator.py": (
         "ci",
@@ -480,6 +492,7 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "[ci_provenance]",
         "ci",
         "gate",
+        "schema_version = 1",
     ),
     "scripts/test_verify_probability_typed_pilot.py": (
         "]",
@@ -531,6 +544,9 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "test",
         "test-archive",
         "workflow_dispatch",
+    ),
+    "scripts/verify_probability_typed_pilot.py": (
+        "]",
     ),
     "scripts/verify_no_config_retype.py": (
         "]",
@@ -593,12 +609,27 @@ def ci_provenance_strings(path: Path, source_rel: str) -> Iterable[ProtectedStri
             yield ProtectedString(stripped, f"{source_rel}:ci_provenance-string")
 
 
+def discover_governed_config_artifacts(root: Path) -> tuple[str, ...]:
+    discovered: set[str] = set()
+    for pattern in GOVERNED_CONFIG_ARTIFACT_PATTERNS:
+        for path in root.glob(pattern):
+            if path.is_file():
+                discovered.add(rel_path(path, root))
+    return tuple(sorted(discovered))
+
+
 def protected_strings(root: Path, governed_config_artifacts: tuple[str, ...]) -> tuple[ProtectedString, ...]:
     protected: list[ProtectedString] = []
+    declared = frozenset(governed_config_artifacts)
     for rel in governed_config_artifacts:
         path = root / rel
         if not path.is_file():
             raise FileNotFoundError(f"governed config artifact missing: {rel}")
+    unlisted = sorted(set(discover_governed_config_artifacts(root)) - declared)
+    if unlisted:
+        raise ValueError(f"governed config artifact unlisted: {unlisted[0]}")
+    for rel in governed_config_artifacts:
+        path = root / rel
         protected.extend(non_comment_config_lines(path, rel))
         protected.extend(ci_provenance_strings(path, rel))
     return tuple(protected)
@@ -640,11 +671,32 @@ def line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start <= line <= end for start, end in ranges)
 
 
+def script_source_paths(root: Path) -> tuple[Path, ...]:
+    scripts = root / "scripts"
+    return tuple(
+        sorted(
+            path
+            for path in scripts.rglob("*")
+            if path.is_file() and (path.suffix == ".py" or path.suffix == "")
+        )
+    )
+
+
 def script_literals(root: Path) -> Iterable[LiteralHit]:
-    for path in sorted((root / "scripts").rglob("*.py")):
+    for path in script_source_paths(root):
         rel = rel_path(path, root)
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        skipped_ranges = registered_payload_literal_ranges(tree)
+        source = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(source, filename=rel)
+        except SyntaxError:
+            if path.suffix == "":
+                continue
+            raise
+        skipped_ranges = (
+            registered_payload_literal_ranges(tree)
+            if rel == "scripts/verify_no_config_retype.py"
+            else ()
+        )
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 line = getattr(node, "lineno", 1)
@@ -659,6 +711,8 @@ def registration_index(registered_retypes: tuple[RegisteredRetype, ...]) -> dict
     for registration in registered_retypes:
         if not registration.path or not registration.value or not registration.reason.strip():
             raise ValueError("registered no-config retype payloads require path, value, and reason")
+        if registration.path == "*":
+            raise ValueError("wildcard registered no-config retype payloads are not allowed")
         key = (registration.path, registration.value)
         if key in index:
             raise ValueError(f"duplicate registered no-config retype payload: {registration.path}:{registration.value!r}")
@@ -667,7 +721,7 @@ def registration_index(registered_retypes: tuple[RegisteredRetype, ...]) -> dict
 
 
 def is_registered(hit: LiteralHit, index: dict[tuple[str, str], str]) -> bool:
-    return (hit.path, hit.value) in index or ("*", hit.value) in index
+    return (hit.path, hit.value) in index
 
 
 def collect_violations(

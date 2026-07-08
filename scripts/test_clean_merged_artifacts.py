@@ -1109,6 +1109,42 @@ class InfraTests(unittest.TestCase):
         self.assertNotIn(secret, emitted)
         self.assertLess(len(emitted), 1000)
 
+    def test_pre_config_stderr_fallback_bound_matches_default_config(self) -> None:
+        config = cm.load_config(self.work)
+
+        self.assertEqual(
+            cm.PRE_CONFIG_REPORT_ERROR_MAX_CHARS,
+            config.logging.report_error_max_chars,
+        )
+
+    def test_stderr_fallback_redacts_and_bounds_non_reason_fields(self) -> None:
+        secret = "ghp_" + ("A" * 24)
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(config.logging, report_error_max_chars=80),
+        )
+        record = {
+            "action": "probe",
+            "path": f"/tmp/{secret}/repo",
+            "huge": "x" * 5000,
+            "nested": {"url": f"https://token={secret}@example.invalid/repo"},
+        }
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            cm._emit_best_effort_audit_fallback(
+                cm._audit_record_for_stderr(record, config),
+                report_error_max_chars=config.logging.report_error_max_chars,
+            )
+
+        emitted = stderr.getvalue()
+        payload = json.loads(emitted)
+        self.assertNotIn(secret, emitted)
+        self.assertLessEqual(len(payload["huge"]), config.logging.report_error_max_chars)
+        self.assertLessEqual(len(payload["path"]), config.logging.report_error_max_chars)
+        self.assertLessEqual(len(payload["nested"]["url"]), config.logging.report_error_max_chars)
+
     def test_stderr_fallback_serializes_non_json_fields(self) -> None:
         config = cm.load_config(self.work)
         common = git_common_dir_compat(self.work)

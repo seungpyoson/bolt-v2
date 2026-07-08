@@ -661,6 +661,35 @@ impl ReadyRealizedVol {
             raise AssertionError(f"expected multiline cfg_attr Default derive finding, got {findings!r}")
 
 
+def test_verify_rejects_cfg_inactive_macro_generated_registered_default_impl() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/cfg_inactive_macro_default.rs": """
+macro_rules! default_for {
+    ($target:ty) => {
+        impl Default for $target {
+            fn default() -> Self { todo!() }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+default_for!(crate::bolt_v3_numeric::Probability);
+""",
+            },
+        )
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
+        if not any(
+            "registered FinancialValue Default impl/derive" in finding
+            and "for Probability" in finding
+            for finding in findings
+        ):
+            raise AssertionError(f"expected macro-generated Default finding, got {findings!r}")
+
+
 def test_registered_default_fence_fails_closed_when_registry_is_empty() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -912,6 +941,7 @@ def main() -> int:
         test_verify_rejects_cfg_gated_registered_financial_value_default_impl,
         test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
         test_verify_rejects_multiline_cfg_attr_default_derive,
+        test_verify_rejects_cfg_inactive_macro_generated_registered_default_impl,
         test_registered_default_fence_fails_closed_when_registry_is_empty,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,

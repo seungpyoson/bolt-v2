@@ -37,6 +37,26 @@ def test_missing_governed_artifact_is_loud_error() -> None:
             raise AssertionError(f"expected missing-artifact finding, got {findings!r}")
 
 
+def test_unlisted_governed_artifact_is_loud_error() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write(root / "ci" / "github-actions-runners.toml", """
+        [ci_provenance]
+        protected_value = "single-source-value"
+        """)
+        write(root / "ci" / "new-governed-config.toml", """
+        schema_version = 1
+        """)
+        findings = VERIFIER.collect_findings(
+            root,
+            governed_config_artifacts=("ci/github-actions-runners.toml",),
+            strict_paths=frozenset(),
+            ratchet_baseline_count=0,
+        )
+        if not any("governed config artifact unlisted: ci/new-governed-config.toml" in finding for finding in findings):
+            raise AssertionError(f"expected unlisted-artifact finding, got {findings!r}")
+
+
 def test_flatten_string_values_rejects_unhandled_container() -> None:
     try:
         list(VERIFIER.flatten_string_values({"outer": ("not", "toml")}, "ci_provenance"))
@@ -104,6 +124,74 @@ def test_registered_payload_allows_strict_retype_with_reason() -> None:
             raise AssertionError(f"registered retype should be accepted, got {findings!r}")
 
 
+def test_wildcard_registered_payload_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write(root / "ci" / "github-actions-runners.toml", """
+        [ci_provenance]
+        protected_value = "single-source-value"
+        """)
+        write(root / "scripts" / "changed.py", """
+        VALUE = "single-source-value"
+        """)
+        registration = VERIFIER.RegisteredRetype(
+            path="*",
+            value="single-source-value",
+            reason="wildcards would bypass path-specific review",
+        )
+        findings = VERIFIER.collect_findings(
+            root,
+            governed_config_artifacts=("ci/github-actions-runners.toml",),
+            strict_paths=frozenset({"scripts/changed.py"}),
+            ratchet_baseline_count=0,
+            registered_retypes=(registration,),
+        )
+        if not any("wildcard" in finding for finding in findings):
+            raise AssertionError(f"expected wildcard rejection, got {findings!r}")
+
+
+def test_extensionless_strict_script_is_scanned() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write(root / "ci" / "github-actions-runners.toml", """
+        [ci_provenance]
+        protected_value = "single-source-value"
+        """)
+        write(root / "scripts" / "cargo-shim", """
+        VALUE = "single-source-value"
+        """)
+        findings = VERIFIER.collect_findings(
+            root,
+            governed_config_artifacts=("ci/github-actions-runners.toml",),
+            strict_paths=frozenset({"scripts/cargo-shim"}),
+            ratchet_baseline_count=0,
+        )
+        if not any("scripts/cargo-shim" in finding for finding in findings):
+            raise AssertionError(f"expected extensionless script violation, got {findings!r}")
+
+
+def test_registered_payload_assignment_skip_is_limited_to_verifier_file() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write(root / "ci" / "github-actions-runners.toml", """
+        [ci_provenance]
+        protected_value = "single-source-value"
+        """)
+        write(root / "scripts" / "changed.py", """
+        REGISTERED_RETYPE_PAYLOADS = (
+            "single-source-value",
+        )
+        """)
+        findings = VERIFIER.collect_findings(
+            root,
+            governed_config_artifacts=("ci/github-actions-runners.toml",),
+            strict_paths=frozenset({"scripts/changed.py"}),
+            ratchet_baseline_count=0,
+        )
+        if not any("scripts/changed.py" in finding for finding in findings):
+            raise AssertionError(f"expected non-verifier assignment violation, got {findings!r}")
+
+
 def test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -149,10 +237,14 @@ def test_registered_payload_literals_do_not_self_violate() -> None:
 def main() -> int:
     tests = (
         test_missing_governed_artifact_is_loud_error,
+        test_unlisted_governed_artifact_is_loud_error,
         test_flatten_string_values_rejects_unhandled_container,
         test_flatten_string_values_ignores_numbers_and_bools,
         test_strict_touched_file_rejects_unregistered_retype,
         test_registered_payload_allows_strict_retype_with_reason,
+        test_wildcard_registered_payload_is_rejected,
+        test_extensionless_strict_script_is_scanned,
+        test_registered_payload_assignment_skip_is_limited_to_verifier_file,
         test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline,
         test_registered_payload_literals_do_not_self_violate,
     )

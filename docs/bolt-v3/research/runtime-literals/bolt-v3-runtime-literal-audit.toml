@@ -925,6 +925,38 @@ classification = "diagnostic_separator"
 reason = "This joins configured client venues for a fail-closed setup diagnostic; the venue values themselves come from TOML config."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"none"'''
+context = '''"none".to_string()'''
+classification = "startup_connect_timeout_diagnostic_placeholder"
+reason = "Display placeholder for an empty client-status list in a fail-loud startup timeout diagnostic; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''clients.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This joins configured client identifiers in a fail-loud startup timeout diagnostic; the client ids themselves come from TOML and NT registration state."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"startup timeout"'''
+context = '''"startup timeout",'''
+classification = "startup_watchdog_shutdown_reason_label"
+reason = "Stable log label naming the stop-and-grace path for startup deadline expiry; the timeout duration remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"startup capture-failure"'''
+context = '''"startup capture-failure",'''
+classification = "startup_watchdog_shutdown_reason_label"
+reason = "Stable log label naming the stop-and-grace path for capture failure before Running; the timeout duration remains config-owned."
+
+[[allowed]]
 path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''

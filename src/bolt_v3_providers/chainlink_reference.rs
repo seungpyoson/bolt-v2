@@ -1391,7 +1391,7 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
                 return;
             }
         };
-        let updates = match subscriptions.lock() {
+        let frame_updates = match subscriptions.lock() {
             Ok(subscriptions) => chainlink_reference_updates_from_report_frame(
                 &feed_bindings,
                 &subscriptions,
@@ -1402,10 +1402,13 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
                 "Chainlink reference subscription state poisoned: {error}"
             )),
         };
-        match updates {
-            Ok(updates) => {
-                if !updates.is_empty() {
+        match frame_updates {
+            Ok(frame_updates) => {
+                let updates = frame_updates.updates;
+                if frame_updates.report_observed {
                     last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
+                }
+                if !updates.is_empty() {
                     if let Some(recovery) = &input_health_recovery {
                         chainlink_reference_refresh_input_health_report_liveness(
                             &recovery.config,
@@ -1504,12 +1507,17 @@ fn chainlink_reference_recovered_input_health_sources(
     sources.into_values().collect()
 }
 
+struct ChainlinkReferenceReportFrameUpdates {
+    report_observed: bool,
+    updates: Vec<ReferencePriceUpdate>,
+}
+
 fn chainlink_reference_updates_from_report_frame(
     feed_bindings: &[ChainlinkStrikeFeedBinding],
     subscriptions: &BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>,
     frame: &str,
     received_ts_ms: u64,
-) -> Result<Vec<ReferencePriceUpdate>, String> {
+) -> Result<ChainlinkReferenceReportFrameUpdates, String> {
     let envelope = serde_json::from_str::<ChainlinkDataStreamsReportApiResponse>(frame)
         .map_err(|error| format!("invalid Chainlink reference report JSON: {error}"))?;
     let binding = feed_bindings
@@ -1533,7 +1541,7 @@ fn chainlink_reference_updates_from_report_frame(
     )
     .map_err(|error| format!("Chainlink reference report decode failed: {error}"))?;
     let instrument_id = binding.instrument_id.to_string();
-    subscriptions
+    let updates = subscriptions
         .values()
         .filter(|subscription| subscription.instrument_id == instrument_id)
         .map(|subscription| {
@@ -1549,8 +1557,13 @@ fn chainlink_reference_updates_from_report_frame(
                 received_ts_ms,
                 ReferenceQuoteProvenance::empty(),
             )
+            .map_err(|error| error.to_string())
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(ChainlinkReferenceReportFrameUpdates {
+        report_observed: true,
+        updates,
+    })
 }
 
 fn current_unix_timestamp_ms() -> anyhow::Result<u64> {
@@ -2485,8 +2498,36 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_report_frame_does_not_refresh_report_liveness() {
+    fn unsubscribed_report_frame_refreshes_report_liveness_without_emitting_data() {
         let (client, mut data_receiver) = fixture_client();
+        let last_report = test_last_report_clock();
+        let handler = chainlink_reference_message_handler_with_input_health_recovery(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            Arc::clone(&last_report),
+            None,
+        );
+
+        handler(WireMessage::text(chainlink_report_frame_json()));
+
+        assert!(
+            last_report.load(Ordering::SeqCst) > 0,
+            "valid configured Chainlink reports must refresh stream liveness even before NT subscriptions exist"
+        );
+        let error = data_receiver
+            .try_recv()
+            .expect_err("unsubscribed Chainlink report frame must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "unsubscribed report should leave the data channel open and empty, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_feed_report_does_not_refresh_report_liveness() {
+        let (client, mut data_receiver) =
+            fixture_client_with_bindings(vec![fixture_eth_feed_binding()]);
         let last_report = test_last_report_clock();
         let handler = chainlink_reference_message_handler_with_input_health_recovery(
             client.config.feed_bindings.clone(),
@@ -2501,14 +2542,14 @@ mod tests {
         assert_eq!(
             last_report.load(Ordering::SeqCst),
             0,
-            "valid Chainlink reports that produce no tracked update must not refresh report-data liveness"
+            "unknown Chainlink feed frames must not refresh report-data liveness"
         );
         let error = data_receiver
             .try_recv()
-            .expect_err("unmatched Chainlink report frame must not emit data");
+            .expect_err("unknown Chainlink report frame must not emit data");
         assert!(
             matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
-            "unmatched report should leave the data channel open and empty, got {error:?}"
+            "unknown feed should leave the data channel open and empty, got {error:?}"
         );
     }
 
@@ -3227,7 +3268,7 @@ mod tests {
                 Ok(frame) => frame,
                 Err(_) => return,
             };
-            let updates = match subscriptions.lock() {
+            let frame_updates = match subscriptions.lock() {
                 Ok(subscriptions) => chainlink_reference_updates_from_report_frame(
                     &feed_bindings,
                     &subscriptions,
@@ -3238,8 +3279,8 @@ mod tests {
                     "Chainlink reference subscription state poisoned: {error}"
                 )),
             };
-            if let Ok(updates) = updates {
-                for update in updates {
+            if let Ok(frame_updates) = frame_updates {
+                for update in frame_updates.updates {
                     let _ =
                         data_sender.send(DataEvent::Data(Data::Custom(update.to_custom_data())));
                 }

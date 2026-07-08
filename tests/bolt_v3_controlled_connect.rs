@@ -320,7 +320,7 @@ fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bou
         .expect_err("controlled-connect must surface the configured timeout");
 
     match error {
-        BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => {
+        BoltV3LiveNodeError::ConnectTimeout { timeout_secs, .. } => {
             assert_eq!(timeout_secs, 1);
         }
         other => panic!("expected ConnectTimeout, got {other}"),
@@ -597,7 +597,7 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
         .block_on(connect_bolt_v3_clients(&mut node, &loaded))
         .expect_err("controlled-connect must surface the configured timeout");
     match error {
-        BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => {
+        BoltV3LiveNodeError::ConnectTimeout { timeout_secs, .. } => {
             assert_eq!(timeout_secs, 1);
         }
         other => panic!("expected ConnectTimeout, got {other}"),

@@ -284,7 +284,18 @@ pub async fn connect_bolt_v3_clients(
     match tokio::time::timeout(bound, connect).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(BoltV3LiveNodeError::ConnectIncomplete),
-        Err(_) => Err(BoltV3LiveNodeError::ConnectTimeout { timeout_secs }),
+        Err(_) => {
+            let node_state = format!("{:?}", node.state());
+            let kernel = node.kernel();
+            Err(BoltV3LiveNodeError::ConnectTimeout {
+                timeout_secs,
+                node_state,
+                not_connected_clients: live_node_not_connected_client_labels_from_statuses(
+                    kernel.data_client_connection_status(),
+                    kernel.exec_client_connection_status(),
+                ),
+            })
+        }
     }
 }
 

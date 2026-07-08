@@ -96,19 +96,37 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         assert!(registered.data);
         assert!(!registered.execution);
 
-        let error = tokio::time::timeout(
-            Duration::from_secs(6),
-            run_bolt_v3_live_node(&mut node, &loaded),
-        )
-        .await
-        .expect("live-node boot must fail loudly instead of hanging past the smoke-test guard")
-        .expect_err("hanging Chainlink first-connect must fail startup");
+        let startup_bound = Duration::from_secs(3);
+        let shutdown_grace_bound = Duration::from_secs(2);
+        let wall_clock_bound = startup_bound + shutdown_grace_bound + Duration::from_secs(1);
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(wall_clock_bound, run_bolt_v3_live_node(&mut node, &loaded))
+            .await
+            .expect("live-node boot must fail loudly instead of hanging past the smoke-test guard")
+            .expect_err("hanging Chainlink first-connect must fail startup");
+        let elapsed = started.elapsed();
 
         server.abort();
 
+        assert!(
+            elapsed <= wall_clock_bound,
+            "boot failure should stay within startup bound ({startup_bound:?}) plus shutdown grace ({shutdown_grace_bound:?}), elapsed {elapsed:?}"
+        );
+
         match error {
-            BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => {
+            BoltV3LiveNodeError::ConnectTimeout {
+                timeout_secs,
+                node_state,
+                not_connected_clients,
+            } => {
                 assert_eq!(timeout_secs, 3);
+                assert_eq!(node_state, "Starting");
+                assert!(
+                    not_connected_clients
+                        .iter()
+                        .any(|client| client == "data:chainlink_reference"),
+                    "timeout must name the Chainlink client that never reached Running: {not_connected_clients:?}"
+                );
             }
             other => panic!("expected ConnectTimeout for hanging Chainlink boot, got {other}"),
         }

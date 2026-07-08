@@ -42,7 +42,9 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     rc::Rc,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -1834,6 +1836,8 @@ pub enum BoltV3LiveNodeError {
     /// production timeout without re-reading the source config.
     ConnectTimeout {
         timeout_secs: u64,
+        node_state: String,
+        not_connected_clients: Vec<String>,
     },
     /// The bolt-v3 controlled-connect boundary dispatched both NT
     /// engine-level connect futures within the configured bound, but
@@ -1979,10 +1983,16 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "LiveNode run, runtime-capture, or IV lifecycle stop failed and bolt-v3 decision \
                  evidence shutdown drain failed: run error: {run_error}; drain error: {drain_error}"
             ),
-            BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => write!(
+            BoltV3LiveNodeError::ConnectTimeout {
+                timeout_secs,
+                node_state,
+                not_connected_clients,
+            } => write!(
                 f,
                 "bolt-v3 live-node startup/connect exceeded the configured Nautilus timeout \
-                 bound ({timeout_secs}s)"
+                 bound ({timeout_secs}s); node_state={node_state}; \
+                 not_connected_clients={}",
+                live_node_client_list_for_display(not_connected_clients)
             ),
             BoltV3LiveNodeError::ConnectIncomplete => write!(
                 f,
@@ -2124,6 +2134,149 @@ fn strategy_free_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedB
 /// NT runner loop through the bolt-v3 wrapper that owns runtime capture and
 /// shutdown classification. Production callers must use this wrapper rather
 /// than invoking the NT runner method directly.
+#[derive(Clone, Debug)]
+struct LiveNodeStartupWatchdogBounds {
+    startup_timeout: Duration,
+    startup_timeout_secs: u64,
+    shutdown_grace: Duration,
+    shutdown_grace_secs: u64,
+}
+
+#[derive(Debug)]
+enum LiveNodeRunStartupOutcome {
+    Finished(Result<(), anyhow::Error>),
+    StartupTimeout {
+        timeout_secs: u64,
+        node_state: String,
+        not_connected_clients: Vec<String>,
+    },
+}
+
+async fn live_node_capture_failure_signal(
+    receiver: &mut Option<tokio::sync::oneshot::Receiver<()>>,
+) {
+    if let Some(receiver) = receiver.as_mut() {
+        let _ = receiver.await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+async fn stop_live_node_startup_with_grace<F, Stop>(
+    mut run_future: Pin<&mut F>,
+    request_stop: &mut Stop,
+    shutdown_grace: Duration,
+    shutdown_grace_secs: u64,
+    reason: &str,
+) -> Option<Result<(), anyhow::Error>>
+where
+    F: Future<Output = Result<(), anyhow::Error>>,
+    Stop: FnMut(),
+{
+    request_stop();
+    let startup_shutdown_grace = tokio::time::sleep(shutdown_grace);
+    tokio::pin!(startup_shutdown_grace);
+    tokio::select! {
+        result = run_future.as_mut() => Some(result),
+        _ = &mut startup_shutdown_grace => {
+            log::error!(
+                "LiveNode {reason} shutdown grace elapsed ({shutdown_grace_secs}s); \
+                 reporting startup timeout"
+            );
+            None
+        }
+    }
+}
+
+async fn live_node_run_startup_watchdog<F, State, Stop>(
+    mut run_future: Pin<&mut F>,
+    capture_failure_receiver: &mut Option<tokio::sync::oneshot::Receiver<()>>,
+    node_state: State,
+    mut request_stop: Stop,
+    bounds: LiveNodeStartupWatchdogBounds,
+    not_connected_clients: Vec<String>,
+) -> LiveNodeRunStartupOutcome
+where
+    F: Future<Output = Result<(), anyhow::Error>>,
+    State: Fn() -> NodeState,
+    Stop: FnMut(),
+{
+    let startup_deadline = tokio::time::sleep(bounds.startup_timeout);
+    tokio::pin!(startup_deadline);
+    let mut startup_deadline_fired = false;
+
+    loop {
+        let capture_failure_enabled = capture_failure_receiver.is_some();
+        tokio::select! {
+            result = run_future.as_mut() => break LiveNodeRunStartupOutcome::Finished(result),
+            _ = &mut startup_deadline, if !startup_deadline_fired => {
+                startup_deadline_fired = true;
+                let state = node_state();
+                if !matches!(&state, NodeState::Running) {
+                    let node_state = format!("{state:?}");
+                    log::error!(
+                        "LiveNode startup exceeded configured startup bound \
+                         ({}s); node_state={node_state}; not_connected_clients={}; requesting stop",
+                        bounds.startup_timeout_secs,
+                        live_node_client_list_for_display(&not_connected_clients)
+                    );
+                    let stop_result = stop_live_node_startup_with_grace(
+                        run_future.as_mut(),
+                        &mut request_stop,
+                        bounds.shutdown_grace,
+                        bounds.shutdown_grace_secs,
+                        "startup timeout",
+                    )
+                    .await;
+                    if let Some(Err(error)) = &stop_result {
+                        log::error!(
+                            "LiveNode run failed during startup timeout shutdown: {error}"
+                        );
+                    }
+                    break LiveNodeRunStartupOutcome::StartupTimeout {
+                        timeout_secs: bounds.startup_timeout_secs,
+                        node_state,
+                        not_connected_clients,
+                    };
+                }
+            }
+            _ = live_node_capture_failure_signal(capture_failure_receiver), if capture_failure_enabled => {
+                let state = node_state();
+                if matches!(&state, NodeState::Running) {
+                    log::error!(
+                        "NT runtime capture failure detected after LiveNode Running; \
+                         awaiting LiveNode shutdown"
+                    );
+                    break LiveNodeRunStartupOutcome::Finished(run_future.as_mut().await);
+                }
+
+                let node_state = format!("{state:?}");
+                log::error!(
+                    "NT runtime capture failure detected before LiveNode Running; \
+                     node_state={node_state}; not_connected_clients={}; requesting stop",
+                    live_node_client_list_for_display(&not_connected_clients)
+                );
+                let stop_result = stop_live_node_startup_with_grace(
+                    run_future.as_mut(),
+                    &mut request_stop,
+                    bounds.shutdown_grace,
+                    bounds.shutdown_grace_secs,
+                    "startup capture-failure",
+                )
+                .await;
+                match stop_result {
+                    Some(result) => break LiveNodeRunStartupOutcome::Finished(result),
+                    None => break LiveNodeRunStartupOutcome::StartupTimeout {
+                        timeout_secs: bounds.startup_timeout_secs,
+                        node_state,
+                        not_connected_clients,
+                    },
+                }
+            }
+        }
+    }
+}
+
 pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
@@ -2156,105 +2309,26 @@ pub async fn run_bolt_v3_live_node(
     let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
     let startup_timeout_secs = live_node_startup_timeout_secs(loaded)?;
     let startup_shutdown_grace_secs = live_node_startup_shutdown_grace_timeout_secs(loaded)?;
-    let startup_deadline = tokio::time::sleep(Duration::from_secs(startup_timeout_secs));
-    tokio::pin!(startup_deadline);
-
-    enum LiveNodeRunStartupOutcome {
-        Finished(Result<(), anyhow::Error>),
-        StartupTimeout { timeout_secs: u64 },
-    }
+    let startup_not_connected_clients = live_node_startup_not_connected_client_labels(runtime);
 
     let run_outcome = {
         let node = &mut runtime.node;
         let run_future = node.run();
         tokio::pin!(run_future);
-        let mut startup_deadline_fired = false;
-
-        loop {
-            if let Some(receiver) = capture_failure_receiver.as_mut() {
-                tokio::select! {
-                    result = &mut run_future => break LiveNodeRunStartupOutcome::Finished(result),
-                    _ = &mut startup_deadline, if !startup_deadline_fired => {
-                        startup_deadline_fired = true;
-                        if !matches!(node_handle.state(), NodeState::Running) {
-                            log::error!(
-                                "LiveNode startup exceeded configured startup bound \
-                                 ({startup_timeout_secs}s); requesting stop"
-                            );
-                            node_handle.stop();
-                            let startup_shutdown_grace = tokio::time::sleep(Duration::from_secs(
-                                startup_shutdown_grace_secs,
-                            ));
-                            tokio::pin!(startup_shutdown_grace);
-                            tokio::select! {
-                                result = &mut run_future => {
-                                    if let Err(error) = &result {
-                                        log::error!(
-                                            "LiveNode run failed during startup timeout shutdown: \
-                                             {error}"
-                                        );
-                                    }
-                                }
-                                _ = &mut startup_shutdown_grace => {
-                                    log::error!(
-                                        "LiveNode startup timeout shutdown grace elapsed \
-                                         ({startup_shutdown_grace_secs}s); reporting startup \
-                                         timeout"
-                                    );
-                                }
-                            }
-                            break LiveNodeRunStartupOutcome::StartupTimeout {
-                                timeout_secs: startup_timeout_secs,
-                            };
-                        }
-                    }
-                    _ = receiver => {
-                        log::error!(
-                            "NT runtime capture failure detected, awaiting LiveNode shutdown"
-                        );
-                        break LiveNodeRunStartupOutcome::Finished(run_future.await);
-                    }
-                }
-            } else {
-                tokio::select! {
-                    result = &mut run_future => break LiveNodeRunStartupOutcome::Finished(result),
-                    _ = &mut startup_deadline, if !startup_deadline_fired => {
-                        startup_deadline_fired = true;
-                        if !matches!(node_handle.state(), NodeState::Running) {
-                            log::error!(
-                                "LiveNode startup exceeded configured startup bound \
-                                 ({startup_timeout_secs}s); requesting stop"
-                            );
-                            node_handle.stop();
-                            let startup_shutdown_grace = tokio::time::sleep(Duration::from_secs(
-                                startup_shutdown_grace_secs,
-                            ));
-                            tokio::pin!(startup_shutdown_grace);
-                            tokio::select! {
-                                result = &mut run_future => {
-                                    if let Err(error) = &result {
-                                        log::error!(
-                                            "LiveNode run failed during startup timeout shutdown: \
-                                             {error}"
-                                        );
-                                    }
-                                }
-                                _ = &mut startup_shutdown_grace => {
-                                    log::error!(
-                                        "LiveNode startup timeout shutdown grace elapsed \
-                                         ({startup_shutdown_grace_secs}s); reporting startup \
-                                         timeout"
-                                    );
-                                }
-                            }
-                            break LiveNodeRunStartupOutcome::StartupTimeout {
-                                timeout_secs: startup_timeout_secs,
-                            };
-                        }
-                    }
-                }
-            }
-        }
+        live_node_run_startup_watchdog(
+            run_future.as_mut(),
+            &mut capture_failure_receiver,
+            || node_handle.state(),
+            || node_handle.stop(),
+            LiveNodeStartupWatchdogBounds {
+                startup_timeout: Duration::from_secs(startup_timeout_secs),
+                startup_timeout_secs,
+                shutdown_grace: Duration::from_secs(startup_shutdown_grace_secs),
+                shutdown_grace_secs: startup_shutdown_grace_secs,
+            },
+            startup_not_connected_clients,
+        )
+        .await
     };
     if let Some(task) = iv_start_task {
         task.abort();
@@ -2266,11 +2340,19 @@ pub async fn run_bolt_v3_live_node(
         LiveNodeRunStartupOutcome::Finished(run_result) => {
             classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
         }
-        LiveNodeRunStartupOutcome::StartupTimeout { timeout_secs } => {
+        LiveNodeRunStartupOutcome::StartupTimeout {
+            timeout_secs,
+            node_state,
+            not_connected_clients,
+        } => {
             if let Err(error) = shutdown_result {
                 log::error!("NT runtime capture shutdown failed after startup timeout: {error}");
             }
-            Err(BoltV3LiveNodeError::ConnectTimeout { timeout_secs })
+            Err(BoltV3LiveNodeError::ConnectTimeout {
+                timeout_secs,
+                node_state,
+                not_connected_clients,
+            })
         }
     };
     let producer_guards =
@@ -2312,6 +2394,45 @@ fn live_node_startup_shutdown_grace_timeout_secs(
     loaded: &LoadedBoltV3Config,
 ) -> Result<u64, BoltV3LiveNodeError> {
     strategy_free_stop_timeout_secs(loaded)
+}
+
+fn live_node_client_list_for_display(clients: &[String]) -> String {
+    if clients.is_empty() {
+        "none".to_string()
+    } else {
+        clients.join(", ")
+    }
+}
+
+fn live_node_startup_not_connected_client_labels(runtime: &BoltV3LiveNodeRuntime) -> Vec<String> {
+    runtime
+        .registered_data_client_ids()
+        .into_iter()
+        .map(|client_id| format!("data:{client_id}"))
+        .chain(
+            runtime
+                .registered_exec_client_ids()
+                .into_iter()
+                .map(|client_id| format!("exec:{client_id}")),
+        )
+        .collect()
+}
+
+fn live_node_not_connected_client_labels_from_statuses(
+    data_client_status: Vec<(ClientId, bool)>,
+    exec_client_status: Vec<(ClientId, bool)>,
+) -> Vec<String> {
+    data_client_status
+        .into_iter()
+        .filter_map(|(client_id, connected)| (!connected).then(|| format!("data:{client_id}")))
+        .chain(
+            exec_client_status
+                .into_iter()
+                .filter_map(|(client_id, connected)| {
+                    (!connected).then(|| format!("exec:{client_id}"))
+                }),
+        )
+        .collect()
 }
 
 fn strategy_free_stop_timeout_secs(

@@ -55,6 +55,7 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/ci_workflow_hygiene_test_helpers.py",
         "scripts/git_remote_utils.py",
         "scripts/governance_diff_analysis.py",
+        "scripts/merge_queue_preflight.py",
         "scripts/merge_queue_operator.py",
         "scripts/minimal_toml.py",
         "scripts/run_ci_lint_suites.py",
@@ -202,6 +203,10 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
     "scripts/governance_diff_analysis.py": (
         "AGENTS.md",
         "]",
+    ),
+    "scripts/merge_queue_preflight.py": (
+        "]",
+        "ci",
     ),
     "scripts/workflow_expression_analysis.py": (
         "build",

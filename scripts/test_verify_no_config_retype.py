@@ -262,6 +262,7 @@ def test_relocated_hygiene_modules_are_strict_paths() -> None:
     expected = {
         "scripts/cargo_command_analysis.py",
         "scripts/ci_workflow_hygiene_test_helpers.py",
+        "scripts/merge_queue_preflight.py",
         "scripts/shell_dataflow_analysis.py",
         "scripts/governance_diff_analysis.py",
         "scripts/workflow_expression_analysis.py",

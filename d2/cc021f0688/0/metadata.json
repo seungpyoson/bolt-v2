@@ -1,0 +1,77 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "d2cc021f0688",
+  "session_id": "a2712926-fa94-405b-b44f-792003993c06",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-09T07:22:36.228563Z",
+  "branch": "chore/704-phase3-batch-plan-eviction",
+  "checkpoints_count": 4,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8[1m]",
+  "turn_id": "1709fc29e846",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 22135,
+    "cache_creation_tokens": 1105476,
+    "cache_read_tokens": 68099582,
+    "output_tokens": 364347,
+    "api_call_count": 189
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 249,
+      "user_lines_removed": 129,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "crates/backtesting-vertical-slice/src/backfill_accepted_tranche.rs": 6,
+        "crates/backtesting-vertical-slice/src/backfill_binding_coverage.rs": 8,
+        "crates/backtesting-vertical-slice/src/backfill_conversion_batch.rs": 15,
+        "crates/backtesting-vertical-slice/src/backfill_conversion_completion.rs": 8,
+        "crates/backtesting-vertical-slice/src/backfill_coverage.rs": 9,
+        "crates/backtesting-vertical-slice/src/backfill_execution_plan.rs": 23,
+        "crates/backtesting-vertical-slice/src/backfill_preflight.rs": 6,
+        "crates/backtesting-vertical-slice/src/backfill_source_proof_scope.rs": 10,
+        "crates/backtesting-vertical-slice/src/first_proof_selector.rs": 15,
+        "crates/backtesting-vertical-slice/src/reference_artifact.rs": 41,
+        "crates/backtesting-vertical-slice/src/source_catalog_mapping_readiness.rs": 7,
+        "crates/backtesting-vertical-slice/src/source_proof_admissibility.rs": 7,
+        "crates/backtesting-vertical-slice/src/source_proof_migration_preflight.rs": 8,
+        "crates/backtesting-vertical-slice/src/source_selection_readiness.rs": 8,
+        "crates/backtesting-vertical-slice/src/source_universe_object_gates.rs": 10,
+        "crates/backtesting-vertical-slice/src/source_universe_source_proofs.rs": 10,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_conversion_completion.rs": 9,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs": 2,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_test_support.rs": 44,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_tests.rs": 2,
+        "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json": 1
+      },
+      "user_removed_per_file": {
+        "crates/backtesting-vertical-slice/src/backfill_accepted_tranche.rs": 2,
+        "crates/backtesting-vertical-slice/src/backfill_binding_coverage.rs": 3,
+        "crates/backtesting-vertical-slice/src/backfill_conversion_batch.rs": 7,
+        "crates/backtesting-vertical-slice/src/backfill_conversion_completion.rs": 31,
+        "crates/backtesting-vertical-slice/src/backfill_coverage.rs": 3,
+        "crates/backtesting-vertical-slice/src/backfill_execution_plan.rs": 11,
+        "crates/backtesting-vertical-slice/src/backfill_preflight.rs": 2,
+        "crates/backtesting-vertical-slice/src/backfill_source_proof_scope.rs": 4,
+        "crates/backtesting-vertical-slice/src/first_proof_selector.rs": 4,
+        "crates/backtesting-vertical-slice/src/source_catalog_mapping_readiness.rs": 2,
+        "crates/backtesting-vertical-slice/src/source_proof_admissibility.rs": 3,
+        "crates/backtesting-vertical-slice/src/source_proof_migration_preflight.rs": 3,
+        "crates/backtesting-vertical-slice/src/source_selection_readiness.rs": 3,
+        "crates/backtesting-vertical-slice/src/source_universe_object_gates.rs": 8,
+        "crates/backtesting-vertical-slice/src/source_universe_source_proofs.rs": 8,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_conversion_completion.rs": 17,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs": 17,
+        "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json": 1
+      }
+    }
+  ]
+}

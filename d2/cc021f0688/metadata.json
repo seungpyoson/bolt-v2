@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "d2cc021f0688",
+  "strategy": "manual-commit",
+  "branch": "chore/704-phase3-batch-plan-eviction",
+  "checkpoints_count": 4,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/d2/cc021f0688/0/metadata.json",
+      "transcript": "/d2/cc021f0688/0/full.jsonl",
+      "compact_transcript": "/d2/cc021f0688/0/transcript.jsonl",
+      "content_hash": "/d2/cc021f0688/0/content_hash.txt",
+      "prompt": "/d2/cc021f0688/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 22135,
+    "cache_creation_tokens": 1105476,
+    "cache_read_tokens": 68099582,
+    "output_tokens": 364347,
+    "api_call_count": 189
+  }
+}

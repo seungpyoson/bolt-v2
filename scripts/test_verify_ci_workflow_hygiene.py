@@ -9738,6 +9738,12 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "Resolve sccache enablement must be continue-on-error",
         ),
         (
+            "shared action must disable vendor stats annotations",
+            action_text.replace('        disable_annotations: "true"\n', "", 1),
+            config_text,
+            "must disable vendor sccache stats annotations",
+        ),
+        (
             "shared action must summarize cache state",
             action_text.replace("        echo \"sccache cache:", "        echo \"cache:", 1),
             config_text,

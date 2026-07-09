@@ -13407,6 +13407,8 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned sccache action")
     if 'version: "v0.10.0"' not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pin sccache v0.10.0")
+    if 'disable_annotations: "true"' not in install_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must disable vendor sccache stats annotations")
     for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
         if fragment not in enable_text:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")

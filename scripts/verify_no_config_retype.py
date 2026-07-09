@@ -93,7 +93,7 @@ STRICT_RETYPE_PATHS = frozenset(
 
 # Recompute by running verify_no_config_retype.py after intentional ratchet
 # removals/additions; this value is the exact current non-strict count.
-RATCHET_BASELINE_COUNT = 2588
+RATCHET_BASELINE_COUNT = 2575
 
 
 @dataclass(frozen=True)

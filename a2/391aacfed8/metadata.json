@@ -3,7 +3,7 @@
   "checkpoint_id": "a2391aacfed8",
   "strategy": "manual-commit",
   "branch": "fix/1319-build-script-rerun-existing-paths",
-  "checkpoints_count": 1,
+  "checkpoints_count": 10,
   "files_touched": [
     "build.rs",
     "tests/build_script_git_head_rerun_paths.rs"
@@ -15,13 +15,20 @@
       "compact_transcript": "/a2/391aacfed8/0/transcript.jsonl",
       "content_hash": "/a2/391aacfed8/0/content_hash.txt",
       "prompt": "/a2/391aacfed8/0/prompt.txt"
+    },
+    {
+      "metadata": "/a2/391aacfed8/1/metadata.json",
+      "transcript": "/a2/391aacfed8/1/full.jsonl",
+      "compact_transcript": "/a2/391aacfed8/1/transcript.jsonl",
+      "content_hash": "/a2/391aacfed8/1/content_hash.txt",
+      "prompt": "/a2/391aacfed8/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 5161,
-    "cache_creation_tokens": 227455,
-    "cache_read_tokens": 3426315,
-    "output_tokens": 25744,
-    "api_call_count": 17
+    "input_tokens": 63067,
+    "cache_creation_tokens": 4599674,
+    "cache_read_tokens": 211133985,
+    "output_tokens": 800122,
+    "api_call_count": 564
   }
 }

@@ -67,6 +67,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import clean_merged_artifacts as cm  # type: ignore  # noqa: E402
+from ci_workflow_hygiene_test_helpers import (  # noqa: E402
+    init_fixture_repo,
+    repo_git_command,
+    suppress_repo_auto_maintenance,
+)  # noqa: E402
 
 GIT_ENV = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -92,14 +97,14 @@ def _run(args: list[str], *, cwd: pathlib.Path, env: dict[str, str] | None = Non
 
 
 def git(cwd: pathlib.Path, *args: str) -> str:
-    return _run(["git", *args], cwd=cwd).stdout
+    return _run(repo_git_command(*args), cwd=cwd).stdout
 
 
 def git_common_dir_compat(work: pathlib.Path) -> pathlib.Path:
     if not work.is_dir():
         raise FileNotFoundError(f"Work directory {work} does not exist")
     common_dir = pathlib.Path(
-        _run(["git", "rev-parse", "--git-common-dir"], cwd=work).stdout.strip()
+        _run(repo_git_command("rev-parse", "--git-common-dir"), cwd=work).stdout.strip()
     )
     if not common_dir.is_absolute():
         common_dir = work / common_dir
@@ -113,12 +118,12 @@ def file_sha256(path: pathlib.Path) -> str:
 def make_repo(tmp: pathlib.Path) -> pathlib.Path:
     """Bare remote + working clone. Returns the working repo path."""
     remote = tmp / "remote.git"
-    _run(["git", "init", "--bare", "-b", "main", str(remote)], cwd=tmp)
+    init_fixture_repo(remote, "--bare", "-b", "main")
     work = tmp / "work"
-    _run(["git", "init", "-b", "main", str(work)], cwd=tmp)
-    _run(["git", "remote", "add", "origin", str(remote)], cwd=work)
-    _run(["git", "commit", "--allow-empty", "-m", "init"], cwd=work)
-    _run(["git", "push", "-u", "origin", "main"], cwd=work)
+    init_fixture_repo(work, "-b", "main")
+    _run(repo_git_command("remote", "add", "origin", str(remote)), cwd=work)
+    _run(repo_git_command("commit", "--allow-empty", "-m", "init"), cwd=work)
+    _run(repo_git_command("push", "-u", "origin", "main"), cwd=work)
     return work
 
 
@@ -223,14 +228,14 @@ def run_clean_inproc(work: pathlib.Path, *args: str) -> int:
 
 def merged_branch_at(work: pathlib.Path, name: str, *, advance_to_trunk: bool = True) -> str:
     """Create a branch, advance it as an ancestor of main, return its tip SHA."""
-    _run(["git", "branch", name], cwd=work)
-    tip = _run(["git", "rev-parse", name], cwd=work).stdout.strip()
+    _run(repo_git_command("branch", name), cwd=work)
+    tip = _run(repo_git_command("rev-parse", name), cwd=work).stdout.strip()
     return tip
 
 
 def add_worktree(work: pathlib.Path, branch: str, dest: pathlib.Path) -> pathlib.Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _run(["git", "worktree", "add", str(dest), branch], cwd=work)
+    _run(repo_git_command("worktree", "add", str(dest), branch), cwd=work)
     return dest
 
 
@@ -251,7 +256,7 @@ class LaneHTests(unittest.TestCase):
         # Create a branch at current HEAD (so it's an ancestor of trunk after trunk advances)
         git(self.work, "branch", "feat/ancestor")
         # Advance trunk past the branch
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         # Now feat/ancestor is an ancestor of main
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
         self.assertEqual(rc, 0)
@@ -259,18 +264,18 @@ class LaneHTests(unittest.TestCase):
         self.assertNotIn("feat/ancestor", branches)
 
     def test_unmerged_kept_by_lane_h(self) -> None:
-        _run(["git", "checkout", "-b", "feat/unmerged"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "new-work"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/unmerged"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "new-work"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         branches = git(self.work, "branch", "--list")
         self.assertIn("feat/unmerged", branches)
 
     def test_trunk_and_current_kept(self) -> None:
-        _run(["git", "checkout", "-b", "feat/cur"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/cur"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         # main is the trunk; feat/cur is unmerged -> kept anyway
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
         self.assertEqual(rc, 0)
@@ -280,8 +285,8 @@ class LaneHTests(unittest.TestCase):
 
     def test_worktree_bound_skipped_by_lane_h(self) -> None:
         # branch at current HEAD, advanced trunk, but bound to a worktree
-        _run(["git", "branch", "feat/bound"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/bound"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         add_worktree(self.work, "feat/bound", self.tmp / "wt-bound")
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
         self.assertEqual(rc, 0)
@@ -291,8 +296,8 @@ class LaneHTests(unittest.TestCase):
 
     def test_master_has_no_implicit_lane_h_protection(self) -> None:
         """Only configured trunk/current/keep are protected branch identities."""
-        _run(["git", "branch", "master"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "master"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
 
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
 
@@ -321,12 +326,12 @@ class LaneRTests(unittest.TestCase):
 
     def test_headRefOid_mismatch_kept(self) -> None:
         # branch reused with new commits after a squash merge
-        _run(["git", "checkout", "-b", "feat/x"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "old"], cwd=self.work)
-        old_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
+        _run(repo_git_command("checkout", "-b", "feat/x"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "old"), cwd=self.work)
+        old_sha = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
         # gh says merged at OLD sha
-        _run(["git", "commit", "--allow-empty", "-m", "new-unmerged"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "new-unmerged"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         # set the origin owner so the same-repo filter is exercised
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
@@ -341,10 +346,10 @@ class LaneRTests(unittest.TestCase):
         self.assertIn("feat/x", branches, "headRefOid mismatch must keep the branch")
 
     def test_baseRefName_mismatch_kept(self) -> None:
-        _run(["git", "checkout", "-b", "feat/release"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/release"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        tip = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 2, "headRefOid": tip,
@@ -357,10 +362,10 @@ class LaneRTests(unittest.TestCase):
         self.assertIn("feat/release", git(self.work, "branch", "--list"))
 
     def test_cross_repo_pr_kept(self) -> None:
-        _run(["git", "checkout", "-b", "feat/fork"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/fork"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        tip = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 3, "headRefOid": tip,
@@ -374,10 +379,10 @@ class LaneRTests(unittest.TestCase):
                        "cross-repo (fork) PR must not delete local branch")
 
     def test_exact_match_deleted_via_cas(self) -> None:
-        _run(["git", "checkout", "-b", "feat/merged"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/merged"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        tip = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 4, "headRefOid": tip,
@@ -394,9 +399,9 @@ class LaneRTests(unittest.TestCase):
         self.assertIn(tip[:12], backups)
 
     def test_gh_error_kept(self) -> None:
-        _run(["git", "checkout", "-b", "feat/err"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/err"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning(None, error="gh exit 1: auth")):
             rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
@@ -405,9 +410,9 @@ class LaneRTests(unittest.TestCase):
                        "gh error must keep the branch (never treat trouble as merged)")
 
     def test_gh_timeout_kept(self) -> None:
-        _run(["git", "checkout", "-b", "feat/timeout"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/timeout"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning(None, error="gh timeout")):
             rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
@@ -466,10 +471,10 @@ class LaneRTests(unittest.TestCase):
 
     def test_lane_r_skips_worktree_bound(self) -> None:
         # The structural P0 fix: Lane R must NEVER update-ref -d a worktree-bound branch.
-        _run(["git", "checkout", "-b", "feat/wt"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/wt"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        tip = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         add_worktree(self.work, "feat/wt", self.tmp / "wt-r")
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
@@ -483,17 +488,17 @@ class LaneRTests(unittest.TestCase):
         # branch still exists, worktree still bound, NOT bricked
         self.assertIn("feat/wt", git(self.work, "branch", "--list"))
         # verify worktree HEAD is NOT zeros (not bricked)
-        wt_head = _run(["git", "--git-dir", str(self.tmp / "wt-r" / ".git"),
-                         "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
+        wt_head = _run(repo_git_command("--git-dir", str(self.tmp / "wt-r" / ".git"),
+                         "rev-parse", "HEAD"), cwd=self.work).stdout.strip()
         self.assertNotEqual(wt_head, "0" * 40, "Lane R must not brick the worktree")
 
     def test_branch_reuse_after_merge(self) -> None:
         # First commit (merged), second commit (unmerged) on same branch name.
-        _run(["git", "checkout", "-b", "feat/reuse"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "v1"], cwd=self.work)
-        v1 = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "commit", "--allow-empty", "-m", "v2-unmerged"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/reuse"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "v1"), cwd=self.work)
+        v1 = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("commit", "--allow-empty", "-m", "v2-unmerged"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         # gh returns the merged PR for v1; current tip is v2 -> must mismatch -> kept
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
@@ -507,8 +512,8 @@ class LaneRTests(unittest.TestCase):
 
     def test_master_has_no_implicit_lane_r_protection(self) -> None:
         """Lane R shares the same branch identity contract as Lane H."""
-        _run(["git", "branch", "master"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "master"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
 
         rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
 
@@ -530,8 +535,8 @@ class LaneWTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_purge_quarantine_preserves_dir_without_manifest(self) -> None:
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         q = common / "clean-merged-quarantine" / "missing-manifest"
         q.mkdir(parents=True)
         old_ts = time.time() - 31 * 86400
@@ -570,11 +575,11 @@ class LaneWTests(unittest.TestCase):
         # Optionally commit a .gitignore on trunk before branching so worktrees inherit it.
         if gitignore is not None:
             (self.work / ".gitignore").write_text(gitignore, encoding="utf-8")
-            _run(["git", "add", ".gitignore"], cwd=self.work)
-            _run(["git", "commit", "-m", "add gitignore"], cwd=self.work)
-            _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
-        _run(["git", "branch", name], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+            _run(repo_git_command("add", ".gitignore"), cwd=self.work)
+            _run(repo_git_command("commit", "-m", "add gitignore"), cwd=self.work)
+            _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
+        _run(repo_git_command("branch", name), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         wt_path = self.tmp / f"wt-{name.replace('/', '-')}"
         add_worktree(self.work, name, wt_path)
         return wt_path
@@ -589,8 +594,8 @@ class LaneWTests(unittest.TestCase):
         # worktree removed from original location
         self.assertFalse(wt_path.exists(), "original worktree path must be vacated")
         # quarantine dir holds archive + manifest as one unit
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         q = common / "clean-merged-quarantine"
         self.assertTrue(q.is_dir())
         entries = list(q.iterdir())
@@ -635,12 +640,12 @@ class LaneWTests(unittest.TestCase):
         """
         # Commit tracked.txt on trunk first so it inherits to the worktree.
         (self.work / tracked_filename).write_text("v1\n", encoding="utf-8")
-        _run(["git", "add", tracked_filename], cwd=self.work)
-        _run(["git", "commit", "-m", "add tracked"], cwd=self.work)
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("add", tracked_filename), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "add tracked"), cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
         # Branch at this HEAD; then advance trunk so branch is an ancestor.
-        _run(["git", "branch", name], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", name), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         wt_path = self.tmp / f"wt-{name.replace('/', '-')}"
         add_worktree(self.work, name, wt_path)
         return wt_path, wt_path / tracked_filename
@@ -649,7 +654,7 @@ class LaneWTests(unittest.TestCase):
         wt_path, tracked = self._setup_merged_worktree_with_tracked_file("feat/au")
         # Modify the tracked file in the worktree, then hide the modification.
         tracked.write_text("modified-but-hidden\n", encoding="utf-8")
-        _run(["git", "update-index", "--assume-unchanged", tracked.name], cwd=wt_path)
+        _run(repo_git_command("update-index", "--assume-unchanged", tracked.name), cwd=wt_path)
         rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         # refused: worktree + branch still present
@@ -662,7 +667,7 @@ class LaneWTests(unittest.TestCase):
     def test_skip_worktree_refused(self) -> None:
         wt_path, tracked = self._setup_merged_worktree_with_tracked_file("feat/sw")
         tracked.write_text("hidden\n", encoding="utf-8")
-        _run(["git", "update-index", "--skip-worktree", tracked.name], cwd=wt_path)
+        _run(repo_git_command("update-index", "--skip-worktree", tracked.name), cwd=wt_path)
         rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertTrue(wt_path.exists(),
@@ -672,7 +677,7 @@ class LaneWTests(unittest.TestCase):
     def test_dirty_worktree_refused(self) -> None:
         wt_path = self._setup_merged_worktree_branch("feat/dirty")
         (wt_path / "tracked.txt").write_text("dirty\n", encoding="utf-8")
-        _run(["git", "add", "tracked.txt"], cwd=wt_path)
+        _run(repo_git_command("add", "tracked.txt"), cwd=wt_path)
         proc = run_clean_proc(self.work, "--include-worktrees", "--apply")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(wt_path.exists())
@@ -683,7 +688,7 @@ class LaneWTests(unittest.TestCase):
         wt_path = self._setup_merged_worktree_branch("feat/nested")
         nested = wt_path / "vendor" / "ext"
         nested.mkdir(parents=True)
-        _run(["git", "init"], cwd=nested)
+        init_fixture_repo(nested)
         rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertTrue(wt_path.exists())
@@ -718,8 +723,8 @@ class LaneWTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if args[:2] == ["worktree", "remove"] and "sha" not in injected:
                 (wt_path / "late.txt").write_text("late local work\n", encoding="utf-8")
-                _run(["git", "add", "late.txt"], cwd=wt_path)
-                _run(["git", "commit", "-m", "late local work"], cwd=wt_path)
+                _run(repo_git_command("add", "late.txt"), cwd=wt_path)
+                _run(repo_git_command("commit", "-m", "late local work"), cwd=wt_path)
                 injected["sha"] = git(wt_path, "rev-parse", "HEAD").strip()
             return original_git(repo_root, args, **kwargs)
 
@@ -786,8 +791,8 @@ class InfraTests(unittest.TestCase):
     def test_dry_run_mutates_nothing(self) -> None:
         # feat/keep at current HEAD; trunk then advances so feat/keep IS an ancestor.
         # Dry-run must report it as a candidate but NOT delete.
-        _run(["git", "branch", "feat/keep"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/keep"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         before = git(self.work, "for-each-ref")
         rc = run_clean(self.work, "--lane", "h")  # no --apply
         self.assertEqual(rc, 0)
@@ -797,8 +802,8 @@ class InfraTests(unittest.TestCase):
         self.assertEqual(git(self.work, "for-each-ref", "refs/clean-merged/").strip(), "")
 
     def test_kill_switch(self) -> None:
-        _run(["git", "branch", "feat/kill"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/kill"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet",
                         env={"CLEAN_MERGED_DISABLED": "1"})
         self.assertEqual(rc, 0)
@@ -807,14 +812,14 @@ class InfraTests(unittest.TestCase):
     def test_audit_log_under_git_common_dir(self) -> None:
         # Delete a branch via Lane H, then verify the audit log lands in
         # git-common-dir (NOT a per-worktree .git), which matters for linked worktrees.
-        _run(["git", "branch", "feat/audit"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/audit"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertNotIn("feat/audit", git(self.work, "branch", "--list"),
                           "precondition: feat/audit was eligible and should have been deleted")
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         log = common / "clean-merged.log"
         self.assertTrue(log.is_file(), "audit log must be written under git-common-dir")
         content = log.read_text(encoding="utf-8")
@@ -1187,8 +1192,8 @@ class InfraTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        _run(["git", "branch", "feat/direct-audit"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/direct-audit"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         proc = run_clean_proc(self.work, "--lane", "h", "--apply", "--quiet")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -1201,8 +1206,8 @@ class InfraTests(unittest.TestCase):
         self.assertIsNotNone(lock_fd)
 
         try:
-            _run(["git", "branch", "feat/direct-lock"], cwd=self.work)
-            _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+            _run(repo_git_command("branch", "feat/direct-lock"), cwd=self.work)
+            _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
             proc = run_clean_proc(self.work, "--lane", "h", "--apply", "--quiet")
         finally:
             if lock_fd is not None:
@@ -1301,10 +1306,10 @@ class InfraTests(unittest.TestCase):
         })
 
     def test_backup_ref_is_sha_addressed(self) -> None:
-        _run(["git", "checkout", "-b", "feat/sha"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
-        tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/sha"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "x"), cwd=self.work)
+        tip = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 lambda r, c, b, t: ([{
                                     "number": 9, "headRefOid": tip, "baseRefName": "main",
@@ -1339,8 +1344,8 @@ class InfraTests(unittest.TestCase):
         self.assertNotIn("Traceback", proc.stdout + proc.stderr)
 
     def test_doctor_reports_rotated_log_usage(self) -> None:
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         (common / "clean-merged.log.1").write_text("audit\n", encoding="utf-8")
         (common / "clean-merged.lane-r.log.1.123.456").write_text("lane r\n", encoding="utf-8")
 
@@ -1357,8 +1362,8 @@ class InfraTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         hb = common / "clean-merged.heartbeat"
         hb.write_text(
             (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat(),
@@ -1380,20 +1385,21 @@ class SyncMainTests(unittest.TestCase):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-sync-"))
         self.work = make_repo(self.tmp)
         make_config(self.work)
-        _run(["git", "add", "config/clean-merged.toml"], cwd=self.work)
-        _run(["git", "commit", "-m", "add clean-merged config"], cwd=self.work)
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("add", "config/clean-merged.toml"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "add clean-merged config"), cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _advance_remote_main(self, message: str = "remote-advance") -> str:
         other = self.tmp / f"other-{time.time_ns()}"
-        _run(["git", "clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)],
+        _run(repo_git_command("clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)),
              cwd=self.tmp)
-        _run(["git", "commit", "--allow-empty", "-m", message], cwd=other)
-        _run(["git", "push", "-q", "origin", "main"], cwd=other)
-        return _run(["git", "rev-parse", "HEAD"], cwd=other).stdout.strip()
+        suppress_repo_auto_maintenance(other)
+        _run(repo_git_command("commit", "--allow-empty", "-m", message), cwd=other)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
+        return _run(repo_git_command("rev-parse", "HEAD"), cwd=other).stdout.strip()
 
     def test_sync_main_dry_run_changes_nothing(self) -> None:
         self._advance_remote_main()
@@ -1416,22 +1422,23 @@ class SyncMainTests(unittest.TestCase):
         self.assertNotIn("tracking-ref-up-to-date", proc.stdout)
 
     def test_sync_main_dry_run_reports_cleanup_after_preview_sync(self) -> None:
-        _run(["git", "checkout", "-b", "feat/preview-w"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/preview-w"), cwd=self.work)
         (self.work / "preview.txt").write_text("merged\n", encoding="utf-8")
-        _run(["git", "add", "preview.txt"], cwd=self.work)
-        _run(["git", "commit", "-m", "preview feature"], cwd=self.work)
-        _run(["git", "push", "-u", "origin", "feat/preview-w"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("add", "preview.txt"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "preview feature"), cwd=self.work)
+        _run(repo_git_command("push", "-u", "origin", "feat/preview-w"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         wt_path = self.tmp / "wt-preview-w"
         add_worktree(self.work, "feat/preview-w", wt_path)
         before_refs = git(self.work, "for-each-ref", "--format=%(refname) %(objectname)")
 
         other = self.tmp / "other-preview-merge"
-        _run(["git", "clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)],
+        _run(repo_git_command("clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)),
              cwd=self.tmp)
-        _run(["git", "fetch", "-q", "origin", "feat/preview-w:feat/preview-w"], cwd=other)
-        _run(["git", "merge", "--ff-only", "feat/preview-w"], cwd=other)
-        _run(["git", "push", "-q", "origin", "main"], cwd=other)
+        suppress_repo_auto_maintenance(other)
+        _run(repo_git_command("fetch", "-q", "origin", "feat/preview-w:feat/preview-w"), cwd=other)
+        _run(repo_git_command("merge", "--ff-only", "feat/preview-w"), cwd=other)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
 
         proc = run_clean_proc(self.work, "--sync-main", "--include-worktrees")
 
@@ -1445,7 +1452,7 @@ class SyncMainTests(unittest.TestCase):
         self.assertIn("would-archive-and-remove", proc.stdout)
 
     def test_sync_main_dry_run_refuses_when_preview_temp_ref_delete_fails(self) -> None:
-        _run(["git", "branch", "feat/direct-cleanup-refusal"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/direct-cleanup-refusal"), cwd=self.work)
         wt_path = self.tmp / "wt-direct-cleanup-refusal"
         add_worktree(self.work, "feat/direct-cleanup-refusal", wt_path)
         self._advance_remote_main()
@@ -1475,7 +1482,7 @@ class SyncMainTests(unittest.TestCase):
         self.assertNotIn("would-archive-and-remove", stdout.getvalue())
 
     def test_sync_main_dry_run_refuses_when_preview_temp_ref_cannot_be_deleted(self) -> None:
-        _run(["git", "branch", "feat/cleanup-refusal"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/cleanup-refusal"), cwd=self.work)
         wt_path = self.tmp / "wt-cleanup-refusal"
         add_worktree(self.work, "feat/cleanup-refusal", wt_path)
         self._advance_remote_main()
@@ -1506,8 +1513,8 @@ class SyncMainTests(unittest.TestCase):
         self.assertNotIn("would-archive-and-remove", stdout.getvalue())
 
     def test_sync_main_dry_run_refuses_non_fast_forward_before_cleanup_preview(self) -> None:
-        _run(["git", "branch", "feat/nonff-preview"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "local-only"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/nonff-preview"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "local-only"), cwd=self.work)
         local_sha = git(self.work, "rev-parse", "main").strip()
         wt_path = self.tmp / "wt-nonff-preview"
         add_worktree(self.work, "feat/nonff-preview", wt_path)
@@ -1523,7 +1530,7 @@ class SyncMainTests(unittest.TestCase):
         self.assertNotIn("would-archive-and-remove", proc.stdout)
 
     def test_sync_main_dry_run_refuses_dirty_checked_out_main_before_cleanup_preview(self) -> None:
-        _run(["git", "branch", "feat/dirty-preview"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/dirty-preview"), cwd=self.work)
         wt_path = self.tmp / "wt-dirty-preview"
         add_worktree(self.work, "feat/dirty-preview", wt_path)
         self._advance_remote_main()
@@ -1551,7 +1558,7 @@ class SyncMainTests(unittest.TestCase):
 
     def test_sync_main_apply_updates_unchecked_out_main_ref(self) -> None:
         remote_sha = self._advance_remote_main()
-        _run(["git", "checkout", "-b", "operator"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "operator"), cwd=self.work)
         operator_sha = git(self.work, "rev-parse", "HEAD").strip()
 
         proc = run_clean_proc(self.work, "--sync-main", "--apply", "--quiet")
@@ -1562,7 +1569,7 @@ class SyncMainTests(unittest.TestCase):
         self.assertEqual(git(self.work, "rev-parse", "main").strip(), remote_sha)
 
     def test_sync_main_apply_refuses_non_fast_forward(self) -> None:
-        _run(["git", "commit", "--allow-empty", "-m", "local-only"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "local-only"), cwd=self.work)
         local_sha = git(self.work, "rev-parse", "main").strip()
         self._advance_remote_main()
 
@@ -1573,8 +1580,8 @@ class SyncMainTests(unittest.TestCase):
         self.assertIn("refused-non-fast-forward", proc.stdout)
 
     def test_sync_main_apply_refusal_stops_cleanup_lanes(self) -> None:
-        _run(["git", "branch", "feat/blocked-w"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "local-only"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/blocked-w"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "local-only"), cwd=self.work)
         wt_path = self.tmp / "wt-blocked-w"
         add_worktree(self.work, "feat/blocked-w", wt_path)
         self._advance_remote_main()
@@ -1599,29 +1606,30 @@ class SyncMainTests(unittest.TestCase):
         self.assertIn("refused-dirty-trunk-worktree", proc.stdout)
 
     def test_remote_branch_gone_but_merged_to_main_is_cleaned_after_sync(self) -> None:
-        _run(["git", "checkout", "-b", "feat/gone-merged"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/gone-merged"), cwd=self.work)
         (self.work / "feature.txt").write_text("merged\n", encoding="utf-8")
-        _run(["git", "add", "feature.txt"], cwd=self.work)
-        _run(["git", "commit", "-m", "feature"], cwd=self.work)
+        _run(repo_git_command("add", "feature.txt"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "feature"), cwd=self.work)
         feature_sha = git(self.work, "rev-parse", "HEAD").strip()
-        _run(["git", "push", "-u", "origin", "feat/gone-merged"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("push", "-u", "origin", "feat/gone-merged"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
 
         other = self.tmp / "other-merge"
-        _run(["git", "clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)],
+        _run(repo_git_command("clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)),
              cwd=self.tmp)
-        _run(["git", "fetch", "-q", "origin", "feat/gone-merged:feat/gone-merged"],
+        suppress_repo_auto_maintenance(other)
+        _run(repo_git_command("fetch", "-q", "origin", "feat/gone-merged:feat/gone-merged"),
              cwd=other)
-        _run(["git", "merge", "--ff-only", "feat/gone-merged"], cwd=other)
-        _run(["git", "push", "-q", "origin", "main"], cwd=other)
-        _run(["git", "push", "-q", "origin", "--delete", "feat/gone-merged"], cwd=other)
+        _run(repo_git_command("merge", "--ff-only", "feat/gone-merged"), cwd=other)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
+        _run(repo_git_command("push", "-q", "origin", "--delete", "feat/gone-merged"), cwd=other)
 
         proc = run_clean_proc(self.work, "--sync-main", "--apply", "--quiet")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(git(self.work, "rev-parse", "main").strip(), feature_sha)
         self.assertNotEqual(
-            _run(["git", "rev-parse", "--verify", "refs/remotes/origin/feat/gone-merged"],
+            _run(repo_git_command("rev-parse", "--verify", "refs/remotes/origin/feat/gone-merged"),
                  cwd=self.work, check=False).returncode,
             0,
             "fetch --prune must remove the stale remote-tracking branch",
@@ -1698,7 +1706,7 @@ class ReportRedactionTests(unittest.TestCase):
 
     def test_gh_error_is_redacted_without_cache_write(self) -> None:
         branch = "feat/gh-error"
-        _run(["git", "branch", branch], cwd=self.work)
+        _run(repo_git_command("branch", branch), cwd=self.work)
         tip = git(self.work, "rev-parse", branch).strip()
         raw_error = "gh exit 1: https://user:secret-token@example.invalid/private.git"
 
@@ -1751,8 +1759,8 @@ class CleanupContractTests(unittest.TestCase):
             )
             hook_file.chmod(0o755)
         if track:
-            _run(["git", "add", ".githooks"], cwd=root)
-            _run(["git", "commit", "-m", f"track {label} hook sources"], cwd=root)
+            _run(repo_git_command("add", ".githooks"), cwd=root)
+            _run(repo_git_command("commit", "-m", f"track {label} hook sources"), cwd=root)
         return source_hooks
 
     def test_lane_summary_prints_full_refusal_reason(self) -> None:
@@ -1858,7 +1866,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertFalse((runtime_hooks_dir / "post-merge").exists())
         manifest = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
         self.assertFalse(manifest.exists())
-        config = _run(["git", "config", "--get", "core.hooksPath"],
+        config = _run(repo_git_command("config", "--get", "core.hooksPath"),
                       cwd=self.work, check=False)
         self.assertNotEqual(config.returncode, 0)
 
@@ -2033,7 +2041,7 @@ class CleanupContractTests(unittest.TestCase):
             with self.assertRaisesRegex(cm.CleanMergedError, "refusing to shadow symlink hook"):
                 cm.install_hooks(self.work, home_dir=pathlib.Path(GIT_ENV["HOME"]))
 
-        config = _run(["git", "config", "--local", "--get", "core.hooksPath"],
+        config = _run(repo_git_command("config", "--local", "--get", "core.hooksPath"),
                       cwd=self.work, check=False,
                       env={"GIT_CONFIG_GLOBAL": str(global_config)})
         self.assertNotEqual(config.returncode, 0)
@@ -2134,10 +2142,10 @@ class CleanupContractTests(unittest.TestCase):
         cm.load_config(self.work)
 
     def test_trunk_resolution_uses_configured_ref_only(self) -> None:
-        _run(["git", "checkout", "-b", "operator"], cwd=self.work)
-        _run(["git", "branch", "-D", "main"], cwd=self.work)
-        _run(["git", "update-ref", "-d", "refs/remotes/origin/main"], cwd=self.work)
-        _run(["git", "branch", "master"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "operator"), cwd=self.work)
+        _run(repo_git_command("branch", "-D", "main"), cwd=self.work)
+        _run(repo_git_command("update-ref", "-d", "refs/remotes/origin/main"), cwd=self.work)
+        _run(repo_git_command("branch", "master"), cwd=self.work)
 
         self.assertIsNone(cm.resolve_trunk_sha(self.work, "main", "origin"))
 
@@ -2204,7 +2212,7 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
-            _run(["git", "config", "--get", "core.hooksPath"], cwd=self.work)
+            _run(repo_git_command("config", "--get", "core.hooksPath"), cwd=self.work)
             .stdout.strip(),
             str(git_common_dir_compat(self.work) / "hooks"),
         )
@@ -2219,7 +2227,7 @@ class CleanupContractTests(unittest.TestCase):
         chained_hook = source_hooks / "post-rewrite.pre-entire"
         chained_hook.write_text("#!/bin/sh\nprintf chained-hook\n", encoding="utf-8")
         chained_hook.chmod(0o755)
-        _run(["git", "config", "core.hooksPath", ".githooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".githooks"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -2227,7 +2235,7 @@ class CleanupContractTests(unittest.TestCase):
         common_dir = git_common_dir_compat(self.work)
         runtime_hooks = common_dir / "hooks"
         self.assertEqual(
-            _run(["git", "config", "--get", "core.hooksPath"], cwd=self.work).stdout.strip(),
+            _run(repo_git_command("config", "--get", "core.hooksPath"), cwd=self.work).stdout.strip(),
             str(runtime_hooks),
         )
         for hook in cm.CLEAN_MERGED_HOOKS:
@@ -2250,8 +2258,8 @@ class CleanupContractTests(unittest.TestCase):
         local_hook = source_hooks / "prepare-commit-msg"
         local_hook.write_text("#!/bin/sh\nprintf source-local-hook\n", encoding="utf-8")
         local_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/prepare-commit-msg"], cwd=self.work)
-        _run(["git", "commit", "-m", "track prepare-commit-msg hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/prepare-commit-msg"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track prepare-commit-msg hook"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -2270,13 +2278,13 @@ class CleanupContractTests(unittest.TestCase):
         local_hook = source_hooks / "prepare-commit-msg"
         local_hook.write_text("#!/bin/sh\nprintf source-local-hook\n", encoding="utf-8")
         local_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/prepare-commit-msg"], cwd=self.work)
-        _run(["git", "commit", "-m", "track prepare-commit-msg hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/prepare-commit-msg"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track prepare-commit-msg hook"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         runtime_hook = git_common_dir_compat(self.work) / "hooks" / "prepare-commit-msg"
         self.assertTrue(runtime_hook.exists())
-        _run(["git", "rm", ".githooks/prepare-commit-msg"], cwd=self.work)
-        _run(["git", "commit", "-m", "remove prepare-commit-msg hook"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/prepare-commit-msg"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "remove prepare-commit-msg hook"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -2307,8 +2315,8 @@ class CleanupContractTests(unittest.TestCase):
         source_hooks = self._write_clean_merged_hook_sources(self.work)
         non_hook = source_hooks / "README"
         non_hook.write_text("not a git hook\n", encoding="utf-8")
-        _run(["git", "add", ".githooks/README"], cwd=self.work)
-        _run(["git", "commit", "-m", "track non hook file"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/README"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track non hook file"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -2328,8 +2336,8 @@ class CleanupContractTests(unittest.TestCase):
         nested_file = nested_dir / "helper"
         nested_file.write_text("#!/bin/sh\nprintf nested-helper\n", encoding="utf-8")
         nested_file.chmod(0o755)
-        _run(["git", "add", ".githooks/support/helper"], cwd=self.work)
-        _run(["git", "commit", "-m", "track nested hook support file"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/support/helper"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track nested hook support file"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -2519,14 +2527,14 @@ class CleanupContractTests(unittest.TestCase):
         legacy_commit_msg = legacy_hooks / "commit-msg"
         legacy_commit_msg.write_text("#!/bin/sh\nprintf legacy-local\n", encoding="utf-8")
         legacy_commit_msg.chmod(0o755)
-        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".legacy-hooks"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         new_hooks = self.work / ".new-hooks"
         new_hooks.mkdir()
         new_commit_msg = new_hooks / "commit-msg"
         new_commit_msg.write_text("#!/bin/sh\nprintf new-local\n", encoding="utf-8")
         new_commit_msg.chmod(0o755)
-        _run(["git", "config", "core.hooksPath", ".new-hooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".new-hooks"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -3106,7 +3114,7 @@ class CleanupContractTests(unittest.TestCase):
         local_hook.chmod(0o755)
         alternate_hooks = self.work / ".alternate-hooks"
         alternate_hooks.mkdir()
-        _run(["git", "config", "core.hooksPath", ".alternate-hooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".alternate-hooks"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -3128,8 +3136,8 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "applypatch-msg"
         repo_hook.write_text("#!/bin/sh\nprintf repo-applypatch\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/applypatch-msg"], cwd=self.work)
-        _run(["git", "commit", "-m", "track applypatch hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/applypatch-msg"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track applypatch hook"), cwd=self.work)
         colliding_hook = runtime_hooks / "applypatch-msg"
         colliding_hook.write_text("#!/bin/sh\nprintf local-applypatch\n", encoding="utf-8")
         colliding_hook.chmod(0o755)
@@ -3152,9 +3160,9 @@ class CleanupContractTests(unittest.TestCase):
             repo_hook = source_hooks / hook_name
             repo_hook.write_text(f"#!/bin/sh\nprintf repo-{hook_name}\n", encoding="utf-8")
             repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/applypatch-msg", ".githooks/commit-msg"],
+        _run(repo_git_command("add", ".githooks/applypatch-msg", ".githooks/commit-msg"),
              cwd=self.work)
-        _run(["git", "commit", "-m", "track extra hooks"], cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track extra hooks"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         first_collision = runtime_hooks / "applypatch-msg"
@@ -3185,12 +3193,12 @@ class CleanupContractTests(unittest.TestCase):
             repo_hook = source_hooks / hook_name
             repo_hook.write_text(f"#!/bin/sh\nprintf repo-{hook_name}\n", encoding="utf-8")
             repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/applypatch-msg", ".githooks/commit-msg"],
+        _run(repo_git_command("add", ".githooks/applypatch-msg", ".githooks/commit-msg"),
              cwd=self.work)
-        _run(["git", "commit", "-m", "track extra hooks"], cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track extra hooks"), cwd=self.work)
         legacy_hooks = self.work / ".legacy-hooks"
         legacy_hooks.mkdir()
-        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".legacy-hooks"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         first_collision = runtime_hooks / "applypatch-msg"
@@ -3306,16 +3314,16 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "pre-push"
         repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         default_hook = runtime_hooks / "pre-push"
         default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
         default_hook.chmod(0o755)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
-        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "remove pre-push hook"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -3336,8 +3344,8 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "pre-push"
         repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         default_hook = runtime_hooks / "pre-push"
@@ -3350,8 +3358,8 @@ class CleanupContractTests(unittest.TestCase):
         backup_path.write_text("#!/bin/sh\nprintf modified-before-promotion\n", encoding="utf-8")
         backup_path.chmod(0o755)
         repo_runtime_content = (runtime_hooks / "pre-push").read_text(encoding="utf-8")
-        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "remove pre-push hook"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks")
 
@@ -3368,8 +3376,8 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "pre-push"
         repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         default_hook = runtime_hooks / "pre-push"
@@ -3386,9 +3394,9 @@ class CleanupContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         (source_hooks / "post-merge").chmod(0o755)
-        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "add", ".githooks/post-merge"], cwd=self.work)
-        _run(["git", "commit", "-m", "update post-merge and remove pre-push"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("add", ".githooks/post-merge"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "update post-merge and remove pre-push"), cwd=self.work)
         backup_path.write_text("#!/bin/sh\nprintf modified-before-promotion\n", encoding="utf-8")
         backup_path.chmod(0o755)
 
@@ -3406,16 +3414,16 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "pre-push"
         repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         default_hook = runtime_hooks / "pre-push"
         default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
         default_hook.chmod(0o755)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
-        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "remove pre-push hook"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -3434,8 +3442,8 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "pre-push"
         repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         default_hook = runtime_hooks / "pre-push"
@@ -3446,8 +3454,8 @@ class CleanupContractTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         pathlib.Path(manifest["shadowed_hooks"]["pre-push"][0]["source_path"]).unlink()
         repo_runtime_content = (runtime_hooks / "pre-push").read_text(encoding="utf-8")
-        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "remove pre-push hook"), cwd=self.work)
 
         setup = run_clean_proc(self.work, "--install-hooks")
         doctor = run_clean_proc(self.work, "--doctor")
@@ -3467,16 +3475,16 @@ class CleanupContractTests(unittest.TestCase):
         repo_hook = source_hooks / "pre-push"
         repo_hook.write_text("#!/bin/sh\nprintf repo-pre-push\n", encoding="utf-8")
         repo_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         default_hook = runtime_hooks / "pre-push"
         default_hook.write_text("#!/bin/sh\nprintf default-pre-push\n", encoding="utf-8")
         default_hook.chmod(0o755)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
-        _run(["git", "rm", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "remove pre-push hook"], cwd=self.work)
+        _run(repo_git_command("rm", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "remove pre-push hook"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -3488,8 +3496,8 @@ class CleanupContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         (source_hooks / "post-merge").chmod(0o755)
-        _run(["git", "add", ".githooks/post-merge"], cwd=self.work)
-        _run(["git", "commit", "-m", "update post-merge hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/post-merge"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "update post-merge hook"), cwd=self.work)
         backup_path.write_text("#!/bin/sh\nprintf modified-promoted-backup\n", encoding="utf-8")
         backup_path.chmod(0o755)
 
@@ -3506,7 +3514,7 @@ class CleanupContractTests(unittest.TestCase):
         source_hooks = self._write_clean_merged_hook_sources(self.work)
         legacy_hooks = self.work / ".legacy-hooks"
         legacy_hooks.mkdir()
-        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".legacy-hooks"), cwd=self.work)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         colliding_hook = runtime_hooks / "post-merge"
@@ -3683,8 +3691,8 @@ class CleanupContractTests(unittest.TestCase):
         source_hook = source_hooks / "pre-push"
         source_hook.write_text("#!/bin/sh\nprintf tracked-pre-push\n", encoding="utf-8")
         source_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
-        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/pre-push"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track pre-push hook"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         runtime_hook = git_common_dir_compat(self.work) / "hooks" / "pre-push"
         runtime_hook.chmod(0o644)
@@ -3768,8 +3776,8 @@ class CleanupContractTests(unittest.TestCase):
         local_hook = source_hooks / "commit-msg"
         local_hook.write_text("#!/bin/sh\nprintf tracked-local-hook\n", encoding="utf-8")
         local_hook.chmod(0o755)
-        _run(["git", "add", ".githooks/commit-msg"], cwd=self.work)
-        _run(["git", "commit", "-m", "track commit-msg hook"], cwd=self.work)
+        _run(repo_git_command("add", ".githooks/commit-msg"), cwd=self.work)
+        _run(repo_git_command("commit", "-m", "track commit-msg hook"), cwd=self.work)
         local_hook.write_text("#!/bin/sh\nprintf dirty-local-hook\n", encoding="utf-8")
 
         proc = run_clean_proc(self.work, "--install-hooks")
@@ -3785,7 +3793,7 @@ class CleanupContractTests(unittest.TestCase):
         local_hook = active_hooks / "commit-msg"
         local_hook.write_text("#!/bin/sh\nprintf home-local-hook\n", encoding="utf-8")
         local_hook.chmod(0o755)
-        _run(["git", "config", "core.hooksPath", "~/hooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", "~/hooks"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--install-hooks", env={"HOME": str(home)})
 
@@ -3798,7 +3806,7 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_install_hooks_uses_main_worktree_hook_sources_from_linked_worktree(self) -> None:
         source_hooks = self._write_clean_merged_hook_sources(self.work, label="main")
-        _run(["git", "branch", "feat/hook-install"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/hook-install"), cwd=self.work)
         linked = add_worktree(self.work, "feat/hook-install", self.tmp / "linked-hook-install")
         linked_source_hooks = self._write_clean_merged_hook_sources(
             linked,
@@ -3824,13 +3832,13 @@ class CleanupContractTests(unittest.TestCase):
         self,
     ) -> None:
         self._write_clean_merged_hook_sources(self.work)
-        _run(["git", "branch", "feat/worktree-hooks-path"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/worktree-hooks-path"), cwd=self.work)
         linked = add_worktree(
             self.work,
             "feat/worktree-hooks-path",
             self.tmp / "linked-worktree-hooks-path",
         )
-        _run(["git", "config", "extensions.worktreeConfig", "true"], cwd=self.work)
+        _run(repo_git_command("config", "extensions.worktreeConfig", "true"), cwd=self.work)
         linked_hooks = linked / ".linked-hooks"
         linked_hooks.mkdir()
         linked_commit_msg = linked_hooks / "commit-msg"
@@ -3839,7 +3847,7 @@ class CleanupContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         linked_commit_msg.chmod(0o755)
-        _run(["git", "config", "--worktree", "core.hooksPath", ".linked-hooks"],
+        _run(repo_git_command("config", "--worktree", "core.hooksPath", ".linked-hooks"),
              cwd=linked)
 
         proc = run_clean_proc(linked, "--install-hooks")
@@ -3847,12 +3855,12 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         self.assertEqual(
-            _run(["git", "config", "--get", "core.hooksPath"], cwd=linked)
+            _run(repo_git_command("config", "--get", "core.hooksPath"), cwd=linked)
             .stdout.strip(),
             str(runtime_hooks),
         )
         self.assertEqual(
-            _run(["git", "config", "--worktree", "--get", "core.hooksPath"],
+            _run(repo_git_command("config", "--worktree", "--get", "core.hooksPath"),
                  cwd=linked).stdout.strip(),
             str(runtime_hooks),
         )
@@ -3863,17 +3871,17 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_doctor_checks_invoking_linked_worktree_hooks_path(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
-        _run(["git", "branch", "feat/doctor-worktree-hooks-path"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/doctor-worktree-hooks-path"), cwd=self.work)
         linked = add_worktree(
             self.work,
             "feat/doctor-worktree-hooks-path",
             self.tmp / "linked-doctor-worktree-hooks-path",
         )
-        _run(["git", "config", "extensions.worktreeConfig", "true"], cwd=self.work)
+        _run(repo_git_command("config", "extensions.worktreeConfig", "true"), cwd=self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
         linked_hooks = linked / ".linked-hooks"
         linked_hooks.mkdir()
-        _run(["git", "config", "--worktree", "core.hooksPath", ".linked-hooks"],
+        _run(repo_git_command("config", "--worktree", "core.hooksPath", ".linked-hooks"),
              cwd=linked)
 
         proc = run_clean_proc(linked, "--doctor")
@@ -3883,7 +3891,7 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_doctor_rejects_legacy_tracked_hooks_path(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
-        _run(["git", "config", "core.hooksPath", ".githooks"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".githooks"), cwd=self.work)
 
         proc = run_clean_proc(self.work, "--doctor")
 
@@ -3914,7 +3922,7 @@ class CleanupContractTests(unittest.TestCase):
                 'remote_name = "origin"', 'remote_name = "upstream"'),
             encoding="utf-8",
         )
-        _run(["git", "remote", "add", "upstream", "https://example.invalid/upstream.git"],
+        _run(repo_git_command("remote", "add", "upstream", "https://example.invalid/upstream.git"),
              cwd=self.work)
         script = f"""
 set -euo pipefail
@@ -3925,7 +3933,7 @@ git config "remote.${{clean_merged_remote}}.prune" true
         _run(["bash", "-c", script], cwd=self.work)
 
         self.assertEqual(git(self.work, "config", "--get", "remote.upstream.prune").strip(), "true")
-        origin_prune = _run(["git", "config", "--get", "remote.origin.prune"],
+        origin_prune = _run(repo_git_command("config", "--get", "remote.origin.prune"),
                             cwd=self.work, check=False)
         self.assertNotEqual(origin_prune.returncode, 0)
 
@@ -4224,10 +4232,10 @@ class HookEndToEndTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-hook-"))
         self.remote = self.tmp / "remote.git"
-        _run(["git", "init", "--bare", "-b", "main", str(self.remote)], cwd=self.tmp)
+        init_fixture_repo(self.remote, "--bare", "-b", "main")
         self.work = self.tmp / "work"
-        _run(["git", "init", "-b", "main", str(self.work)], cwd=self.tmp)
-        _run(["git", "remote", "add", "origin", str(self.remote)], cwd=self.work)
+        init_fixture_repo(self.work, "-b", "main")
+        _run(repo_git_command("remote", "add", "origin", str(self.remote)), cwd=self.work)
         # Drop config + script + hooks
         make_config(self.work)
         scripts_dir = self.work / "scripts"
@@ -4238,15 +4246,15 @@ class HookEndToEndTests(unittest.TestCase):
         for h in ("post-merge", "post-checkout", "post-rewrite"):
             shutil.copy(REPO_ROOT / ".githooks" / h, hooks_dir)
             (hooks_dir / h).chmod(0o755)
-        _run(["git", "config", "core.hooksPath", ".githooks"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "init"], cwd=self.work)
-        _run(["git", "push", "-u", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("config", "core.hooksPath", ".githooks"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "init"), cwd=self.work)
+        _run(repo_git_command("push", "-u", "origin", "main"), cwd=self.work)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _heartbeat(self) -> pathlib.Path | None:
-        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        common = _run(repo_git_command("rev-parse", "--path-format=absolute", "--git-common-dir"),
                        cwd=self.work).stdout.strip()
         hb = pathlib.Path(common) / "clean-merged.heartbeat"
         return hb if hb.is_file() else None
@@ -4276,16 +4284,17 @@ class HookEndToEndTests(unittest.TestCase):
 
     def _advance_remote(self) -> None:
         other = self.tmp / "other"
-        _run(["git", "clone", "-q", "-b", "main", str(self.remote), str(other)], cwd=self.tmp)
-        _run(["git", "commit", "--allow-empty", "-m", "remote-advance"], cwd=other)
-        _run(["git", "push", "-q", "origin", "main"], cwd=other)
+        _run(repo_git_command("clone", "-q", "-b", "main", str(self.remote), str(other)), cwd=self.tmp)
+        suppress_repo_auto_maintenance(other)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "remote-advance"), cwd=other)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
 
     def test_post_merge_fires_on_ff_pull(self) -> None:
         # eligible branch on main; advance remote; pull -> post-merge fires Lane H.
-        _run(["git", "branch", "feat/eligible"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/eligible"), cwd=self.work)
         self._advance_remote()
         self.assertIsNone(self._heartbeat(), "precondition: no heartbeat yet")
-        _run(["git", "pull", "--ff-only", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("pull", "--ff-only", "origin", "main"), cwd=self.work)
         # detached Lane R may take a moment; heartbeat is written synchronously by Lane H
         hb = self._heartbeat()
         self.assertIsNotNone(hb, "post-merge must fire Lane H which writes the heartbeat")
@@ -4296,8 +4305,8 @@ class HookEndToEndTests(unittest.TestCase):
 
     def test_post_checkout_fires_on_branch_switch(self) -> None:
         # Switching to a feature branch and back to main fires post-checkout.
-        _run(["git", "checkout", "-b", "feat/x"], cwd=self.work)
-        _run(["git", "checkout", "main"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/x"), cwd=self.work)
+        _run(repo_git_command("checkout", "main"), cwd=self.work)
         hb = self._heartbeat()
         # post-checkout runs Lane H only when landing on trunk; verify heartbeat present.
         self.assertIsNotNone(hb, "post-checkout Lane H dispatch must write heartbeat")
@@ -4309,17 +4318,17 @@ class HookEndToEndTests(unittest.TestCase):
                 'trunk_branch = "main"', 'trunk_branch = "trunk"'),
             encoding="utf-8",
         )
-        _run(["git", "checkout", "-b", "trunk"], cwd=self.work)
-        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        _run(repo_git_command("checkout", "-b", "trunk"), cwd=self.work)
+        common = _run(repo_git_command("rev-parse", "--path-format=absolute", "--git-common-dir"),
                        cwd=self.work).stdout.strip()
         pathlib.Path(common, "clean-merged.heartbeat").unlink(missing_ok=True)
 
-        _run(["git", "checkout", "-b", "feat/configured-trunk"], cwd=self.work)
+        _run(repo_git_command("checkout", "-b", "feat/configured-trunk"), cwd=self.work)
         self.assertIsNone(
             self._heartbeat(),
             "post-checkout must not dispatch when landing off the configured trunk",
         )
-        _run(["git", "checkout", "trunk"], cwd=self.work)
+        _run(repo_git_command("checkout", "trunk"), cwd=self.work)
 
         self.assertIsNotNone(
             self._heartbeat(),
@@ -4343,8 +4352,8 @@ class HookEndToEndTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         log_path = common / "custom-lane-r.log"
 
         proc = run_clean_proc(self.work, "--doctor", "--redirect-output-to-lane-r-log")
@@ -4364,8 +4373,8 @@ class HookEndToEndTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         log_path = common / "custom-lane-r.log"
         log_path.write_text("old content that exceeds the configured cap\n", encoding="utf-8")
 
@@ -4378,8 +4387,8 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertIn("[clean-merged] doctor", log_path.read_text(encoding="utf-8"))
 
     def test_lane_r_log_rotation_respects_existing_lock(self) -> None:
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         log_path = common / "clean-merged.lane-r.log"
         log_path.write_text("old content that exceeds the configured cap\n", encoding="utf-8")
         lock_fd = cm._acquire_lock(log_path.with_suffix(log_path.suffix + ".lock"))
@@ -4398,8 +4407,8 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertIn("new content", log_path.read_text(encoding="utf-8"))
 
     def test_lane_r_log_rotation_keeps_active_writer_reachable(self) -> None:
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         log_path = common / "clean-merged.lane-r.log"
         log_path.write_text("seed content that exceeds the configured cap\n", encoding="utf-8")
 
@@ -4432,8 +4441,8 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertIn("active writer after third rotation", visible)
 
     def test_rotating_log_prunes_expired_rotated_segments(self) -> None:
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip())
         log_path = common / "clean-merged.lane-r.log"
         log_path.write_text("live content that exceeds the configured cap\n", encoding="utf-8")
         expired = common / "clean-merged.lane-r.log.1.111.222"
@@ -4453,9 +4462,9 @@ class HookEndToEndTests(unittest.TestCase):
 
     def test_post_rewrite_does_not_fire_clean_merged_on_rebase_pull(self) -> None:
         # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.
-        _run(["git", "commit", "--allow-empty", "-m", "local-divergent"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "local-divergent"), cwd=self.work)
         self._advance_remote()
-        _run(["git", "pull", "--rebase", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("pull", "--rebase", "origin", "main"), cwd=self.work)
         hb = self._heartbeat()
         self.assertIsNone(hb, "post-rewrite must not dispatch clean-merged Lane H")
 
@@ -4465,10 +4474,10 @@ class HookEndToEndTests(unittest.TestCase):
         meant CLEAN_MERGED_DISABLED=0 silenced hooks but enabled manual Python runs.
         Assert parity: DISABLED=0 does NOT silence the hook (matches Python)."""
         # eligible branch on main; advance remote
-        _run(["git", "branch", "feat/parity"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/parity"), cwd=self.work)
         self._advance_remote()
         # Remove any prior heartbeat so we can detect a fresh write.
-        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        common = _run(repo_git_command("rev-parse", "--path-format=absolute", "--git-common-dir"),
                        cwd=self.work).stdout.strip()
         pathlib.Path(common, "clean-merged.heartbeat").unlink(missing_ok=True)
         # Pull with DISABLED=0 in the environment.
@@ -4477,7 +4486,7 @@ class HookEndToEndTests(unittest.TestCase):
         full_env.update(GIT_ENV)
         full_env.update(pull_env)
         subprocess.run(
-            ["git", "pull", "--ff-only", "origin", "main"],
+            repo_git_command("pull", "--ff-only", "origin", "main"),
             cwd=self.work, env=full_env, capture_output=True, text=True, timeout=30,
         )
         hb = pathlib.Path(common, "clean-merged.heartbeat")
@@ -4486,16 +4495,16 @@ class HookEndToEndTests(unittest.TestCase):
 
     def test_kill_switch_parity_disabled_one_silences(self) -> None:
         """Counterpart: CLEAN_MERGED_DISABLED=1 must silence both bash and Python."""
-        _run(["git", "branch", "feat/parity-off"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/parity-off"), cwd=self.work)
         self._advance_remote()
-        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        common = _run(repo_git_command("rev-parse", "--path-format=absolute", "--git-common-dir"),
                        cwd=self.work).stdout.strip()
         pathlib.Path(common, "clean-merged.heartbeat").unlink(missing_ok=True)
         full_env = os.environ.copy()
         full_env.update(GIT_ENV)
         full_env.update({"CLEAN_MERGED_DISABLED": "1"})
         subprocess.run(
-            ["git", "pull", "--ff-only", "origin", "main"],
+            repo_git_command("pull", "--ff-only", "origin", "main"),
             cwd=self.work, env=full_env, capture_output=True, text=True, timeout=30,
         )
         hb = pathlib.Path(common, "clean-merged.heartbeat")
@@ -4522,8 +4531,8 @@ class HookEndToEndTests(unittest.TestCase):
         dir if worktree.tar.gz exists and verifies. Otherwise a crash between
         worktree-remove and the manifest flip would lose the only recovery surface."""
         # Synthesize an incomplete quarantine entry with a verified archive.
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         q = common / "clean-merged-quarantine" / "stuck-dir"
         q.mkdir(parents=True)
         # Create a real tar (so tar -tzf succeeds).
@@ -4549,8 +4558,8 @@ class HookEndToEndTests(unittest.TestCase):
         must NOT pin a dir forever if the archive was deleted externally.
         The flag records 'was valid once', not 'is valid now'. Without the
         archive_file.is_file() gate, an empty stuck dir survives indefinitely."""
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         q = common / "clean-merged-quarantine" / "stuck-flagged-empty"
         q.mkdir(parents=True)
         # Manifest claims a verified archive, but NO archive file is present
@@ -4584,8 +4593,8 @@ class ActiveWorktreeSkipTests(unittest.TestCase):
 
     def test_lane_w_does_not_clean_invoker_worktree(self) -> None:
         # Set up an eligible (ancestor-of-trunk) branch + worktree on it.
-        _run(["git", "branch", "feat/invoker"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/invoker"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
         wt_path = self.tmp / "wt-invoker"
         add_worktree(self.work, "feat/invoker", wt_path)
         # Run Lane W with cwd=wt_path (the invoker IS in the feature worktree).
@@ -4630,18 +4639,18 @@ class ActiveWorktreeSkipTests(unittest.TestCase):
         # Two ancestor-of-trunk detached worktrees: wt-other (eligible, should
         # be removed) and wt-invoker (the operator's CWD, must survive).
         # Create commits on trunk so detached HEADs land at ancestor-of-trunk.
-        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
-        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c1"), cwd=self.work)
+        c1_sha = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c2"), cwd=self.work)
         # Push so origin/main advances past c1; otherwise resolve_trunk_sha
         # returns stale origin/main (at init) and c1 looks non-ancestor.
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
         # wt-other at c1 (ancestor of current main); detached.
         wt_other = self.tmp / "wt-other"
-        _run(["git", "worktree", "add", "--detach", str(wt_other), c1_sha], cwd=self.work)
+        _run(repo_git_command("worktree", "add", "--detach", str(wt_other), c1_sha), cwd=self.work)
         # wt-invoker at c1 too (detached); the operator's CWD.
         wt_invoker = self.tmp / "wt-invoker-detached"
-        _run(["git", "worktree", "add", "--detach", str(wt_invoker), c1_sha], cwd=self.work)
+        _run(repo_git_command("worktree", "add", "--detach", str(wt_invoker), c1_sha), cwd=self.work)
         old_cwd = os.getcwd()
         os.chdir(wt_invoker)
         try:
@@ -4694,9 +4703,9 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _setup_eligible_worktree_bound_branch(self) -> pathlib.Path:
-        _run(["git", "branch", "feat/wb"], cwd=self.work)
-        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("branch", "feat/wb"), cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "trunk-ahead"), cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
         wt_path = self.tmp / "wt-wb"
         add_worktree(self.work, "feat/wb", wt_path)
         return wt_path
@@ -4711,8 +4720,8 @@ class LaneWOptInInvariantTests(unittest.TestCase):
                         "default mode MUST NOT remove worktrees (Lane W is opt-in)")
         self.assertIn("feat/wb", git(self.work, "branch", "--list"))
         # No quarantine created
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         self.assertFalse((common / "clean-merged-quarantine").exists(),
                          "default mode MUST NOT create quarantine")
 
@@ -4724,8 +4733,8 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         self.assertTrue(wt_path.exists(),
                         "--reconcile MUST NOT remove worktrees (Lane W is opt-in)")
         self.assertIn("feat/wb", git(self.work, "branch", "--list"))
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         self.assertFalse((common / "clean-merged-quarantine").exists(),
                          "--reconcile MUST NOT create quarantine")
 
@@ -4735,20 +4744,20 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         capture the orphaned commit; the worktree's reflog dies with the admin
         entry on `git worktree remove`; commit becomes unreachable."""
         # Set up: trunk with two commits, detached worktree at the older one.
-        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
-        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c1"), cwd=self.work)
+        c1_sha = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c2"), cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
         wt_path = self.tmp / "wt-detached"
-        _run(["git", "worktree", "add", "--detach", str(wt_path), c1_sha], cwd=self.work)
+        _run(repo_git_command("worktree", "add", "--detach", str(wt_path), c1_sha), cwd=self.work)
         # Default Lane W invocation: detached must be refused.
         rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertTrue(wt_path.exists(),
                         "detached-HEAD worktree MUST be refused by default "
                         "(reflog-only commits are not preserved by the archive)")
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         self.assertFalse((common / "clean-merged-quarantine").exists(),
                          "no quarantine should be created for refused detached worktree")
 
@@ -4756,20 +4765,20 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         """Soundness-fix review (Kimi P2 #3): --allow-detached-removal actually
         allows removal. Without this test, the override flag could be silently
         no-op and the suite would stay green."""
-        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
-        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c1"), cwd=self.work)
+        c1_sha = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c2"), cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
         wt_path = self.tmp / "wt-detached-allowed"
-        _run(["git", "worktree", "add", "--detach", str(wt_path), c1_sha], cwd=self.work)
+        _run(repo_git_command("worktree", "add", "--detach", str(wt_path), c1_sha), cwd=self.work)
         rc = run_clean(self.work, "--include-worktrees", "--apply",
                        "--allow-detached-removal", "--quiet")
         self.assertEqual(rc, 0)
         self.assertFalse(wt_path.exists(),
                          "--allow-detached-removal must actually permit removal "
                          "of an eligible detached-HEAD worktree")
-        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
-                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        common = pathlib.Path(_run(repo_git_command("rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"), cwd=self.work).stdout.strip()).resolve()
         self.assertTrue((common / "clean-merged-quarantine").is_dir(),
                         "quarantine must be created when --allow-detached-removal proceeds")
 
@@ -4791,7 +4800,7 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         # tool would resolve the PARENT repo — the test would pass for the wrong
         # reason and --apply could mutate that repo. Require a genuinely repo-less
         # dir; skip (don't silently pass) otherwise.
-        if subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=nongit,
+        if subprocess.run(repo_git_command("rev-parse", "--show-toplevel"), cwd=nongit,
                           env=env, capture_output=True, text=True).returncode == 0:
             self.skipTest(f"{nongit} is inside a git repo (set TMPDIR outside any "
                           "checkout); cannot exercise the non-git-dir path here")
@@ -4885,12 +4894,12 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         sentinel into the operator-facing reason. Asserts the structured record —
         a stdout-only check would miss a sentinel leak, and the pre-existing refuse
         test asserts only survival + no-quarantine, not the action label."""
-        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
-        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
-        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
-        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c1"), cwd=self.work)
+        c1_sha = _run(repo_git_command("rev-parse", "HEAD"), cwd=self.work).stdout.strip()
+        _run(repo_git_command("commit", "--allow-empty", "-m", "c2"), cwd=self.work)
+        _run(repo_git_command("push", "-q", "origin", "main"), cwd=self.work)
         wt_path = self.tmp / "wt-detached-label"
-        _run(["git", "worktree", "add", "--detach", str(wt_path), c1_sha], cwd=self.work)
+        _run(repo_git_command("worktree", "add", "--detach", str(wt_path), c1_sha), cwd=self.work)
         old_env = os.environ.copy()
         os.environ.update(GIT_ENV)
         try:
@@ -4922,7 +4931,7 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _linked_worktree(self, branch: str = "feat/target-dir") -> pathlib.Path:
-        _run(["git", "branch", branch], cwd=self.work)
+        _run(repo_git_command("branch", branch), cwd=self.work)
         return add_worktree(self.work, branch, self.tmp / branch.replace("/", "-"))
 
     def _fake_ps_env(self, body: str = "exit 0\n", *, lsof_body: str | None = None) -> dict[str, str]:
@@ -5200,7 +5209,7 @@ class CleanMergedDegradedStateTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, nongit, ignore_errors=True)
         env = os.environ.copy()
         env.update(GIT_ENV)
-        if subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=nongit,
+        if subprocess.run(repo_git_command("rev-parse", "--show-toplevel"), cwd=nongit,
                           env=env, capture_output=True, text=True).returncode == 0:
             self.skipTest(f"{nongit} is inside a git repo")
 

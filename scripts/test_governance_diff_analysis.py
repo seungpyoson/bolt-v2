@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import pathlib
 import shutil
@@ -31,6 +32,8 @@ from ci_workflow_hygiene_test_helpers import (
     write_repo_text,
 )
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
 def assert_run_repo_git_suppresses_background_maintenance() -> None:
     calls: list[tuple[str, ...]] = []
     original_run = hygiene_helpers.subprocess.run
@@ -54,6 +57,94 @@ def assert_run_repo_git_suppresses_background_maintenance() -> None:
     )
     if calls != [expected]:
         raise AssertionError(f"run_repo_git must suppress background maintenance, got: {calls}")
+
+def _maintenance_children(trace_path: pathlib.Path) -> int:
+    """`git maintenance`/`git gc` processes recorded in a GIT_TRACE2 event log."""
+    if not trace_path.exists():
+        return 0
+    total = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("event") != "child_start":
+            continue
+        argv = " ".join(event.get("argv", []))
+        if "maintenance" in argv or argv.startswith("git gc"):
+            total += 1
+    return total
+
+
+def assert_init_fixture_repo_persists_suppression() -> None:
+    """A fixture remote must carry the suppression in its own config.
+
+    Git drops the repo-scoped config environment when it runs against another
+    repository, so `-c gc.auto=0` on a `git push` never reaches the remote's
+    `receive-pack`.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        bare = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
+        for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            actual = run_repo_git(bare, "config", "--get", key).strip()
+            if actual != value:
+                raise AssertionError(f"fixture remote {key}={actual!r}, want {value!r}")
+
+
+def assert_push_to_fixture_remote_spawns_no_background_maintenance() -> None:
+    """Push into a helper-built remote and prove `receive-pack` detaches nothing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        bare = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
+        work = hygiene_helpers.init_fixture_repo(root / "work", "-b", "main")
+        run_repo_git(work, "config", "user.email", "fixture@example.invalid")
+        run_repo_git(work, "config", "user.name", "Fixture")
+        run_repo_git(work, "commit", "--allow-empty", "-m", "seed")
+        run_repo_git(work, "remote", "add", "origin", str(bare))
+
+        trace = root / "trace.json"
+        environ = dict(os.environ, GIT_TRACE2_EVENT=str(trace))
+        subprocess.run(
+            hygiene_helpers.repo_git_command("push", "origin", "main"),
+            cwd=work,
+            env=environ,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        spawned = _maintenance_children(trace)
+        if spawned:
+            raise AssertionError(
+                f"push into a fixture remote spawned {spawned} background maintenance children"
+            )
+
+
+def assert_routed_fixture_module_spawns_no_background_maintenance() -> None:
+    """A newly routed fixture suite must not detach a writer into its tmpdir.
+
+    `test_ci_input_sets.py` built its own `git` argv before #1323 and spawned a
+    background writer per commit, into a `TemporaryDirectory` it then deleted.
+    """
+    module = "scripts/test_ci_input_sets.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = pathlib.Path(tmp) / "trace.json"
+        environ = dict(os.environ, GIT_TRACE2_EVENT=str(trace))
+        completed = subprocess.run(
+            [sys.executable, module],
+            cwd=REPO_ROOT,
+            env=environ,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(f"{module} failed: {completed.stderr[-2000:]}")
+        spawned = _maintenance_children(trace)
+        if spawned:
+            raise AssertionError(f"{module} spawned {spawned} background maintenance children")
+
 
 def assert_temp_git_fixture_cleanup_stress_blocks_background_writer() -> None:
     real_git = shutil.which("git")
@@ -1066,6 +1157,9 @@ def assert_debug_test_workflow_contract() -> None:
 
 def main() -> int:
     assert_run_repo_git_suppresses_background_maintenance()
+    assert_init_fixture_repo_persists_suppression()
+    assert_push_to_fixture_remote_spawns_no_background_maintenance()
+    assert_routed_fixture_module_spawns_no_background_maintenance()
     assert_temp_git_fixture_cleanup_stress_blocks_background_writer()
     assert_self_authorizing_governance_detector_contract()
     assert_debug_test_workflow_contract()

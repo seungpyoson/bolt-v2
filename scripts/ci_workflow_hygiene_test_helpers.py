@@ -27,6 +27,11 @@ GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = (
     "maintenance.auto=false",
 )
 
+GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG = (
+    ("gc.auto", "0"),
+    ("maintenance.auto", "false"),
+)
+
 DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
 GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = "name: ${{ needs.ci-policy.outputs.gate_name }}"
@@ -1758,6 +1763,38 @@ def run_repo_git(repo: pathlib.Path, *args: str) -> str:
         stderr=subprocess.PIPE,
     )
     return completed.stdout
+
+def suppress_repo_auto_maintenance(repo: pathlib.Path) -> None:
+    """Persist the suppression inside `repo`'s own config.
+
+    `repo_git_command` only reaches the git processes this suite launches. Git
+    drops the repo-scoped config environment when it runs a command against a
+    *different* repository, so `git push` never carries `-c gc.auto=0` into the
+    remote's `receive-pack`, and git spawned by the code under test never sees
+    it either. Both then detach a writer into a fixture directory the test is
+    about to delete. A fixture repo that carries the setting in its own config
+    is covered whoever runs git against it, bare or not.
+    """
+    for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+        subprocess.run(
+            repo_git_command("-C", str(repo), "config", key, value),
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+def init_fixture_repo(repo: pathlib.Path, *init_args: str) -> pathlib.Path:
+    """`git init` a fixture repo that never spawns auto-maintenance."""
+    subprocess.run(
+        repo_git_command("init", *init_args, str(repo)),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    suppress_repo_auto_maintenance(repo)
+    return repo
 
 def commit_repo(repo: pathlib.Path, message: str) -> str:
     run_repo_git(repo, "add", ".")

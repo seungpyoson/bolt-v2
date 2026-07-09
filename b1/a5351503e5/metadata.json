@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "b1a5351503e5",
+  "strategy": "manual-commit",
+  "branch": "pr-1309",
+  "checkpoints_count": 4,
+  "files_touched": [
+    ".gitignore",
+    "crates/backtesting-vertical-slice/src/reference_fixture_index.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_conversion_completion.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json",
+    "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b1/a5351503e5/0/metadata.json",
+      "transcript": "/b1/a5351503e5/0/full.jsonl",
+      "compact_transcript": "/b1/a5351503e5/0/transcript.jsonl",
+      "content_hash": "/b1/a5351503e5/0/content_hash.txt",
+      "prompt": "/b1/a5351503e5/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 21988,
+    "cache_creation_tokens": 1074490,
+    "cache_read_tokens": 63107804,
+    "output_tokens": 346967,
+    "api_call_count": 181
+  }
+}

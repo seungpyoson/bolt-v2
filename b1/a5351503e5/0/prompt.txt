@@ -1,0 +1,310 @@
+Adversarial review PR #1302 — Warm debug lane compile cache
+
+  Review range:
+  Base: 552d42aa1
+  Head: 9f7fac2561f95a8b880266bd20bb9ce74024d57f
+
+  Context:
+  This PR adds read-only sccache to debug/probe/flaky lanes, centralizes sccache setup/trust/location in shared actions and TOML, splits compile preflight from
+  test execution to prevent retry-masking, emits stats after compile/run, and hardens flaky workflows.
+
+  Latest fixes:
+  - flaky-test-smoke is manually dispatchable.
+  - flaky-test-smoke and flaky-test-detection guard JUnit staging when reports are missing.
+  - flaky-test-detection now exits with captured rc while preserving Mergify upload.
+  - verifier now enforces helper-wrapped commands are compile-only, stats use if: always(), test execution is unwrapped, no forced sccache-off test execution,
+  guarded JUnit staging, and exit "$rc".
+  - docs now mention scheduled and manually dispatched Flaky Test Smoke.
+
+  Review goals:
+  1. Can sccache/AWS/config/setup failures still fail lanes whose compile/tests would pass?
+  2. Can fail-open retry mask real/flaky test failures?
+  3. Is every helper-wrapped command structurally compile-only?
+  4. Does unwrapped test execution with sccache enabled create a realistic residual failure path?
+  5. Are stats emitted after compile/run with if: always()?
+  6. Is read/write trust single-owned in sccache-setup and restricted correctly?
+  7. Is ci/sccache-location.toml the single runtime sccache location source?
+  8. Do both flaky workflows fail GitHub jobs correctly while preserving Mergify upload?
+  9. Are verifier checks load-bearing and resistant to echo/comment/string spoofing?
+  10. What exact-head runtime evidence is still missing?
+
+  Focus files:
+  - .github/actions/sccache-setup/action.yml
+  - .github/actions/sccache-stats/action.yml
+  - .github/scripts/sccache-fail-open.sh
+  - .github/workflows/ci.yml
+  - .github/workflows/debug-test.yml
+  - .github/workflows/rust-probe.yml
+  - .github/workflows/flaky-test-smoke.yml
+  - .github/workflows/flaky-test-detection.yml
+  - scripts/verify_ci_workflow_hygiene.py
+  - scripts/test_verify_ci_workflow_hygiene.py
+  - ci/sccache-location.toml
+  - docs/ci/nextest-artifact-cache.md
+
+  Local evidence at head:
+  - python3 scripts/verify_ci_workflow_hygiene.py passed
+  - PYTHONPATH=scripts python3 scripts/test_verify_ci_workflow_hygiene.py passed
+  - actionlint -config-file .github/actionlint.yaml .github/workflows/*.yml passed
+  - git diff --check passed
+  - just ci-lint-workflow passed all 28 suites
+
+  Remote evidence:
+  - Exact-head Flaky Test Smoke dispatched:
+    https://github.com/seungpyoson/bolt-v2/actions/runs/28985113912
+    At last check: in_progress at 9f7fac2561f95a8b880266bd20bb9ce74024d57f.
+
+  Output:
+  Findings first, ordered by severity. For each finding include file/line, failure mode, why it matters, and smallest systematic fix. If no actionable findings
+  remain, say so plainly and list residual evidence gaps separately.
+
+---
+
+Adversarial review PR #1302 — Warm debug lane compile cache
+
+  Review range: 552d42aa1..2e659e1248d08d123e92220faee8bc2dc2b68d38.
+  If PR head differs, review the actual PR head and state the SHA.
+
+  This is review-only. Do not patch. Findings first, ordered by severity. For each finding include severity, file/line, concrete failure mode, why it matters,
+  and the smallest systematic fix. If no actionable findings, say that explicitly and list remaining evidence gaps separately.
+
+  Context:
+  - Prior head failed Flaky Test Smoke run 28985113912 because workflow-level compile/run split ran rust_verification disk preflight twice.
+  - Prior head also measured 0% sccache hits for flaky-smoke because Rust Probe/flaky-smoke missed the profile envs used by the CI writer.
+  - Latest head moves sccache fail-open retry/split into scripts/rust_verification.py, deletes .github/scripts/sccache-fail-open.sh, and makes workflows call
+  one managed owner invocation.
+  - Latest head adds CARGO_PROFILE_TEST_DEBUG=0 and CARGO_PROFILE_DEV_DEBUG=0 to Rust Probe and Flaky Test Smoke.
+  - Latest head adds synthetic JUnit fallback staging so Mergify upload has a report even when nextest fails before writing JUnit.
+
+  Review goals:
+  1. Does rust_verification.py now perform exactly one disk preflight for managed nextest run with sccache active?
+  2. Does it retry only compile/preflight work without retrying real test execution or masking flaky failures?
+  3. Are non-sccache/local managed run semantics preserved, especially private just recipe authorization and cache-retention locking?
+  4. Are all workflows free of workflow-level fail-open helper paths and shell-shape spoofing risks?
+  5. Do CI, Debug Test, Rust Probe, and Flaky Test Smoke now share compile identity/profile envs enough to hit the CI-written sccache objects?
+  6. Does deleting .github/scripts/sccache-fail-open.sh leave no stale runtime references or dual retry path?
+  7. Does synthetic JUnit staging preserve Mergify upload without hiding the real run failure?
+  8. Are stats still emitted after compile/run with if: always()?
+  9. Are hygiene verifier assertions load-bearing and aligned with the new single-owner design?
+  10. What exact-head runtime evidence is still missing before ready-for-review?
+
+  Local evidence claimed at 2e659e124:
+  - python3 scripts/verify_ci_workflow_hygiene.py passed.
+  - PYTHONPATH=scripts python3 scripts/test_verify_ci_workflow_hygiene.py passed.
+  - PYTHONPATH=scripts python3 scripts/test_rust_verification.py passed.
+  - actionlint on affected workflows passed.
+  - bash -n .github/scripts/run-rust-probe.sh passed.
+  - git diff --check passed.
+  - just ci-lint-workflow passed outside sandbox, 28 suites.
+
+  Pay special attention to regressions introduced by moving retry from YAML into rust_verification.py.
+
+---
+
+Adversarial review PR #1302 — Warm debug lane compile cache
+
+  Repo: seungpyoson/bolt-v2
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1302
+  Base SHA: ca0d9d2440caa7ecf77fb27f38eff88a7bb62e23
+  Head SHA: 635c4149bf636dc91109b4fd82c938df501c7203
+
+  Review the full PR diff, not stale earlier heads. Treat AGENTS.md as binding governance.
+
+  Scope:
+  - Shared sccache setup/stats actions.
+  - sccache location TOML ownership.
+  - sccache eligibility/trust policy.
+  - rust_verification.py compile/run split and fail-open retry behavior.
+  - CI/debug-test/rust-probe/flaky-test-smoke/flaky-test-detection workflow wiring.
+  - Source-fence/no-config-retype governance changes.
+
+  Known latest status:
+  - PR is draft and mergeable.
+  - No failing checks at current head.
+  - Draft PR skips full merge-proof Rust gates by policy.
+  - source-fence-static now passes remotely at head.
+  - Local verification passed:
+    - python3 scripts/verify_no_config_retype.py
+    - python3 scripts/test_verify_no_config_retype.py
+    - python3 scripts/test_sccache_eligibility.py
+    - python3 scripts/verify_ci_workflow_hygiene.py
+    - python3 scripts/test_verify_ci_workflow_hygiene.py
+    - just source-fence-static
+    - git diff --check
+
+  Review goals:
+  1. Can sccache/AWS/config/server failures still fail debug/probe/flaky lanes when underlying compile/
+  tests would pass?
+  2. Can fail-open retry mask real/flaky test failures?
+  3. Is every retry-wrapped command structurally compile-only?
+  4. Are nextest compile-preflight args valid for all affected lanes, especially --no-fail-fast,
+  --partition, filters, and BVS cases?
+  5. Does retry success propagate the correct wrapper/env state into the later test phase?
+  6. Are sccache stats emitted after compile/run with if: always() everywhere?
+  7. Is read/write cache trust policy single-owned and restricted to trusted main push/dispatch?
+  8. Is ci/sccache-location.toml truly the single runtime sccache location source, with no ungoverned
+  hardcoded bucket/region/prefix drift?
+  9. Did the source-fence/no-config-retype fix preserve governance without hiding accidental config
+  retypes?
+  10. Do flaky-test-smoke and flaky-test-detection fail/report correctly while preserving Mergify upload
+  and avoiding missing-JUnit secondary errors?
+  11. Are verifier assertions structural/load-bearing, not spoofable by comments, echo strings, same-line
+  command chaining, or dead text?
+  12. What exact-head runtime evidence is still missing before ready-for-review?
+
+  Finding format:
+  - Severity: Blocker / High / Medium / Low
+  - File/line
+  - Concrete failure mode
+  - Why it matters
+  - Minimal systematic fix
+  - Evidence or reproduction command
+
+  Do not raise speculative issues without a plausible failure path. Do not re-litigate bugs from older
+  heads unless you confirm they still exist at 635c4149. If no actionable code findings remain, say that
+  clearly and list only residual evidence gaps.
+
+---
+
+Adversarial review PR #1302 — Warm debug lane compile cache
+
+  Repo: seungpyoson/bolt-v2
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1302
+  Base SHA: ca0d9d2440caa7ecf77fb27f38eff88a7bb62e23
+  Head SHA: 9bc981c8e435d8850345ce9d4b803f1e8b8cb55b
+
+  Review the exact head only. Do not re-litigate older-head findings unless they still reproduce at
+  9bc981c8.
+
+  Context:
+  - Retry/split is now owned in scripts/rust_verification.py.
+  - Test phase now runs without RUSTC_WRAPPER after compile preflight.
+  - nextest compile preflight strips run-only failure-control flags.
+  - sccache eligibility trust logic lives in scripts/sccache_eligibility.py.
+  - test_sccache_eligibility.py is wired into ci-lint-workflow and source-fence-static.
+  - Current PR is draft; merge-proof Rust gates are expected to be skipped.
+  - Current remote checks report no failing checks.
+
+  Local verification claimed:
+  - just source-fence-static
+  - just ci-lint-workflow
+  - git diff --check
+  - focused rust_verification / workflow hygiene / no-config / sccache eligibility tests
+
+  Review goals:
+  1. Can sccache/AWS/config/server failures still fail debug/probe/flaky lanes when compile/tests would
+  pass?
+  2. Can retry mask real test failures?
+  3. Is every retry path structurally compile-only?
+  4. Are synthesized nextest --no-run args valid for all wired lanes and common flag variants?
+  5. Does the post-preflight test phase avoid sccache client/server failure surfaces without causing
+  rebuilds?
+  6. Is sccache read/write trust policy single-owned and adequately guarded?
+  7. Are verifier checks load-bearing, not spoofable by comments, dead strings, echo, or continue-on-
+  error?
+  8. Is ci/sccache-location.toml the single sccache runtime location source?
+  9. Are no-config-retype strict paths and registrations appropriate for the new resolver/tests?
+  10. Do flaky-test-smoke and flaky-test-detection preserve job failure/reporting semantics and Mergify
+  upload?
+  11. What exact-head runtime evidence is still missing before ready-for-review?
+
+  Finding format:
+  - Severity: Blocker / High / Medium / Low
+  - File/line
+  - Concrete failure mode
+  - Why it matters
+  - Minimal systematic fix
+  - Evidence/reproduction command
+
+  If no actionable code findings remain, say so directly and list only residual evidence gaps.
+
+---
+
+Adversarially review PR #1302: “Warm debug lane compile cache”
+
+  Base: ca0d9d2440caa7ecf77fb27f38eff88a7bb62e23
+  Head: 667ca6a0d6c6e153f6179833d76b726a2efa5e58
+  Branch: fix/debug-lane-cache-parity
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1302
+
+  Focus on whether the latest changes stop review churn by making nextest compile preflight args explicit
+  and governed instead of inferred from run args.
+
+  Review goals:
+  1. Verify `commands.test.compile_args` is now the single governed source for managed test compile
+  preflight base args.
+  2. Confirm managed `test` still runs tests with `commands.test.cargo_args` and does not retry test
+  execution.
+  3. Check that caller-supplied compile-relevant args are preserved, while run-only nextest flags/aliases
+  like `--ff`, `--nff`, `--fail-fast`, `--no-fail-fast`, and `--max-fail` cannot poison the `--no-run`
+  compile preflight.
+  4. Confirm direct `cargo nextest run` fallback behavior remains sane and compile-only retry applies only
+  to compile preflight.
+  5. Verify policy validation rejects missing/invalid/non-compile-only `commands.test.compile_args`.
+  6. Check for config retyping, dual path drift, stale fixtures, and verifier gaps.
+  7. Confirm `test_verify_remote.py`, fixtures, and no-config governance were updated consistently.
+  8. Identify only actionable defects. Do not relitigate accepted residual evidence gaps unless this head
+  introduces a new one.
+
+  Evidence already run locally:
+  - `python3 scripts/test_rust_verification.py`
+  - `python3 scripts/verify_no_config_retype.py`
+  - `python3 scripts/test_verify_no_config_retype.py`
+  - `python3 scripts/verify_ci_workflow_hygiene.py`
+  - `python3 scripts/test_verify_ci_workflow_hygiene.py`
+  - `python3 scripts/test_run_rust_probe.py`
+  - `python3 scripts/test_run_ci_lint_suites.py`
+  - `just source-fence-static`
+  - `just ci-lint-workflow`
+  - `git diff --check`
+
+  Remote draft checks at head are pass/skipped as expected; full Rust gates remain skipped because PR is
+  draft.
+
+───────────────────────────────
+
+---
+
+• Adversarially review PR #1302: “Warm debug lane compile cache”
+
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1302
+  Base: ca0d9d2440caa7ecf77fb27f38eff88a7bb62e23
+  Head: 34ca2de2f471fbd0551664100d20a9a5f27a6fa9
+  Branch: fix/debug-lane-cache-parity
+  Status: draft
+
+  Focus on the latest systematic fix for nextest compile preflight classification.
+
+  Review goals:
+  1. Verify managed `test` uses governed `commands.test.compile_args` for compile preflight and
+  `commands.test.cargo_args` for actual test execution.
+  2. Confirm test execution is never retried and retry remains compile-preflight-only.
+  3. Check the closed nextest classifier:
+     - compile selectors are preserved: `--release`, `-r`, `-F`, `--bin`, `--example`, `--bench`,
+     `--cargo-profile`, `--build-jobs`, `--ignore-rust-version`
+     - known run-only flags are dropped from caller tails
+     - unknown flags refuse loudly instead of silently reshaping preflight
+  4. Verify `commands.test.compile_args` rejects run-only, unknown, and `--archive-file` forms.
+  5. Confirm `--archive-file` remains a known no-split path, not an error.
+  6. Confirm target-routing refusals still take precedence over compile-tail classification.
+  7. Check for dual paths, stale fixtures, config retyping, or verifier gaps.
+  8. Report only actionable defects. Do not relitigate accepted draft evidence gaps unless this head
+  introduces a new one.
+
+  Evidence already passed locally:
+  - `python3 scripts/test_rust_verification.py`
+  - `python3 scripts/test_rust_verification_cache_retention.py`
+  - `python3 scripts/verify_no_config_retype.py`
+  - `python3 scripts/test_verify_no_config_retype.py`
+  - `python3 scripts/verify_ci_workflow_hygiene.py`
+  - `python3 scripts/test_verify_ci_workflow_hygiene.py`
+  - `python3 scripts/test_run_rust_probe.py`
+  - `python3 scripts/test_verify_remote.py`
+  - `python3 scripts/test_run_ci_lint_suites.py`
+  - `just source-fence-static`
+  - `just ci-lint-workflow`
+  - `git diff --check`
+
+  Remote draft checks at head are pass or draft-policy skipped, including `source-fence-static`,
+  `actionlint`, `ci-policy`, `coverage-enforcer`, `bvs-ci-policy`, `bvs-detect`, `host-health`, and
+  `detector`.

@@ -949,16 +949,13 @@ thread_local! {
 }
 
 fn install_test_data_command_sender() {
-    static INSTALL: std::sync::Once = std::sync::Once::new();
-    INSTALL.call_once(|| {
-        msgbus::register_data_command_endpoint(
-            MessagingSwitchboard::data_engine_queue_execute(),
-            TypedIntoHandler::from(|command: DataCommand| {
-                get_data_cmd_sender().execute(command);
-            }),
-        );
-        replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender));
-    });
+    msgbus::register_data_command_endpoint(
+        MessagingSwitchboard::data_engine_queue_execute(),
+        TypedIntoHandler::from(|command: DataCommand| {
+            get_data_cmd_sender().execute(command);
+        }),
+    );
+    replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender));
     TEST_DATA_COMMANDS.with(|commands| {
         commands
             .lock()

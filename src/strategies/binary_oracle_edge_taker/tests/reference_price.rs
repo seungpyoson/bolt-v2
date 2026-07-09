@@ -1,13 +1,21 @@
 #![cfg(test)]
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use super::*;
 use crate::{
     bolt_v3_config::{
-        ReferencePriceBlock, ReferencePriceDriftPolicy, ReferencePriceProvider,
-        ReferencePriceSelectionPolicy, ReferencePriceSourceBlock, ReferencePriceStalePolicy,
+        LoadedBoltV3Config, RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceBlock,
+        RealizedVolatilitySourceClassBlock, ReferencePriceBlock, ReferencePriceDriftPolicy,
+        ReferencePriceProvider, ReferencePriceSelectionPolicy, ReferencePriceSourceBlock,
+        ReferencePriceStalePolicy, load_bolt_v3_config, realized_volatility_engine_config,
     },
+    bolt_v3_prod_profile::{STRATEGIES_DIR_NAME, generate_live_config},
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
@@ -25,6 +33,8 @@ const POLYRESEARCH_BACKUP_SOURCE_ID: &str = "polyresearch_backup";
 const TEST_REFERENCE_CURRENT_PRICE: f64 = 66_300.25;
 const TEST_REFERENCE_OBSERVED_TS_MS: u64 = 1_200;
 const TEST_REFERENCE_RECEIVED_TS_MS: u64 = 1_250;
+const PROD_BTC_5M_PROFILE_ID: &str = "prod-btc-5m";
+const CONFIG_ROOT: &str = "config";
 
 #[test]
 fn signal_quote_subscription_uses_configured_signal_client() {
@@ -52,8 +62,246 @@ fn signal_quote_subscription_without_signal_client_preserves_default_routing() {
     assert_eq!(strategy.signal_client_id(), None);
 }
 
+#[test]
+fn prod_btc_5m_startup_derivations_match_composed_config() {
+    let loaded = load_composed_prod_btc_5m_config();
+    let loaded_strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| {
+            strategy.config.strategy_archetype.as_str()
+                == crate::bolt_v3_archetypes::binary_oracle_edge_taker::KEY
+        })
+        .expect("composed profile should include the binary oracle taker strategy");
+    let raw = crate::bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config(
+        loaded_strategy,
+        &loaded,
+    )
+    .expect("composed binary oracle strategy should map through the taker archetype");
+    let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(
+        &raw,
+        &prod_strategy_build_context(&loaded, loaded_strategy),
+    )
+    .expect("composed binary oracle runtime config should build a strategy");
+
+    let reference_current_price = loaded_strategy
+        .config
+        .reference_current_price
+        .as_ref()
+        .expect("composed strategy should declare reference_current_price");
+    let expected_reference_source_ids = reference_current_price
+        .source_order
+        .iter()
+        .filter(|source_id| {
+            reference_current_price
+                .sources
+                .get(source_id.as_str())
+                .is_some_and(|source| source.enabled)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let actual_reference_source_ids = strategy
+        .reference_price_subscription_requests()
+        .into_iter()
+        .map(|request| request.source_id)
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        !actual_reference_source_ids.is_empty(),
+        "composed prod profile must derive reference_current_price subscriptions"
+    );
+    assert_eq!(
+        actual_reference_source_ids, expected_reference_source_ids,
+        "reference subscriptions must match the enabled configured reference_current_price sources"
+    );
+
+    let signal_data = loaded_strategy
+        .config
+        .signal_data
+        .get("primary")
+        .expect("composed strategy should declare signal_data.primary");
+    assert_eq!(
+        strategy.signal_instrument_id().map(|id| id.to_string()),
+        Some(signal_data.instrument_id.to_string()),
+        "signal instrument should come from loaded signal_data.primary"
+    );
+    assert_eq!(
+        strategy.signal_client_id().map(|id| id.to_string()),
+        Some(signal_data.data_client_id.to_string()),
+        "signal client should come from loaded signal_data.primary"
+    );
+
+    let surface_id = loaded_strategy
+        .config
+        .realized_volatility_surface_id
+        .as_deref()
+        .expect("composed strategy should declare a realized_volatility_surface_id");
+    let surface = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .and_then(|surfaces| surfaces.get(surface_id))
+        .expect("composed root should include the configured realized-volatility surface");
+    let expected_rv_requests = expected_realized_volatility_requests(surface);
+    let actual_rv_requests =
+        realized_volatility_requests_for_strategy_surface(&strategy, surface_id);
+
+    assert!(
+        !actual_rv_requests.is_empty(),
+        "composed prod profile must derive realized-volatility subscriptions"
+    );
+    assert_eq!(
+        actual_rv_requests, expected_rv_requests,
+        "RV subscriptions must cover the enabled sources of the configured surface"
+    );
+}
+
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
+}
+
+fn load_composed_prod_btc_5m_config() -> LoadedBoltV3Config {
+    let generated = generate_live_config(&repo_path(CONFIG_ROOT), PROD_BTC_5M_PROFILE_ID)
+        .expect("prod-btc-5m profile should compose through the production generator");
+    let temp = tempfile::tempdir().expect("staged runtime config dir should create");
+    stage_strategy_files(temp.path());
+    let live_path = temp.path().join("live.toml");
+    fs::write(&live_path, generated.text).expect("composed runtime config should write");
+    load_bolt_v3_config(&live_path).expect("composed runtime config should load")
+}
+
+fn stage_strategy_files(config_root: &Path) {
+    copy_toml_tree(
+        &repo_path(&format!("{CONFIG_ROOT}/{STRATEGIES_DIR_NAME}")),
+        config_root,
+    );
+}
+
+fn copy_toml_tree(source: &Path, config_root: &Path) {
+    let relative = source
+        .strip_prefix(repo_path(CONFIG_ROOT))
+        .expect("source should be under repo config root");
+    let destination = config_root.join(relative);
+    fs::create_dir_all(&destination).expect("staged strategy directory should create");
+    for entry in fs::read_dir(source).expect("strategy source directory should read") {
+        let entry = entry.expect("strategy source entry should read");
+        let file_type = entry
+            .file_type()
+            .expect("strategy source entry type should read");
+        let source_path = entry.path();
+        if file_type.is_dir() {
+            copy_toml_tree(&source_path, config_root);
+        } else if file_type.is_file()
+            && source_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("toml")
+        {
+            fs::copy(&source_path, destination.join(entry.file_name()))
+                .expect("strategy file should copy into staged runtime dir");
+        }
+    }
+}
+
+fn repo_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+fn prod_strategy_build_context(
+    loaded: &LoadedBoltV3Config,
+    loaded_strategy: &crate::bolt_v3_config::LoadedStrategy,
+) -> StrategyBuildContext {
+    let execution_venue = loaded
+        .root
+        .clients
+        .get(loaded_strategy.config.execution_client_id.as_str())
+        .expect("strategy execution client should be present in composed root")
+        .venue;
+    let surfaces = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .expect("composed root should declare realized_volatility_surfaces")
+        .iter()
+        .map(|(surface_id, surface)| {
+            (
+                surface_id.clone(),
+                realized_volatility_engine_config(surface_id, surface)
+                    .expect("loaded realized-volatility surface should build engine config"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let decision_evidence = Arc::new(RecordingDecisionEvidenceWriter);
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
+    );
+    StrategyBuildContext::new(
+        RecordingFeeProvider::cold(),
+        decision_evidence,
+        submit_admission,
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        execution_venue,
+    )
+    .with_realized_volatility_surfaces(surfaces)
+}
+
+fn expected_realized_volatility_requests(
+    surface: &crate::bolt_v3_config::RealizedVolatilitySurfaceBlock,
+) -> BTreeSet<(String, Option<String>)> {
+    surface
+        .sources
+        .iter()
+        .filter(|source| source.enabled && source_is_subscribable(source))
+        .map(|source| {
+            (
+                source.instrument_id.to_string(),
+                Some(source.data_client_id.to_string()),
+            )
+        })
+        .collect()
+}
+
+fn source_is_subscribable(source: &RealizedVolatilitySourceBlock) -> bool {
+    matches!(
+        (source.source_class, source.sample_kind),
+        (
+            RealizedVolatilitySourceClassBlock::SpotQuote,
+            RealizedVolatilitySampleKindBlock::Midpoint
+        ) | (
+            RealizedVolatilitySourceClassBlock::Trade,
+            RealizedVolatilitySampleKindBlock::Trade
+        ) | (
+            RealizedVolatilitySourceClassBlock::Index,
+            RealizedVolatilitySampleKindBlock::Index
+        )
+    )
+}
+
+fn realized_volatility_requests_for_strategy_surface(
+    strategy: &BinaryOracleEdgeTaker,
+    surface_id: &str,
+) -> BTreeSet<(String, Option<String>)> {
+    strategy
+        .context
+        .realized_volatility_quote_subscription_requests_for_surface(surface_id)
+        .into_iter()
+        .chain(
+            strategy
+                .context
+                .realized_volatility_trade_subscription_requests_for_surface(surface_id),
+        )
+        .chain(
+            strategy
+                .context
+                .realized_volatility_index_subscription_requests_for_surface(surface_id),
+        )
+        .map(|(instrument_id, client_id)| {
+            (
+                instrument_id.to_string(),
+                client_id.map(|client_id| client_id.to_string()),
+            )
+        })
+        .collect()
 }
 
 fn reference_price_update(

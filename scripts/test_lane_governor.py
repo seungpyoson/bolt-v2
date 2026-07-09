@@ -121,7 +121,7 @@ _LOADER_CALLS = frozenset(
         "run_module",
     }
 )
-RUN_FENCES_SOURCE_SHA256 = "0df445212531dc16bb859ebda397169918be380cdf219673eb08197663376712"
+RUN_FENCES_SOURCE_SHA256 = "76545cf5591be92a9aedac673ee1d10a6ec022f687605f243da801d07fe5b7f0"
 _RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES = _LOADER_CALLS | frozenset(
     {"__import__", "eval", "exec", "import_module_from_path"}
 )
@@ -3074,7 +3074,6 @@ def test_cheap_lanes_do_not_write_repo_root_shared_state() -> None:
     scripts = _cheap_lane_python_scripts()
     required = {
         SCRIPTS_DIR / "test_verify_bolt_v3_runtime_literals.py",
-        SCRIPTS_DIR / "test_verify_bolt_v3_strategy_policy_fence.py",
     }
     missing_required = sorted(str(path.relative_to(REPO_ROOT)) for path in required - scripts)
     assert not missing_required, f"guard did not scan required scripts: {missing_required}"

@@ -313,7 +313,6 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER (pull_request and review events): ${{ github.event.pull_request.number }}
             PR NUMBER (issue_comment events): ${{ github.event.issue.number }}
-            MODEL FRESHNESS WARNING: ${{ steps.model-freshness.outputs.claude_warning }}
             DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}
             SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}
             FINDING REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_finding_required_labels }}

@@ -322,7 +322,6 @@ jobs:
           KIMI_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.kimi_review_max_chunk_chars }}
           KIMI_CLI_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.kimi_cli_timeout_seconds }}
           AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
-          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}
         run: >-
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-review
           --started-at "${{ steps.review-window.outputs.started_at }}"
@@ -350,30 +349,10 @@ jobs:
           KIMI_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.kimi_review_max_chunk_chars }}
           KIMI_CLI_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.kimi_cli_timeout_seconds }}
           AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
-          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}
         run: >-
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .ai-review/standards/kimi-review-standards.md
-          --config-file .ai-review/base/ci/ai-review.toml
-
-      - name: Post Kimi model freshness advisory
-        if: >-
-          ${{
-            steps.kimi-secret.outputs.configured == 'true'
-            && steps.pause.outputs.paused != 'true'
-            && steps.review-decision.outputs.should_review == 'true'
-            && always()
-            && steps.model-freshness.outputs.kimi_warning != ''
-          }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
-          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}
-        run: >-
-          python3 .ai-review/base/scripts/ai_review_deliverables.py model-freshness-notice
-          --provider Kimi
-          --started-at "${{ steps.review-window.outputs.started_at }}"
           --config-file .ai-review/base/ci/ai-review.toml
 
       - name: Post Kimi fallback infrastructure failure notice

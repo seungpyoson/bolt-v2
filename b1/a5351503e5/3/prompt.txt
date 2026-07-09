@@ -1,0 +1,68 @@
+Review PR #1309: https://github.com/seungpyoson/bolt-v2/pull/1309
+  Head SHA: 6dac19af3f6b2f2be542d391d0a707e826bfd292
+
+  Review only. Do not edit files.
+
+  Findings first, ordered by severity, with file/line references. Separate blocking from non-blocking
+  findings. If there are no findings, say so explicitly.
+
+  This PR splits the giant CI workflow hygiene verifier/test files into smaller modules while preserving
+  behavior.
+
+  Focus on:
+  1. Behavior parity: moved analyzer/Mergify functions should behave the same.
+  2. Legacy compatibility: old imports and subcommands from `verify_ci_workflow_hygiene.py` must still
+  work.
+  3. Test split: new split tests should be registered and should not depend on the old giant test file.
+  4. Fence strength: `verify_no_config_retype` strict coverage must not be weakened.
+  5. Scope: no `.mergify.yml` changes and no unrelated behavior changes.
+  6. Evidence accuracy: PR body claims should match the diff and verification.
+
+  Known accepted exception:
+  `assert_command_parse_cache_is_transparent` was edited to cover relocated cache globals. Do not flag
+  that solely as “not pure relocation” unless the edit is wrong or evidence is misleading.
+
+  Reported local checks:
+  - `just ci-lint-workflow` passed.
+  - `python3 scripts/run_fences.py` passed.
+  - `git diff --check` passed.
+
+---
+
+Review PR #1309: https://github.com/seungpyoson/bolt-v2/pull/1309
+  Head SHA: f35603bd95aff86b833249e7ed90afecdcbcf6f3
+
+  Review only. Do not edit files.
+
+  Findings first, ordered by severity, with file/line references. Separate blocking from non-blocking
+  findings. If there are no findings, say so explicitly.
+
+  This PR splits the giant CI workflow hygiene verifier/test files into smaller modules while preserving
+  behavior.
+
+  Focus areas:
+  1. Behavior parity: moved analyzer/Mergify functions should behave the same.
+  2. Legacy compatibility: old imports and subcommands from `verify_ci_workflow_hygiene.py` must still
+  work.
+  3. Test split: new split tests should be registered and should not depend on the old giant test file.
+  4. Fence strength: `verify_no_config_retype` strict coverage must not be weakened, including moved
+  Mergify validation now in `merge_queue_preflight.py`.
+  5. Scope: no `.mergify.yml` changes and no unrelated behavior changes.
+  6. Evidence accuracy: PR body claims should match the diff and verification.
+
+  Known accepted exception:
+  `assert_command_parse_cache_is_transparent` was edited to cover relocated cache globals. Do not flag
+  that solely as “not pure relocation” unless the edit is wrong or evidence is misleading.
+
+  Previously addressed internal/GPT findings:
+  - Completed legacy re-exports for moved Mergify helpers and shell punctuation constants.
+  - Split tests no longer import `test_verify_ci_workflow_hygiene.py`.
+  - New analyzer/test/helper modules are strict no-config-retype paths.
+  - `merge_queue_preflight.py` is now also a strict no-config-retype path with bootstrap registrations.
+
+  Reported local checks:
+  - `just ci-lint-workflow` passed: 33 suites.
+  - `python3 scripts/run_fences.py` passed.
+  - `python3 scripts/test_merge_queue_preflight.py` passed.
+  - `python3 scripts/verify_no_config_retype.py` passed.
+  - `git diff --check` passed.

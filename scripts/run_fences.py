@@ -36,6 +36,7 @@ NON_STATIC_VERIFY_PREFIXES = (
 STANDALONE_TEST_FILENAMES = (
     "test_migrate_bolt_v3_capital_admission_config.py",
     "test_migrate_bolt_v3_decision_evidence_to_v15.py",
+    "test_sccache_eligibility.py",
     "test_verify_runtime_capture_yaml.py",
     "test_local_verification_gate.py",
     "test_lane_governor.py",

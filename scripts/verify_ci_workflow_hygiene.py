@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import functools
@@ -12937,6 +12938,28 @@ def step_block_has_field(block: list[str] | None, key: str, value: str) -> bool:
     return False
 
 
+def step_block_has_key(block: list[str] | None, key: str) -> bool:
+    if block is None:
+        return False
+    step_indent: int | None = None
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        stripped = clean.lstrip()
+        if stripped.startswith("- "):
+            step_indent = len(clean) - len(stripped)
+            first_field = stripped.removeprefix("- ").strip()
+            if first_field.startswith(f"{key}:"):
+                return True
+            continue
+        if step_indent is None:
+            continue
+        if len(clean) - len(stripped) == step_indent + 2 and stripped.startswith(f"{key}:"):
+            return True
+    return False
+
+
 def just_invocation_count(run_lines: tuple[str, ...], recipe: str) -> int:
     return sum(len(re.findall(rf"\bjust\s+{re.escape(recipe)}\b", line)) for line in run_lines)
 
@@ -13440,6 +13463,35 @@ def sccache_eligibility_script_contract_errors(script_text: str) -> list[str]:
     ):
         if fragment not in script_text:
             errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must include {fragment!r}")
+    try:
+        tree = ast.parse(script_text, filename=SCCACHE_ELIGIBILITY_SCRIPT_FILE)
+    except SyntaxError as exc:
+        errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must parse as Python: {exc}")
+        return errors
+    resolver = next((node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "resolve_sccache_eligibility"), None)
+    if resolver is None:
+        errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must define resolve_sccache_eligibility")
+        return errors
+
+    def assigned_value(name: str) -> ast.AST | None:
+        for node in ast.walk(resolver):
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                return node.value
+        return None
+
+    trusted_write = assigned_value("trusted_write")
+    expected_trusted_write = ast.parse(
+        'write_requested and ((event_name == "push" and github_ref == "refs/heads/main") '
+        'or (event_name == "workflow_dispatch" and github_ref == "refs/heads/main"))',
+        mode="eval",
+    ).body
+    if trusted_write is None or ast.dump(trusted_write, include_attributes=False) != ast.dump(expected_trusted_write, include_attributes=False):
+        errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} trusted_write expression must restrict write access to main push/dispatch")
+
+    read_allowed = assigned_value("read_allowed")
+    expected_read_allowed = ast.parse('event_name in {"pull_request", "merge_group", "workflow_dispatch", "schedule"}', mode="eval").body
+    if read_allowed is None or ast.dump(read_allowed, include_attributes=False) != ast.dump(expected_read_allowed, include_attributes=False):
+        errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} read_allowed expression must restrict reads to pull_request/merge_group/workflow_dispatch/schedule")
     return errors
 
 
@@ -13506,6 +13558,8 @@ def debug_lane_sccache_job_errors(
 
     compile_block = named_step_block(job_lines, compile_step_name)
     compile_text = uncommented_text(compile_block) if compile_block is not None else ""
+    if step_block_has_key(compile_block, "continue-on-error"):
+        errors.append(f"{label} compile/test run step must not use continue-on-error")
     if DEBUG_LANE_SCCACHE_OPT_IN not in compile_text:
         errors.append(f"{label} compile step must opt into managed sccache conditionally")
     for fragment in (DEBUG_LANE_TEST_PROFILE_ENV, DEBUG_LANE_DEV_PROFILE_ENV):

@@ -9500,6 +9500,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "flaky smoke run step must exit with captured rc",
         ),
         (
+            "flaky smoke run step must not continue on error",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    "      - name: Run tests\n        env:\n",
+                    "      - name: Run tests\n        continue-on-error: true\n        env:\n",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "compile/test run step must not use continue-on-error",
+        ),
+        (
             "flaky smoke JUnit staging must synthesize missing-report failures",
             {
                 **workflows,
@@ -9757,6 +9770,15 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "eligibility script must keep trusted write policy",
             eligibility_script_text.replace('event_name == "push" and github_ref == "refs/heads/main"', 'event_name == "push"', 1),
             'event_name == "push" and github_ref == "refs/heads/main"',
+        ),
+        (
+            "eligibility script must not grant PR write access through dead-text spoofing",
+            eligibility_script_text.replace(
+                "trusted_write = write_requested and (",
+                'trusted_write = write_requested and ((event_name == "pull_request") or ',
+                1,
+            ),
+            "trusted_write expression must restrict write access",
         ),
         (
             "eligibility script must set sccache ignore I/O",

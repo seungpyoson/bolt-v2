@@ -3156,8 +3156,29 @@ def nextest_run_compile_preflight_args(cargo_args: list[str]) -> list[str] | Non
         return None
     if any(token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail):
         return None
-    compile_option_tail = [token for token in option_tail if token not in {"--no-fail-fast"}]
+    compile_option_tail = nextest_compile_option_tail(option_tail)
     return cargo_args[: nextest_index + 1] + compile_option_tail + ["--no-run"] + tail[separator_index:]
+
+
+def nextest_compile_option_tail(option_tail: list[str]) -> list[str]:
+    run_only_flags = {"--no-fail-fast", "--nff", "--fail-fast"}
+    value_run_only_flags = {"--max-fail"}
+    compile_tail: list[str] = []
+    index = 0
+    while index < len(option_tail):
+        token = option_tail[index]
+        if token in run_only_flags:
+            index += 1
+            continue
+        if token in value_run_only_flags:
+            index += 2
+            continue
+        if any(token.startswith(f"{flag}=") for flag in value_run_only_flags):
+            index += 1
+            continue
+        compile_tail.append(token)
+        index += 1
+    return compile_tail
 
 
 def cargo_args_are_compile_only(cargo_args: list[str]) -> bool:
@@ -3209,7 +3230,7 @@ def run_cargo_with_remote_cache_fail_open(
     retry_env = managed_env_without_remote_compile_cache(repo, policy)
     compile_args = nextest_run_compile_preflight_args(cargo_args)
     if compile_args is not None and "RUSTC_WRAPPER" in env:
-        compile_rc, test_env = run_compile_with_remote_cache_fail_open(
+        compile_rc, _compile_env = run_compile_with_remote_cache_fail_open(
             ["cargo", *compile_args],
             repo=repo,
             env=env,
@@ -3217,7 +3238,7 @@ def run_cargo_with_remote_cache_fail_open(
         )
         if compile_rc != 0:
             return compile_rc
-        return run_process(["cargo", *cargo_args], repo=repo, env=test_env)
+        return run_process(["cargo", *cargo_args], repo=repo, env=retry_env)
     if cargo_args_are_compile_only(cargo_args) and "RUSTC_WRAPPER" in env:
         compile_rc, _compile_env = run_compile_with_remote_cache_fail_open(
             ["cargo", *cargo_args],

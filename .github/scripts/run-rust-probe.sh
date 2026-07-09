@@ -129,7 +129,6 @@ fi
 echo "Rust Probe id: $probe_id"
 echo "Rust Probe checkout SHA: $actual_sha_lower"
 echo "Rust Probe mode: $mode"
-echo "Rust Probe compile_only: <unused>"
 echo "Rust Probe test_target: ${test_target:-<empty>}"
 echo "Rust Probe test_name: ${test_name:-<empty>}"
 

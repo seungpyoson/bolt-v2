@@ -58,6 +58,7 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/run_ci_lint_suites.py",
         "scripts/rust_verification.py",
         "scripts/sandbox_safe_push.py",
+        "scripts/sccache_eligibility.py",
         "scripts/test_cargo_shim.py",
         "scripts/test_clean_merged_artifacts.py",
         "scripts/test_host_health_sampler.py",
@@ -66,6 +67,7 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/test_run_ci_lint_suites.py",
         "scripts/test_rust_verification.py",
         "scripts/test_rust_verification_decoupling.py",
+        "scripts/test_sccache_eligibility.py",
         "scripts/test_sandbox_safe_push.py",
         "scripts/test_verifier_io.py",
         "scripts/test_verify_bolt_v3_core_boundary.py",
@@ -174,6 +176,12 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
     ),
     "scripts/sandbox_safe_push.py": (
         "push",
+    ),
+    "scripts/sccache_eligibility.py": (
+        "merge_group",
+        "pull_request",
+        "push",
+        "workflow_dispatch",
     ),
     "scripts/test_cargo_shim.py": (
         '"test",',
@@ -359,6 +367,13 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "push",
         "schema_version = 2",
         'target_namespace = "bolt-v2"',
+    ),
+    "scripts/test_sccache_eligibility.py": (
+        "ci",
+        "merge_group",
+        "pull_request",
+        "push",
+        "workflow_dispatch",
     ),
     "scripts/test_verify_bolt_v3_dependency_direction.py": (
         "main",

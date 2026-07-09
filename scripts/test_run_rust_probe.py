@@ -109,7 +109,6 @@ def assert_valid(
             f"Rust Probe id: probe-test\n"
             f"Rust Probe checkout SHA: {'a' * 40}\n"
             f"Rust Probe mode: {mode}\n"
-            f"Rust Probe compile_only: <unused>\n"
             f"Rust Probe test_target: {test_target or '<empty>'}\n"
             f"Rust Probe test_name: {test_name or '<empty>'}\n"
         )

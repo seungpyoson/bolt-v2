@@ -1441,15 +1441,26 @@ def assert_managed_test_splits_nextest_run_inside_owner() -> None:
         "--skip",
         "slow_case",
     ]
-    if run_calls != [(expected_compile, "/opt/sccache/sccache"), (expected_test, "/opt/sccache/sccache")]:
+    if run_calls != [(expected_compile, "/opt/sccache/sccache"), (expected_test, None)]:
         raise AssertionError(run_calls)
 
 
 def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
     owner = load_owner_module()
-    compile_args = owner.nextest_run_compile_preflight_args(
-        ["nextest", "run", "--locked", "--config-file", "nextest.toml", "--no-fail-fast"]
-    )
+    run_args = [
+        "nextest",
+        "run",
+        "--locked",
+        "--config-file",
+        "nextest.toml",
+        "--no-fail-fast",
+        "--fail-fast",
+        "--nff",
+        "--max-fail",
+        "1",
+        "--max-fail=all",
+    ]
+    compile_args = owner.nextest_run_compile_preflight_args(run_args)
     if compile_args != ["nextest", "run", "--locked", "--config-file", "nextest.toml", "--no-run"]:
         raise AssertionError(compile_args)
 
@@ -1514,7 +1525,7 @@ def assert_direct_nextest_run_splits_inside_owner() -> None:
     run_calls = [call for call in calls if call[0][0] == "cargo"]
     if run_calls != [
         (["cargo", "nextest", "run", "--locked", "-p", "bolt-v2", "--no-run"], "/opt/sccache/sccache"),
-        (["cargo", "nextest", "run", "--locked", "-p", "bolt-v2"], "/opt/sccache/sccache"),
+        (["cargo", "nextest", "run", "--locked", "-p", "bolt-v2"], None),
     ]:
         raise AssertionError(run_calls)
 

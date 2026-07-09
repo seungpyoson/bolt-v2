@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "413b705b4c3a",
+  "strategy": "manual-commit",
+  "branch": "chore/704-phase3-batch-plan-eviction",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/src/bin/polymarket_metadata_gate.rs",
+    "crates/backtesting-vertical-slice/src/path_resolution.rs",
+    "crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs",
+    "crates/backtesting-vertical-slice/src/polymarket_metadata_gate.rs",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/backfill-conversion-completion-ledger.toml",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/backfill-conversion-completion-ledger.toml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/41/3b705b4c3a/0/metadata.json",
+      "transcript": "/41/3b705b4c3a/0/full.jsonl",
+      "compact_transcript": "/41/3b705b4c3a/0/transcript.jsonl",
+      "content_hash": "/41/3b705b4c3a/0/content_hash.txt",
+      "prompt": "/41/3b705b4c3a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8494,
+    "cache_creation_tokens": 160951,
+    "cache_read_tokens": 6983550,
+    "output_tokens": 78618,
+    "api_call_count": 55
+  }
+}

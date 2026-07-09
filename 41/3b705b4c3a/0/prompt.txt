@@ -1,0 +1,36 @@
+• Completed the work on branch chore/scripts-teardown-wave1 in the worktree and PR #1312:
+
+  https://github.com/seungpyoson/bolt-v2/pull/1312
+
+  Current head: 67e8733c473e4f85602a1ab1ab3700f36ed69848
+
+  Net branch diff is 98 files changed, 4 insertions, 35703 deletions. I updated the PR body with the
+  wiring map, fold-candidates, line counts, and evidence. One requested migrator was restored as a fold-
+  candidate because a KEEP Rust recovery-equivalence test still executes it.
+
+  Verification:
+
+  - Local: python3 scripts/run_fences.py, just ci-lint-workflow, focused migrator and lane-governor checks
+    passed.
+
+  - Remote: just verify-remote passed for CI run 29004700082, then again after the PR body edit on run
+    29006737288.
+
+  - Backtester CI post-body run 29006737397 passed.
+  - Final PR checks are pass or intentional skip.
+  - Required reviewer node U_kgDOEZMFhA resolves to sp-reviewer, and that review request is present.
+  - Worktree is clean.
+
+  Goal record closed: 1,321,440 tokens used, about 3h 13m elapsed.
+
+---
+
+so what's next explain in plain english and make this concise
+
+---
+
+why should we approve 1312? we don't need external reviews? approve for step 1.
+
+---
+
+so I'm not saying we must have external review - should we have one or not - or is this something that is mechanical so it doesn't need reviews

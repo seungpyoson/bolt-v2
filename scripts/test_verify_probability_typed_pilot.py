@@ -743,6 +743,35 @@ default_for!(Probability, crate::other::NotProbability);
             raise AssertionError(f"expected overloaded marker argument to be ignored, got {findings!r}")
 
 
+def test_verify_uses_first_matching_same_arity_macro_arm() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/same_arity_macro_default_marker.rs": """
+macro_rules! default_for {
+    ($marker:ty, $target:ident) => {
+        impl Default for $target {
+            fn default() -> Self { todo!() }
+        }
+    };
+    ($target:ty, $factory:expr) => {
+        impl Default for $target {
+            fn default() -> Self { $factory() }
+        }
+    };
+}
+
+default_for!(Probability, NotProbability);
+""",
+            },
+        )
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
+        if any("registered FinancialValue Default impl/derive" in finding for finding in findings):
+            raise AssertionError(f"expected same-arity marker argument to be ignored, got {findings!r}")
+
+
 def test_verify_rejects_overloaded_cfg_inactive_macro_default_target() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -1031,6 +1060,7 @@ def main() -> int:
         test_verify_rejects_cfg_inactive_macro_generated_registered_default_impl,
         test_verify_ignores_macro_default_marker_argument,
         test_verify_ignores_overloaded_macro_default_marker_argument,
+        test_verify_uses_first_matching_same_arity_macro_arm,
         test_verify_rejects_overloaded_cfg_inactive_macro_default_target,
         test_registered_default_fence_fails_closed_when_registry_is_empty,
         test_verify_rejects_public_financial_value_field,

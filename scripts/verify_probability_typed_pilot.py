@@ -24,8 +24,8 @@ class PatternCheck:
 
 
 @dataclass(frozen=True)
-class MacroDefaultArm:
-    argument_count: int
+class MacroArm:
+    argument_fragments: tuple[str, ...]
     target_indexes: tuple[int, ...]
 
 
@@ -42,7 +42,9 @@ RUST_TYPE_PATH_TOKEN_RE = re.compile(
     r"(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*"
 )
 MACRO_RULES_START_RE = re.compile(r"\bmacro_rules!\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
-MACRO_MATCHER_VAR_RE = re.compile(r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:")
+MACRO_MATCHER_VAR_RE = re.compile(
+    r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<fragment>[A-Za-z_][A-Za-z0-9_]*)"
+)
 DEFAULT_IMPL_TARGET_VAR_RE = re.compile(
     r"\bimpl\b(?s:.*?)\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
     r"Default\s+for\s+\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
@@ -518,6 +520,10 @@ def macro_matcher_variables(body: str) -> list[str]:
     return variables
 
 
+def macro_matcher_fragments(body: str) -> list[str]:
+    return [match.group("fragment") for match in MACRO_MATCHER_VAR_RE.finditer(body)]
+
+
 def macro_rule_arms(body: str) -> list[tuple[str, str]]:
     inner = body[1:-1] if body.startswith("{") and body.endswith("}") else body
     close_by_open = {"(": ")", "[": "]", "{": "}"}
@@ -561,16 +567,18 @@ def macro_rule_arms(body: str) -> list[tuple[str, str]]:
     return arms
 
 
-def default_generating_macro_arms(source: str) -> dict[str, tuple[MacroDefaultArm, ...]]:
-    macros: dict[str, tuple[MacroDefaultArm, ...]] = {}
+def default_generating_macro_arms(source: str) -> dict[str, tuple[MacroArm, ...]]:
+    macros: dict[str, tuple[MacroArm, ...]] = {}
     for match in MACRO_RULES_START_RE.finditer(source):
         span = balanced_span(source, match.end() - 1, "{", "}")
         if span is None:
             continue
         body = source[span[0]:span[1]]
-        default_arms: list[MacroDefaultArm] = []
+        arms: list[MacroArm] = []
+        has_default_arm = False
         for matcher_text, expansion_text in macro_rule_arms(body):
             matcher_variables = macro_matcher_variables(matcher_text)
+            matcher_fragments = macro_matcher_fragments(matcher_text)
             target_indexes = sorted(
                 {
                     matcher_variables.index(target.group("name"))
@@ -578,16 +586,41 @@ def default_generating_macro_arms(source: str) -> dict[str, tuple[MacroDefaultAr
                     if target.group("name") in matcher_variables
                 }
             )
-            if target_indexes:
-                default_arms.append(
-                    MacroDefaultArm(
-                        argument_count=len(matcher_variables),
-                        target_indexes=tuple(target_indexes),
-                    )
+            has_default_arm = has_default_arm or bool(target_indexes)
+            arms.append(
+                MacroArm(
+                    argument_fragments=tuple(matcher_fragments),
+                    target_indexes=tuple(target_indexes),
                 )
-        if default_arms:
-            macros[match.group("name")] = tuple(default_arms)
+            )
+        if has_default_arm:
+            macros[match.group("name")] = tuple(arms)
     return macros
+
+
+def macro_argument_matches_fragment(argument: str, fragment: str) -> bool:
+    argument = argument.strip()
+    if not argument:
+        return False
+    if fragment == "ident":
+        return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument) is not None
+    if fragment == "literal":
+        return (
+            re.fullmatch(r"[0-9][A-Za-z0-9_]*", argument) is not None
+            or (len(argument) >= 2 and argument[0] == argument[-1] and argument[0] in {'"', "'"})
+        )
+    if fragment in {"ty", "path", "expr", "tt", "meta", "pat", "pat_param", "block", "item", "vis", "lifetime"}:
+        return True
+    return True
+
+
+def macro_invocation_matches_arm(argument_chunks: list[str], arm: MacroArm) -> bool:
+    if len(argument_chunks) != len(arm.argument_fragments):
+        return False
+    return all(
+        macro_argument_matches_fragment(argument, fragment)
+        for argument, fragment in zip(argument_chunks, arm.argument_fragments, strict=True)
+    )
 
 
 def macro_invocation_arguments(source: str, macro_name: str) -> list[str]:
@@ -652,7 +685,7 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
         return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
     registered_aliases = registered_financial_value_aliases(root, registered_types)
     source_items = tuple(rust_sources(root))
-    default_macro_arms: dict[str, list[MacroDefaultArm]] = {}
+    default_macro_arms: dict[str, list[MacroArm]] = {}
     for _, source in source_items:
         for macro_name, arms in default_generating_macro_arms(source).items():
             default_macro_arms.setdefault(macro_name, []).extend(arms)
@@ -676,7 +709,7 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
             for arguments in macro_invocation_arguments(source, macro_name):
                 argument_chunks = split_macro_arguments(arguments)
                 for arm in arms:
-                    if len(argument_chunks) != arm.argument_count:
+                    if not macro_invocation_matches_arm(argument_chunks, arm):
                         continue
                     for target_index in arm.target_indexes:
                         for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(argument_chunks[target_index]):
@@ -690,6 +723,7 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
                                     f"{relative_path}: registered FinancialValue Default impl/derive "
                                     f"for {registered_type} is forbidden"
                                 )
+                    break
     return sorted(set(findings))
 
 

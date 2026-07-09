@@ -12,8 +12,9 @@ candidate hooks instrumented.
 
 ## Verdict
 
-All three Lane H hooks are justified on this machine/git-version. The dominant
-"merge PR on GitHub → `git checkout main && git pull`" workflow is covered.
+Git fires all three candidate hooks on this machine/git-version, but Lane H
+uses only `post-merge` and `post-checkout`. The dominant "merge PR on GitHub →
+`git checkout main && git pull`" workflow is covered.
 
 ## Results
 
@@ -29,16 +30,18 @@ All three Lane H hooks are justified on this machine/git-version. The dominant
 
 1. **Lane H primary trigger = `post-merge`.** Covers FF pull (the common
    post-PR-merge action) and real-merge pulls.
-2. **`post-rewrite` is required** for operators with `pull.rebase=true` whose
-   local main has divergent commits.
+2. **`post-rewrite` is intentionally not a clean-merged trigger.** Divergent
+   `git pull --rebase` rewrites fire Git's `post-rewrite` hook, but this repo
+   reserves that hook for Entire CLI session remapping. That path does not run
+   Lane H.
 3. **`post-checkout` is a stale-state trap.** When the operator runs
    `git checkout main` *before* pulling, origin/main is stale at hook time.
    `post-merge` (which fires after the subsequent pull) closes the gap on the
    same session. Do NOT put a fetch inside `post-checkout` — that re-introduces
    network-in-hook (rejected in the design).
 4. **No `post-fetch` hook exists in git.** Confirmed by the absence of any
-   fetch-only hook firing. The `post-merge`/`post-rewrite` pair is the only
-   native surface that fires after origin/main is updated.
+   fetch-only hook firing. `post-merge` is the clean-merged native surface that
+   fires after origin/main is updated.
 
 ## Dispute resolution
 

@@ -68,9 +68,16 @@ fn main_runs_bolt_v3_runner_inside_local_set() {
     let build_runtime = run_fn
         .find("let runtime = tokio::runtime::Builder::new_multi_thread()")
         .expect("production entrypoint must build the Tokio runtime in run_built_node");
+    let logging_guard = run_fn
+        .find("assert_bolt_v3_logging_ready_for_run()?")
+        .expect("production entrypoint must abort before run when NT logging is dead");
     let run_bolt_v3 = run_fn
         .find("run_bolt_v3_live_node(&mut node, &loaded).await?")
         .expect("production entrypoint must enter the bolt-v3 runner wrapper");
+    assert!(
+        logging_guard < build_runtime,
+        "production entrypoint must verify logging before creating the runner future"
+    );
     assert!(
         build_runtime < run_bolt_v3,
         "production entrypoint must build the Tokio runtime before entering the runner future"

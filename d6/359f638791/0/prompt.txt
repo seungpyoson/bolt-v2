@@ -1,0 +1,9 @@
+I didn't understand - so which price feed was it unsubscribed?
+
+---
+
+why? we need to investigate - because we did have no issues before - so something about the PR just now must have turned it off
+
+---
+
+let's investigate end to end before relaying to codex

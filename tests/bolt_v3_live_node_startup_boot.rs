@@ -32,6 +32,11 @@ fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
     loaded.root.nautilus.timeout_disconnection_secs = 1;
     loaded.root.nautilus.delay_post_stop_secs = 0;
     loaded.root.nautilus.timeout_shutdown_secs = 1;
+    let reconnect_timeout = chainlink_startup_bound(&loaded)
+        .checked_add(Duration::from_millis(1))
+        .expect("Chainlink startup reconnect timeout should fit");
+    let reconnect_timeout_ms = i64::try_from(reconnect_timeout.as_millis())
+        .expect("Chainlink startup reconnect timeout should fit TOML integer");
 
     let chainlink = loaded
         .root
@@ -47,7 +52,22 @@ fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
         "websocket_endpoint".to_string(),
         toml::Value::String(endpoint),
     );
+    data.insert(
+        "reconnect_timeout_ms".to_string(),
+        toml::Value::Integer(reconnect_timeout_ms),
+    );
     loaded
+}
+
+fn chainlink_startup_bound(loaded: &LoadedBoltV3Config) -> Duration {
+    loaded
+        .root
+        .nautilus
+        .timeout_connection_secs
+        .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
+        .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
+        .map(Duration::from_secs)
+        .expect("Chainlink startup bound should fit")
 }
 
 #[test]
@@ -95,7 +115,7 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         assert!(registered.data);
         assert!(!registered.execution);
 
-        let startup_bound = Duration::from_secs(3);
+        let startup_bound = chainlink_startup_bound(&loaded);
         let reconnect_timeout_ms = loaded
             .root
             .clients
@@ -135,7 +155,7 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
                 node_state,
                 registered_client_labels,
             } => {
-                assert_eq!(timeout_secs, 3);
+                assert_eq!(timeout_secs, startup_bound.as_secs());
                 assert_eq!(node_state, "Starting");
                 assert!(
                     registered_client_labels

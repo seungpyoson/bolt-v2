@@ -20871,14 +20871,6 @@ reason = "Stable fail-loud startup diagnostic for a configured RV surface that d
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
 kind = "string"
-literal = '''"binary_oracle_edge_taker_invalid_reference_price_subscription_requests: strategy_id={}"'''
-context = '''"binary_oracle_edge_taker_invalid_reference_price_subscription_requests: strategy_id={}",'''
-classification = "strategy_startup_error_template"
-reason = "Stable fail-loud startup diagnostic for reference-current-price subscription derivation errors; the strategy id comes from TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
-kind = "string"
 literal = '''"binary_oracle_edge_taker_empty_signal_quote_subscription_request: signal_venue is configured but signal_instrument_id is absent (strategy_id={})"'''
 context = '''"binary_oracle_edge_taker_empty_signal_quote_subscription_request: signal_venue is configured but signal_instrument_id is absent (strategy_id={})",'''
 classification = "strategy_startup_error_template"

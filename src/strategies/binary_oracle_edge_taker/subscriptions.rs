@@ -213,10 +213,10 @@ impl BinaryOracleEdgeTaker {
         let Some(reference_price) = &self.config.reference_current_price else {
             return Ok(Vec::new());
         };
-        let subscriptions = build_reference_price_subscription_requests(reference_price)
-            .with_context(|| {
-                format!(
-                    "binary_oracle_edge_taker_invalid_reference_price_subscription_requests: strategy_id={}",
+        let subscriptions =
+            build_reference_price_subscription_requests(reference_price).map_err(|error| {
+                anyhow::anyhow!(
+                    "binary_oracle_edge_taker_invalid_reference_price_subscription_requests: strategy_id={}: {error}",
                     self.config.strategy_id
                 )
             })?;

@@ -136,19 +136,49 @@ fn linked_worktree_per_worktree_head_ref_watches_the_worktree_ref() {
     let _ = fs::remove_dir_all(manifest_dir);
 }
 
+/// The invariants every emitted watch set must satisfy, whatever the checkout
+/// shape. `git_dir` is the base holding `HEAD`; outside a linked worktree it is
+/// also the `common_dir`.
+fn assert_watch_invariants(label: &str, paths: &[PathBuf], git_dir: &Path, common_dir: &Path) {
+    assert_eq!(
+        paths.first(),
+        Some(&git_dir.join("HEAD")),
+        "{label}: HEAD is always watched"
+    );
+    for path in paths {
+        assert!(
+            path.exists(),
+            "{label}: watched path does not exist: {path:?}"
+        );
+    }
+    for (index, path) in paths.iter().enumerate() {
+        assert!(
+            !paths[..index].contains(path),
+            "{label}: duplicate watched path: {path:?}"
+        );
+    }
+    for base in [git_dir, common_dir] {
+        assert!(
+            !paths.contains(&base.to_path_buf()),
+            "{label}: {base:?} holds the index and the logs, which change without HEAD moving"
+        );
+    }
+}
+
 /// Cargo treats a `rerun-if-changed` path that does not exist as permanently
 /// dirty, which re-runs the build script and recompiles the crate on every
 /// invocation. A ref is stored loosely, packed, both, or neither, so no single
-/// candidate can be named unconditionally.
+/// candidate can be named unconditionally. Both checkout shapes must hold.
 #[test]
 fn every_watched_path_exists_in_every_ref_storage_state() {
-    for (name, loose, packed) in [
-        ("storage-loose", true, false),
-        ("storage-packed", false, true),
-        ("storage-both", true, true),
-        ("storage-neither", false, false),
+    for (storage, loose, packed) in [
+        ("loose", true, false),
+        ("packed", false, true),
+        ("both", true, true),
+        ("neither", false, false),
     ] {
-        let manifest_dir = plain_checkout_fixture(name, "refs/heads/topic");
+        let label = format!("plain-{storage}");
+        let manifest_dir = plain_checkout_fixture(&label, "refs/heads/topic");
         let git_dir = manifest_dir.join(".git");
         if loose {
             write_loose_ref(&git_dir, "refs/heads/topic");
@@ -156,34 +186,112 @@ fn every_watched_path_exists_in_every_ref_storage_state() {
         if packed {
             write_packed_refs(&git_dir);
         }
-
         let paths = build_script::git_head_rerun_paths(&manifest_dir);
         let git_dir = canonical_git_dir(&manifest_dir);
+        assert_watch_invariants(&label, &paths, &git_dir, &git_dir);
+        let _ = fs::remove_dir_all(manifest_dir);
 
-        assert_eq!(
-            paths.first(),
-            Some(&git_dir.join("HEAD")),
-            "{name}: HEAD is always watched"
-        );
-        for path in &paths {
-            assert!(
-                path.exists(),
-                "{name}: watched path does not exist: {path:?}"
-            );
+        let label = format!("worktree-{storage}");
+        let (manifest_dir, common_dir, worktree_git_dir) =
+            linked_worktree_fixture(&label, "refs/heads/topic");
+        if loose {
+            write_loose_ref(&common_dir, "refs/heads/topic");
         }
-        for (index, path) in paths.iter().enumerate() {
-            assert!(
-                !paths[..index].contains(path),
-                "{name}: duplicate watched path: {path:?}"
-            );
+        if packed {
+            write_packed_refs(&common_dir);
         }
-        assert!(
-            !paths.contains(&git_dir),
-            "{name}: the git dir holds the index and the logs, which change without HEAD moving"
-        );
-
+        let paths = build_script::git_head_rerun_paths(&manifest_dir);
+        let common_dir = fs::canonicalize(&common_dir).expect("common dir should canonicalize");
+        let worktree_git_dir =
+            fs::canonicalize(&worktree_git_dir).expect("worktree git dir should canonicalize");
+        assert_watch_invariants(&label, &paths, &worktree_git_dir, &common_dir);
         let _ = fs::remove_dir_all(manifest_dir);
     }
+}
+
+/// A git dir with no readable `HEAD` file names no commit, so there is nothing
+/// to watch. Emitting `<git_dir>/HEAD` regardless would be permanently dirty,
+/// and `<git_dir>` is not a fallback.
+#[test]
+fn a_git_dir_without_a_head_file_watches_nothing() {
+    let manifest_dir = temp_git_fixture("no-head");
+    fs::create_dir_all(manifest_dir.join(".git").join("refs").join("heads"))
+        .expect("refs dir should be created");
+    let paths = build_script::git_head_rerun_paths(&manifest_dir);
+    assert!(paths.is_empty(), "`.git` dir with no HEAD: {paths:?}");
+    let _ = fs::remove_dir_all(manifest_dir);
+
+    let manifest_dir = temp_git_fixture("dangling-gitdir");
+    fs::write(manifest_dir.join(".git"), "gitdir: ./nowhere\n").expect(".git should be written");
+    let paths = build_script::git_head_rerun_paths(&manifest_dir);
+    assert!(
+        paths.is_empty(),
+        "`.git` file -> missing git dir: {paths:?}"
+    );
+    let _ = fs::remove_dir_all(manifest_dir);
+
+    let manifest_dir = temp_git_fixture("head-is-a-dir");
+    fs::create_dir_all(manifest_dir.join(".git").join("HEAD")).expect("HEAD dir should be created");
+    let paths = build_script::git_head_rerun_paths(&manifest_dir);
+    assert!(paths.is_empty(), "HEAD is a directory: {paths:?}");
+    let _ = fs::remove_dir_all(manifest_dir);
+}
+
+/// A symlinked `refs/heads` resolves to a directory outside the git dir. The
+/// emitted path is still the lexical one inside `<git_dir>`, and it exists, so
+/// nothing is permanently dirty. Watching it merely over-triggers when the
+/// target changes, which is the safe direction.
+#[cfg(unix)]
+#[test]
+fn symlinked_refs_directory_emits_an_existing_path_inside_the_git_dir() {
+    let manifest_dir = temp_git_fixture("symlinked-refs-heads");
+    let git_dir = manifest_dir.join(".git");
+    fs::create_dir_all(git_dir.join("refs")).expect("refs dir should be created");
+    let outside = manifest_dir.join("heads-elsewhere");
+    fs::create_dir_all(&outside).expect("outside dir should be created");
+    std::os::unix::fs::symlink(&outside, git_dir.join("refs").join("heads"))
+        .expect("symlink should be created");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/topic\n").expect("HEAD should be written");
+
+    let paths = build_script::git_head_rerun_paths(&manifest_dir);
+    let git_dir = canonical_git_dir(&manifest_dir);
+
+    assert_eq!(
+        paths,
+        vec![git_dir.join("HEAD"), git_dir.join("refs").join("heads")]
+    );
+    assert_watch_invariants("symlinked-refs-heads", &paths, &git_dir, &git_dir);
+    for path in &paths {
+        assert!(
+            path.starts_with(&git_dir),
+            "emitted path escapes the git dir: {path:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(manifest_dir);
+}
+
+/// A loose ref that is a dangling symlink is not a file, so it is never named.
+/// The walk falls back to the enclosing directory, which exists.
+#[cfg(unix)]
+#[test]
+fn dangling_symlink_loose_ref_falls_back_to_the_enclosing_directory() {
+    let manifest_dir = plain_checkout_fixture("dangling-loose-ref", "refs/heads/topic");
+    let heads = manifest_dir.join(".git").join("refs").join("heads");
+    std::os::unix::fs::symlink(heads.join("nowhere"), heads.join("topic"))
+        .expect("symlink should be created");
+
+    let paths = build_script::git_head_rerun_paths(&manifest_dir);
+    let git_dir = canonical_git_dir(&manifest_dir);
+
+    assert_eq!(
+        paths,
+        vec![git_dir.join("HEAD"), git_dir.join("refs").join("heads")],
+        "the dangling loose ref must not be named; its enclosing dir is watched instead"
+    );
+    assert_watch_invariants("dangling-loose-ref", &paths, &git_dir, &git_dir);
+
+    let _ = fs::remove_dir_all(manifest_dir);
 }
 
 #[test]

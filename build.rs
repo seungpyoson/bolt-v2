@@ -191,12 +191,23 @@ pub fn build_script_manifest_dir() -> PathBuf {
 /// Every path returned must exist. Cargo treats a `rerun-if-changed` path that
 /// does not exist as permanently dirty, which re-runs this script and
 /// recompiles the crate on every single invocation.
+///
+/// Empty when there is no `HEAD` file to read: a git dir without one names no
+/// commit, so there is nothing to watch. `<git_dir>` is not a fallback, because
+/// the index and the logs beneath it change without `HEAD` moving.
 pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
     let Some(git_dir) = git_dir_from_manifest(manifest_dir) else {
         return Vec::new();
     };
 
+    // `git_dir` may still be absent (a `.git` file can name a git dir that was
+    // deleted), and `HEAD` may be missing or not a file. Naming it regardless
+    // would emit the very kind of nonexistent path this function exists to keep
+    // out.
     let head_path = git_dir.join("HEAD");
+    if !head_path.is_file() {
+        return Vec::new();
+    }
     let mut paths = vec![head_path.clone()];
 
     let Ok(head_content) = fs::read_to_string(&head_path) else {

@@ -1853,6 +1853,12 @@ def assert_direct_nextest_no_run_with_run_only_tail_retries() -> None:
 
 def assert_direct_nextest_archive_file_remains_no_split() -> None:
     owner = load_owner_module()
+    if owner.cargo_args_are_compile_only(
+        ["nextest", "run", "--locked", "--archive-file", "/tmp/a", "--extract-to", "/tmp/e"]
+    ):
+        raise AssertionError("nextest run --archive-file must not be classified as compile-only")
+    if not owner.cargo_args_are_compile_only(["nextest", "archive", "--locked", "--archive-file", "/tmp/a"]):
+        raise AssertionError("nextest archive must remain compile-only")
     calls: list[tuple[list[str], str | None]] = []
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"

@@ -54,16 +54,9 @@ const TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analyt
 const TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/";
 const TIER1_PMXT_SOURCE_PROOFS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/";
-pub const PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json";
-pub const PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json";
-
-/// Phase-3 exact generated reference artifacts evicted after tests learned to
-/// regenerate them from their committed TOML specs and compare against this
-/// index instead of requiring committed JSON bytes.
-pub const PHASE3_EVICTED_REFERENCE_PATHS: &[&str] = &[
-    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-];
+const PHASE3_CONVERSION_BATCHES_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/";
+const PHASE3_CONVERSION_BATCH_PLAN_SUFFIX: &str = "/plan/backfill-conversion-batch-plan.json";
 
 /// Tier-1 subtree prefixes whose generated JSON artifacts are evicted.
 pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
@@ -262,9 +255,15 @@ pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
         || is_phase3_evicted_reference_fixture_path(path)
 }
 
-/// `true` iff `path` is one of the exact Phase-3 generated reference artifacts.
+/// `true` iff `path` is a Phase-3 generated conversion batch plan.
 pub fn is_phase3_evicted_reference_fixture_path(path: &str) -> bool {
-    PHASE3_EVICTED_REFERENCE_PATHS.contains(&path)
+    let Some(scope) = path.strip_prefix(PHASE3_CONVERSION_BATCHES_PREFIX) else {
+        return false;
+    };
+    let Some(scope) = scope.strip_suffix(PHASE3_CONVERSION_BATCH_PLAN_SUFFIX) else {
+        return false;
+    };
+    !scope.is_empty() && !scope.contains('/')
 }
 
 /// `true` iff `path` is a per-record (non-`00000`) execution-pack run artifact.

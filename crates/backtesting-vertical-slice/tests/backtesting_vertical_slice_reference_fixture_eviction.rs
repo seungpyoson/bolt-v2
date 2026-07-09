@@ -16,12 +16,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::backtesting_vertical_slice_test_support::PHASE3_EVICTED_REFERENCE_PATHS;
 use backtesting_vertical_slice::reference_fixture_index::{
-    EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, PHASE3_EVICTED_REFERENCE_PATHS,
-    TIER1_EVICTED_SUBTREE_PREFIXES, TIER1_KEPT_REFERENCE_PATHS,
-    is_evicted_execution_pack_record_path, is_evicted_reference_fixture_path,
-    is_phase3_evicted_reference_fixture_path, is_tier1_evicted_reference_fixture_path,
-    repo_root_from_manifest_dir,
+    EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
+    TIER1_KEPT_REFERENCE_PATHS, is_evicted_execution_pack_record_path,
+    is_evicted_reference_fixture_path, is_phase3_evicted_reference_fixture_path,
+    is_tier1_evicted_reference_fixture_path, repo_root_from_manifest_dir,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPack;
 

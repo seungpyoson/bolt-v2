@@ -1,15 +1,14 @@
 use crate::backtesting_vertical_slice_test_support::{
-    generate_evicted_batch_plan, rewrite_assignment, tempdir_in_repo_target,
+    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, generate_evicted_batch_plan,
+    rewrite_assignment, tempdir_in_repo_target,
 };
 use backtesting_vertical_slice::{
     backfill_conversion_completion::{
         BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
         write_backfill_conversion_completion_ledger_from_spec_file,
     },
-    reference_fixture_index::{
-        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, repo_root_from_manifest_dir,
-    },
+    reference_fixture_index::repo_root_from_manifest_dir,
 };
 use std::{fs, path::Path};
 

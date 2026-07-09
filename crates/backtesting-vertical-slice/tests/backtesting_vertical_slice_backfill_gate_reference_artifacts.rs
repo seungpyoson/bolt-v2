@@ -1,4 +1,7 @@
-use crate::backtesting_vertical_slice_test_support::generated_evicted_conversion_batch_plan;
+use crate::backtesting_vertical_slice_test_support::{
+    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, generated_evicted_conversion_batch_plan,
+};
 use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
@@ -23,10 +26,6 @@ use backtesting_vertical_slice::{
         evaluate_backfill_source_proof_scope_for_selected_object,
     },
     operator::RunSpec,
-    reference_fixture_index::{
-        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-    },
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessBlocker, SourceCatalogMappingReadinessInput,
         SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessSpec,

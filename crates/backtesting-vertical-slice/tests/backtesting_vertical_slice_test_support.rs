@@ -11,6 +11,14 @@ use backtesting_vertical_slice::{
     reference_fixture_index::{EvictedFixtureIndex, repo_root_from_manifest_dir},
 };
 
+pub const PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json";
+pub const PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json";
+
+pub const PHASE3_EVICTED_REFERENCE_PATHS: &[&str] = &[
+    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+];
+
 pub fn tempdir_in_repo_target() -> tempfile::TempDir {
     let target_dir = repo_root_from_manifest_dir().join("target");
     fs::create_dir_all(&target_dir).unwrap_or_else(|error| {

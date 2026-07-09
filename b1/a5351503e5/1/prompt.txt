@@ -1,0 +1,1130 @@
+• Waited for background terminal · just source-fence-static
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The static gate found one unrelated failure: verify_no_config_retype.py reports config/live.toml as an
+  unlisted governed config artifact. The specs/023-related BTE and RA fences in that run passed.
+
+• Waited for background terminal · just source-fence-static
+
+• Ran just source-fence-static
+  └ python3 "/Users/spson/Projects/Claude/bolt-v2/scripts/rust_verification.py" validate-policy --repo "/
+    Users/spson/Projects/Claude/bolt-v2" >/dev/null
+    … +271 lines (ctrl + t to view transcript)
+    error: recipe `source-fence-static-inner` failed on line 364 with exit code 1
+    error: recipe `source-fence-static` failed on line 355 with exit code 1
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The source-fence command is still active; it has already run the BTE/RA tests and is now in later
+  verifier tests. I’m keeping the session open so we don’t leave a background process running.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The static gate completed with exit code 1 only because of the unrelated config/live.toml no-config-
+  retype finding. The fixture-related BTE/RA verifiers and their self-tests passed inside that run.
+
+• Ran git status --short
+  └ (no output)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’m doing one more static pass to avoid overclaiming. Exact path references will identify files that are
+  definitely not removable without edits; directory/glob references are treated as active dependencies
+  unless the owning tests are changed.
+
+• Ran python3 - <<'PY'
+  │ import os, re, subprocess, collections
+  │ spec='specs/023-nt-research-analytics-platform'
+  │ … +51 lines
+  └ tracked_under_spec 3702
+    tracked_under_reference 3682
+    … +65 lines (ctrl + t to view transcript)
+        3/    4 source-universe-object-gates
+        4/    4 source-universe-operator-inputs
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The exact-reference pass found only 153 files named directly from outside the spec, but there are broad
+  directory references to reference/ and daily backfill-gates directories. That means “not exact-
+  mentioned” is a hint, not deletion proof.
+
+• Explored
+  └ Search include_str!\(|include_bytes!\( in backtesting-vertical-slice
+    Search specs/023-nt-research-analytics-platform
+    Search read_dir|fs::read|std::fs::read|read_to_string|File::open|exists\(|is_file\(|is_dir\( in
+           backtesting-vertical-slice
+    Search reference|REFERENCE|specs/023|backfill-gates|execution-pack|source-universe
+    Search REFERENCE_ROOT|Path\("specs/023|specs/023-nt-research-analytics-platform/reference|read_json|
+           read_toml|exists\(|glob|rglob|iterdir in verify_bte_022_*.py
+    Search include_str!\( in backtesting-vertical-slice
+    Search specs/023-nt-research-analytics-platform
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The compile-time dependencies are small but real: the backtesting crate embeds a handful of specs/023
+  files with include_str! / include_bytes!, especially the BNBUSDC run spec, source bindings, and
+  backfill-gate reference artifacts. Those are hard “keep unless code changes” files.
+
+• Explored
+  └ Read Cargo.toml, backtester-ci.yml
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Using superpowers:verification-before-completion before I summarize, because I’m about to state what I
+  verified and what remains unverified.
+
+• Explored
+  └ Read SKILL.md (superpowers:verification-before-completion skill)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Assessment
+  Do not delete specs/023-nt-research-analytics-platform/reference/** wholesale if CI/repo health must
+  stay intact.
+
+  Runtime impact: safe. The live src/ tree has no references to specs/023, and the backtesting crate is
+  intentionally isolated from the live bolt-v2 package in crates/backtesting-vertical-slice/Cargo.toml:1.
+
+  Repo/CI impact: not safe. The reference tree is part of the backtester CI input set in ci/rust-ci-
+  inputs.toml:1, consumed by .github/workflows/backtester-ci.yml:211, read by BTE/RA verifiers, and some
+  files are compiled into the backtesting crate/tests via include_str! / include_bytes!.
+
+  What Can Be Removed
+  Immediate no-code-change removal I can recommend: none from reference/**. The repo already removed the
+  obvious generated bulk through the existing eviction mechanism in
+  crates/backtesting-vertical-slice/src/reference_fixture_index.rs:1 and .gitignore:79: 23,973 evicted
+  artifacts, 137,537,322 bytes, stored under s3://bolt-parquet/nt-research-analytics/reference-fixtures.
+
+  Best next removal candidates, but only with CI/test updates using the existing eviction-index pattern:
+
+  - source-universe-operator-inputs: 4 files, ~22.1 MB
+  - source-universe-execution-packs: 10 kept golden-record files, ~22.2 MB
+  - source-universe-object-gates: 4 files, ~16.8 MB
+  - backfill-source-universe-object-manifests: 13 files, ~14.8 MB
+  - source-universe-conversion-queues: 5 files, ~10.5 MB
+  - evicted-fixtures.index.json: ~9.2 MB, but currently required by eviction tests
+
+  I would not start with backfill-gates: it is 2,775 files, but only ~4.9 MB and heavily exercised by
+  backtesting reference tests.
+
+  Verification
+  I ran the relevant non-compile checks. BTE/RA fixture verifiers passed, ci_input_sets.py validate
+  backtester_cache backtester_detect passed, and just source-fence-static passed all specs/023-related
+  BTE/RA fences but exited 1 due an unrelated verify_no_config_retype.py finding: config/live.toml is an
+  unlisted governed config artifact. I did not run local Rust tests/builds per the repo’s remote-first
+  Rust policy.
+
+─ Worked for 8m 03s ──────────────────────────────────────────────────────────────────────────────────────
+
+
+› backtested info - that's already in s3 - so again investigate with hard evidences. we need to make
+  decisions
+
+
+• Using codebase-nav again for the large-repo dependency audit. I’m going to tighten this from “referenced
+  somewhere” into decision-grade evidence: which remaining artifacts are already represented by S3/object-
+  store pointers, which are source-of-truth manifests, and which tests/verifiers would break if removed.
+
+• Explored
+  └ Read SKILL.md (codebase-nav skill)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’ll avoid broad file reads and use exact searches plus small structural summaries. The goal is a
+  decision table, not another vague “it’s referenced” answer.
+
+• Ran command -v probe && probe --version
+  └ /Users/spson/.npm-global/bin/probe
+    (node:71479) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any
+    time.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+    probe-code 0.6.0
+
+• Ran git status --short
+  └ (no output)
+
+• Ran command -v toktoken && toktoken --version
+  └ TokToken (beta release) 0.4.0 (update available: 0.5.0)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Next I’m measuring S3 coverage inside the remaining reference tree. If a file is only a local receipt
+  for an object already named in S3, that belongs in a different bucket than a compact TOML/JSON contract
+  the code actually parses.
+
+• Ran python3 - <<'PY'
+  │ import os,re,subprocess,collections,json
+  │ root='specs/023-nt-research-analytics-platform/reference'
+  │ … +22 lines
+  └ remaining_reference_files 3682
+    remaining_reference_bytes 113193393
+    … +25 lines (ctrl + t to view transcript)
+          3626     2     0      0 source-catalog-mapping-readiness
+          1097     2     0      0 source-universe-conversion-work-orders
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The S3 signal is strong: 1,722 of the remaining 3,682 reference files contain S3 URIs, with 84,739 URI
+  occurrences. The largest buckets are mostly S3 pointer manifests rather than raw market data.
+
+• Ran python3 - <<'PY'
+  │ import os,re,subprocess,collections
+  │ spec='specs/023-nt-research-analytics-platform'
+  │ … +41 lines
+  └ Top remaining reference files by bytes:
+    bytes s3_uris exact_refs include file
+    … +94 lines (ctrl + t to view transcript)
+    source-proof-nt-catalog-mapping-evaluation.backtesting-engine.binance-bnbusdc-2026-05-11.2026-06-10.js
+    on
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The top heavy files are not compile-time embedded and mostly have zero exact path references, but that
+  is not enough by itself: several tests read their parent directories or validate packs. I’m mapping
+  those consumers by bucket now.
+
+• Ran for pattern in source-universe-operator-inputs source-universe-object-gates
+  │ source-universe-execution-packs backfill-source-universe-object-manifests
+  │ source-universe-conversion-queues evicted-fixtures.index backfill-instrument-metadata
+  │ … +3 lines
+  └ ./crates/backtesting-vertical-slice/src/reference_fixture_index.rs
+    ./crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs
+    … +6 lines (ctrl + t to view transcript)
+    ./crates/backtesting-vertical-slice/tests/
+    backtesting_vertical_slice_venue_scale_conversion_acceptance.rs
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The consumer list shows why deleting now would break CI, not runtime. The decision is whether to change
+  those tests to validate an index/pointer instead of parsing full local manifests.
+
+• Explored
+  └ Search source-universe-execution-pack|execution-pack|source-universe-operator-inputs|source-universe-
+           object-gates|source-universe-conversion-queue in
+           backtesting_vertical_slice_source_universe_execution_pack.rs
+    Search source-universe-operator-inputs|operator-inputs|source-universe-object-gates|object-
+    gates|source-
+           universe-conversion-queue in backtesting_vertical_slice_source_universe_operator_inputs.rs
+    Search source-universe-object-gates|object-manifest|source-universe-object-manifest|source-archive-
+    index-
+           manifest in backtesting_vertical_slice_source_universe_object_gates.rs
+    Search backfill-instrument-metadata|read_dir|source-proof-nt-catalog-mapping-evaluation|backfill-gates
+    in
+           backtesting_vertical_slice_backfill_gate_reference_artifacts.rs
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The clearest pattern is reproducible generated JSON next to small TOML specs. Where tests currently
+  regenerate and byte-compare the JSON, we can keep the same evidence by comparing regenerated bytes
+  against the eviction index instead of keeping the blob in git.
+
+• Ran for d in source-universe-operator-inputs source-universe-object-gates
+  │ source-universe-conversion-queues source-universe-conversion-run-plans
+  │ source-universe-execution-packs backfill-source-universe-object-manifests
+  │ … +3 lines
+  └    614625 specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/
+    pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json
+    … +2 lines (ctrl + t to view transcript)
+          374 specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/
+    pmxt-polymarket-v2-current/source-archive-index-manifest.toml
+
+• Ran python3 - <<'PY'
+  │ import glob, os
+  │ patterns={
+  │ … +19 lines
+  └   22050690 bytes   2 files operator-inputs generated JSON
+      16781825 bytes   2 files object-gates generated JSON
+    … +2 lines (ctrl + t to view transcript)
+      22176062 bytes   2 files execution-pack summary JSON
+      72654820 bytes total low-risk generated-json candidate set
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• A concrete first slice emerges: 9 generated JSON files total 72,654,820 bytes. They are the big local
+  summaries, not the underlying backtest/source data. The required change is to keep their fingerprints in
+  the eviction index and update tests to verify regenerated bytes/hash instead of committed bytes.
+
+• Explored
+  └ Search assert_bytes_match_committed|committed|reproduc|source-universe-object-gates.json|source-
+  universe-
+           conversion-queue.json|source-universe-conversion-run-plan.json|source-universe-execution-
+           pack.json
+           in backtesting_vertical_slice_source_universe_object_gates.rs
+    Search assert_bytes_match_committed|fn assert_bytes_match_committed|committed .*reproduc|
+    evicted_index|
+           EvictedFixtureIndex in backtesting_vertical_slice_source_universe_operator_inputs.rs
+    Search sha256_file|sha256|EvictedFixtureIndex|entry_for|assert.*hash|committed in
+           backtesting_vertical_slice_reference_fixture_eviction.rs
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• You’re right: the backtested/source objects are already in S3. The repo is mostly carrying generated
+  receipts/manifests, not the underlying data.
+
+  Decision
+  Remove by eviction, not raw deletion. First target: 9 generated JSON artifacts, 72,654,820 bytes,
+  keeping the TOML specs and the existing S3/hash evidence path.
+
+  Evidence:
+
+  - Live runtime: src/ has zero references to specs/023.
+  - Existing eviction index already proves the repo pattern: 23,973 artifacts, 137,537,322 bytes, stored
+    under s3://bolt-parquet/nt-research-analytics/reference-fixtures.
+
+  - Remaining reference/: 3,682 files, 113,193,393 bytes.
+  - 1,722 of those files contain S3 URIs; total S3 URI occurrences: 84,739.
+  - Largest remaining blobs are generated JSON pointer manifests. Example: the 16.4 MB Bybit execution
+    pack JSON has 11,714 S3 URI occurrences and zero exact external path refs.
+
+  Remove First
+  These are the best first PR slice:
+
+  22,050,690  source-universe-operator-inputs/*/operator-inputs/*.json
+  16,781,825  source-universe-object-gates/*/gates/*.json
+  10,455,567  source-universe-conversion-queues/*/queue/*.json
+   1,190,676  source-universe-conversion-run-plans/*/run-plan/*.json
+  22,176,062  source-universe-execution-packs/*/execution-pack/source-universe-execution-pack.json
+
+  Keep:
+
+  - Adjacent *.toml specs.
+  - source-universe-execution-packs/*/runs/00000-* golden records for now.
+  - The eviction index, updated with these 9 paths and SHA-256s.
+  - .gitignore rules preventing regrowth.
+  - Tests changed to compare regenerated bytes/hash against the eviction index instead of reading
+    committed JSON blobs.
+
+  Do Not Remove Yet
+
+  - backfill-gates/: 2,775 files but only ~4.86 MB, heavily referenced by tests.
+  - backfill-source-bindings.v1.toml, run specs, accepted proofs, and several root status/proof JSONs:
+    compile-time or verifier inputs.
+
+  - evicted-fixtures.index.json: big at ~9.24 MB, but it is currently the local proof ledger for already-
+    evicted artifacts.
+
+  - backfill-instrument-metadata and source-archive-index-manifests: smaller, and I don’t yet have
+    regeneration proof as strong as the 9-file set.
+
+  Verification Run
+  just source-fence-static passed all BTE/RA fixture-related verifiers and self-tests. It exited 1 only
+  because of an unrelated config/live.toml no-config-retype finding.
+
+─ Worked for 3m 03s ──────────────────────────────────────────────────────────────────────────────────────
+
+
+› are they safe to remove ? are you 10)% confident? can you also aggressively review? I do not want
+  maybe -
+
+
+• Using code-review for the aggressive review posture, because you’re asking for a hard go/no-go finding
+  rather than an implementation plan.
+
+• Explored
+  └ Read SKILL.md (code-review skill)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’m going to answer the safety question in two modes: direct removal from the current tree, and removal
+  through an eviction PR. Those are different decisions; direct removal has hard breakage evidence.
+
+• Explored
+  └ Search source-universe-operator-inputs\.json|source-universe-object-gates\.json|source-universe-
+           conversion-queue\.json|source-universe-conversion-run-plan\.json|source-universe-execution-
+           pack\.json|read committed Bybit inputs|read committed Binance inputs|read Bybit execution pack|
+           read
+           Binance execution pack|read committed run plan in tests
+    Search fs::read\(|read_to_string\(|serde_json::from_slice|assert_bytes_match_committed|
+           EvictedFixtureIndex|sha256_for in backtesting_vertical_slice_source_universe_operator_inputs.rs
+
+• Ran python3 - <<'PY'
+  │ from pathlib import Path
+  │ candidates = [
+  │ … +29 lines
+  └ bytes path
+     14999138 specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/
+    … +20 lines (ctrl + t to view transcript)
+    source-universe-execution-pack.json
+    total 72654820
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Interpreting 10)% as 100%.
+
+  Verdict
+  No, they are not safe to raw-delete from the current repo. I am 100% confident blind removal breaks
+  repo/CI tests.
+
+  They are safe to remove only as an eviction PR: add their SHA-256/bytes to evicted-fixtures.index.json,
+  add .gitignore regrowth rules, and update tests to validate regenerated bytes/hash against the index
+  instead of reading committed JSON.
+
+  Blocking Evidence
+  Current tests directly read these files:
+
+  - crates/backtesting-vertical-slice/tests/
+    backtesting_vertical_slice_source_universe_execution_pack.rs:353 reads the Bybit execution-pack JSON.
+
+  - crates/backtesting-vertical-slice/tests/
+    backtesting_vertical_slice_source_universe_execution_pack.rs:370 reads the Binance execution-pack
+    JSON.
+
+  - crates/backtesting-vertical-slice/tests/
+    backtesting_vertical_slice_source_universe_operator_inputs.rs:498 reads committed Bybit operator
+    inputs.
+
+  - crates/backtesting-vertical-slice/tests/
+    backtesting_vertical_slice_source_universe_operator_inputs.rs:547 byte-compares regenerated Binance
+    operator inputs to the committed JSON.
+
+  - crates/backtesting-vertical-slice/tests/
+    backtesting_vertical_slice_source_universe_conversion_run_plan.rs:143 reads committed run-plan JSON.
+
+  - crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs:216
+    currently expects execution-pack summary JSON to exist.
+
+  Aggressive Review
+  REQUEST CHANGES on blind deletion.
+
+  APPROVE the first eviction slice: the 9 generated JSON files totaling 72,654,820 bytes. They are S3-
+  heavy pointer/generated artifacts, not live runtime inputs. But the PR must change the test contract
+  first; otherwise CI breakage is guaranteed.
+
+  Do not touch backfill-gates/ yet. It is noisy by file count but small by bytes and tightly coupled to
+  tests.
+
+─ Worked for 1m 16s ──────────────────────────────────────────────────────────────────────────────────────
+
+
+› can we just investigate so that we can remove things that are not code and work that affects runtime
+  and production?
+
+
+• Using codebase-nav for a runtime/prod blast-radius audit. I’ll keep this read-only and separate
+  “runtime/production unaffected” from “repo/CI/test unaffected,” because those are different bars.
+
+• Explored
+  └ Read SKILL.md (codebase-nav skill)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’m first identifying the production surface: built binaries, deploy/service entrypoints, root runtime
+  config, and references from those surfaces into specs/, tests/, or crates/backtesting-vertical-slice.
+
+• Ran git status --short
+  └ (no output)
+
+• Explored
+  └ Search ^\[\[bin\]\]|^name = |^path = |^\[workspace\]|^\[package\] in Cargo.toml
+    List src
+    Search specs/023|023-nt-research|crates/backtesting-vertical-slice|backtesting-vertical-slice|tests/
+           fixtures|include_str!|include_bytes! in src
+    Search ExecStart|bolt-v2|config/live|LiveNode|live.toml|target/.*/release|cargo run|install|systemd|
+    deploy
+           in deploy
+    List specs
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The production entrypoint is explicit: systemd runs /opt/bolt-v2/bolt-v2 ops launch --profile
+  "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config. That narrows the runtime dependency surface to
+  the root bolt-v2 binary plus deployed config, not specs/023 or the separate backtesting workspace.
+
+• Ran python3 - <<'PY'
+  │ import subprocess, os
+  │ prod_prefixes=('src/','config/','deploy/')
+  │ … +22 lines
+  └ tracked_total 4775
+    runtime_prod_surface_files 249
+    … +5 lines (ctrl + t to view transcript)
+    github_ci             44 files       377184 bytes
+    scripts              182 files      7083753 bytes
+
+• Ran python3 - <<'PY'
+  │ import subprocess, os, collections
+  │ roots=['specs/023-nt-research-analytics-platform','crates/backtesting-vertical-slice','tests']
+  │ … +5 lines
+  └ specs/023-nt-research-analytics-platform: 3702 files 113645809 bytes
+    crates/backtesting-vertical-slice: 200 files 9201307 bytes
+    tests: 122 files 3370337 bytes
+
+• Explored
+  └ Search specs/023|023-nt-research|specs/|crates/backtesting-vertical-slice|backtesting-vertical-slice
+  in
+           src
+    Search ^\[workspace\]|members|backtesting-vertical-slice|bolt-v2 = \{ path = "\.\./\.\." \} in
+    Cargo.toml
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The root production surface has only comment references to specs/; no runtime/config/deploy code path
+  references specs/023. The separate backtesting crate depends on root bolt-v2, but the root production
+  crate does not depend on the backtesting crate.
+
+• Explored
+  └ Read ci.yml, Justfile, bolt-v2.service
+    Search specs/023|specs/|backtesting-vertical-slice|crates/backtesting-vertical-slice in config
+
+⚠ Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill,
+  but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+
+• Context compacted
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Yes. We can keep this as a read-only investigation and classify files by actual impact.
+
+  Current hard evidence says:
+
+  - specs/023-nt-research-analytics-platform/** is not a runtime/deploy input.
+  - The deployed service runs only /opt/bolt-v2/bolt-v2 ops launch --config-root /opt/bolt-v2/config.
+  - CI deploy stages only the bolt-v2 binary and checksum.
+  - Root Cargo.toml is not a workspace including crates/backtesting-vertical-slice; the backtesting crate
+    depends on root, not the other way around.
+
+  - src/, config/, deploy/, root Cargo.toml, Cargo.lock, Justfile are the production/runtime surface.
+  - specs/023 and crates/backtesting-vertical-slice affect research/backtesting/governance tests, not the
+    live trading runtime.
+
+  My confidence level:
+
+  - 100% confident raw removal of the big generated JSON blobs will not affect the live deployed binary/
+    runtime.
+
+  - 100% confident raw removal will break some current repo tests/CI because tests directly read committed
+    fixture paths.
+
+  - So the safe decision is not “delete blindly”; it is evict/archive with index/test updates, or decide
+    explicitly that backtesting CI is being retired.
+
+  Recommended investigation scope:
+
+  1. Produce a manifest of all tracked files with columns:
+     path, bytes, type, bucket, runtime_ref_count, deploy_ref_count, ci_ref_count, test_ref_count,
+     s3_uri_count, recommendation.
+
+  2. Classify into decision buckets:
+      - Remove/Evict First: specs/023 generated fixture blobs already represented in S3 or eviction index.
+      - Keep For Production: src/, config/, deploy/, root Cargo files, Justfile.
+      - Keep Unless CI Is Retired: .github/, scripts/, ci/, governance verifiers.
+      - Separate Decision: crates/backtesting-vertical-slice/** and integration tests. Not runtime, but
+        intentionally part of research/backtesting validation.
+
+  3. Then make a deletion/eviction PR from the manifest, starting with the largest safe blobs.
+
+  Bottom line: yes, the huge backtest/spec fixture corpus is safe to remove from a runtime/production
+  perspective, but not safe to raw-delete while preserving current CI. The correct path is an evidence-
+  backed eviction plan, not individual review of all 3,702 files.
+
+─ Worked for 2m 32s ──────────────────────────────────────────────────────────────────────────────────────
+
+
+› ok let's do that - so generate the plan
+
+
+• Using the plan skill because you asked for a decision plan rather than deletion or code changes.
+
+• Explored
+  └ Read SKILL.md (plan skill)
+
+⚠ Heads up, you have less than 25% of your 5h limit left. Run /status for a breakdown.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Decision: remove repo weight that does not affect runtime/production while keeping CI/repo governance
+  intentionally green.
+
+  Invariant: the live bolt-v2 binary, deploy path, runtime config, and production launch behavior must be
+  unchanged.
+
+  Option A: Evidence Manifest + Staged Eviction
+
+  - Approach: generate a tracked-file manifest with runtime/deploy/CI/test reference counts, S3 evidence,
+    bytes, and recommendation; then remove only approved buckets in staged PRs.
+
+  - Upside: hard evidence, reversible, CI-safe, lets us separate “runtime safe” from “repo safe.”
+  - Downside: requires one cleanup PR before the big deletion PR.
+  - Blast radius: low. Wrong classification is caught before deletion because files are only removed after
+    manifest review.
+
+  Option B: Delete Runtime-Irrelevant Trees
+
+  - Approach: remove specs/023-nt-research-analytics-platform/** and possibly crates/backtesting-vertical-
+    slice/** because they are outside runtime/deploy.
+
+  - Upside: fastest size reduction.
+  - Downside: will break existing backtesting/governance tests unless CI is changed at the same time.
+  - Blast radius: medium/high for repo CI, low for live runtime.
+
+  Option C: Do Nothing
+
+  - Approach: keep blobs in Git.
+  - Upside: zero immediate CI risk.
+  - Downside: preserves 118 MB of fixture debt and keeps review/agent work noisy.
+  - Blast radius: low now, high over time.
+
+  Recommendation
+  Use Option A.
+
+  Concrete plan:
+
+  1. Generate repo-removal-candidates manifest:
+      - classify every tracked file
+      - mark runtime/deploy references
+      - mark CI/test/governance references
+      - mark S3 URI presence
+      - mark existing eviction-index coverage
+      - assign recommendation: keep-prod, evict-safe, evict-with-ci-change, keep-ci-governance, manual-
+        review
+
+  2. First cleanup PR:
+      - do not delete production files
+      - target only specs/023 generated fixture blobs already backed by S3 or eviction index
+      - update fixture eviction index/tests instead of raw deleting
+      - verify non-Rust gates and relevant fixture/governance verifiers
+
+  3. Second decision:
+      - decide whether crates/backtesting-vertical-slice/** remains in-repo, moves out, or becomes an
+        optional research package
+
+      - this is separate because it is not runtime, but it is real code
+
+  4. Hard stop rules:
+      - no deletion from src/, config/, deploy/, root Cargo files, Justfile
+      - no deletion from .github/, ci/, or scripts/ unless we are explicitly changing CI/release
+        governance
+
+      - no raw deletion of fixture paths currently read by tests without updating the eviction mechanism
+
+  I skipped external review for the plan itself; it is low-risk until we start deleting. The next concrete
+  step is to generate the manifest read-only.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› what's the manifest?
+
+
+• The manifest is a generated evidence table that tells us, file by file, whether something is safe to
+  remove.
+
+  It is not magic or a repo concept yet. It would be a report we generate from git ls-files, rg, sizes,
+  and known production entrypoints.
+
+  Example shape:
+
+
+  path,bytes,type,bucket,runtime_refs,deploy_refs,ci_refs,test_refs,s3_uri_count,eviction_indexed,recommen
+  dation
+  specs/023-.../source-universe-execution-pack.json,16403649,json,specs_023,0,0,3,2,41,false,evict-with-
+  ci-change
+  src/main.rs,18423,rs,production_runtime,12,1,4,6,0,false,keep-prod
+  deploy/systemd/bolt-v2.service,812,service,production_deploy,1,8,2,0,0,false,keep-prod
+
+  The important column is recommendation:
+
+  - keep-prod: production/runtime file, do not delete.
+  - keep-ci-governance: not runtime, but affects CI/release controls.
+  - evict-safe: non-runtime blob already backed by S3/index and not directly required.
+  - evict-with-ci-change: non-runtime blob, but tests/verifiers currently read it.
+  - manual-review: ambiguous or mixed-purpose file.
+
+  For your case, the manifest answers: “Can this file be removed without affecting live production?” and
+  separately “Can this file be removed without breaking the repo/CI today?”
+
+  That separation matters because the big specs/023 blobs are production-safe to remove, but some are not
+  CI-safe to raw-delete.
+
+
+› ok do that with hard evidences
+
+
+• I’ll generate this as a read-only evidence artifact first: one CSV for machine sorting and one Markdown
+  summary with the decision buckets. I’m going to classify by actual references from runtime/deploy, CI/
+  governance, and tests rather than by filename alone.
+
+• Ran pwd
+  └ /Users/spson/Projects/Claude/bolt-v2
+
+• Explored
+  └ List rg --files
+    List rg --files -g AGENTS.md -g '!target'
+
+• Ran git status --short
+  └ (no output)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The repo is clean, so I’ll keep generated outputs outside tracked source under /private/tmp. The
+  manifest will still reference exact repo paths and evidence commands so we can turn it into a PR
+  artifact later without mixing it into the codebase.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’m going to generate counts from git ls-files and literal path searches. The key distinction in the
+  report will be runtime_safe_to_remove versus raw_delete_ci_safe, because those are different questions
+  in this repo.
+
+• Ran python3 - <<'PY'
+  │ from __future__ import annotations
+  │
+  │ … +356 lines
+  └ /private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.csv
+    /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.md
+    … +3 lines (ctrl + t to view transcript)
+    runtime_safe_files=4401
+    raw_delete_ci_safe_files=3769
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The manifest is generated. I’m checking the summary and top candidates now, because the useful output is
+  not just the CSV but the concrete decision buckets and any surprising references.
+
+• Explored
+  └ Read removal-candidates-summary.md
+
+• Ran python3 - <<'PY'
+  │ import csv
+  │ from collections import Counter
+  │ … +14 lines
+  └ evict-with-ci-change 153 27142362
+    evict-safe-candidate 1608 78497828
+    … +34 lines (ctrl + t to view transcript)
+    988176 manual-review-misc rt=0 ci=2 test=0 s3=0 docs/bolt-v3/research/runtime-literals/
+    bolt-v3-runtime-literal-audit.toml
+
+• Ran python3 - <<'PY'
+  │ import csv
+  │ p='/private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.csv'
+  │ … +12 lines
+  └ runtime refs to specs/023:
+    runtime refs to backtesting crate:
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• One important caveat came up: exact path refs are strong evidence, but not sufficient for raw deletion
+  because tests can walk directories or glob files. I’m doing a second pass for directory-level references
+  so the recommendation does not hide glob-based coupling.
+
+• Explored
+  └ Search specs/023-nt-research-analytics-platform|023-nt-research|reference/|backfill-gates|source-
+  universe|
+           evicted-fixtures|tier1-evicted|backfill-source|source-proof|artifact-index in tests
+    Search specs/023-nt-research-analytics-platform|023-nt-research|reference/ in src
+    Search glob|walkdir|read_dir|fs::read_dir|std::fs::read_dir|recursive|WalkDir|globset|glob\( in tests
+    Read backtesting_vertical_slice_reference_fixture_eviction.rs,
+         backtesting_vertical_slice_backfill_gate_reference_artifacts.rs,
+         backtesting_vertical_slice_source_proof_reference_fixtures.rs, rust-ci-inputs.toml
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I found constructed test paths and a broad CI glob that make the first manifest too optimistic for raw
+  deletion. I’m regenerating it conservatively: production-safe remains yes for the spec fixtures, but
+  repo/CI raw-delete-safe is no unless we have evidence beyond exact-path absence.
+
+• Ran python3 - <<'PY'
+  │ from __future__ import annotations
+  │
+  │ … +351 lines
+  └ /private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.v2.csv
+    /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.v2.md
+    … +3 lines (ctrl + t to view transcript)
+    evict_runtime_safe_ci_update_required_bytes 96221556
+    prove_s3_then_evict_ci_update_required_bytes 4259177
+
+• Explored
+  └ Read removal-candidates-summary.v2.md
+
+• Ran python3 - <<'PY'
+  │ import csv
+  │ p='/private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.v2.csv'
+  │ … +15 lines
+  └ spec023 reference recommendations:
+    keep-or-evict-with-policy-change 3650 12691136
+    … +31 lines (ctrl + t to view transcript)
+    binance-data-vision-trades-2026-03-01-all-instruments/run-plan/
+    source-universe-conversion-run-plan.json
+
+• Ran git status --short
+  └ (no output)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• One correction before I report this: the eviction index itself showed up as large, but it is metadata
+  that protects the existing eviction scheme. I’m marking that as keep/compact-later, not a deletion
+  candidate.
+
+• Ran python3 - <<'PY'
+  │ from __future__ import annotations
+  │ import csv,json,subprocess
+  │ … +241 lines
+  └ /private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.v3.csv
+    /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.v3.md
+    … +3 lines (ctrl + t to view transcript)
+    prove_s3_then_evict_ci_update_required_bytes 4259177
+    keep_eviction_metadata_bytes 9306877
+
+• Explored
+  └ Read removal-candidates-summary.v3.md
+
+• Ran python3 - <<'PY'
+  │ import csv
+  │ from collections import Counter
+  │ … +11 lines
+  └ Recommendation totals
+    3640 12455670 keep-or-evict-with-policy-change
+    … +49 lines (ctrl + t to view transcript)
+    backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/
+    backfill-conversion-batch-plan.json
+
+• Ran git status --short
+  └ (no output)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Generated the evidence artifacts:
+
+  - /private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.v3.csv
+  - /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.v3.md
+
+  No repo files were changed; git status --short is clean.
+
+  Hard conclusion:
+
+  - Runtime/prod safe: specs/023-nt-research-analytics-platform/reference/** is not used by live runtime/
+    deploy.
+
+  - Not raw-delete CI safe: current CI/test policy references the whole reference tree via ci/rust-ci-
+    inputs.toml, and backtesting tests construct/walk fixture paths.
+
+  - Correct action: eviction/index/test-policy update, not blind deletion.
+
+  Top decision numbers:
+
+  - specs/023: 3,702 files, 113.6 MB.
+  - specs/023/reference: 3,682 files, 113.2 MB.
+  - First real eviction batch: 26 files / 91.0 MB.
+      - 21 files / 86.8 MB already have s3:// evidence.
+      - 5 files / 4.3 MB need S3 proof before eviction.
+
+  - Keep for now: evicted-fixtures.index.json and tier1-evicted-fixture-paths.txt as eviction metadata,
+    despite being 9.3 MB.
+
+  My recommendation: do the first PR against the 26 large fixture artifacts only, update the eviction
+  index/tests/CI policy, and leave production files, CI governance, and backtesting code untouched.
+
+─ Worked for 7m 53s ──────────────────────────────────────────────────────────────────────────────────────
+
+
+› so what's next
+
+
+• Next: make a small, high-confidence eviction PR.
+
+  I would not start with all 3,702 files. Start with the 21 large specs/023/reference files that already
+  contain S3 evidence:
+
+  - Scope: 21 files, 86.8 MB
+  - Runtime risk: none found
+  - CI risk: real, so fix tests/policy in the same PR
+  - Exclude for now: 5 files / 4.3 MB that need explicit S3 proof first
+  - Keep: evicted-fixtures.index.json and tier1-evicted-fixture-paths.txt
+
+  Implementation sequence:
+
+  1. Inspect existing eviction-index schema and tests.
+  2. Add the 21 file hashes/byte sizes to the eviction metadata.
+  3. Update fixture lookup/tests so they validate index/S3 pointers instead of requiring committed blobs.
+  4. Add .gitignore protection so the blobs do not regrow.
+  5. git rm only those 21 files.
+  6. Run non-compile verification gates and targeted Python/Rust-policy checks allowed by repo rules.
+  7. Report exact deleted paths, bytes removed, and checks run.
+
+  Decision I recommend: proceed with Batch 1A: 21 S3-backed fixture evictions only.
+
+⚠ Heads up, you have less than 10% of your 5h limit left. Run /status for a breakdown.
+
+
+› ok let's do that - but generate a handoff prompt for Claude for overall orchestration
+
+
+• Use this handoff prompt:
+
+  You are working in /Users/spson/Projects/Claude/bolt-v2.
+
+  Goal: orchestrate the first safe fixture eviction PR. Do not touch production runtime behavior.
+
+  Context:
+  - Evidence artifacts already generated:
+    - /private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.v3.csv
+    - /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.v3.md
+  - Repo status was clean when generated.
+  - specs/023-nt-research-analytics-platform/reference is 3,682 files / 113.2 MB.
+  - Production runtime/deploy evidence found zero runtime dependency on specs/023.
+  - CI/test evidence does depend on the reference tree, so raw deletion is not safe.
+  - Correct strategy: eviction/index/test-policy update, then git rm selected blobs.
+
+  Non-negotiables:
+  - Do not delete anything from src/, config/, deploy/, root Cargo files, Justfile, .github/, ci/,
+  scripts/, tests/, or crates/backtesting-vertical-slice code.
+  - Do not delete evicted-fixtures.index.json or tier1-evicted-fixture-paths.txt.
+  - Do not include the 5 files marked prove-s3-then-evict-ci-update-required.
+  - Use existing eviction patterns in crates/backtesting-vertical-slice/src/reference_fixture_index.rs and
+  tests/backtesting_vertical_slice_reference_fixture_eviction.rs.
+  - Preserve CI/repo correctness. This is not a blind deletion PR.
+
+  Batch 1A target:
+  Evict only the 21 files marked evict-runtime-safe-ci-update-required in the manifest, totaling ~86.8 MB.
+  They have s3:// evidence and are runtime-safe but require CI/test policy updates.
+
+  Required workflow:
+  1. Read /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.v3.md.
+  2. Inspect existing eviction implementation:
+     - specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json
+     - specs/023-nt-research-analytics-platform/reference/tier1-evicted-fixture-paths.txt
+     - crates/backtesting-vertical-slice/src/reference_fixture_index.rs
+     - crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs
+  3. Compute sha256 and byte size for each of the 21 target files before deletion.
+  4. Add them to the existing eviction metadata using the repo’s current schema.
+  5. Update fixture lookup/tests so current CI validates the eviction metadata instead of requiring those
+  blobs to remain committed.
+  6. Add .gitignore protection for the evicted paths/families if missing.
+  7. git rm only the 21 approved files.
+  8. Run allowed non-compile checks first. Do not run local compile-heavy Rust gates unless explicitly
+  approved by repo policy.
+  9. Report:
+     - exact deleted paths
+     - exact bytes removed
+     - index entries added
+     - tests/checks run
+     - any remaining blockers
+
+  Do not proceed if:
+  - A target file lacks hash/size proof.
+  - The existing eviction schema is ambiguous.
+  - Tests require redesign beyond fixture/index policy changes.
+  - Any runtime/deploy file needs modification.
+
+  Primary decision rule:
+  Runtime safety is already proven for specs/023 reference blobs, but repo/CI safety must be preserved
+  through the eviction mechanism.
+
+
+› no this is not for just this PR - overall eviction and minimization
+
+
+• Use this broader handoff prompt:
+
+  You are working in /Users/spson/Projects/Claude/bolt-v2.
+
+  Goal: orchestrate overall repo minimization and fixture eviction without changing live production/
+  runtime behavior.
+
+  Primary objective:
+  Reduce tracked repo weight by removing or externalizing non-runtime artifacts, especially specs/023-nt-
+  research-analytics-platform fixture blobs, while keeping intentional CI/governance behavior either
+  preserved or explicitly redesigned.
+
+  Evidence already generated:
+  - /private/tmp/bolt-v2-removal-evidence/removal-candidates-manifest.v3.csv
+  - /private/tmp/bolt-v2-removal-evidence/removal-candidates-summary.v3.md
+
+  Known facts from evidence:
+  - Repo has 4,775 tracked files / 145.6 MB.
+  - specs/023-nt-research-analytics-platform has 3,702 files / 113.6 MB.
+  - specs/023/reference has 3,682 files / 113.2 MB.
+  - Production runtime/deploy surface does not require specs/023.
+  - Live service launches only the bolt-v2 binary with config:
+    /opt/bolt-v2/bolt-v2 ops launch --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config
+  - CI deploy uploads only artifact/bolt-v2 and artifact/bolt-v2.sha256.
+  - crates/backtesting-vertical-slice is a separate workspace that depends on root bolt-v2, not the other
+  way around.
+  - Current CI/backtesting/governance does depend on specs/023/reference, so raw deletion is not repo-
+  safe.
+  - Existing eviction machinery already exists:
+    specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json
+    specs/023-nt-research-analytics-platform/reference/tier1-evicted-fixture-paths.txt
+    crates/backtesting-vertical-slice/src/reference_fixture_index.rs
+    crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs
+
+  Non-negotiables:
+  - Do not change live trading/runtime behavior.
+  - Do not delete src/, config/, deploy/, root Cargo files, Justfile, .github/, ci/, scripts/, tests/, or
+  crates/backtesting-vertical-slice code as part of fixture eviction.
+  - Do not raw-delete fixtures that current CI/tests expect without updating the eviction/index/test
+  policy.
+  - Do not delete eviction metadata unless there is a separate compacted replacement and tests prove
+  equivalence.
+  - Keep changes staged and reviewable. Avoid one giant deletion PR unless explicitly approved.
+
+  Decision model:
+  Classify every candidate along two axes:
+  1. Runtime safety: does live production/deploy need it?
+  2. Repo/CI safety: do tests, governance, or backtesting workflows need it?
+
+  Use these buckets:
+  - keep-prod: src/, config/, deploy/, root Cargo/build/runtime files.
+  - keep-ci-governance: .github/, ci/, scripts/, governance verifier files.
+  - separate-decision-backtesting-code: crates/backtesting-vertical-slice code and its real tests.
+  - evict-runtime-safe-ci-update-required: fixture blobs safe for runtime but requiring eviction/index/
+  test updates.
+  - prove-s3-then-evict-ci-update-required: fixture blobs that need explicit S3/hash proof before
+  eviction.
+  - keep-or-evict-with-policy-change: small fixtures/configs coupled to governance; defer until big blobs
+  are gone.
+  - keep-eviction-metadata-compact-later: eviction index/path manifest; compact only as a separate design.
+  - manual-review: ambiguous small files/docs/spec scaffolding.
+
+  Overall minimization roadmap:
+  Phase 0: Evidence freeze
+  - Refresh manifest from git ls-files, file sizes, literal path refs, directory/glob refs, S3 URI counts,
+  and eviction-index coverage.
+  - Keep the manifest as the source of decisions.
+
+  Phase 1: Large S3-backed fixture eviction
+  - Target the largest files marked evict-runtime-safe-ci-update-required.
+  - Compute sha256 and byte size before deletion.
+  - Add entries to the existing eviction index using current schema.
+  - Update tests so they validate index/S3 pointers instead of requiring committed blobs.
+  - Add .gitignore protection against regrowth.
+  - git rm only approved files.
+  - Verify with allowed non-compile checks and targeted fixture/governance checks.
+
+  Phase 2: S3-proof gap closure
+  - For files marked prove-s3-then-evict-ci-update-required, prove or create durable S3 backing.
+  - Record hash/size/S3 URI.
+  - Evict in a separate PR after proof exists.
+
+  Phase 3: Small reference fixture policy
+  - Review the 3,640 small specs/023 reference files marked keep-or-evict-with-policy-change.
+  - Decide whether they stay as thin source-fence evidence or collapse into a smaller manifest/index.
+  - Do not spend time reviewing each individually unless a policy question requires it.
+
+  Phase 4: Backtesting crate decision
+  - Treat crates/backtesting-vertical-slice as non-runtime but real code.
+  - Decide separately whether to keep it in repo, split it to a research repo, or make it optional.
+  - Do not mix this with fixture blob eviction.
+
+  Phase 5: Eviction metadata compaction
+  - evicted-fixtures.index.json is already large (~9.2 MB).
+  - Compact only after fixture eviction stabilizes.
+  - Replacement must preserve content-addressed integrity, path lookup, hash/size proof, and anti-regrowth
+  tests.
+
+  Phase 6: CI/cache minimization
+  - Revisit ci/rust-ci-inputs.toml after fixture eviction.
+  - Remove broad specs/023/reference/** cache coupling only if tests no longer require it.
+  - Keep release/deploy governance intact.
+
+  Recommended first implementation slice:
+  - Batch 1A: evict only the largest S3-backed fixture blobs already marked evict-runtime-safe-ci-update-
+  required.
+  - Do not include files marked prove-s3-then-evict-ci-update-required.
+  - Do not delete eviction metadata.
+  - Keep PR small enough to review: deletion list, index updates, fixture tests, .gitignore, verification
+  output.
+
+  Required final report for each PR:
+  - Files deleted and exact bytes removed.
+  - Files intentionally kept and why.
+  - Index entries added/changed.
+  - CI/test/governance files changed and why.
+  - Verification commands run and results.
+  - Remaining minimization backlog by bucket.
+
+---
+
+• Implemented the first safe eviction slice.
+
+  I narrowed the first PR slice to two deterministic generated batch-plan JSONs because the larger 21-file
+  batch included golden summaries and generator inputs. Removed:
+
+  218,066 bytes total
+  specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-
+  01-2026-05-31/plan/backfill-conversion-batch-plan.json
+  specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-
+  2026-06-01/plan/backfill-conversion-batch-plan.json
+
+  Changed:
+
+  - Added exact Phase 3 eviction scope in reference_fixture_index.rs.
+  - Added guard tests for index membership, absence, and .gitignore.
+  - Updated affected tests to regenerate the batch plans from committed TOML specs and compare generated
+    bytes against evicted-fixtures.index.json.
+
+  - Added the two hash/size entries to the eviction index.
+  - Added narrow .gitignore anti-regrowth rules.
+
+  Verification run:
+
+  - cargo fmt --check at repo root: pass
+  - cargo fmt --check in crates/backtesting-vertical-slice: pass
+  - python3 -m json.tool .../evicted-fixtures.index.json: pass
+  - python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect: pass
+  - index consistency check: both removed paths indexed, absent, hashes/bytes match, entries sorted
+  - git check-ignore for both removed paths: pass
+  - git diff --check and git diff --cached --check: pass
+
+  I did not run local Rust tests because repo policy avoids compile-heavy local Rust verification by
+  default. Current worktree has the code/index edits unstaged and the two deletions staged from your git
+  rm.
+
+what do you think
+
+---
+
+<task-notification>
+<task-id>bi3zhferu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/bi3zhferu.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the three touched test binaries under break-glass" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bwt4a5hsk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/bwt4a5hsk.output</output-file>
+<status>failed</status>
+<summary>Background command "Run affected tests by name filter under break-glass" failed with exit code 100</summary>
+</task-notification>
+
+---
+
+• S3 mirror is populated and verified.
+
+  Evidence:
+
+  - Uploaded prefix: s3://bolt-parquet/nt-research-analytics/reference-fixtures
+  - Local manifest: /private/tmp/bolt-v2-reference-fixture-mirror/upload-manifest.csv
+  - Local summary: /private/tmp/bolt-v2-reference-fixture-mirror/upload-summary.json
+  - Objects uploaded: 23,999
+  - Bytes uploaded: 228,573,621
+  - Full S3 key/size comparison: missing=0, extra=0, size_mismatch=0
+
+  Scope covered:
+
+  - 23,975 current eviction-index entries.
+  - 24 still-present heavy/capture candidates from the v3 removal manifest.
+  - The two batch-plan files already deleted in this branch are covered by the updated eviction index.
+  - One historical mismatch, the Bybit source-universe run plan, was regenerated from committed TOML +
+    object-gates JSON and matched the indexed SHA exactly before upload.
+
+  Current repo state is unchanged by the S3 upload, but the earlier small eviction slice is still
+  uncommitted:
+
+  - .gitignore
+  - backtesting fixture index/tests
+  - evicted-fixtures.index.json
+  - two deleted batch-plan JSON files
+
+  Next decision is no longer “is the data safe?” It is. Next is the unified harness refactor/eviction PR
+  for the remaining heavy reference artifacts. Raw deletion is still not safe for CI/backtesting; it needs
+  the harness update. I did not run local compile-heavy Rust tests, per repo polic
+
+---
+
+so what's next

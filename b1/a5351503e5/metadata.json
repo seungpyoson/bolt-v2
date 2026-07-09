@@ -3,7 +3,7 @@
   "checkpoint_id": "b1a5351503e5",
   "strategy": "manual-commit",
   "branch": "pr-1309",
-  "checkpoints_count": 4,
+  "checkpoints_count": 10,
   "files_touched": [
     ".gitignore",
     "crates/backtesting-vertical-slice/src/reference_fixture_index.rs",
@@ -21,13 +21,20 @@
       "compact_transcript": "/b1/a5351503e5/0/transcript.jsonl",
       "content_hash": "/b1/a5351503e5/0/content_hash.txt",
       "prompt": "/b1/a5351503e5/0/prompt.txt"
+    },
+    {
+      "metadata": "/b1/a5351503e5/1/metadata.json",
+      "transcript": "/b1/a5351503e5/1/full.jsonl",
+      "compact_transcript": "/b1/a5351503e5/1/transcript.jsonl",
+      "content_hash": "/b1/a5351503e5/1/content_hash.txt",
+      "prompt": "/b1/a5351503e5/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 21988,
-    "cache_creation_tokens": 1074490,
-    "cache_read_tokens": 63107804,
-    "output_tokens": 346967,
-    "api_call_count": 181
+    "input_tokens": 38801,
+    "cache_creation_tokens": 1248691,
+    "cache_read_tokens": 69518536,
+    "output_tokens": 422572,
+    "api_call_count": 228
   }
 }

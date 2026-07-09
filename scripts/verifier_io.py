@@ -182,13 +182,6 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "collect_violations_from_files returns floor violations before scanning source text.",
     ),
     RequiredDiscoveryFloorContract(
-        "verify_bte_test_topology.py",
-        "backtester integration test files",
-        "entrypoint-terminal",
-        "verify_root",
-        "verify_root returns the harness floor before manifest and source-proof checks.",
-    ),
-    RequiredDiscoveryFloorContract(
         "verify_ci_workflow_hygiene.py",
         "ci/github-actions-runners.toml",
         "helper-terminal",

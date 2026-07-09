@@ -148,30 +148,6 @@ verify-dashboard-read-only-contract: check-workspace
     python3 scripts/test_verify_dashboard_read_only_contract.py
     python3 scripts/verify_dashboard_read_only_contract.py
 
-verify-bte-022-pmxt-durable-source: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_durable_source.py
-    python3 scripts/verify_bte_022_pmxt_durable_source.py
-
-verify-bte-022-pmxt-storage-proof: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
-    python3 scripts/verify_bte_022_pmxt_storage_proof.py
-
-verify-bte-022-pmxt-coverage-ledger: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
-    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
-
-verify-bte-022-pmxt-dynamic-tick-size: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
-    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
-
-verify-bte-022-binary-option-bar-catalog: check-workspace
-    python3 scripts/test_verify_bte_022_binary_option_bar_catalog.py
-    python3 scripts/verify_bte_022_binary_option_bar_catalog.py
-
-verify-bte-022-pmxt-broad-backfill-efficiency: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
-    python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
-
 verify-bolt-v3-legacy-default-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py

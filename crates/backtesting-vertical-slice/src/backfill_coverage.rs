@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    reference_artifact::{resolve_spec_path, spec_path_resolution_base},
+    path_resolution::{resolve_existing_path, resolve_output_dir},
     source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus},
 };
 
@@ -676,6 +676,24 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
     inventories: Vec<BackfillPhysicalInventory>,
     registry: &SourceBindingRegistry,
 ) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
+    write_coverage_ledger_artifact_from_manifest_files_with_base(
+        output_dir,
+        ledger_id,
+        manifest_files,
+        inventories,
+        registry,
+        Path::new("."),
+    )
+}
+
+fn write_coverage_ledger_artifact_from_manifest_files_with_base(
+    output_dir: &Path,
+    ledger_id: impl Into<String>,
+    manifest_files: Vec<BackfillCoverageManifestFile>,
+    inventories: Vec<BackfillPhysicalInventory>,
+    registry: &SourceBindingRegistry,
+    base_dir: &Path,
+) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
     let manifest_summaries = manifest_files
         .into_iter()
         .map(|input| {
@@ -693,7 +711,8 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                 canonical_s3_write,
             } = input;
             let path_display = path.display().to_string();
-            let bytes = fs::read(&path).map_err(|error| {
+            let resolved_path = resolve_existing_path(base_dir, &path);
+            let bytes = fs::read(&resolved_path).map_err(|error| {
                 BackfillCoverageManifestFileError::ReadManifest {
                     manifest_uri: manifest_uri.clone(),
                     path: path_display.clone(),
@@ -709,7 +728,7 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
             })?;
             let source_proof_metadata = source_proof_path
                 .as_deref()
-                .map(|path| read_source_proof_metadata(&manifest_uri, path, registry))
+                .map(|path| read_source_proof_metadata(&manifest_uri, path, registry, base_dir))
                 .transpose()?;
             let source_binding = merge_source_proof_metadata_string(
                 &manifest_uri,
@@ -836,8 +855,8 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let path_base = spec_path_resolution_base(spec_path, &spec.source_bindings_path);
-    let resolved_source_bindings_path = resolve_spec_path(&path_base, &spec.source_bindings_path);
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
     let registry =
         crate::source_proof::read_source_binding_registry_from_path(&resolved_source_bindings_path)
             .map_err(
@@ -846,13 +865,14 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
                     error: error.to_string(),
                 },
             )?;
-    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
-    write_coverage_ledger_artifact_from_manifest_files(
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_coverage_ledger_artifact_from_manifest_files_with_base(
         &output_dir,
         spec.ledger_id,
         spec.manifests,
         spec.inventories,
         &registry,
+        base_dir,
     )
 }
 
@@ -860,14 +880,17 @@ fn read_source_proof_metadata(
     manifest_uri: &str,
     path: &Path,
     registry: &SourceBindingRegistry,
+    base_dir: &Path,
 ) -> Result<SourceProofReport, BackfillCoverageManifestFileError> {
     let path_display = path.display().to_string();
-    let bytes =
-        fs::read(path).map_err(|error| BackfillCoverageManifestFileError::ReadSourceProof {
+    let resolved_path = resolve_existing_path(base_dir, path);
+    let bytes = fs::read(&resolved_path).map_err(|error| {
+        BackfillCoverageManifestFileError::ReadSourceProof {
             manifest_uri: manifest_uri.to_string(),
             path: path_display.clone(),
             error: error.to_string(),
-        })?;
+        }
+    })?;
     let proof: SourceProofReport = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillCoverageManifestFileError::ParseSourceProofJson {
             manifest_uri: manifest_uri.to_string(),

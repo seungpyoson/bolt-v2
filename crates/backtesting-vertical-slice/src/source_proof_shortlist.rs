@@ -13,6 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_proof::{
     FixtureType, SourceCandidateClass, SourceProofFidelityClass, SourceProofReport,
     SourceProofStatus, SourceSelectionStatus,
@@ -279,18 +280,21 @@ pub fn write_source_proof_shortlist_report_from_spec_file(
             path: path_display,
             error: error.to_string(),
         })?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let inputs = spec
         .source_proofs
         .into_iter()
         .map(|source_proof| {
             let SourceProofShortlistProofFile { proof_uri, path } = source_proof;
             let path_display = path.display().to_string();
-            let bytes =
-                fs::read(&path).map_err(|error| SourceProofShortlistError::ReadSourceProof {
+            let resolved_path = resolve_existing_path(base_dir, &path);
+            let bytes = fs::read(&resolved_path).map_err(|error| {
+                SourceProofShortlistError::ReadSourceProof {
                     proof_uri: proof_uri.clone(),
                     path: path_display.clone(),
                     error: error.to_string(),
-                })?;
+                }
+            })?;
             let proof: SourceProofReport = serde_json::from_slice(&bytes).map_err(|error| {
                 SourceProofShortlistError::ParseSourceProofJson {
                     proof_uri: proof_uri.clone(),
@@ -302,7 +306,8 @@ pub fn write_source_proof_shortlist_report_from_spec_file(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let report = evaluate_source_proof_shortlist(spec.shortlist_id, inputs, &spec.selection);
-    write_source_proof_shortlist_report(&spec.output_dir, &report)
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_source_proof_shortlist_report(&output_dir, &report)
 }
 
 pub fn write_source_proof_shortlist_report(

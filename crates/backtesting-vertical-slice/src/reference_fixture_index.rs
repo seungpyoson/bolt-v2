@@ -348,10 +348,12 @@ fn is_lowercase_sha256_hex(value: &str) -> bool {
 }
 
 /// Resolve the repo root from this crate's manifest dir (`<repo>/crates/<crate>`).
-/// Mirrors the `env!("CARGO_MANIFEST_DIR")/../..` convention used by the crate's tests;
-/// the trailing `..` components are resolved by the OS at access time.
 pub fn repo_root_from_manifest_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root")
+        .to_path_buf()
 }
 
 #[cfg(test)]

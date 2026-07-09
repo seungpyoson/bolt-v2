@@ -19,7 +19,7 @@ use crate::{
     },
     hashing::sha256_hex,
     operator::RunSpec,
-    reference_artifact::{resolve_spec_path, spec_path_resolution_base},
+    path_resolution::{resolve_existing_path, resolve_output_dir},
     source_proof::SourceProofUsageScope,
 };
 
@@ -403,14 +403,14 @@ pub fn write_backfill_execution_plan_from_spec_file(
             path: spec_path.display().to_string(),
             error: error.to_string(),
         })?;
-    let path_base = spec_path_resolution_base(spec_path, &spec.accepted_tranche_manifest_path);
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let resolved_accepted_tranche_manifest_path =
-        resolve_spec_path(&path_base, &spec.accepted_tranche_manifest_path);
+        resolve_existing_path(base_dir, &spec.accepted_tranche_manifest_path);
     let (tranche, accepted_tranche_manifest_hash) = read_accepted_tranche_manifest(
         &resolved_accepted_tranche_manifest_path,
         &spec.accepted_tranche_manifest_path,
     )?;
-    let resolved_run_spec_path = resolve_spec_path(&path_base, &spec.run_spec_path);
+    let resolved_run_spec_path = resolve_existing_path(base_dir, &spec.run_spec_path);
     let (run_spec, run_spec_hash) = read_run_spec(&resolved_run_spec_path, &spec.run_spec_path)?;
     let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
     let work_budget = BackfillExecutionWorkBudget {
@@ -427,7 +427,7 @@ pub fn write_backfill_execution_plan_from_spec_file(
         &run_binding,
         work_budget,
     );
-    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     write_backfill_execution_plan(&output_dir, &plan)
 }
 

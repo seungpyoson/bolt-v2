@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     backfill_coverage::{BackfillCoverageLedger, BackfillCoverageRecord, BackfillCoverageStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
-    reference_artifact::{resolve_spec_path, spec_path_resolution_base},
+    path_resolution::{resolve_existing_path, resolve_output_dir},
 };
 
 pub const BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION: &str = "backfill-conversion-batch-plan.v1";
@@ -339,9 +339,9 @@ pub fn write_backfill_conversion_batch_plan_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let path_base = spec_path_resolution_base(spec_path, &spec.coverage_ledger_path);
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let ledger_path = spec.coverage_ledger_path.display().to_string();
-    let resolved_ledger_path = resolve_spec_path(&path_base, &spec.coverage_ledger_path);
+    let resolved_ledger_path = resolve_existing_path(base_dir, &spec.coverage_ledger_path);
     let ledger_bytes = fs::read(&resolved_ledger_path).map_err(|error| {
         BackfillConversionBatchPlanError::ReadCoverageLedger {
             path: ledger_path.clone(),
@@ -357,11 +357,11 @@ pub fn write_backfill_conversion_batch_plan_from_spec_file(
         })?;
     let mut inputs = Vec::new();
     for spec_input in spec.inputs {
-        inputs.push(read_input(spec_input, &path_base)?);
+        inputs.push(read_input(spec_input, base_dir)?);
     }
     let plan =
         evaluate_backfill_conversion_batch_plan(spec.batch_id, &ledger, &spec.selection, inputs);
-    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     write_backfill_conversion_batch_plan(&output_dir, &plan)
 }
 
@@ -403,10 +403,10 @@ pub fn write_backfill_conversion_batch_plan(
 
 fn read_input(
     spec_input: BackfillConversionBatchPlanSpecInput,
-    path_base: &Path,
+    base_dir: &Path,
 ) -> Result<BackfillConversionBatchInput, BackfillConversionBatchPlanError> {
     let run_spec_path = spec_input.run_spec_path.display().to_string();
-    let resolved_run_spec_path = resolve_spec_path(path_base, &spec_input.run_spec_path);
+    let resolved_run_spec_path = resolve_existing_path(base_dir, &spec_input.run_spec_path);
     let run_spec_hash = file_sha256(&resolved_run_spec_path).map_err(|error| {
         BackfillConversionBatchPlanError::ReadRunSpec {
             path: run_spec_path,
@@ -415,7 +415,7 @@ fn read_input(
     })?;
     let execution_plan_path = spec_input.execution_plan_path.display().to_string();
     let resolved_execution_plan_path =
-        resolve_spec_path(path_base, &spec_input.execution_plan_path);
+        resolve_existing_path(base_dir, &spec_input.execution_plan_path);
     let execution_plan_bytes = fs::read(&resolved_execution_plan_path).map_err(|error| {
         BackfillConversionBatchPlanError::ReadExecutionPlan {
             path: execution_plan_path.clone(),

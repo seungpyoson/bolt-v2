@@ -20,7 +20,7 @@ use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuild
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::reference_artifact::{resolve_spec_path, spec_path_resolution_base};
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 
 pub const FIRST_PROOF_EVENT_COUNT_LEDGER_SCHEMA_VERSION: &str = "first-proof-event-count-ledger.v1";
 pub const FIRST_PROOF_SELECTOR_SCHEMA_VERSION: &str = "first-proof-selector-report.v1";
@@ -495,9 +495,9 @@ pub fn write_first_proof_selector_report_from_spec_file(
             path: spec_path_display,
             error: error.to_string(),
         })?;
-    let path_base = spec_path_resolution_base(spec_path, &spec.event_count_ledger_path);
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let ledger_path_display = spec.event_count_ledger_path.display().to_string();
-    let resolved_ledger_path = resolve_spec_path(&path_base, &spec.event_count_ledger_path);
+    let resolved_ledger_path = resolve_existing_path(base_dir, &spec.event_count_ledger_path);
     let ledger_bytes = fs::read(&resolved_ledger_path).map_err(|error| {
         FirstProofSelectorError::ReadEventCountLedger {
             path: ledger_path_display.clone(),
@@ -507,7 +507,7 @@ pub fn write_first_proof_selector_report_from_spec_file(
     let ledger = parse_event_count_ledger(&ledger_bytes, &ledger_path_display)?;
     let report =
         evaluate_first_proof_selector(spec.selector_id, &ledger.event_counts, &spec.selection);
-    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     write_first_proof_selector_report(&output_dir, &report)
 }
 
@@ -525,10 +525,10 @@ pub fn write_first_proof_event_count_ledger_from_spec_file(
             path: spec_path_display,
             error: error.to_string(),
         })?;
-    let path_base = spec_path_resolution_base(spec_path, &spec.source_parquet_path);
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let resolved_spec = FirstProofEventCountLedgerSpec {
-        source_parquet_path: resolve_spec_path(&path_base, &spec.source_parquet_path),
-        output_path: resolve_spec_path(&path_base, &spec.output_path),
+        source_parquet_path: resolve_existing_path(base_dir, &spec.source_parquet_path),
+        output_path: resolve_output_dir(base_dir, &spec.output_path),
         ..spec
     };
     let report = build_first_proof_event_count_ledger_from_parquet(&resolved_spec)?;

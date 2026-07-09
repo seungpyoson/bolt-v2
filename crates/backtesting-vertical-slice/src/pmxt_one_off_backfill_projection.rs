@@ -51,6 +51,7 @@ use ustr::Ustr;
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
+use crate::path_resolution::resolve_existing_path;
 use crate::{
     catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
     conversion_boundary::{
@@ -364,13 +365,23 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_spec_file(
                 spec_path.display()
             )
         })?;
-    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(spec)
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(spec, base_dir)
 }
 
 pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
     spec: PmxtOneOffArtifactRootRunTomlSpec,
 ) -> Result<PmxtOneOffArtifactRootRunArtifact> {
-    let gamma_markets_bytes = fs::read(&spec.selected_source.gamma_markets_json_path)
+    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(spec, Path::new("."))
+}
+
+fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
+    spec: PmxtOneOffArtifactRootRunTomlSpec,
+    base_dir: &Path,
+) -> Result<PmxtOneOffArtifactRootRunArtifact> {
+    let gamma_markets_path =
+        resolve_existing_path(base_dir, &spec.selected_source.gamma_markets_json_path);
+    let gamma_markets_bytes = fs::read(&gamma_markets_path)
         .with_context(|| {
             format!(
                 "read PMXT Gamma metadata {}",
@@ -384,7 +395,8 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
                 spec.selected_source.gamma_markets_json_path.display()
             )
         })?;
-    let manifest_text = fs::read_to_string(&spec.manifest_path).with_context(|| {
+    let manifest_path = resolve_existing_path(base_dir, &spec.manifest_path);
+    let manifest_text = fs::read_to_string(&manifest_path).with_context(|| {
         format!(
             "read PMXT one-off manifest {}",
             spec.manifest_path.display()
@@ -408,33 +420,36 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
     let output_catalog_uri = format!("file://{}", spec.catalog_root.display());
     let execution_catalog_uri = spec.catalog_root.display().to_string();
     let manifest_hash = manifest.manifest_hash();
-    let run = write_pmxt_one_off_l2_artifact_root_run(PmxtOneOffArtifactRootRunSpec {
-        selected_source: PmxtSelectedSourceProjectionSpec {
-            source_binding: spec.selected_source.source_binding,
-            usage_scope: spec.selected_source.usage_scope,
-            selected_condition_id: spec.selected_source.selected_condition_id,
-            selected_token_id: spec.selected_source.selected_token_id,
-            gamma_markets,
-            selected_source_parquet_path: spec.selected_source.selected_source_parquet_path,
-            selected_source_report_path: spec.selected_source.selected_source_report_path,
-            schema: spec.selected_source.schema,
+    let run = write_pmxt_one_off_l2_artifact_root_run_with_base(
+        PmxtOneOffArtifactRootRunSpec {
+            selected_source: PmxtSelectedSourceProjectionSpec {
+                source_binding: spec.selected_source.source_binding,
+                usage_scope: spec.selected_source.usage_scope,
+                selected_condition_id: spec.selected_source.selected_condition_id,
+                selected_token_id: spec.selected_source.selected_token_id,
+                gamma_markets,
+                selected_source_parquet_path: spec.selected_source.selected_source_parquet_path,
+                selected_source_report_path: spec.selected_source.selected_source_report_path,
+                schema: spec.selected_source.schema,
+            },
+            output_dir: spec.output_dir.clone(),
+            catalog_root: spec.catalog_root,
+            fingerprint: spec.fingerprint,
+            manifest,
+            manifest_hash,
+            normalized_schema_version: spec.normalized_schema_version,
+            output_catalog_uri,
+            execution_catalog_uri,
+            direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
+            acceptance_mode: spec.acceptance_mode,
+            accepted_by: spec.accepted_by,
+            accepted_at: spec.accepted_at,
+            artifact_uris: spec.artifact_uris,
+            created_at: spec.created_at,
+            claim_limits: spec.claim_limits,
         },
-        output_dir: spec.output_dir.clone(),
-        catalog_root: spec.catalog_root,
-        fingerprint: spec.fingerprint,
-        manifest,
-        manifest_hash,
-        normalized_schema_version: spec.normalized_schema_version,
-        output_catalog_uri,
-        execution_catalog_uri,
-        direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
-        acceptance_mode: spec.acceptance_mode,
-        accepted_by: spec.accepted_by,
-        accepted_at: spec.accepted_at,
-        artifact_uris: spec.artifact_uris,
-        created_at: spec.created_at,
-        claim_limits: spec.claim_limits,
-    })?;
+        base_dir,
+    )?;
     Ok(PmxtOneOffArtifactRootRunArtifact {
         output_dir: spec.output_dir,
         result_contract_hash: sha256_file(&run.result_contract_path)?,
@@ -452,11 +467,20 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
 pub fn project_pmxt_selected_source_parquet_to_nt(
     spec: PmxtSelectedSourceProjectionSpec,
 ) -> Result<PmxtSelectedSourceNtProjection> {
+    project_pmxt_selected_source_parquet_to_nt_with_base(spec, Path::new("."))
+}
+
+fn project_pmxt_selected_source_parquet_to_nt_with_base(
+    spec: PmxtSelectedSourceProjectionSpec,
+    base_dir: &Path,
+) -> Result<PmxtSelectedSourceNtProjection> {
     ensure!(
         spec.usage_scope == SourceProofUsageScope::OneOffBackfillData,
         "PMXT selected-source projection only accepts one_off_backfill_data usage_scope"
     );
-    let report_bytes = fs::read(&spec.selected_source_report_path).with_context(|| {
+    let selected_source_report_path =
+        resolve_existing_path(base_dir, &spec.selected_source_report_path);
+    let report_bytes = fs::read(&selected_source_report_path).with_context(|| {
         format!(
             "read selected-source report {}",
             spec.selected_source_report_path.display()
@@ -480,14 +504,16 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
         report.output_parquet_path,
         spec.selected_source_parquet_path.display().to_string()
     );
-    let selected_parquet_sha256 = sha256_file(&spec.selected_source_parquet_path)?;
+    let selected_source_parquet_path =
+        resolve_existing_path(base_dir, &spec.selected_source_parquet_path);
+    let selected_parquet_sha256 = sha256_file(&selected_source_parquet_path)?;
     ensure!(
         report.output_parquet_sha256 == selected_parquet_sha256,
         "selected-source parquet sha256 mismatch: report {:?}, actual {:?}",
         report.output_parquet_sha256,
         selected_parquet_sha256
     );
-    let selector_report = read_selected_source_selector_report(&report)?;
+    let selector_report = read_selected_source_selector_report(&report, base_dir)?;
     ensure!(
         selector_report.selected_asset_ids_hash == report.selected_asset_ids_hash,
         "selected-source report selected_asset_ids_hash {:?} does not match selector report {:?}",
@@ -507,7 +533,7 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
     ensure_ignored_event_types_are_allowed(&spec.schema)?;
     ensure_selector_excludes_forbidden_event_types(&selector_report, &spec.schema)?;
 
-    let decoded = decode_selected_source_rows(&spec, &report)?;
+    let decoded = decode_selected_source_rows(&spec, &report, base_dir)?;
     let projected_l2_rows = decoded.rows.len() as u64;
     ensure!(
         projected_l2_rows > 0,
@@ -544,9 +570,11 @@ struct DecodedSelectedSourceRows {
 
 fn read_selected_source_selector_report(
     report: &SelectedSourceSliceReport,
+    base_dir: &Path,
 ) -> Result<FirstProofSelectorReport> {
     let selector_path = Path::new(&report.selector_report_path);
-    let selector_bytes = fs::read(selector_path)
+    let resolved_selector_path = resolve_existing_path(base_dir, selector_path);
+    let selector_bytes = fs::read(&resolved_selector_path)
         .with_context(|| format!("read selector report {}", selector_path.display()))?;
     let selector_sha256 = sha256_hex(&selector_bytes);
     ensure!(
@@ -598,8 +626,11 @@ fn ensure_selector_excludes_forbidden_event_types(
 fn decode_selected_source_rows(
     spec: &PmxtSelectedSourceProjectionSpec,
     report: &SelectedSourceSliceReport,
+    base_dir: &Path,
 ) -> Result<DecodedSelectedSourceRows> {
-    let file = fs::File::open(&spec.selected_source_parquet_path).with_context(|| {
+    let selected_source_parquet_path =
+        resolve_existing_path(base_dir, &spec.selected_source_parquet_path);
+    let file = fs::File::open(&selected_source_parquet_path).with_context(|| {
         format!(
             "open selected-source parquet {}",
             spec.selected_source_parquet_path.display()
@@ -1772,9 +1803,17 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
 pub fn write_pmxt_one_off_l2_artifact_root_run(
     spec: PmxtOneOffArtifactRootRunSpec,
 ) -> Result<PmxtOneOffArtifactRootRun> {
+    write_pmxt_one_off_l2_artifact_root_run_with_base(spec, Path::new("."))
+}
+
+fn write_pmxt_one_off_l2_artifact_root_run_with_base(
+    spec: PmxtOneOffArtifactRootRunSpec,
+    base_dir: &Path,
+) -> Result<PmxtOneOffArtifactRootRun> {
+    let selected_source_parquet_path =
+        resolve_existing_path(base_dir, &spec.selected_source.selected_source_parquet_path);
     ensure!(
-        spec.fingerprint.accepted_object_sha256
-            == sha256_file(&spec.selected_source.selected_source_parquet_path)?,
+        spec.fingerprint.accepted_object_sha256 == sha256_file(&selected_source_parquet_path)?,
         "PMXT one-off conversion fingerprint accepted_object_sha256 must match selected-source parquet"
     );
     ensure!(
@@ -1782,8 +1821,9 @@ pub fn write_pmxt_one_off_l2_artifact_root_run(
         "PMXT one-off result artifact nt_catalog_uri must match conversion output_catalog_uri"
     );
 
-    let selected_projection = project_pmxt_selected_source_parquet_to_nt(spec.selected_source)
-        .context("project selected PMXT source rows into NT data")?;
+    let selected_projection =
+        project_pmxt_selected_source_parquet_to_nt_with_base(spec.selected_source, base_dir)
+            .context("project selected PMXT source rows into NT data")?;
     ensure!(
         selected_projection.selected_source_parquet_hash == spec.fingerprint.accepted_object_sha256,
         "PMXT one-off selected-source hash does not match conversion fingerprint"

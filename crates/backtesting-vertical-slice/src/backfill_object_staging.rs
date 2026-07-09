@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    path_resolution::{resolve_existing_path, resolve_output_dir},
     run_manifest::{ManifestArtifactStore, ManifestError, artifact_store_storage_options_for_uri},
     source_proof::IngestManifestObjectRecord,
 };
@@ -237,7 +238,8 @@ where
             path: spec_path_display,
             error: error.to_string(),
         })?;
-    stage_backfill_object_with_resolver(&spec, resolver)
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    stage_backfill_object_with_resolver_and_base(&spec, resolver, base_dir)
 }
 
 pub fn stage_backfill_object_with_resolver<F>(
@@ -247,8 +249,20 @@ pub fn stage_backfill_object_with_resolver<F>(
 where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
+    stage_backfill_object_with_resolver_and_base(spec, resolver, Path::new("."))
+}
+
+fn stage_backfill_object_with_resolver_and_base<F>(
+    spec: &BackfillObjectStagingSpec,
+    resolver: &mut F,
+    base_dir: &Path,
+) -> Result<BackfillObjectStagingArtifact, BackfillObjectStagingError>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
     validate_spec(spec)?;
-    let actual_bytes = fs::metadata(&spec.local_object_path)
+    let local_object_path = resolve_existing_path(base_dir, &spec.local_object_path);
+    let actual_bytes = fs::metadata(&local_object_path)
         .map_err(|error| BackfillObjectStagingError::ReadLocalObject {
             path: spec.local_object_path.display().to_string(),
             error: error.to_string(),
@@ -260,7 +274,7 @@ where
             actual: actual_bytes,
         });
     }
-    let object_bytes = fs::read(&spec.local_object_path).map_err(|error| {
+    let object_bytes = fs::read(&local_object_path).map_err(|error| {
         BackfillObjectStagingError::ReadLocalObject {
             path: spec.local_object_path.display().to_string(),
             error: error.to_string(),
@@ -308,7 +322,8 @@ where
             schema_columns: spec.schema_columns.clone(),
         }],
     };
-    write_manifest(&spec.output_dir, &manifest).map(
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_manifest(&output_dir, &manifest).map(
         |(manifest_path, manifest_hash, manifest_bytes)| BackfillObjectStagingArtifact {
             manifest_path,
             manifest_hash,

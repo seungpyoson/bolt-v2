@@ -1,64 +1,17 @@
 use crate::backtesting_vertical_slice_test_support::{
-    repo_root, rewrite_assignment, tempdir_in_repo_target,
+    generate_evicted_batch_plan, rewrite_assignment, tempdir_in_repo_target,
 };
 use backtesting_vertical_slice::{
-    backfill_conversion_batch::write_backfill_conversion_batch_plan_from_spec_file,
     backfill_conversion_completion::{
         BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
         write_backfill_conversion_completion_ledger_from_spec_file,
     },
-    hashing::sha256_hex,
     reference_fixture_index::{
-        EvictedFixtureIndex, PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
         PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, repo_root_from_manifest_dir,
     },
 };
 use std::{fs, path::Path};
-
-fn assert_generated_fixture_matches_index(repo_relative_path: &str, generated_path: &Path) {
-    let index =
-        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
-    let entry = index
-        .entry_for(repo_relative_path)
-        .unwrap_or_else(|| panic!("eviction index must contain {repo_relative_path}"));
-    let bytes = fs::read(generated_path).unwrap_or_else(|error| {
-        panic!(
-            "read generated fixture {}: {error}",
-            generated_path.display()
-        )
-    });
-    assert_eq!(
-        bytes.len() as u64,
-        entry.bytes,
-        "generated fixture byte length must match eviction index for {repo_relative_path}"
-    );
-    assert_eq!(
-        sha256_hex(&bytes),
-        entry.sha256,
-        "generated fixture sha256 must match eviction index for {repo_relative_path}"
-    );
-}
-
-fn generate_evicted_batch_plan(
-    batch_root: &Path,
-    repo_relative_path: &str,
-    temp_dir: &Path,
-) -> std::path::PathBuf {
-    let spec_path = batch_root.join("backfill-conversion-batch-plan.toml");
-    let temp_spec_path = temp_dir.join("backfill-conversion-batch-plan.toml");
-    let temp_output_dir = temp_dir.join("plan");
-    let spec = fs::read_to_string(&spec_path)
-        .unwrap_or_else(|error| panic!("read batch spec {}: {error}", spec_path.display()));
-    fs::write(
-        &temp_spec_path,
-        rewrite_assignment(&spec, "output_dir", &temp_output_dir),
-    )
-    .expect("write temp batch spec");
-    let artifact = write_backfill_conversion_batch_plan_from_spec_file(&temp_spec_path)
-        .expect("batch plan generation succeeds");
-    assert_generated_fixture_matches_index(repo_relative_path, &artifact.path);
-    artifact.path
-}
 
 fn generate_completion_ledger_with_temp_batch_plan(
     reference_root: &Path,
@@ -69,7 +22,7 @@ fn generate_completion_ledger_with_temp_batch_plan(
     let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
     let batch_plan_path =
         generate_evicted_batch_plan(&batch_root, evicted_batch_plan_path, temp_dir.path());
-    let repo_root = repo_root();
+    let repo_root = repo_root_from_manifest_dir();
     let batch_plan_path = batch_plan_path
         .strip_prefix(&repo_root)
         .unwrap_or(&batch_plan_path)

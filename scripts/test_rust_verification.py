@@ -1518,6 +1518,87 @@ def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
         raise AssertionError(compile_args)
 
 
+def assert_nextest_compile_preflight_preserves_compile_selectors() -> None:
+    owner = load_owner_module()
+    cases = [
+        (["--release"], ["--release"]),
+        (["-r"], ["-r"]),
+        (["-F", "serde"], ["-F", "serde"]),
+        (["--bin", "bolt-v2"], ["--bin", "bolt-v2"]),
+        (["--example", "smoke"], ["--example", "smoke"]),
+        (["--bench", "latency"], ["--bench", "latency"]),
+        (["--cargo-profile", "ci"], ["--cargo-profile", "ci"]),
+        (["--build-jobs", "2"], ["--build-jobs", "2"]),
+        (["--ignore-rust-version"], ["--ignore-rust-version"]),
+    ]
+    for tail, expected_tail in cases:
+        compile_args = owner.nextest_run_compile_preflight_args(["nextest", "run", "--locked", *tail])
+        expected = ["nextest", "run", "--locked", *expected_tail, "--no-run"]
+        if compile_args != expected:
+            raise AssertionError((tail, compile_args, expected))
+
+
+def assert_nextest_compile_preflight_refuses_unknown_flags() -> None:
+    owner = load_owner_module()
+    compile_args = owner.nextest_run_compile_preflight_args(["nextest", "run", "--locked", "--future-nextest-flag"])
+    if compile_args is not None:
+        raise AssertionError(compile_args)
+
+
+def assert_managed_test_refuses_unknown_compile_tail() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[list[str], str | None]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo, policy_text=remote_compile_policy_text())
+        originals = install_owner_process_spies(owner, calls, [])
+        try:
+            with _patched_environ(
+                {
+                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+                    "GITHUB_ACTIONS": "true",
+                    "SCCACHE_PATH": "/opt/sccache/sccache",
+                }
+            ):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    result = owner.cmd_run(
+                        argparse.Namespace(
+                            repo=str(repo),
+                            command="test",
+                            args=["--future-nextest-flag"],
+                            args_separator=False,
+                        )
+                    )
+        finally:
+            restore_owner_process_spies(owner, originals)
+    if result != 2:
+        raise AssertionError(result)
+    run_calls = [call for call in calls if call[0][0] == "cargo"]
+    if run_calls:
+        raise AssertionError(run_calls)
+
+
+def assert_compile_args_reject_run_only_and_unknown_flags() -> None:
+    owner = load_owner_module()
+    cases = [
+        '"--ff"',
+        '"--no-fail-fast"',
+        '"--max-fail=all"',
+        '"--archive-file", "archive.tar.zst"',
+        '"--future-nextest-flag"',
+    ]
+    for extra_tail in cases:
+        policy_text = remote_compile_policy_text().replace(
+            '"--locked", "--no-run"', f'"--locked", "--no-run", {extra_tail}', 1
+        )
+        try:
+            owner.validate_policy_data(tomllib.loads(policy_text))
+        except owner.PolicyError:
+            continue
+        raise AssertionError(f"expected PolicyError for compile_args tail {extra_tail}")
+
+
 def assert_nextest_compile_failure_retries_without_retrying_tests() -> None:
     owner = load_owner_module()
     calls: list[tuple[list[str], str | None]] = []
@@ -2013,6 +2094,10 @@ def main() -> int:
     assert_managed_test_splits_nextest_run_inside_owner()
     assert_managed_test_uses_configured_compile_args()
     assert_nextest_compile_preflight_omits_run_only_flags()
+    assert_nextest_compile_preflight_preserves_compile_selectors()
+    assert_nextest_compile_preflight_refuses_unknown_flags()
+    assert_managed_test_refuses_unknown_compile_tail()
+    assert_compile_args_reject_run_only_and_unknown_flags()
     assert_nextest_compile_failure_retries_without_retrying_tests()
     assert_direct_nextest_run_splits_inside_owner()
     assert_validate_remote_fast_linker_policy_contract()

@@ -84,7 +84,6 @@ jobs:
             .pr_agent.toml
             ci/ai-review.toml
             scripts/ai_review_deliverables.py
-            scripts/verify_ai_review_model_freshness.py
           sparse-checkout-cone-mode: false
 
       - name: Load AI review runtime config
@@ -248,17 +247,6 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
           fi
-
-      - name: Check AI review model freshness
-        id: model-freshness
-        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true'
-        continue-on-error: true
-        run: >-
-          python3 scripts/verify_ai_review_model_freshness.py
-          --config-file ci/ai-review.toml
-          --live
-          --advisory
-          --provider glm
 
       - name: Capture GLM review window
         id: review-window

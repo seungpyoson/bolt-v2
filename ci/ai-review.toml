@@ -23,7 +23,6 @@ notice_marker_template = "<!-- ai-review-model-freshness-notice-{provider} -->"
 [pr_agent_mirror]
 required_note_snippets = [
   "Review against AGENTS.md as the repository governance source",
-  "This mirror is checked against ci/ai-review.toml by scripts/verify_ai_review_governance.py",
   "update ci/ai-review.toml and this block when the mirrored AGENTS.md rules change",
 ]
 

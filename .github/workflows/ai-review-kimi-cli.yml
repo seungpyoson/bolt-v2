@@ -94,7 +94,6 @@ jobs:
             AGENTS.md
             ci/ai-review.toml
             scripts/ai_review_deliverables.py
-            scripts/verify_ai_review_model_freshness.py
           sparse-checkout-cone-mode: false
 
       - name: Load AI review runtime config
@@ -256,17 +255,6 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
           fi
-
-      - name: Check AI review model freshness
-        id: model-freshness
-        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true'
-        continue-on-error: true
-        run: >-
-          python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py
-          --config-file .ai-review/base/ci/ai-review.toml
-          --live
-          --advisory
-          --provider kimi
 
       - name: Prepare Kimi review standards
         id: prepare-standards

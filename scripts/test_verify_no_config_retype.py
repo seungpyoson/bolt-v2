@@ -134,20 +134,21 @@ def test_wildcard_registered_payload_is_rejected() -> None:
         write(root / "scripts" / "changed.py", """
         VALUE = "single-source-value"
         """)
-        registration = VERIFIER.RegisteredRetype(
-            path="*",
-            value="single-source-value",
-            reason="wildcards would bypass path-specific review",
-        )
-        findings = VERIFIER.collect_findings(
-            root,
-            governed_config_artifacts=("ci/github-actions-runners.toml",),
-            strict_paths=frozenset({"scripts/changed.py"}),
-            ratchet_baseline_count=0,
-            registered_retypes=(registration,),
-        )
-        if not any("wildcard" in finding for finding in findings):
-            raise AssertionError(f"expected wildcard rejection, got {findings!r}")
+        for wildcard_path in ("*", "scripts/*.py", "*.py", "scripts/[abc].py"):
+            registration = VERIFIER.RegisteredRetype(
+                path=wildcard_path,
+                value="single-source-value",
+                reason="wildcards would bypass path-specific review",
+            )
+            findings = VERIFIER.collect_findings(
+                root,
+                governed_config_artifacts=("ci/github-actions-runners.toml",),
+                strict_paths=frozenset({"scripts/changed.py"}),
+                ratchet_baseline_count=0,
+                registered_retypes=(registration,),
+            )
+            if not any("wildcard" in finding for finding in findings):
+                raise AssertionError(f"expected wildcard rejection for {wildcard_path!r}, got {findings!r}")
 
 
 def test_extensionless_strict_script_is_scanned() -> None:

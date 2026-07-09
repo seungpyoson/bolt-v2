@@ -91,6 +91,7 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
 # reviewed before allowlisting. This avoids predicting macro expansion or
 # cfg-active surfaces; the boundary is the exact current normalized Rust token
 # inventory after the shared scanner strips comments and literals.
+# Duplicate entries are intentional: Counter equality enforces multiplicity.
 FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),
@@ -520,7 +521,7 @@ def verify_financial_value_default_token_allowlist(
     expected_allowlist: tuple[tuple[str, str], ...] = FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST,
 ) -> list[str]:
     actual_counter = Counter(
-        (relative_path, line.strip())
+        (relative_path, normalize_source_line(line))
         for relative_path, source in rust_sources(root)
         for line in source.splitlines()
         if "Default" in line

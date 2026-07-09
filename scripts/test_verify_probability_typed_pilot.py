@@ -584,7 +584,7 @@ default_many!(crate::bolt_v3_numeric::Probability, crate::other::NotProbability)
         findings = VERIFIER.verify_financial_value_default_token_allowlist(
             root,
             expected_allowlist=tuple(
-                (relative_path, line.strip())
+                (relative_path, VERIFIER.normalize_source_line(line))
                 for relative_path, source in VERIFIER.rust_sources(root)
                 for line in source.splitlines()
                 if "Default" in line and relative_path != "src/cfg_inactive_macro_default.rs"
@@ -609,7 +609,7 @@ struct ReviewedFixtureState {
             },
         )
         expected = tuple(
-            (relative_path, line.strip())
+            (relative_path, VERIFIER.normalize_source_line(line))
             for relative_path, source in VERIFIER.rust_sources(root)
             for line in source.splitlines()
             if "Default" in line
@@ -620,6 +620,55 @@ struct ReviewedFixtureState {
         )
         if findings:
             raise AssertionError(f"reviewed Default token lines should pass: {findings!r}")
+
+
+def test_default_token_allowlist_uses_normalized_source_lines() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/reviewed_default.rs": """
+#[derive(Debug,  Default)]
+struct ReviewedFixtureState {
+    value: u64,
+}
+""",
+            },
+        )
+        expected = tuple(
+            (
+                relative_path,
+                VERIFIER.normalize_source_line(line),
+            )
+            for relative_path, source in VERIFIER.rust_sources(root)
+            for line in source.splitlines()
+            if "Default" in line and relative_path != "src/reviewed_default.rs"
+        ) + (("src/reviewed_default.rs", "#[derive(Debug, Default)]"),)
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=expected,
+        )
+        if findings:
+            raise AssertionError(f"whitespace-only Default token changes should normalize: {findings!r}")
+
+
+def test_default_token_allowlist_rejects_missing_expected_line() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        expected = tuple(
+            (relative_path, VERIFIER.normalize_source_line(line))
+            for relative_path, source in VERIFIER.rust_sources(root)
+            for line in source.splitlines()
+            if "Default" in line
+        ) + (("src/missing_default.rs", "#[derive(Default)]"),)
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=expected,
+        )
+        if not any("missing expected Default token lines" in finding for finding in findings):
+            raise AssertionError(f"expected missing Default token finding, got {findings!r}")
 
 
 def test_verify_rejects_cfg_gated_registered_financial_value_default_impl() -> None:
@@ -1014,6 +1063,8 @@ def main() -> int:
         test_registered_default_surface_accepts_unrelated_default_derive,
         test_default_token_allowlist_rejects_macro_generated_default_surface,
         test_default_token_allowlist_accepts_reviewed_unrelated_default_surface,
+        test_default_token_allowlist_uses_normalized_source_lines,
+        test_default_token_allowlist_rejects_missing_expected_line,
         test_verify_rejects_cfg_gated_registered_financial_value_default_impl,
         test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
         test_verify_rejects_multiline_cfg_attr_default_derive,

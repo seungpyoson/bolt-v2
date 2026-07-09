@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import pathlib
 import shlex
@@ -12,6 +11,8 @@ import subprocess
 import sys
 import urllib.parse
 from typing import Any
+
+import minimal_toml as _minimal_toml
 
 try:
     import tomllib
@@ -91,46 +92,16 @@ def load_config_with_tomllib(path: pathlib.Path) -> dict[str, Any]:
     return loaded
 
 
-def load_config_without_tomllib(path: pathlib.Path) -> dict[str, Any]:
-    data: dict[str, Any] = {}
-    current_table: str | None = None
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise PushError(f"cannot read {CONFIG_RELATIVE_PATH}: {exc}") from exc
-    for lineno, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current_table = line[1:-1].strip()
-            if current_table == "sandbox_safe_push":
-                data[current_table] = {}
-            continue
-        if current_table != "sandbox_safe_push":
-            continue
-        key, sep, value_text = line.partition("=")
-        if not sep:
-            raise PushError(f"{CONFIG_RELATIVE_PATH}:{lineno}: expected key = value")
-        key = key.strip()
-        value_text = value_text.strip()
-        if not value_text.startswith('"') or not value_text.endswith('"'):
-            raise PushError(f"{CONFIG_RELATIVE_PATH}:{lineno}: sandbox_safe_push.{key} must be a string")
-        try:
-            value = json.loads(value_text)
-        except json.JSONDecodeError as exc:
-            raise PushError(f"{CONFIG_RELATIVE_PATH}:{lineno}: invalid string") from exc
-        data.setdefault("sandbox_safe_push", {})[key] = value
-    return data
-
-
 def load_config(repo: pathlib.Path) -> dict[str, Any]:
     path = repo / CONFIG_RELATIVE_PATH
     if not path.is_file():
         raise PushError(f"{CONFIG_RELATIVE_PATH} is required")
     if tomllib is not None:
         return load_config_with_tomllib(path)
-    return load_config_without_tomllib(path)
+    try:
+        return _minimal_toml.load(path, display_path=CONFIG_RELATIVE_PATH, error_cls=PushError)
+    except OSError as exc:
+        raise PushError(f"cannot read {CONFIG_RELATIVE_PATH}: {exc}") from exc
 
 
 def validate_remote_name(remote: str) -> None:

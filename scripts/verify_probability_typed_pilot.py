@@ -24,6 +24,27 @@ class PatternCheck:
 
 
 FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
+REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE = re.compile(
+    r"<\s*(?P<type>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+    r"\s+as\s+AmbiguousIfDefault\s*<\s*_\s*>\s*>\s*::\s*_check"
+)
+TYPE_ALIAS_RE = re.compile(
+    r"\btype\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?P<target>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE = re.compile(
+    r"\bimpl\b[^{};]*?\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
+    r"Default\s+for\s+"
+    r"(?P<type>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\b",
+    re.DOTALL,
+)
+TYPE_WITH_ATTRS_RE = re.compile(
+    r"(?P<attrs>(?:\s*#\s*\[[^\]]*\]\s*)*)"
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum)\s+"
+    r"(?P<type>[A-Za-z_][A-Za-z0-9_]*)\b",
+    re.DOTALL,
+)
+DEFAULT_DERIVE_ATTR_RE = re.compile(r"\bderive\s*\([^)]*\bDefault\b", re.DOTALL)
 FINANCIAL_VALUE_MARKER_TOKEN_PATTERN = re.compile(
     r"\b(?:FinancialValue|financial_value_private|Sealed)\b"
 )
@@ -67,8 +88,10 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
     "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
 )
 # Intentional global tripwire: any new `Default` token under src/ must be
-# reviewed before allowlisting. Narrowing this to registered-type-adjacent
-# lines would make cfg-inactive/off-file aliases depend on prediction again.
+# reviewed before allowlisting. This avoids predicting macro expansion or
+# cfg-active surfaces; the boundary is the exact current normalized Rust token
+# inventory after the shared scanner strips comments and literals.
+# Duplicate entries are intentional: Counter equality enforces multiplicity.
 FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
     ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),
@@ -493,37 +516,103 @@ def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
     ]
 
 
-def verify_financial_value_default_token_allowlist(root: Path) -> list[str]:
-    actual = Counter(
-        (relative_path, line)
+def verify_financial_value_default_token_allowlist(
+    root: Path,
+    expected_allowlist: tuple[tuple[str, str], ...] = FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST,
+) -> list[str]:
+    actual_counter = Counter(
+        (relative_path, normalize_source_line(line))
         for relative_path, source in rust_sources(root)
-        for line in normalized_source_lines(source)
+        for line in source.splitlines()
         if "Default" in line
     )
-    expected = Counter(
-        (relative_path, line)
-        for relative_path, line in FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST
-        if (root / relative_path).exists()
-    )
-    if actual == expected:
+    expected_counter = Counter(expected_allowlist)
+    if actual_counter == expected_counter:
         return []
 
-    missing = sorted((expected - actual).elements())
-    extra = sorted((actual - expected).elements())
+    missing = sorted((expected_counter - actual_counter).elements())
+    extra = sorted((actual_counter - expected_counter).elements())
     details = []
     if missing:
-        details.append(f"missing {missing!r}")
+        details.append(f"missing expected Default token lines {missing!r}")
     if extra:
-        details.append(f"extra {extra!r}")
+        details.append(f"unexpected Default token lines {extra!r}")
     guidance = (
         "Add unrelated source lines containing the text Default to "
         "FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST after review. Do not "
         "allowlist Default for Probability, UsableMu, ValidRealizedVol, "
-        "ReadyRealizedVol, or aliases of them."
+        "or ReadyRealizedVol."
     )
     return [
         f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}. {guidance}"
     ]
+
+
+def path_type_name(type_name: str) -> str:
+    return re.sub(r"\s+", "", type_name).lstrip(":").split("::")[-1]
+
+
+def registered_financial_value_types(root: Path) -> set[str]:
+    source = scanner_source(root, FINANCIAL_VALUE_OWNER_MODULE)
+    return {
+        path_type_name(match.group("type"))
+        for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE.finditer(source)
+    }
+
+
+def registered_financial_value_aliases(root: Path, registered_types: set[str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for _, source in rust_sources(root):
+        for match in TYPE_ALIAS_RE.finditer(source):
+            aliases[match.group("alias")] = path_type_name(match.group("target"))
+
+    resolved: dict[str, str] = {}
+    for alias in aliases:
+        seen: set[str] = set()
+        current = alias
+        while current in aliases and current not in seen:
+            seen.add(current)
+            current = aliases[current]
+        if current in registered_types:
+            resolved[alias] = current
+    return resolved
+
+
+def registered_type_for_token(
+    token: str,
+    registered_types: set[str],
+    registered_aliases: dict[str, str],
+) -> str | None:
+    target = path_type_name(token)
+    return target if target in registered_types else registered_aliases.get(target)
+
+
+# Direct-source diagnostic only. Do not model macro expansion here; the exact
+# Default-token allowlist above is the fail-closed boundary for generated forms.
+def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
+    findings = []
+    registered_types = registered_financial_value_types(root)
+    if not registered_types:
+        return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
+    registered_aliases = registered_financial_value_aliases(root, registered_types)
+    source_items = tuple(rust_sources(root))
+    for relative_path, source in source_items:
+        for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):
+            registered_type = registered_type_for_token(match.group("type"), registered_types, registered_aliases)
+            if registered_type is not None:
+                findings.append(
+                    f"{relative_path}: registered FinancialValue Default impl/derive "
+                    f"for {registered_type} is forbidden"
+                )
+        for match in TYPE_WITH_ATTRS_RE.finditer(source):
+            if DEFAULT_DERIVE_ATTR_RE.search(match.group("attrs")):
+                type_name = path_type_name(match.group("type"))
+                if type_name in registered_types:
+                    findings.append(
+                        f"{relative_path}: registered FinancialValue Default impl/derive "
+                        f"for {type_name} is forbidden"
+                    )
+    return sorted(set(findings))
 
 
 def verify(root: Path) -> list[str]:
@@ -534,6 +623,7 @@ def verify(root: Path) -> list[str]:
     findings.extend(verify_financial_value_marker_allowlist(root))
     findings.extend(verify_financial_value_owner_risk_surface(root))
     findings.extend(verify_financial_value_default_token_allowlist(root))
+    findings.extend(verify_registered_financial_value_default_surface(root))
     return findings
 
 

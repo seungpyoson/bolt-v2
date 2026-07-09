@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "e080f5edc119",
+  "strategy": "manual-commit",
+  "branch": "fix/1319-build-script-rerun-existing-paths",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "build.rs",
+    "tests/build_script_git_head_rerun_paths.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e0/80f5edc119/0/metadata.json",
+      "transcript": "/e0/80f5edc119/0/full.jsonl",
+      "compact_transcript": "/e0/80f5edc119/0/transcript.jsonl",
+      "content_hash": "/e0/80f5edc119/0/content_hash.txt",
+      "prompt": "/e0/80f5edc119/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14288,
+    "cache_creation_tokens": 208434,
+    "cache_read_tokens": 30250194,
+    "output_tokens": 112838,
+    "api_call_count": 77
+  }
+}

@@ -98,3 +98,68 @@ Adversarial review PR #1302 — Warm debug lane compile cache
   - just ci-lint-workflow passed outside sandbox, 28 suites.
 
   Pay special attention to regressions introduced by moving retry from YAML into rust_verification.py.
+
+---
+
+Adversarial review PR #1302 — Warm debug lane compile cache
+
+  Repo: seungpyoson/bolt-v2
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1302
+  Base SHA: ca0d9d2440caa7ecf77fb27f38eff88a7bb62e23
+  Head SHA: 635c4149bf636dc91109b4fd82c938df501c7203
+
+  Review the full PR diff, not stale earlier heads. Treat AGENTS.md as binding governance.
+
+  Scope:
+  - Shared sccache setup/stats actions.
+  - sccache location TOML ownership.
+  - sccache eligibility/trust policy.
+  - rust_verification.py compile/run split and fail-open retry behavior.
+  - CI/debug-test/rust-probe/flaky-test-smoke/flaky-test-detection workflow wiring.
+  - Source-fence/no-config-retype governance changes.
+
+  Known latest status:
+  - PR is draft and mergeable.
+  - No failing checks at current head.
+  - Draft PR skips full merge-proof Rust gates by policy.
+  - source-fence-static now passes remotely at head.
+  - Local verification passed:
+    - python3 scripts/verify_no_config_retype.py
+    - python3 scripts/test_verify_no_config_retype.py
+    - python3 scripts/test_sccache_eligibility.py
+    - python3 scripts/verify_ci_workflow_hygiene.py
+    - python3 scripts/test_verify_ci_workflow_hygiene.py
+    - just source-fence-static
+    - git diff --check
+
+  Review goals:
+  1. Can sccache/AWS/config/server failures still fail debug/probe/flaky lanes when underlying compile/
+  tests would pass?
+  2. Can fail-open retry mask real/flaky test failures?
+  3. Is every retry-wrapped command structurally compile-only?
+  4. Are nextest compile-preflight args valid for all affected lanes, especially --no-fail-fast,
+  --partition, filters, and BVS cases?
+  5. Does retry success propagate the correct wrapper/env state into the later test phase?
+  6. Are sccache stats emitted after compile/run with if: always() everywhere?
+  7. Is read/write cache trust policy single-owned and restricted to trusted main push/dispatch?
+  8. Is ci/sccache-location.toml truly the single runtime sccache location source, with no ungoverned
+  hardcoded bucket/region/prefix drift?
+  9. Did the source-fence/no-config-retype fix preserve governance without hiding accidental config
+  retypes?
+  10. Do flaky-test-smoke and flaky-test-detection fail/report correctly while preserving Mergify upload
+  and avoiding missing-JUnit secondary errors?
+  11. Are verifier assertions structural/load-bearing, not spoofable by comments, echo strings, same-line
+  command chaining, or dead text?
+  12. What exact-head runtime evidence is still missing before ready-for-review?
+
+  Finding format:
+  - Severity: Blocker / High / Medium / Low
+  - File/line
+  - Concrete failure mode
+  - Why it matters
+  - Minimal systematic fix
+  - Evidence or reproduction command
+
+  Do not raise speculative issues without a plausible failure path. Do not re-litigate bugs from older
+  heads unless you confirm they still exist at 635c4149. If no actionable code findings remain, say that
+  clearly and list only residual evidence gaps.

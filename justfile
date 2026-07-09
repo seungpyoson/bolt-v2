@@ -76,6 +76,10 @@ verify-bolt-v3-poison-lock-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_poison_lock_fence.py
     python3 scripts/verify_bolt_v3_poison_lock_fence.py
 
+verify-bolt-v3-no-exit-market-command: check-workspace
+    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/verify_bolt_v3_no_exit_market_command.py
+
 test-verify-runtime-capture-yaml: check-workspace
     python3 scripts/test_verify_runtime_capture_yaml.py
 

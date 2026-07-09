@@ -270,6 +270,8 @@ def validate_policy_data(data: dict[str, Any]) -> None:
         raise PolicyError("commands.test.compile_args must run cargo nextest run")
     if not nextest_run_compile_args_are_safe(test_compile_args, allow_separator=False):
         raise PolicyError("commands.test.compile_args must be compile-only")
+    if cargo_target_routing_override(test_compile_args) is not None:
+        raise PolicyError("commands.test.compile_args must not override Cargo target routing")
     for name in ("clippy", "build"):
         command = commands.get(name)
         if not isinstance(command, dict):
@@ -3207,28 +3209,54 @@ NEXTEST_RUN_ONLY_FLAGS = frozenset(
         "--fail-fast",
         "--ff",
         "--nff",
+        "--cargo-quiet",
+        "--cargo-verbose",
         "--hide-progress-bar",
+        "--ignore-default-filter",
+        "--no-input-handler",
+        "--no-output-indent",
+        "--no-pager",
         "--no-capture",
         "--no-fail-fast",
+        "--override-version-check",
+        "--timings",
+        "--verbose",
     }
 )
 NEXTEST_RUN_ONLY_VALUE_OPTIONS = frozenset(
     {
         "-j",
+        "--build-dir-remap",
         "--color",
+        "--cargo-message-format",
+        "--cargo-metadata",
+        "--config",
         "--debugger",
         "--failure-output",
         "--final-status-level",
+        "--flaky-result",
+        "--future-incompat-report",
         "--jobs",
         "--max-fail",
+        "--max-progress-running",
         "--message-format",
+        "--message-format-version",
         "--no-tests",
+        "--platform-filter",
+        "--rerun",
         "--retries",
         "--run-ignored",
+        "--show-progress",
         "--status-level",
+        "--stress-count",
+        "--stress-duration",
         "--success-output",
+        "--target-dir-remap",
         "--test-threads",
+        "--tool-config-file",
         "--tracer",
+        "--unit-graph",
+        "--user-config-file",
     }
 )
 NEXTEST_UNSUPPORTED_COMPILE_VALUE_OPTIONS = frozenset({"--archive-file"})
@@ -3248,13 +3276,15 @@ def nextest_run_compile_preflight_plan(cargo_args: list[str]) -> tuple[NextestCo
     tail = cargo_args[nextest_index + 1 :]
     separator_index = tail.index("--") if "--" in tail else len(tail)
     option_tail = tail[:separator_index]
-    if any(token == "--no-run" for token in option_tail):
-        return NextestCompilePreflight.NO_SPLIT, None
     if any(token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail):
         return NextestCompilePreflight.NO_SPLIT, None
-    compile_option_tail = nextest_compile_option_tail(option_tail)
+    has_no_run = any(token == "--no-run" for token in option_tail)
+    tail_without_no_run = [token for token in option_tail if token != "--no-run"]
+    compile_option_tail = nextest_compile_option_tail(tail_without_no_run)
     if compile_option_tail is None:
         return NextestCompilePreflight.UNSUPPORTED, None
+    if has_no_run:
+        return NextestCompilePreflight.NO_SPLIT, None
     return NextestCompilePreflight.SPLIT, cargo_args[: nextest_index + 1] + compile_option_tail + ["--no-run"]
 
 
@@ -3264,24 +3294,24 @@ def nextest_run_compile_preflight_args(cargo_args: list[str]) -> list[str] | Non
 
 
 def nextest_compile_invocation_tail_plan(command_tail: list[str]) -> tuple[NextestCompilePreflight, list[str] | None]:
-    if nextest_tail_disables_compile_preflight(command_tail):
+    if nextest_tail_uses_archive_file(command_tail):
         return NextestCompilePreflight.NO_SPLIT, None
     separator_index = command_tail.index("--") if "--" in command_tail else len(command_tail)
-    compile_tail = nextest_compile_option_tail(command_tail[:separator_index])
+    option_tail = command_tail[:separator_index]
+    has_no_run = any(token == "--no-run" for token in option_tail)
+    tail_without_no_run = [token for token in option_tail if token != "--no-run"]
+    compile_tail = nextest_compile_option_tail(tail_without_no_run)
     if compile_tail is None:
         return NextestCompilePreflight.UNSUPPORTED, None
+    if has_no_run:
+        return NextestCompilePreflight.NO_SPLIT, None
     return NextestCompilePreflight.SPLIT, compile_tail
 
 
-def nextest_tail_disables_compile_preflight(command_tail: list[str]) -> bool:
+def nextest_tail_uses_archive_file(command_tail: list[str]) -> bool:
     separator_index = command_tail.index("--") if "--" in command_tail else len(command_tail)
     option_tail = command_tail[:separator_index]
-    return any(
-        token == "--no-run"
-        or token == "--archive-file"
-        or token.startswith("--archive-file=")
-        for token in option_tail
-    )
+    return any(token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail)
 
 
 def nextest_compile_option_tail(option_tail: list[str]) -> list[str] | None:

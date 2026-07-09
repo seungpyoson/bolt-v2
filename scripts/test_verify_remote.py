@@ -69,6 +69,7 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
 
             [commands.test]
             cargo_args = ["nextest", "run", "--locked"]
+            compile_args = ["nextest", "run", "--locked", "--no-run"]
 
             [commands.clippy]
             recipe = "managed-clippy"

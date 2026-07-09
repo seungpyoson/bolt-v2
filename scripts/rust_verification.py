@@ -249,6 +249,20 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     nextest_subcommand = nextest_subcommand_with_index(test_cargo_args[test_subcommand[0] + 1 :])
     if nextest_subcommand is None or nextest_subcommand[1] != "run":
         raise PolicyError("commands.test.cargo_args must run cargo nextest run")
+    test_compile_args = test_command.get("compile_args")
+    if not isinstance(test_compile_args, list) or not all(
+        isinstance(token, str) and token and "\x00" not in token and "\n" not in token
+        for token in test_compile_args
+    ):
+        raise PolicyError("commands.test.compile_args must be a non-empty string array")
+    compile_subcommand = cargo_subcommand_with_index(test_compile_args)
+    if compile_subcommand is None or compile_subcommand[1] != "nextest":
+        raise PolicyError("commands.test.compile_args must run cargo nextest")
+    compile_nextest_subcommand = nextest_subcommand_with_index(test_compile_args[compile_subcommand[0] + 1 :])
+    if compile_nextest_subcommand is None or compile_nextest_subcommand[1] != "run":
+        raise PolicyError("commands.test.compile_args must run cargo nextest run")
+    if not cargo_args_are_compile_only(test_compile_args):
+        raise PolicyError("commands.test.compile_args must be compile-only")
     for name in ("clippy", "build"):
         command = commands.get(name)
         if not isinstance(command, dict):
@@ -3157,24 +3171,69 @@ def nextest_run_compile_preflight_args(cargo_args: list[str]) -> list[str] | Non
     if any(token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail):
         return None
     compile_option_tail = nextest_compile_option_tail(option_tail)
-    return cargo_args[: nextest_index + 1] + compile_option_tail + ["--no-run"] + tail[separator_index:]
+    return cargo_args[: nextest_index + 1] + compile_option_tail + ["--no-run"]
+
+
+def nextest_compile_invocation_tail(command_tail: list[str]) -> list[str]:
+    separator_index = command_tail.index("--") if "--" in command_tail else len(command_tail)
+    return nextest_compile_option_tail(command_tail[:separator_index])
 
 
 def nextest_compile_option_tail(option_tail: list[str]) -> list[str]:
-    run_only_flags = {"--no-fail-fast", "--nff", "--fail-fast"}
-    value_run_only_flags = {"--max-fail"}
+    compile_flags = {
+        "--all",
+        "--all-features",
+        "--all-targets",
+        "--benches",
+        "--bins",
+        "--examples",
+        "--frozen",
+        "--lib",
+        "--locked",
+        "--no-default-features",
+        "--offline",
+        "--tests",
+        "--workspace",
+    }
+    compile_value_options = {
+        "-E",
+        "-p",
+        "--config-file",
+        "--exclude",
+        "--expr",
+        "--features",
+        "--manifest-path",
+        "--package",
+        "--partition",
+        "--profile",
+        "--target",
+        "--target-dir",
+        "--test",
+    }
     compile_tail: list[str] = []
     index = 0
     while index < len(option_tail):
         token = option_tail[index]
-        if token in run_only_flags:
+        if token in compile_flags:
+            compile_tail.append(token)
             index += 1
             continue
-        if token in value_run_only_flags:
-            index += 2
+        if token in compile_value_options:
+            if index + 1 < len(option_tail):
+                compile_tail.extend((token, option_tail[index + 1]))
+                index += 2
+            else:
+                index += 1
             continue
-        if any(token.startswith(f"{flag}=") for flag in value_run_only_flags):
+        if any(token.startswith(f"{flag}=") for flag in compile_value_options if flag.startswith("--")):
+            compile_tail.append(token)
             index += 1
+            continue
+        if token.startswith("-"):
+            if "=" not in token and index + 1 < len(option_tail) and not option_tail[index + 1].startswith("-"):
+                index += 2
+            else:
+                index += 1
             continue
         compile_tail.append(token)
         index += 1
@@ -3225,13 +3284,15 @@ def run_cargo_with_remote_cache_fail_open(
     repo: pathlib.Path,
     policy: dict[str, Any],
     cargo_args: list[str],
+    *,
+    compile_args: list[str] | None = None,
 ) -> int:
     env = managed_env(repo, policy)
     retry_env = managed_env_without_remote_compile_cache(repo, policy)
-    compile_args = nextest_run_compile_preflight_args(cargo_args)
-    if compile_args is not None and "RUSTC_WRAPPER" in env:
+    preflight_args = compile_args if compile_args is not None else nextest_run_compile_preflight_args(cargo_args)
+    if preflight_args is not None and "RUSTC_WRAPPER" in env:
         compile_rc, _compile_env = run_compile_with_remote_cache_fail_open(
-            ["cargo", *compile_args],
+            ["cargo", *preflight_args],
             repo=repo,
             env=env,
             retry_env=retry_env,
@@ -4866,8 +4927,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     command_tail = ["--", *args.args] if test_separator else args.args
     if args.command == "test":
         command_cargo_args = list(command["cargo_args"]) + command_tail
+        command_compile_args = list(command["compile_args"]) + nextest_compile_invocation_tail(command_tail)
     else:
         command_cargo_args = []
+        command_compile_args = None
     override_args = command_cargo_args if args.command == "test" else args.args
     override = cargo_target_routing_override(override_args)
     if override is not None:
@@ -4882,7 +4945,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.command == "test":
         try:
             with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(command_cargo_args)):
-                return run_cargo_with_remote_cache_fail_open(repo, policy, command_cargo_args)
+                return run_cargo_with_remote_cache_fail_open(repo, policy, command_cargo_args, compile_args=command_compile_args)
         except CacheLockTimeoutError as exc:
             return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
     run_exclusive = run_args_need_exclusive_cache_lock(

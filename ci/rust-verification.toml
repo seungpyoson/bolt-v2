@@ -6,6 +6,7 @@ target_namespace = "bolt-v2"
 
 [commands.test]
 cargo_args = ["nextest", "run", "--locked"]
+compile_args = ["nextest", "run", "--locked", "--no-run"]
 
 [commands.clippy]
 recipe = "managed-clippy"

@@ -1423,12 +1423,9 @@ def assert_managed_test_splits_nextest_run_inside_owner() -> None:
         "nextest",
         "run",
         "--locked",
+        "--no-run",
         "--config-file",
         "nextest.toml",
-        "--no-run",
-        "--",
-        "--skip",
-        "slow_case",
     ]
     expected_test = [
         "cargo",
@@ -1445,6 +1442,61 @@ def assert_managed_test_splits_nextest_run_inside_owner() -> None:
         raise AssertionError(run_calls)
 
 
+def assert_managed_test_uses_configured_compile_args() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[list[str], str | None]] = []
+    policy_text = remote_compile_policy_text().replace(
+        '"--locked", "--no-run"', '"--locked", "--workspace", "--no-run"', 1
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo, policy_text=policy_text)
+        originals = install_owner_process_spies(owner, calls, [])
+        try:
+            with _patched_environ(
+                {
+                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+                    "GITHUB_ACTIONS": "true",
+                    "SCCACHE_PATH": "/opt/sccache/sccache",
+                }
+            ):
+                result = owner.cmd_run(
+                    argparse.Namespace(
+                        repo=str(repo),
+                        command="test",
+                        args=["--config-file", "nextest.toml", "--ff"],
+                        args_separator=False,
+                    )
+                )
+        finally:
+            restore_owner_process_spies(owner, originals)
+    if result != 0:
+        raise AssertionError(result)
+    run_calls = [call for call in calls if call[0][0] == "cargo"]
+    expected_compile = [
+        "cargo",
+        "nextest",
+        "run",
+        "--locked",
+        "--workspace",
+        "--no-run",
+        "--config-file",
+        "nextest.toml",
+    ]
+    expected_test = [
+        "cargo",
+        "nextest",
+        "run",
+        "--locked",
+        "--config-file",
+        "nextest.toml",
+        "--ff",
+    ]
+    if run_calls != [(expected_compile, "/opt/sccache/sccache"), (expected_test, None)]:
+        raise AssertionError(run_calls)
+
+
 def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
     owner = load_owner_module()
     run_args = [
@@ -1455,6 +1507,7 @@ def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
         "nextest.toml",
         "--no-fail-fast",
         "--fail-fast",
+        "--ff",
         "--nff",
         "--max-fail",
         "1",
@@ -1958,6 +2011,7 @@ def main() -> int:
     assert_managed_remote_compile_cache_env_fails_open()
     assert_managed_env_scrubs_then_reinjects_wrapper()
     assert_managed_test_splits_nextest_run_inside_owner()
+    assert_managed_test_uses_configured_compile_args()
     assert_nextest_compile_preflight_omits_run_only_flags()
     assert_nextest_compile_failure_retries_without_retrying_tests()
     assert_direct_nextest_run_splits_inside_owner()

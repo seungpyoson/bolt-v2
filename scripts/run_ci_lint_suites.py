@@ -35,6 +35,10 @@ class SuiteResult:
 
 CI_LINT_SUITES = (
     CiLintSuite("ci-workflow-hygiene-tests", ("python3", "scripts/test_verify_ci_workflow_hygiene.py")),
+    CiLintSuite("cargo-command-analysis", ("python3", "scripts/test_cargo_command_analysis.py")),
+    CiLintSuite("shell-dataflow-analysis", ("python3", "scripts/test_shell_dataflow_analysis.py")),
+    CiLintSuite("governance-diff-analysis", ("python3", "scripts/test_governance_diff_analysis.py")),
+    CiLintSuite("workflow-expression-analysis", ("python3", "scripts/test_workflow_expression_analysis.py")),
     CiLintSuite("ci-test-manifest", ("python3", "scripts/test_ci_test_manifest.py")),
     CiLintSuite("cancel-obsolete-dispatch-runs", ("python3", "scripts/test_cancel_obsolete_dispatch_runs.py")),
     CiLintSuite("config-validators", ("python3", "scripts/test_config_validators.py")),

@@ -23,12 +23,6 @@ class PatternCheck:
     description: str
 
 
-@dataclass(frozen=True)
-class MacroArm:
-    argument_fragments: tuple[str, ...]
-    target_indexes: tuple[int, ...]
-
-
 FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
 REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE = re.compile(
     r"<\s*(?P<type>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
@@ -37,17 +31,6 @@ REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE = re.compile(
 TYPE_ALIAS_RE = re.compile(
     r"\btype\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"(?P<target>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*;"
-)
-RUST_TYPE_PATH_TOKEN_RE = re.compile(
-    r"(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*"
-)
-MACRO_RULES_START_RE = re.compile(r"\bmacro_rules!\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
-MACRO_MATCHER_VAR_RE = re.compile(
-    r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<fragment>[A-Za-z_][A-Za-z0-9_]*)"
-)
-DEFAULT_IMPL_TARGET_VAR_RE = re.compile(
-    r"\bimpl\b(?s:.*?)\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
-    r"Default\s+for\s+\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
 )
 REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE = re.compile(
     r"\bimpl\b[^{};]*?\b(?:(?:::)?(?:std|core)\s*::\s*default\s*::\s*)?"
@@ -103,6 +86,72 @@ FINANCIAL_VALUE_OWNER_PRODUCTION_RISK_LINE_ALLOWLIST = (
     "let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;",
     "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
     "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
+)
+# Intentional global tripwire: any new `Default` token under src/ must be
+# reviewed before allowlisting. This avoids predicting macro expansion or
+# cfg-active surfaces; the boundary is the exact current normalized Rust token
+# inventory after the shared scanner strips comments and literals.
+FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST = (
+    ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Default)]"),
+    ("src/bolt_v3_live_node/risk_admission_loss.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_live_node/tests/data_client_probe.rs", "clients: Default::default(),"),
+    ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
+    ("src/bolt_v3_live_node/tests/transport_scope.rs", "clients: Default::default(),"),
+    ("src/bolt_v3_numeric.rs", "trait AmbiguousIfDefault<A> {"),
+    ("src/bolt_v3_numeric.rs", "impl<T: ?Sized> AmbiguousIfDefault<()> for T {}"),
+    ("src/bolt_v3_numeric.rs", "impl<T: Default> AmbiguousIfDefault<Invalid> for T {}"),
+    ("src/bolt_v3_numeric.rs", "let _ = <Probability as AmbiguousIfDefault<_>>::_check;"),
+    (
+        "src/bolt_v3_numeric.rs",
+        "let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;",
+    ),
+    (
+        "src/bolt_v3_numeric.rs",
+        "let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;",
+    ),
+    ("src/bolt_v3_order_execution.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_order_execution.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_submit_admission.rs", "#[derive(Debug, Default)]"),
+    ("src/bolt_v3_submit_admission.rs", "#[derive(Default)]"),
+    ("src/shadow_pnl.rs", "#[derive(Debug, Clone, Default)]"),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs",
+        "assert_eq!(order.trigger_type(), Some(TriggerType::Default));",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+        "#[derive(Debug, Default)]",
+    ),
+    (
+        "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs",
+        "#[derive(Default)]",
+    ),
+    ("src/strategies/registry.rs", "..Default::default()"),
+    ("src/strategies/registry.rs", "let raw = toml::Value::Table(Default::default());"),
 )
 FINANCIAL_VALUE_MARKER_ALLOWLIST = (
     ("src/bolt_v3_numeric.rs", "mod financial_value_private {"),
@@ -466,6 +515,38 @@ def verify_financial_value_owner_risk_surface(root: Path) -> list[str]:
     ]
 
 
+def verify_financial_value_default_token_allowlist(
+    root: Path,
+    expected_allowlist: tuple[tuple[str, str], ...] = FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST,
+) -> list[str]:
+    actual_counter = Counter(
+        (relative_path, line.strip())
+        for relative_path, source in rust_sources(root)
+        for line in source.splitlines()
+        if "Default" in line
+    )
+    expected_counter = Counter(expected_allowlist)
+    if actual_counter == expected_counter:
+        return []
+
+    missing = sorted((expected_counter - actual_counter).elements())
+    extra = sorted((actual_counter - expected_counter).elements())
+    details = []
+    if missing:
+        details.append(f"missing expected Default token lines {missing!r}")
+    if extra:
+        details.append(f"unexpected Default token lines {extra!r}")
+    guidance = (
+        "Add unrelated source lines containing the text Default to "
+        "FINANCIAL_VALUE_DEFAULT_TOKEN_ALLOWLIST after review. Do not "
+        "allowlist Default for Probability, UsableMu, ValidRealizedVol, "
+        "or ReadyRealizedVol."
+    )
+    return [
+        f"src/: FinancialValue Default token allowlist mismatch: {', '.join(details)}. {guidance}"
+    ]
+
+
 def path_type_name(type_name: str) -> str:
     return re.sub(r"\s+", "", type_name).lstrip(":").split("::")[-1]
 
@@ -496,179 +577,6 @@ def registered_financial_value_aliases(root: Path, registered_types: set[str]) -
     return resolved
 
 
-def balanced_span(source: str, start: int, open_char: str, close_char: str) -> tuple[int, int] | None:
-    depth = 0
-    for index in range(start, len(source)):
-        char = source[index]
-        if char == open_char:
-            depth += 1
-        elif char == close_char:
-            depth -= 1
-            if depth == 0:
-                return start, index + 1
-    return None
-
-
-def macro_matcher_variables(body: str) -> list[str]:
-    variables: list[str] = []
-    seen: set[str] = set()
-    for match in MACRO_MATCHER_VAR_RE.finditer(body):
-        name = match.group("name")
-        if name not in seen:
-            seen.add(name)
-            variables.append(name)
-    return variables
-
-
-def macro_matcher_fragments(body: str) -> list[str]:
-    return [match.group("fragment") for match in MACRO_MATCHER_VAR_RE.finditer(body)]
-
-
-def macro_rule_arms(body: str) -> list[tuple[str, str]]:
-    inner = body[1:-1] if body.startswith("{") and body.endswith("}") else body
-    close_by_open = {"(": ")", "[": "]", "{": "}"}
-    arms: list[tuple[str, str]] = []
-    index = 0
-    while index < len(inner):
-        while index < len(inner) and (inner[index].isspace() or inner[index] == ";"):
-            index += 1
-        if index >= len(inner):
-            break
-        open_char = inner[index]
-        close_char = close_by_open.get(open_char)
-        if close_char is None:
-            index += 1
-            continue
-        matcher_span = balanced_span(inner, index, open_char, close_char)
-        if matcher_span is None:
-            break
-        matcher_text = inner[matcher_span[0] + 1:matcher_span[1] - 1]
-        index = matcher_span[1]
-        while index < len(inner) and inner[index].isspace():
-            index += 1
-        if not inner.startswith("=>", index):
-            continue
-        index += 2
-        while index < len(inner) and inner[index].isspace():
-            index += 1
-        if index >= len(inner):
-            break
-        open_char = inner[index]
-        close_char = close_by_open.get(open_char)
-        if close_char is None:
-            index += 1
-            continue
-        expansion_span = balanced_span(inner, index, open_char, close_char)
-        if expansion_span is None:
-            break
-        expansion_text = inner[expansion_span[0] + 1:expansion_span[1] - 1]
-        arms.append((matcher_text, expansion_text))
-        index = expansion_span[1]
-    return arms
-
-
-def default_generating_macro_arms(source: str) -> dict[str, tuple[MacroArm, ...]]:
-    macros: dict[str, tuple[MacroArm, ...]] = {}
-    for match in MACRO_RULES_START_RE.finditer(source):
-        span = balanced_span(source, match.end() - 1, "{", "}")
-        if span is None:
-            continue
-        body = source[span[0]:span[1]]
-        arms: list[MacroArm] = []
-        has_default_arm = False
-        for matcher_text, expansion_text in macro_rule_arms(body):
-            matcher_variables = macro_matcher_variables(matcher_text)
-            matcher_fragments = macro_matcher_fragments(matcher_text)
-            target_indexes = sorted(
-                {
-                    matcher_variables.index(target.group("name"))
-                    for target in DEFAULT_IMPL_TARGET_VAR_RE.finditer(expansion_text)
-                    if target.group("name") in matcher_variables
-                }
-            )
-            has_default_arm = has_default_arm or bool(target_indexes)
-            arms.append(
-                MacroArm(
-                    argument_fragments=tuple(matcher_fragments),
-                    target_indexes=tuple(target_indexes),
-                )
-            )
-        if has_default_arm:
-            macros[match.group("name")] = tuple(arms)
-    return macros
-
-
-def macro_argument_matches_fragment(argument: str, fragment: str) -> bool:
-    argument = argument.strip()
-    if not argument:
-        return False
-    if fragment == "ident":
-        return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument) is not None
-    if fragment == "literal":
-        return (
-            re.fullmatch(r"[0-9][A-Za-z0-9_]*", argument) is not None
-            or (len(argument) >= 2 and argument[0] == argument[-1] and argument[0] in {'"', "'"})
-        )
-    if fragment in {"ty", "path", "expr", "tt", "meta", "pat", "pat_param", "block", "item", "vis", "lifetime"}:
-        return True
-    return True
-
-
-def macro_invocation_matches_arm(argument_chunks: list[str], arm: MacroArm) -> bool:
-    if len(argument_chunks) != len(arm.argument_fragments):
-        return False
-    return all(
-        macro_argument_matches_fragment(argument, fragment)
-        for argument, fragment in zip(argument_chunks, arm.argument_fragments, strict=True)
-    )
-
-
-def macro_invocation_arguments(source: str, macro_name: str) -> list[str]:
-    invocation_re = re.compile(rf"\b{re.escape(macro_name)}\s*!\s*(?P<open>[\(\{{\[])")
-    close_by_open = {"(": ")", "{": "}", "[": "]"}
-    arguments: list[str] = []
-    for match in invocation_re.finditer(source):
-        open_char = match.group("open")
-        close_char = close_by_open[open_char]
-        span = balanced_span(source, match.end() - 1, open_char, close_char)
-        if span is not None:
-            arguments.append(source[span[0] + 1:span[1] - 1])
-    return arguments
-
-
-def split_macro_arguments(arguments: str) -> list[str]:
-    chunks: list[str] = []
-    start = 0
-    round_depth = square_depth = brace_depth = angle_depth = 0
-    for index, char in enumerate(arguments):
-        if char == "(":
-            round_depth += 1
-        elif char == ")" and round_depth:
-            round_depth -= 1
-        elif char == "[":
-            square_depth += 1
-        elif char == "]" and square_depth:
-            square_depth -= 1
-        elif char == "{":
-            brace_depth += 1
-        elif char == "}" and brace_depth:
-            brace_depth -= 1
-        elif char == "<":
-            angle_depth += 1
-        elif char == ">" and angle_depth:
-            angle_depth -= 1
-        elif (
-            char == ","
-            and round_depth == square_depth == brace_depth == angle_depth == 0
-        ):
-            chunks.append(arguments[start:index].strip())
-            start = index + 1
-    tail = arguments[start:].strip()
-    if tail:
-        chunks.append(tail)
-    return chunks
-
-
 def registered_type_for_token(
     token: str,
     registered_types: set[str],
@@ -678,6 +586,8 @@ def registered_type_for_token(
     return target if target in registered_types else registered_aliases.get(target)
 
 
+# Direct-source diagnostic only. Do not model macro expansion here; the exact
+# Default-token allowlist above is the fail-closed boundary for generated forms.
 def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
     findings = []
     registered_types = registered_financial_value_types(root)
@@ -685,10 +595,6 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
         return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
     registered_aliases = registered_financial_value_aliases(root, registered_types)
     source_items = tuple(rust_sources(root))
-    default_macro_arms: dict[str, list[MacroArm]] = {}
-    for _, source in source_items:
-        for macro_name, arms in default_generating_macro_arms(source).items():
-            default_macro_arms.setdefault(macro_name, []).extend(arms)
     for relative_path, source in source_items:
         for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):
             registered_type = registered_type_for_token(match.group("type"), registered_types, registered_aliases)
@@ -705,25 +611,6 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
                         f"{relative_path}: registered FinancialValue Default impl/derive "
                         f"for {type_name} is forbidden"
                     )
-        for macro_name, arms in default_macro_arms.items():
-            for arguments in macro_invocation_arguments(source, macro_name):
-                argument_chunks = split_macro_arguments(arguments)
-                for arm in arms:
-                    if not macro_invocation_matches_arm(argument_chunks, arm):
-                        continue
-                    for target_index in arm.target_indexes:
-                        for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(argument_chunks[target_index]):
-                            registered_type = registered_type_for_token(
-                                token_match.group(0),
-                                registered_types,
-                                registered_aliases,
-                            )
-                            if registered_type is not None:
-                                findings.append(
-                                    f"{relative_path}: registered FinancialValue Default impl/derive "
-                                    f"for {registered_type} is forbidden"
-                                )
-                    break
     return sorted(set(findings))
 
 
@@ -734,6 +621,7 @@ def verify(root: Path) -> list[str]:
     findings.extend(present_forbidden(root, FORBIDDEN_PATTERNS))
     findings.extend(verify_financial_value_marker_allowlist(root))
     findings.extend(verify_financial_value_owner_risk_surface(root))
+    findings.extend(verify_financial_value_default_token_allowlist(root))
     findings.extend(verify_registered_financial_value_default_surface(root))
     return findings
 

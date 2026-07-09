@@ -113,6 +113,48 @@ impl ReadyRealizedVol {
     pub fn get(self) -> f64 { self.0.get() }
 }
 """,
+        "src/bolt_v3_live_node/risk_admission_loss.rs": """
+#[derive(Default)]
+#[derive(Debug, Default)]
+""",
+        "src/bolt_v3_live_node/tests/data_client_probe.rs": """
+clients: Default::default(),
+""",
+        "src/bolt_v3_live_node/tests/transport_scope.rs": """
+clients: Default::default(),
+clients: Default::default(),
+""",
+        "src/bolt_v3_order_execution.rs": """
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+""",
+        "src/bolt_v3_submit_admission.rs": """
+#[derive(Debug, Default)]
+#[derive(Default)]
+""",
+        "src/shadow_pnl.rs": """
+#[derive(Debug, Clone, Default)]
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs": """
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs": """
+assert_eq!(order.trigger_type(), Some(TriggerType::Default));
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs": """
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs": """
+#[derive(Default)]
+""",
+        "src/strategies/registry.rs": """
+..Default::default()
+let raw = toml::Value::Table(Default::default());
+""",
         "src/bolt_v3_market_families/mod.rs": """
 pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<Probability>,
 pub fn fair_probability_up_for_family(family_key: &str, inputs: &FairProbabilityInputs) -> Option<Probability> { None }
@@ -500,7 +542,7 @@ def test_verify_rejects_split_financial_value_owner_use() -> None:
             raise AssertionError(f"expected split owner use finding, got {findings!r}")
 
 
-def test_verify_accepts_unrelated_default_derive() -> None:
+def test_registered_default_surface_accepts_unrelated_default_derive() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         write_sources(
@@ -514,9 +556,70 @@ struct LocalFixtureState {
 """,
             },
         )
-        findings = VERIFIER.verify(root)
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
         if findings:
-            raise AssertionError(f"unrelated Default derives must not trip the money fence: {findings!r}")
+            raise AssertionError(f"unrelated Default derives must not trip the registered-type fence: {findings!r}")
+
+
+def test_default_token_allowlist_rejects_macro_generated_default_surface() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/cfg_inactive_macro_default.rs": """
+macro_rules! default_many {
+    ($($target:ty),*) => {
+        $(impl Default for $target {
+            fn default() -> Self { todo!() }
+        })*
+    };
+}
+
+#[cfg(target_os = "windows")]
+default_many!(crate::bolt_v3_numeric::Probability, crate::other::NotProbability);
+""",
+            },
+        )
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=tuple(
+                (relative_path, line.strip())
+                for relative_path, source in VERIFIER.rust_sources(root)
+                for line in source.splitlines()
+                if "Default" in line and relative_path != "src/cfg_inactive_macro_default.rs"
+            ),
+        )
+        if not any("unexpected Default token lines" in finding for finding in findings):
+            raise AssertionError(f"expected Default token allowlist finding, got {findings!r}")
+
+
+def test_default_token_allowlist_accepts_reviewed_unrelated_default_surface() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/reviewed_default.rs": """
+#[derive(Default)]
+struct ReviewedFixtureState {
+    value: u64,
+}
+""",
+            },
+        )
+        expected = tuple(
+            (relative_path, line.strip())
+            for relative_path, source in VERIFIER.rust_sources(root)
+            for line in source.splitlines()
+            if "Default" in line
+        )
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=expected,
+        )
+        if findings:
+            raise AssertionError(f"reviewed Default token lines should pass: {findings!r}")
 
 
 def test_verify_rejects_cfg_gated_registered_financial_value_default_impl() -> None:
@@ -659,151 +762,6 @@ impl ReadyRealizedVol {
             for finding in findings
         ):
             raise AssertionError(f"expected multiline cfg_attr Default derive finding, got {findings!r}")
-
-
-def test_verify_rejects_cfg_inactive_macro_generated_registered_default_impl() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/cfg_inactive_macro_default.rs": """
-macro_rules! default_for {
-    ($target:ty) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-default_for!(crate::bolt_v3_numeric::Probability);
-""",
-            },
-        )
-        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
-        if not any(
-            "registered FinancialValue Default impl/derive" in finding
-            and "for Probability" in finding
-            for finding in findings
-        ):
-            raise AssertionError(f"expected macro-generated Default finding, got {findings!r}")
-
-
-def test_verify_ignores_macro_default_marker_argument() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/macro_default_marker.rs": """
-macro_rules! default_for {
-    ($marker:ident, $target:ty) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    }
-}
-
-default_for!(Probability, crate::other::NotProbability);
-""",
-            },
-        )
-        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
-        if any("registered FinancialValue Default impl/derive" in finding for finding in findings):
-            raise AssertionError(f"expected marker argument to be ignored, got {findings!r}")
-
-
-def test_verify_ignores_overloaded_macro_default_marker_argument() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/overloaded_macro_default_marker.rs": """
-macro_rules! default_for {
-    ($target:ty) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    };
-    ($marker:ident, $target:ty) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    };
-}
-
-default_for!(Probability, crate::other::NotProbability);
-""",
-            },
-        )
-        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
-        if any("registered FinancialValue Default impl/derive" in finding for finding in findings):
-            raise AssertionError(f"expected overloaded marker argument to be ignored, got {findings!r}")
-
-
-def test_verify_uses_first_matching_same_arity_macro_arm() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/same_arity_macro_default_marker.rs": """
-macro_rules! default_for {
-    ($marker:ty, $target:ident) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    };
-    ($target:ty, $factory:expr) => {
-        impl Default for $target {
-            fn default() -> Self { $factory() }
-        }
-    };
-}
-
-default_for!(Probability, NotProbability);
-""",
-            },
-        )
-        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
-        if any("registered FinancialValue Default impl/derive" in finding for finding in findings):
-            raise AssertionError(f"expected same-arity marker argument to be ignored, got {findings!r}")
-
-
-def test_verify_rejects_overloaded_cfg_inactive_macro_default_target() -> None:
-    with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        write_sources(
-            root,
-            {
-                "src/overloaded_macro_default_target.rs": """
-macro_rules! default_for {
-    ($marker:ident, $target:ty) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    };
-    ($target:ty) => {
-        impl Default for $target {
-            fn default() -> Self { todo!() }
-        }
-    };
-}
-
-#[cfg(target_os = "windows")]
-default_for!(crate::bolt_v3_numeric::Probability);
-""",
-            },
-        )
-        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
-        if not any(
-            "registered FinancialValue Default impl/derive" in finding
-            and "for Probability" in finding
-            for finding in findings
-        ):
-            raise AssertionError(f"expected overloaded macro Default target finding, got {findings!r}")
 
 
 def test_registered_default_fence_fails_closed_when_registry_is_empty() -> None:
@@ -1053,15 +1011,12 @@ def main() -> int:
         test_verify_rejects_unapproved_financial_value_owner_use,
         test_verify_rejects_visibility_qualified_financial_value_owner_use,
         test_verify_rejects_split_financial_value_owner_use,
-        test_verify_accepts_unrelated_default_derive,
+        test_registered_default_surface_accepts_unrelated_default_derive,
+        test_default_token_allowlist_rejects_macro_generated_default_surface,
+        test_default_token_allowlist_accepts_reviewed_unrelated_default_surface,
         test_verify_rejects_cfg_gated_registered_financial_value_default_impl,
         test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
         test_verify_rejects_multiline_cfg_attr_default_derive,
-        test_verify_rejects_cfg_inactive_macro_generated_registered_default_impl,
-        test_verify_ignores_macro_default_marker_argument,
-        test_verify_ignores_overloaded_macro_default_marker_argument,
-        test_verify_uses_first_matching_same_arity_macro_arm,
-        test_verify_rejects_overloaded_cfg_inactive_macro_default_target,
         test_registered_default_fence_fails_closed_when_registry_is_empty,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,

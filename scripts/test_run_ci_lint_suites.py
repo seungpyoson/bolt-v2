@@ -267,6 +267,10 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
     commands = {" ".join(suite.command) for suite in runner.CI_LINT_SUITES}
     expected = {
         "python3 scripts/test_verify_ci_workflow_hygiene.py",
+        "python3 scripts/test_cargo_command_analysis.py",
+        "python3 scripts/test_shell_dataflow_analysis.py",
+        "python3 scripts/test_governance_diff_analysis.py",
+        "python3 scripts/test_workflow_expression_analysis.py",
         "python3 scripts/test_ci_test_manifest.py",
         "python3 scripts/test_cancel_obsolete_dispatch_runs.py",
         "python3 scripts/test_config_validators.py",

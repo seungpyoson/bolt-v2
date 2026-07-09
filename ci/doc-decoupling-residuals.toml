@@ -8,8 +8,17 @@ owner_issue = "#711"
 tracking_issue = "#1027"
 read_purpose = "rename_guard"
 snippets = [
-  '"AGENTS.md",',
-  '".specify/memory/constitution.md",',
   'AGENTS.md \\',
   '.specify/memory/constitution.md \\',
+]
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/governance_diff_analysis.py"
+kind = "deliberate_guard"
+owner_issue = "#711"
+tracking_issue = "#1027"
+read_purpose = "rename_guard"
+snippets = [
+  "\"AGENTS.md\",",
+  "\".specify/memory/constitution.md\",",
 ]

@@ -20795,3 +20795,18 @@ literal = '''"input_health_transition_emitter_configured"'''
 context = '''"input_health_transition_emitter_configured",'''
 classification = "chainlink_reference_config_debug_field"
 reason = "Debug output field name that reports whether live input-health transition emission was attached before NT registration; it is not an operator runtime value."
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
+kind = "string"
+literal = '''"binary_oracle_edge_taker signal subscription derived zero requests from configured signal_instrument_id: strategy_id={}"'''
+context = '''"binary_oracle_edge_taker signal subscription derived zero requests from configured signal_instrument_id: strategy_id={}",'''
+classification = "startup_subscription_derivation_diagnostic_template"
+reason = "Fail-loud startup diagnostic for a configured signal route that cannot derive a valid NT subscription; the route value remains TOML-owned and this template does not configure runtime behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
+kind = "string"
+literal = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}"'''
+context = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",'''
+classification = "startup_subscription_derivation_diagnostic_template"
+reason = "Fail-loud startup diagnostic for a configured realized-volatility surface whose runtime context derives no subscribable feeds; surface selection remains TOML-owned and this template does not configure runtime behavior."

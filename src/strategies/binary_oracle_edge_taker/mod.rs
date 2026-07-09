@@ -7216,8 +7216,9 @@ impl DataActor for BinaryOracleEdgeTaker {
         self.bootstrap_recovery_from_cache();
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         self.refresh_selection_from_cache(now_ms);
+        self.ensure_startup_subscription_derivations()?;
         self.register_selection_retry_timer();
-        self.subscribe_reference_prices();
+        self.subscribe_reference_prices()?;
         self.subscribe_signal_quotes();
         self.subscribe_realized_volatility_sources();
         Ok(())
@@ -7226,7 +7227,7 @@ impl DataActor for BinaryOracleEdgeTaker {
     fn on_stop(&mut self) -> Result<()> {
         self.unsubscribe_realized_volatility_sources();
         self.unsubscribe_signal_quotes();
-        self.unsubscribe_reference_prices();
+        self.unsubscribe_reference_prices()?;
         self.unsubscribe_resolution_strike();
         self.deregister_selection_retry_timer();
         Ok(())

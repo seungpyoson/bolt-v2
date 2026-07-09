@@ -109,6 +109,7 @@ fn prod_btc_5m_startup_derivations_match_composed_config() {
         .collect::<BTreeSet<_>>();
     let actual_reference_source_ids = strategy
         .reference_price_subscription_requests()
+        .expect("composed prod profile should derive reference_current_price subscriptions")
         .into_iter()
         .map(|request| request.source_id)
         .collect::<BTreeSet<_>>();

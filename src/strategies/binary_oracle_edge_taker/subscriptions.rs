@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use anyhow::Result;
 #[cfg(not(test))]
 use nautilus_common::actor::DataActor;
 use nautilus_core::Params;
@@ -55,8 +56,18 @@ impl BinaryOracleEdgeTaker {
         });
 
         if reference_missing {
-            self.unsubscribe_reference_prices();
-            self.subscribe_reference_prices();
+            if let Err(error) = self.unsubscribe_reference_prices() {
+                log::error!(
+                    "binary_oracle_edge_taker failed to unsubscribe reference_current_price retry subscriptions: {error}; strategy_id={}",
+                    self.config.strategy_id,
+                );
+            }
+            if let Err(error) = self.subscribe_reference_prices() {
+                log::error!(
+                    "binary_oracle_edge_taker failed to subscribe reference_current_price retry subscriptions: {error}; strategy_id={}",
+                    self.config.strategy_id,
+                );
+            }
         }
         if signal_missing {
             self.unsubscribe_signal_quotes();
@@ -104,6 +115,57 @@ impl BinaryOracleEdgeTaker {
             .signal_instrument_id
             .as_deref()
             .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
+    }
+
+    pub(super) fn ensure_startup_subscription_derivations(&self) -> Result<()> {
+        let reference_requests = self.reference_price_subscription_requests()?;
+        if self.reference_current_price_declares_subscription_sources()
+            && reference_requests.is_empty()
+        {
+            return Err(anyhow::anyhow!(
+                "binary_oracle_edge_taker reference_current_price declares subscription sources but derived zero subscription requests: strategy_id={}",
+                self.config.strategy_id,
+            ));
+        }
+
+        if self.signal_subscription_declares_source() && self.signal_instrument_id().is_none() {
+            return Err(anyhow::anyhow!(
+                "binary_oracle_edge_taker signal subscription derived zero requests from configured signal_instrument_id: strategy_id={}",
+                self.config.strategy_id,
+            ));
+        }
+
+        let surface_id = self.config.realized_volatility_surface_id.as_str();
+        let quote_requests = self
+            .context
+            .realized_volatility_quote_subscription_requests_for_surface(surface_id);
+        let trade_requests = self
+            .context
+            .realized_volatility_trade_subscription_requests_for_surface(surface_id);
+        let index_requests = self
+            .context
+            .realized_volatility_index_subscription_requests_for_surface(surface_id);
+        if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
+            return Err(anyhow::anyhow!(
+                "binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",
+                self.config.strategy_id,
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn reference_current_price_declares_subscription_sources(&self) -> bool {
+        self.config
+            .reference_current_price
+            .as_ref()
+            .is_some_and(|reference_price| {
+                !reference_price.source_order.is_empty() || !reference_price.sources.is_empty()
+            })
+    }
+
+    fn signal_subscription_declares_source(&self) -> bool {
+        self.config.signal_instrument_id.is_some()
     }
 
     pub(super) fn signal_client_id(&self) -> Option<ClientId> {
@@ -205,8 +267,8 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    pub(super) fn subscribe_reference_prices(&mut self) {
-        for subscription in self.reference_price_subscription_requests() {
+    pub(super) fn subscribe_reference_prices(&mut self) -> Result<()> {
+        for subscription in self.reference_price_subscription_requests()? {
             #[cfg(not(test))]
             self.subscribe_data(
                 subscription.data_type.clone(),
@@ -217,10 +279,11 @@ impl BinaryOracleEdgeTaker {
                 &subscription,
             ));
         }
+        Ok(())
     }
 
-    pub(super) fn unsubscribe_reference_prices(&mut self) {
-        for subscription in self.reference_price_subscription_requests() {
+    pub(super) fn unsubscribe_reference_prices(&mut self) -> Result<()> {
+        for subscription in self.reference_price_subscription_requests()? {
             #[cfg(not(test))]
             self.unsubscribe_data(
                 subscription.data_type.clone(),
@@ -231,24 +294,21 @@ impl BinaryOracleEdgeTaker {
                 &subscription,
             ));
         }
+        Ok(())
     }
 
     pub(super) fn reference_price_subscription_requests(
         &self,
-    ) -> Vec<ReferencePriceSubscriptionRequest> {
+    ) -> Result<Vec<ReferencePriceSubscriptionRequest>> {
         let Some(reference_price) = &self.config.reference_current_price else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        match build_reference_price_subscription_requests(reference_price) {
-            Ok(subscriptions) => subscriptions,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker invalid reference price subscription request: {error}; strategy_id={}",
-                    self.config.strategy_id,
-                );
-                Vec::new()
-            }
-        }
+        build_reference_price_subscription_requests(reference_price).map_err(|error| {
+            anyhow::anyhow!(
+                "binary_oracle_edge_taker reference_current_price subscription derivation failed: {error}; strategy_id={}",
+                self.config.strategy_id,
+            )
+        })
     }
 
     pub(super) fn unsubscribe_realized_volatility_sources(&mut self) {

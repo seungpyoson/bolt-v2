@@ -1,0 +1,144 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "b1a5351503e5",
+  "session_id": "dca29518-fa99-4628-826b-1fb630035bd9",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-09T07:03:26.297481Z",
+  "branch": "pr-1309",
+  "checkpoints_count": 23,
+  "save_step_count": 2,
+  "files_touched": [
+    ".gitignore",
+    "crates/backtesting-vertical-slice/src/reference_fixture_index.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_conversion_completion.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json",
+    "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "f781d097668c",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 30121,
+    "cache_creation_tokens": 3483492,
+    "cache_read_tokens": 160764539,
+    "output_tokens": 519629,
+    "api_call_count": 357
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01XDAWX99cM2smip7ayVc5JR",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "f781d097668c",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 380,
+        "end": 381,
+        "entry_ids": [
+          "a64e332a-bcf5-4426-b28b-499a48a0c069"
+        ],
+        "tool_use_id": "toolu_01XDAWX99cM2smip7ayVc5JR"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01XDAWX99cM2smip7ayVc5JR"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01BDyri4pgopyXe8ikEudtyC",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "dataviz"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "f781d097668c",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 385,
+        "end": 386,
+        "entry_ids": [
+          "40a1be4a-81d7-47f3-88b4-9ca7c47856a7"
+        ],
+        "tool_use_id": "toolu_01BDyri4pgopyXe8ikEudtyC"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01BDyri4pgopyXe8ikEudtyC"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: dataviz",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 23
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-09T07:03:25.971442Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 3241,
+    "total_committed": 2,
+    "total_lines_changed": 3241,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 290,
+      "user_lines_removed": 3241,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".gitignore": 5,
+        "crates/backtesting-vertical-slice/src/reference_fixture_index.rs": 18,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_conversion_completion.rs": 117,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs": 95,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs": 51,
+        "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json": 4
+      },
+      "user_removed_per_file": {
+        "crates/backtesting-vertical-slice/src/reference_fixture_index.rs": 1,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_conversion_completion.rs": 20,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs": 22,
+        "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs": 3,
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json": 1584,
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json": 1601,
+        "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json": 10
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 292,
+      "agent_lines_removed": 3241
+    }
+  ]
+}

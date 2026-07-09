@@ -16404,6 +16404,70 @@ classification = "reference_current_price_health_contract"
 reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"reference-current-price-health subprocess exited non-zero: {status}"'''
+context = '''"reference-current-price-health subprocess exited non-zero: {status}"'''
+classification = "reference_current_price_health_subprocess_failure_diagnostic"
+reason = "Static fail-loud diagnostic for the launch-health child process; the exit status is observed subprocess state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"ops"'''
+context = '''.arg("ops")'''
+classification = "reference_current_price_health_subprocess_command_contract"
+reason = "Fixed argv segment for invoking the existing ops subcommand in a subprocess; the target config path remains launch-profile owned."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"reference-current-price-health"'''
+context = '''.arg("reference-current-price-health")'''
+classification = "reference_current_price_health_subprocess_command_contract"
+reason = "Fixed argv segment for invoking the existing reference-current-price health subcommand in a subprocess; the probe behavior remains governed by the composed config."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"--config"'''
+context = '''.arg("--config")'''
+classification = "reference_current_price_health_subprocess_command_contract"
+reason = "Fixed CLI flag that passes the launch-selected live config path into the health subprocess; the path value is profile-derived."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"targets"'''
+context = '''if value.get("targets").is_none()'''
+classification = "reference_current_price_health_subprocess_report_schema_key"
+reason = "Expected JSON operator-report schema key used to reject missing child health reports; it validates subprocess output shape and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"clients"'''
+context = '''|| value.get("clients").is_none()'''
+classification = "reference_current_price_health_subprocess_report_schema_key"
+reason = "Expected JSON operator-report schema key used to reject missing child health reports; it validates subprocess output shape and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"source_update_observations"'''
+context = '''|| value.get("source_update_observations").is_none()'''
+classification = "reference_current_price_health_subprocess_report_schema_key"
+reason = "Expected JSON operator-report schema key used to reject missing child health reports; it validates subprocess output shape and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"operator_health"'''
+context = '''|| value.get("operator_health").is_none()'''
+classification = "reference_current_price_health_subprocess_report_schema_key"
+reason = "Expected JSON operator-report schema key used to reject missing child health reports; it validates subprocess output shape and does not configure runtime behavior."
+
+[[allowed]]
 path = "src/bolt_v3_validate/reference_price.rs"
 kind = "number"
 literal = '''1'''

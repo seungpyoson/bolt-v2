@@ -2270,6 +2270,64 @@ mod tests {
     }
 
     #[test]
+    fn ops_launch_reference_health_stage_then_start_keeps_parent_logging_boundary_alive() {
+        let mut context = ops_launch_context_with_secret_free_fixture();
+        run_ops_launch_stage(OpsLaunchStage::SecretsResolve, &mut context)
+            .expect("secret-free fixture should populate resolved secrets");
+        let live_config = live_config_path(&context.config_root);
+        let parent_logger_alive = std::rc::Rc::new(std::cell::Cell::new(true));
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+
+        let mut health = {
+            let events = events.clone();
+            move |config: &Path| -> Result<(), Box<dyn std::error::Error>> {
+                assert_eq!(config, live_config.as_path());
+                events
+                    .borrow_mut()
+                    .push("reference-health-subprocess-completed".to_string());
+                Ok(())
+            }
+        };
+        let mut start = {
+            let events = events.clone();
+            let parent_logger_alive = parent_logger_alive.clone();
+            move |_loaded: LoadedBoltV3Config,
+                  _resolved: &ResolvedBoltV3Secrets|
+                  -> Result<(), Box<dyn std::error::Error>> {
+                assert!(
+                    parent_logger_alive.get(),
+                    "the health stage must not own/drop the parent process logger before start"
+                );
+                events
+                    .borrow_mut()
+                    .push("real-node-log-after-reference-health".to_string());
+                Ok(())
+            }
+        };
+        let mut runners = OpsLaunchStageRunners {
+            reference_current_price_health: &mut health,
+            start_loaded_node: &mut start,
+        };
+
+        run_ops_launch_stage_with_runners(
+            OpsLaunchStage::ReferenceCurrentPriceHealth,
+            &mut context,
+            &mut runners,
+        )
+        .expect("reference health subprocess stage should pass");
+        run_ops_launch_stage_with_runners(OpsLaunchStage::Start, &mut context, &mut runners)
+            .expect("start stage should still be able to log after health");
+
+        assert_eq!(
+            events.borrow().as_slice(),
+            [
+                "reference-health-subprocess-completed",
+                "real-node-log-after-reference-health"
+            ]
+        );
+    }
+
+    #[test]
     fn ops_launch_target_verify_stage_degrades_when_no_deploy_toml() {
         // Dispatch guard for the TargetVerify arm of `run_ops_launch_stage`:
         // a `config_root` with no `deploy.toml` exercises the dispatch arm and

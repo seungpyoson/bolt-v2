@@ -145,6 +145,23 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
 }
 
 #[test]
+fn ops_launch_reference_health_stage_is_subprocess_isolated() {
+    let source = include_str!("../src/main.rs");
+    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+
+    assert!(
+        stage_fn.contains("run_reference_current_price_health_subprocess"),
+        "ops launch reference-current-price-health must run through the subprocess boundary"
+    );
+    assert!(
+        !stage_fn.contains(
+            "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)"
+        ),
+        "ops launch must not build/run the reference-current-price health LiveNode in-process"
+    );
+}
+
+#[test]
 fn ops_launch_verify_config_reuses_loaded_config_from_verification() {
     let source = include_str!("../src/main.rs");
     let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");

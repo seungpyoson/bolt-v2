@@ -1,6 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_common::{
+    messages::data::DataCommand,
+    msgbus::TypedIntoHandler,
+    runner::{DataCommandSender, get_data_cmd_sender, replace_data_cmd_sender},
+};
 use nautilus_trading::Strategy;
 
 pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
@@ -904,6 +909,7 @@ pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc
 pub(super) fn register_test_strategy_with_clock(
     strategy: &mut BinaryOracleEdgeTaker,
 ) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
+    install_test_data_command_sender();
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
@@ -921,6 +927,53 @@ pub(super) fn register_test_strategy_with_clock(
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
     (cache_handle, clock_handle)
+}
+
+#[derive(Debug)]
+struct RecordingDataCommandSender;
+
+impl DataCommandSender for RecordingDataCommandSender {
+    fn execute(&self, command: DataCommand) {
+        TEST_DATA_COMMANDS.with(|commands| {
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .push(command);
+        });
+    }
+}
+
+thread_local! {
+    static TEST_DATA_COMMANDS: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+}
+
+fn install_test_data_command_sender() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        msgbus::register_data_command_endpoint(
+            MessagingSwitchboard::data_engine_queue_execute(),
+            TypedIntoHandler::from(|command: DataCommand| {
+                get_data_cmd_sender().execute(command);
+            }),
+        );
+        replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender));
+    });
+    TEST_DATA_COMMANDS.with(|commands| {
+        commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned")
+            .clear();
+    });
+}
+
+pub(super) fn recorded_data_commands() -> Vec<DataCommand> {
+    TEST_DATA_COMMANDS.with(|commands| {
+        commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned")
+            .clone()
+    })
 }
 
 pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {

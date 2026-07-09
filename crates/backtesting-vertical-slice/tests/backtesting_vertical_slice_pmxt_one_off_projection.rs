@@ -22,6 +22,7 @@ use backtesting_vertical_slice::{
         run_pmxt_one_off_l2_backtest_contract, write_pmxt_one_off_conversion_projection,
         write_pmxt_one_off_l2_artifact_root_run, write_pmxt_one_off_projection_to_catalog,
     },
+    reference_fixture_index::repo_root_from_manifest_dir,
     result_contract::BacktestResultContract,
     result_contract::ResultArtifactUris,
     run_manifest::{
@@ -48,7 +49,7 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_polymarket::http::models::GammaMarket;
 use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs::File, process::Command, sync::Arc};
+use std::{collections::BTreeMap, fs::File, path::PathBuf, process::Command, sync::Arc};
 use ustr::Ustr;
 
 const PMXT_TEST_EVENT_COUNT_LEDGER_HASH: &str =
@@ -958,6 +959,142 @@ fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source
             .expect("parse rerun contract");
     assert_eq!(contract_after_rerun, written_contract);
     assert_eq!(rerun.contract_output.contract, written_contract);
+}
+
+#[test]
+fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_runtime_io() {
+    let repo_root = repo_root_from_manifest_dir();
+    let scratch_root = PathBuf::from(format!(
+        "target/pmxt-test-repo-relative-catalog-root-{}",
+        std::process::id()
+    ));
+    let anchored_scratch_root = repo_root.join(&scratch_root);
+    let _ = std::fs::remove_dir_all(&anchored_scratch_root);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
+    let selected_report_path = dir.path().join("selected-source-report.json");
+    let output_dir = scratch_root
+        .join("artifact-root")
+        .join("backtests")
+        .join("pmxt-run");
+    let catalog_root = output_dir.join("nt-catalog");
+    let expected_catalog_root = catalog_root.display().to_string();
+    let output_catalog_uri = format!("file://{expected_catalog_root}");
+    write_pmxt_selected_source_fixture(&selected_parquet_path);
+    write_selector_report_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        3,
+    );
+    let expected_projection =
+        project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
+            source_binding: "synthetic-pmxt-one-off-source".to_string(),
+            usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            selected_condition_id: "0xcondition".to_string(),
+            selected_token_id: "token-a".to_string(),
+            gamma_markets: gamma_markets(),
+            selected_source_parquet_path: selected_parquet_path.clone(),
+            selected_source_report_path: selected_report_path.clone(),
+            schema: pmxt_selected_source_schema(),
+        })
+        .expect("expected selected-source projection");
+    let manifest = pmxt_l2_manifest(&expected_projection.projection, &catalog_root, &output_dir);
+    let manifest_hash = manifest.manifest_hash();
+    let selected_source_sha256 = sha256_file(&selected_parquet_path);
+
+    let run = write_pmxt_one_off_l2_artifact_root_run(PmxtOneOffArtifactRootRunSpec {
+        selected_source: PmxtSelectedSourceProjectionSpec {
+            source_binding: "synthetic-pmxt-one-off-source".to_string(),
+            usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            selected_condition_id: "0xcondition".to_string(),
+            selected_token_id: "token-a".to_string(),
+            gamma_markets: gamma_markets(),
+            selected_source_parquet_path: selected_parquet_path.clone(),
+            selected_source_report_path: selected_report_path.clone(),
+            schema: pmxt_selected_source_schema(),
+        },
+        output_dir: output_dir.clone(),
+        catalog_root: catalog_root.clone(),
+        fingerprint: pmxt_conversion_fingerprint_for_hash(&selected_source_sha256),
+        manifest,
+        manifest_hash,
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: output_catalog_uri.clone(),
+        execution_catalog_uri: expected_catalog_root.clone(),
+        direct_s3_catalog_access_proven: false,
+        acceptance_mode: AcceptanceMode::Manual,
+        accepted_by: "source-proof-reviewer".to_string(),
+        accepted_at: "2026-06-08T00:00:00Z".to_string(),
+        artifact_uris: pmxt_result_artifact_uris(&output_dir),
+        created_at: "2026-06-08T00:00:00Z".to_string(),
+        claim_limits: vec![
+            "one-off PMXT L2 sample only".to_string(),
+            "no dynamic tick-size replay claim".to_string(),
+            "no expanded coverage claim".to_string(),
+        ],
+    })
+    .expect("write PMXT one-off artifact-root run with repo-relative catalog_root");
+
+    let anchored_output_dir = repo_root.join(&output_dir);
+    let anchored_catalog_root = repo_root.join(&catalog_root);
+    assert!(
+        anchored_catalog_root.exists(),
+        "catalog root should be marker-root anchored at {}",
+        anchored_catalog_root.display()
+    );
+    assert!(
+        anchored_output_dir
+            .join(CONVERSION_CHECKPOINT_FILE)
+            .exists()
+    );
+    assert!(anchored_output_dir.join(CONVERSION_MANIFEST_FILE).exists());
+    assert!(anchored_output_dir.join(CATALOG_METADATA_FILE).exists());
+    assert!(
+        anchored_output_dir
+            .join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE)
+            .exists()
+    );
+    assert_eq!(run.completed.catalog_projection.catalog_root, catalog_root);
+    assert_eq!(
+        run.completed.conversion_manifest.output_catalog_uri,
+        output_catalog_uri
+    );
+    assert_eq!(
+        run.completed
+            .conversion_catalog_metadata
+            .execution_catalog_uri,
+        expected_catalog_root
+    );
+    assert_eq!(
+        run.contract_output.contract.artifact_uris.nt_catalog_uri,
+        output_catalog_uri
+    );
+    let conversion_manifest_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(anchored_output_dir.join(CONVERSION_MANIFEST_FILE))
+            .expect("read conversion manifest"),
+    )
+    .expect("parse conversion manifest");
+    assert_eq!(
+        conversion_manifest_json["output_catalog_uri"],
+        output_catalog_uri
+    );
+    let catalog_metadata_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(anchored_output_dir.join(CATALOG_METADATA_FILE))
+            .expect("read catalog metadata"),
+    )
+    .expect("parse catalog metadata");
+    assert_eq!(
+        catalog_metadata_json["execution_catalog_uri"],
+        expected_catalog_root
+    );
+    assert_eq!(
+        run.contract_output.nt_result.iterations,
+        expected_projection.projection.order_book_deltas.len()
+    );
+    std::fs::remove_dir_all(anchored_scratch_root).expect("remove PMXT repo-relative scratch dir");
 }
 
 #[test]

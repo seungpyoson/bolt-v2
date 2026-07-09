@@ -14,6 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus};
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_proof::{SourceBindingRegistry, read_source_binding_registry_from_path};
 
 pub const BACKFILL_BINDING_COVERAGE_SCHEMA_VERSION: &str = "backfill-binding-coverage-report.v1";
@@ -186,17 +187,19 @@ pub fn write_backfill_binding_coverage_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let registry =
-        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
-            BackfillBindingCoverageError::ReadSourceBindings {
-                path: source_bindings_path.clone(),
-                error: error.to_string(),
-            }
-        })?;
+    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
+    let registry = read_source_binding_registry_from_path(&resolved_source_bindings_path).map_err(
+        |error| BackfillBindingCoverageError::ReadSourceBindings {
+            path: source_bindings_path.clone(),
+            error: error.to_string(),
+        },
+    )?;
     let source_bindings = source_bindings_from_registry(&registry, &source_bindings_path)?;
     let ledger_path = spec.coverage_ledger_path.display().to_string();
-    let ledger_bytes = fs::read(&spec.coverage_ledger_path).map_err(|error| {
+    let resolved_ledger_path = resolve_existing_path(base_dir, &spec.coverage_ledger_path);
+    let ledger_bytes = fs::read(&resolved_ledger_path).map_err(|error| {
         BackfillBindingCoverageError::ReadLedger {
             path: ledger_path.clone(),
             error: error.to_string(),
@@ -215,7 +218,8 @@ pub fn write_backfill_binding_coverage_report_from_spec_file(
         &ledger,
         spec.required_table_families,
     );
-    write_backfill_binding_coverage_report(&spec.output_dir, &report)
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_backfill_binding_coverage_report(&output_dir, &report)
 }
 
 pub fn write_backfill_binding_coverage_report(

@@ -22,7 +22,10 @@ use object_store::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri};
+use crate::{
+    path_resolution::{resolve_existing_path, resolve_output_dir},
+    run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri},
+};
 
 pub const SOURCE_PROOF_EVIDENCE_STAGING_SCHEMA_VERSION: &str =
     "source-proof-evidence-staging-manifest.v1";
@@ -267,7 +270,8 @@ where
             error: error.to_string(),
         }
     })?;
-    stage_source_proof_evidence_with_resolver(&spec, resolver)
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    stage_source_proof_evidence_with_resolver_and_base(&spec, resolver, base_dir)
 }
 
 pub fn stage_source_proof_evidence_with_resolver<F>(
@@ -277,10 +281,22 @@ pub fn stage_source_proof_evidence_with_resolver<F>(
 where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
+    stage_source_proof_evidence_with_resolver_and_base(spec, resolver, Path::new("."))
+}
+
+fn stage_source_proof_evidence_with_resolver_and_base<F>(
+    spec: &SourceProofEvidenceStagingSpec,
+    resolver: &mut F,
+    base_dir: &Path,
+) -> Result<SourceProofEvidenceStagingArtifact, SourceProofEvidenceStagingError>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
     validate_spec(spec)?;
     let mut pending_writes = Vec::with_capacity(spec.evidence_files.len());
     for file in &spec.evidence_files {
-        let bytes = fs::read(&file.local_path).map_err(|error| {
+        let local_path = resolve_existing_path(base_dir, &file.local_path);
+        let bytes = fs::read(&local_path).map_err(|error| {
             SourceProofEvidenceStagingError::ReadLocalObject {
                 path: file.local_path.display().to_string(),
                 error: error.to_string(),
@@ -338,15 +354,16 @@ where
         total_bytes,
         evidence_records,
     };
-    write_manifest(&spec.output_dir, &manifest).map(
-        |(manifest_path, manifest_hash, manifest_bytes)| SourceProofEvidenceStagingArtifact {
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_manifest(&output_dir, &manifest).map(|(manifest_path, manifest_hash, manifest_bytes)| {
+        SourceProofEvidenceStagingArtifact {
             manifest_path,
             manifest_hash,
             manifest_bytes,
             record_count: manifest.record_count,
             total_bytes: manifest.total_bytes,
-        },
-    )
+        }
+    })
 }
 
 fn validate_spec(

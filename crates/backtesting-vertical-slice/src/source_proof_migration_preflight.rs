@@ -13,6 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    path_resolution::{resolve_existing_path, resolve_output_dir},
     source_proof::{EvidenceState, SourceBindingRegistry, read_source_binding_registry_from_path},
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
@@ -288,16 +289,19 @@ pub fn write_source_proof_migration_preflight_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
+    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
     let source_bindings_registry =
-        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
-            SourceProofMigrationPreflightError::ReadSourceBindings {
+        read_source_binding_registry_from_path(&resolved_source_bindings_path).map_err(
+            |error| SourceProofMigrationPreflightError::ReadSourceBindings {
                 path: source_bindings_path,
                 error: error.to_string(),
-            }
-        })?;
+            },
+        )?;
     let report_path = spec.derivability_report_path.display().to_string();
-    let report_bytes = fs::read(&spec.derivability_report_path).map_err(|error| {
+    let resolved_report_path = resolve_existing_path(base_dir, &spec.derivability_report_path);
+    let report_bytes = fs::read(&resolved_report_path).map_err(|error| {
         SourceProofMigrationPreflightError::ReadDerivabilityReport {
             path: report_path.clone(),
             error: error.to_string(),
@@ -316,7 +320,8 @@ pub fn write_source_proof_migration_preflight_report_from_spec_file(
         &spec.selection,
         &source_bindings_registry,
     );
-    write_source_proof_migration_preflight_report(&spec.output_dir, &report)
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_source_proof_migration_preflight_report(&output_dir, &report)
 }
 
 fn is_eligible(

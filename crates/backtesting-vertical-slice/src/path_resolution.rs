@@ -11,7 +11,9 @@
 //!    against the enclosing repo root (an ancestor of the current directory or
 //!    of this crate carrying the repo's `justfile` + `AGENTS.md` markers),
 //!    falling back to the nearest ancestor that can contain them;
-//! 3. otherwise the working-directory-relative or `base_dir`-relative
+//! 3. repo scratch paths (`target/...`) resolve against the marker root that
+//!    owns the referencing spec, without requiring `target/` to exist first;
+//! 4. otherwise the working-directory-relative or `base_dir`-relative
 //!    candidate wins.
 
 use std::path::{Component, Path, PathBuf};
@@ -19,6 +21,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Result, bail};
 
 const REPO_TOP_LEVEL_DIRS: [&str; 4] = ["specs", "crates", "docs", "scripts"];
+const REPO_SCRATCH_DIRS: [&str; 1] = ["target"];
 const REPO_ROOT_MARKERS: [&str; 2] = ["justfile", "AGENTS.md"];
 
 /// Resolve a path that must reference an existing input file or directory.
@@ -35,6 +38,12 @@ pub fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
         && let Some(candidate) = resolve_from_known_anchors(path)
     {
         return candidate;
+    }
+    if looks_repo_scratch_path(path) {
+        if let Some(repo_root) = marker_repo_root_from_base_dir(base_dir) {
+            return repo_root.join(path);
+        }
+        return base_dir.join(path);
     }
     if path.exists() {
         return path.to_path_buf();
@@ -76,6 +85,12 @@ pub fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
         && let Some(candidate) = resolve_from_known_anchors(path)
     {
         return candidate;
+    }
+    if looks_repo_scratch_path(path) {
+        if let Some(repo_root) = marker_repo_root_from_base_dir(base_dir) {
+            return repo_root.join(path);
+        }
+        return base_dir.join(path);
     }
     let base_candidate = base_dir.join(path);
     if base_candidate
@@ -169,6 +184,39 @@ pub fn looks_repo_relative(path: &Path) -> bool {
     )
 }
 
+fn looks_repo_scratch_path(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(Component::Normal(component))
+            if REPO_SCRATCH_DIRS.iter().any(|dir| component == *dir)
+    ) && !has_parent_component(path)
+}
+
+fn marker_repo_root_from_base_dir(base_dir: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if base_dir.is_absolute() {
+        candidates.push(base_dir.to_path_buf());
+    } else {
+        if let Ok(current_dir) = std::env::current_dir() {
+            candidates.push(current_dir.join(base_dir));
+        }
+        candidates.push(base_dir.to_path_buf());
+    }
+
+    for candidate in candidates {
+        let normalized = candidate.canonicalize().unwrap_or(candidate);
+        for ancestor in normalized.ancestors() {
+            if REPO_ROOT_MARKERS
+                .iter()
+                .all(|marker| ancestor.join(marker).exists())
+            {
+                return Some(ancestor.to_path_buf());
+            }
+        }
+    }
+    None
+}
+
 fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
     let anchors = anchor_dirs();
     // Strongest anchor first: the enclosing repo root itself, identified by
@@ -237,6 +285,126 @@ mod tests {
         let base = std::env::temp_dir();
         let resolved = resolve_output_dir(&base, Path::new("nested/out-dir"));
         assert_eq!(resolved, base.join("nested/out-dir"));
+    }
+
+    #[test]
+    fn target_output_dirs_anchor_to_marker_root_even_when_target_is_absent() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "path-resolution-target-anchor-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_root);
+        let spec_dir = temp_root.join("specs/reference/scope");
+        fs::create_dir_all(&spec_dir).expect("create spec dir");
+        fs::write(temp_root.join("justfile"), "").expect("write justfile marker");
+        fs::write(temp_root.join("AGENTS.md"), "").expect("write AGENTS marker");
+        let canonical_temp_root = temp_root.canonicalize().expect("canonical temp root");
+
+        let resolved =
+            resolve_output_dir(&spec_dir, Path::new("target/reference-regen/scope/plan"));
+
+        assert_eq!(
+            resolved,
+            canonical_temp_root.join("target/reference-regen/scope/plan")
+        );
+        fs::remove_dir_all(temp_root).expect("remove marker-root temp dir");
+    }
+
+    #[test]
+    fn target_output_dirs_without_repo_markers_remain_base_relative() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "path-resolution-target-markerless-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_root);
+        let spec_dir = temp_root.join("specs/reference/scope");
+        fs::create_dir_all(&spec_dir).expect("create markerless spec dir");
+
+        let resolved =
+            resolve_output_dir(&spec_dir, Path::new("target/reference-regen/scope/plan"));
+
+        assert_eq!(resolved, spec_dir.join("target/reference-regen/scope/plan"));
+        fs::remove_dir_all(temp_root).expect("remove markerless temp dir");
+    }
+
+    #[test]
+    fn target_input_paths_anchor_to_marker_root_before_cwd_decoys() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "path-resolution-target-input-anchor-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_root);
+        let spec_dir = temp_root.join("specs/reference/scope");
+        fs::create_dir_all(&spec_dir).expect("create spec dir");
+        fs::write(temp_root.join("justfile"), "").expect("write justfile marker");
+        fs::write(temp_root.join("AGENTS.md"), "").expect("write AGENTS marker");
+        let canonical_temp_root = temp_root.canonicalize().expect("canonical temp root");
+        let relative = Path::new("target/path-resolution-input-decoy/plan.json");
+        let anchored = canonical_temp_root.join(relative);
+        fs::create_dir_all(anchored.parent().expect("anchored parent"))
+            .expect("create anchored parent");
+        fs::write(&anchored, b"anchored").expect("write anchored input");
+        let cwd_decoy = std::env::current_dir().expect("current dir").join(relative);
+        let _ = fs::remove_file(&cwd_decoy);
+        fs::create_dir_all(cwd_decoy.parent().expect("cwd decoy parent"))
+            .expect("create cwd decoy parent");
+        fs::write(&cwd_decoy, b"decoy").expect("write cwd decoy");
+
+        let resolved = resolve_existing_path(&spec_dir, relative);
+
+        assert_eq!(resolved, anchored);
+        assert_eq!(
+            fs::read(&resolved).expect("read resolved input"),
+            b"anchored"
+        );
+        fs::remove_file(cwd_decoy).expect("remove cwd decoy");
+        fs::remove_dir_all(temp_root).expect("remove marker-root temp dir");
+    }
+
+    #[test]
+    fn missing_target_input_paths_report_marker_root_location() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "path-resolution-target-input-missing-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_root);
+        let spec_dir = temp_root.join("specs/reference/scope");
+        fs::create_dir_all(&spec_dir).expect("create spec dir");
+        fs::write(temp_root.join("justfile"), "").expect("write justfile marker");
+        fs::write(temp_root.join("AGENTS.md"), "").expect("write AGENTS marker");
+        let canonical_temp_root = temp_root.canonicalize().expect("canonical temp root");
+        let relative = Path::new("target/reference-regen/missing/plan.json");
+        let anchored = canonical_temp_root.join(relative);
+
+        let resolved = resolve_existing_path(&spec_dir, relative);
+        let err = fs::read(&resolved)
+            .map_err(|error| format!("read {}: {error}", resolved.display()))
+            .expect_err("missing target input should fail at anchored path");
+
+        assert_eq!(resolved, anchored);
+        assert!(
+            err.contains(&anchored.display().to_string()),
+            "error did not name anchored path: {err}"
+        );
+        fs::remove_dir_all(temp_root).expect("remove marker-root temp dir");
+    }
+
+    #[test]
+    fn target_output_dirs_do_not_expand_portable_artifact_prefixes() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        let absolute_target_artifact = repo_root.join("target/reference-regen/scope/artifact.json");
+
+        assert_eq!(
+            portable_artifact_path_for_spec(
+                &absolute_target_artifact,
+                Path::new("target/reference-regen/scope/artifact.json"),
+            )
+            .expect("target scratch output is not a committed portable artifact prefix"),
+            absolute_target_artifact
+        );
     }
 
     #[test]

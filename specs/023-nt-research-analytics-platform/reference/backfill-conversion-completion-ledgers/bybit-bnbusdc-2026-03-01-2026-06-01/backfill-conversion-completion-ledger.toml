@@ -1,5 +1,5 @@
 ledger_id = "backfill-conversion-completion-ledger-bybit-bnbusdc-2026-03-01-2026-06-01"
-batch_plan_path = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json"
+batch_plan_path = "target/reference-regen/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json"
 output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger"
 
 [requirements]

@@ -3,9 +3,28 @@
 
 from __future__ import annotations
 
+import os
+import pathlib
+import subprocess
 import sys
+import tempfile
+import time
 
-from test_verify_ci_workflow_hygiene import *  # noqa: F403
+from ci_workflow_hygiene_test_helpers import (
+    BASE_WORKFLOW,
+    DEBUG_TEST_WORKFLOW_PATH,
+    assert_error,
+    commit_repo,
+    copy_self_authorizing_base_tree,
+    init_self_authorizing_fixture_repo,
+    load_verifier,
+    replace_once,
+    replace_once_after,
+    repo_source_text,
+    repo_workflow_text,
+    run_repo_git,
+    write_repo_text,
+)
 
 def self_authorizing_errors_for_changes(
     changes: dict[str, str],

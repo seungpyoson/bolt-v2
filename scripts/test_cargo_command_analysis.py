@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import pathlib
 import sys
+import tempfile
 
-from test_verify_ci_workflow_hygiene import *  # noqa: F403
+from ci_workflow_hygiene_test_helpers import load_verifier, run_verifier_main_with_no_mistakes
 
 def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
     verifier = load_verifier()

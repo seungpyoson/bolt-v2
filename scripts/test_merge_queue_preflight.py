@@ -18,7 +18,7 @@ import time
 
 import ci_provenance
 import git_remote_utils
-from test_verify_ci_workflow_hygiene import (
+from ci_workflow_hygiene_test_helpers import (
     load_provenance,
     load_verifier,
     replace_once,

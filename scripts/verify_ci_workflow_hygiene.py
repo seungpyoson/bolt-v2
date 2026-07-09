@@ -60,6 +60,7 @@ from cargo_command_analysis import (
     SHELL_ASSIGNMENT_RE,
     SHELL_COMMAND_BOUNDARIES,
     SHELL_PUNCTUATION_CHARS,
+    SHELL_PUNCTUATION_OPERATORS,
     SHELL_PUNCTUATION_OPERATORS_BY_LENGTH,
     SHELL_REDIRECTION_OPERATORS,
     SUDO_OPTIONS_WITHOUT_ARGUMENT,
@@ -280,7 +281,31 @@ from governance_diff_analysis import (
     yaml_permissions_grants,
     yaml_permissions_scoped_grants,
 )
-from merge_queue_preflight import parse_mergify_yaml, verify_mergify_config
+from merge_queue_preflight import (
+    MERGIFY_DYNAMIC_BATCH_KEYS,
+    MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS,
+    MERGIFY_MERGE_QUEUE_KEYS,
+    MERGIFY_PRIORITY_RULE_KEYS,
+    MERGIFY_QUEUE_RULE_KEYS,
+    MERGIFY_REQUIRED_MERGE_CONDITIONS,
+    MERGIFY_REQUIRED_PRIORITY_RULES,
+    MERGIFY_REQUIRED_QUEUE_RULES,
+    MERGIFY_TOP_LEVEL_KEYS,
+    MERGIFY_YAML_PARSER_RUBY,
+    expect_scalar,
+    mergify_condition_list,
+    mergify_list,
+    mergify_mapping,
+    mergify_required_conditions,
+    named_mergify_rules,
+    parse_mergify_yaml,
+    required_mergify_list,
+    required_mergify_mapping,
+    scalar_equals,
+    unsupported_mapping_keys,
+    verify_mergify_config,
+    yaml_display,
+)
 
 from ci_provenance import (
     GATE_NAME_KEYS,

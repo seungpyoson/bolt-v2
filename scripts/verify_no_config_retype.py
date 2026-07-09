@@ -51,14 +51,20 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/ci_provenance.py",
         "scripts/clean_merged_artifacts.py",
         "scripts/cargo-shim",
+        "scripts/cargo_command_analysis.py",
+        "scripts/ci_workflow_hygiene_test_helpers.py",
         "scripts/git_remote_utils.py",
+        "scripts/governance_diff_analysis.py",
         "scripts/merge_queue_operator.py",
         "scripts/minimal_toml.py",
         "scripts/run_ci_lint_suites.py",
         "scripts/rust_verification.py",
         "scripts/sandbox_safe_push.py",
+        "scripts/shell_dataflow_analysis.py",
         "scripts/test_cargo_shim.py",
+        "scripts/test_cargo_command_analysis.py",
         "scripts/test_clean_merged_artifacts.py",
+        "scripts/test_governance_diff_analysis.py",
         "scripts/test_host_health_sampler.py",
         "scripts/test_merge_queue_operator.py",
         "scripts/test_merge_queue_preflight.py",
@@ -66,6 +72,7 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/test_rust_verification.py",
         "scripts/test_rust_verification_decoupling.py",
         "scripts/test_sandbox_safe_push.py",
+        "scripts/test_shell_dataflow_analysis.py",
         "scripts/test_verifier_io.py",
         "scripts/test_verify_bolt_v3_core_boundary.py",
         "scripts/test_verify_bolt_v3_dependency_direction.py",
@@ -75,6 +82,7 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/test_verify_probability_typed_pilot.py",
         "scripts/test_verify_ra_notebook_read_only_boundary.py",
         "scripts/test_verify_ra_single_engine_import_boundary.py",
+        "scripts/test_workflow_expression_analysis.py",
         "scripts/verifier_io.py",
         "scripts/verify_ai_review_governance.py",
         "scripts/verify_bolt_v3_core_boundary.py",
@@ -85,12 +93,13 @@ STRICT_RETYPE_PATHS = frozenset(
         "scripts/verify_probability_typed_pilot.py",
         "scripts/verify_ra_notebook_read_only_boundary.py",
         "scripts/verify_ra_single_engine_import_boundary.py",
+        "scripts/workflow_expression_analysis.py",
     }
 )
 
 # Recompute by running verify_no_config_retype.py after intentional ratchet
 # removals/additions; this value is the exact current non-strict count.
-RATCHET_BASELINE_COUNT = 2661
+RATCHET_BASELINE_COUNT = 2573
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,56 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
     "scripts/cargo-shim": (
         "]",
         "ci",
+    ),
+    "scripts/cargo_command_analysis.py": (
+        "build",
+        "clippy",
+        "deny",
+        "test",
+        "test-archive",
+    ),
+    "scripts/ci_workflow_hygiene_test_helpers.py": (
+        ".github/workflows/ci.yml",
+        "AGENTS.md",
+        "[local_compile_policy]",
+        "[local_lane_policy]",
+        "[remote_verification]",
+        'acquire_timeout_seconds = 1800',
+        'allowed_ci_env = "GITHUB_ACTIONS"',
+        'break_glass_env = "BOLT_ALLOW_LOCAL_RUST"',
+        "checks_appear_timeout_seconds = 300",
+        "ci",
+        "diagnostic_log_max_bytes = 20000",
+        "diagnostic_log_max_lines = 160",
+        "diagnostic_unavailable_notice_interval_polls = 4",
+        "enabled = true",
+        "heartbeat_seconds = 15",
+        'lock_dir = "/tmp/rust-verification-lanes"',
+        "main",
+        "overall_timeout_seconds = 3600",
+        "poll_interval_seconds = 1",
+        "poll_interval_seconds = 15",
+        'project_id = "backtesting-vertical-slice"',
+        'project_id = "bolt-v2"',
+        'refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]',
+        'refused_managed_commands = ["test", "clippy", "build"]',
+        "schema_version = 2",
+        'target_namespace = "backtesting-vertical-slice"',
+        'target_namespace = "bolt-v2"',
+    ),
+    "scripts/governance_diff_analysis.py": (
+        "AGENTS.md",
+        "]",
+    ),
+    "scripts/workflow_expression_analysis.py": (
+        "build",
+        "check-aarch64",
+        "clippy",
+        "deny",
+        "nextest-fingerprint",
+        "source-fence",
+        "test",
+        "test-archive",
     ),
     "scripts/merge_queue_operator.py": (
         "ci",
@@ -219,6 +278,23 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         'target_namespace = "bolt-v2"',
         "test",
         'trunk_branch = "main"',
+    ),
+    "scripts/test_cargo_command_analysis.py": (
+        "ci",
+        "test",
+    ),
+    "scripts/test_governance_diff_analysis.py": (
+        ".github/workflows/ci.yml",
+        "AGENTS.md",
+        "]",
+    ),
+    "scripts/test_workflow_expression_analysis.py": (
+        ".github/workflows/ci.yml",
+        "actionlint.yml",
+        "merge_group",
+        'merge_group = "full"',
+        "nextest-fingerprint",
+        "test-archive",
     ),
     "scripts/test_clean_merged_artifacts.py": (
         "[clean-merged.backups]",

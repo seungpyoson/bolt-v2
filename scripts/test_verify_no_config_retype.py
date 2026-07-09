@@ -258,6 +258,23 @@ def test_registered_payload_literals_do_not_self_violate() -> None:
             raise AssertionError(f"registered payload literals should be control-plane data, got {findings!r}")
 
 
+def test_relocated_hygiene_modules_are_strict_paths() -> None:
+    expected = {
+        "scripts/cargo_command_analysis.py",
+        "scripts/ci_workflow_hygiene_test_helpers.py",
+        "scripts/shell_dataflow_analysis.py",
+        "scripts/governance_diff_analysis.py",
+        "scripts/workflow_expression_analysis.py",
+        "scripts/test_cargo_command_analysis.py",
+        "scripts/test_shell_dataflow_analysis.py",
+        "scripts/test_governance_diff_analysis.py",
+        "scripts/test_workflow_expression_analysis.py",
+    }
+    missing = sorted(expected - VERIFIER.STRICT_RETYPE_PATHS)
+    if missing:
+        raise AssertionError(f"relocated hygiene modules must stay in strict no-config-retype coverage: {missing}")
+
+
 def main() -> int:
     tests = (
         test_missing_governed_artifact_is_loud_error,
@@ -272,6 +289,7 @@ def main() -> int:
         test_registered_payload_assignment_skip_is_limited_to_verifier_file,
         test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline,
         test_registered_payload_literals_do_not_self_violate,
+        test_relocated_hygiene_modules_are_strict_paths,
     )
     for test in tests:
         test()

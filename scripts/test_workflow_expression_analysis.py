@@ -5,7 +5,20 @@ from __future__ import annotations
 
 import sys
 
-from test_verify_ci_workflow_hygiene import *  # noqa: F403
+from ci_workflow_hygiene_test_helpers import (
+    GATE_NAME,
+    GATE_NEEDS,
+    assert_no_inline_matrix_key,
+    ci_provenance_config_fixture,
+    inline_matrix_values,
+    load_verifier,
+    replace_once,
+    repo_workflow_text,
+    runner_config_load_error,
+    shard_partition_argument_denominators,
+    without_inline_need,
+)
+from workflow_expression_analysis import one_indexed_sequence
 
 def assert_merge_group_support_gaps_are_reported() -> None:
     # Non-vacuous mutation tests for the merge queue (merge_group) lane:

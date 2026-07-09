@@ -4,8 +4,16 @@
 from __future__ import annotations
 
 import sys
+import textwrap
 
-from test_verify_ci_workflow_hygiene import *  # noqa: F403
+from ci_workflow_hygiene_test_helpers import (
+    BASE_ACTION,
+    BASE_ADVISORY_WORKFLOW,
+    BASE_NEXTEST_CONFIG,
+    BASE_WORKFLOW,
+    load_verifier,
+    workflow_with_detector_probe,
+)
 
 def assert_v6_deploy_artifact_s3_stays_allowed() -> None:
     verifier = load_verifier()

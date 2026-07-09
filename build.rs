@@ -206,10 +206,12 @@ pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
         return paths;
     };
 
-    // A linked worktree resolves `refs/heads/*` against the common dir but keeps
-    // its per-worktree refs (`refs/bisect/*`, `refs/worktree/*`,
-    // `refs/rewritten/*`) in its own git dir, so both bases can hold the ref.
-    // The two are the same directory outside a linked worktree.
+    // `HEAD` may name a ref in either base: a linked worktree resolves
+    // `refs/heads/*` against the common dir, but keeps its per-worktree refs
+    // (`refs/bisect/*`, `refs/worktree/*`, `refs/rewritten/*`) in its own git
+    // dir. Only one base holds this `HEAD`'s ref; the other finds no loose file
+    // and falls back to its `refs` dir, which over-triggers harmlessly. Outside
+    // a linked worktree the two bases are the same directory.
     let common_dir = git_common_dir(&git_dir);
     for base in [&common_dir, &git_dir] {
         if let Some(path) = ref_watch_path(base, head_ref) {

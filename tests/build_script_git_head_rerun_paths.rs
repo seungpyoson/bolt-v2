@@ -44,13 +44,17 @@ fn canonical_git_dir(manifest_dir: &Path) -> PathBuf {
     fs::canonicalize(manifest_dir.join(".git")).expect("git dir should canonicalize")
 }
 
-#[test]
-fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
-    let manifest_dir = temp_git_fixture("linked-worktree");
+/// A checkout whose `.git` is a file pointing into `<common>/worktrees/<name>`,
+/// as `git worktree add` leaves it. That git dir holds `HEAD` and an initially
+/// empty `refs`, because `refs/heads/*` resolves against the common dir and only
+/// per-worktree refs (`refs/bisect/*`, `refs/worktree/*`, `refs/rewritten/*`)
+/// land in the worktree.
+///
+/// Returns `(manifest_dir, common_dir, worktree_git_dir)`, uncanonicalized.
+fn linked_worktree_fixture(name: &str, head_ref: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let manifest_dir = temp_git_fixture(name);
     let common_dir = manifest_dir.join("main-git");
     let worktree_git_dir = common_dir.join("worktrees").join("bolt-v3");
-    // `git worktree add` leaves `<worktree_git_dir>/refs` empty: `refs/heads/*`
-    // resolves against the common dir, and only per-worktree refs land here.
     fs::create_dir_all(worktree_git_dir.join("refs")).expect("worktree refs dir should be created");
     fs::create_dir_all(common_dir.join("refs").join("heads"))
         .expect("common refs dir should be created");
@@ -65,8 +69,15 @@ fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
     )
     .expect(".git file should be written");
     fs::write(worktree_git_dir.join("commondir"), "../..\n").expect("commondir should be written");
-    fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/topic\n")
+    fs::write(worktree_git_dir.join("HEAD"), format!("ref: {head_ref}\n"))
         .expect("HEAD should be written");
+    (manifest_dir, common_dir, worktree_git_dir)
+}
+
+#[test]
+fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
+    let (manifest_dir, common_dir, worktree_git_dir) =
+        linked_worktree_fixture("linked-worktree", "refs/heads/topic");
     write_loose_ref(&common_dir, "refs/heads/topic");
     write_packed_refs(&common_dir);
 
@@ -83,9 +94,44 @@ fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
             worktree_git_dir.join("refs"),
             common_dir.join("packed-refs"),
         ],
-        "the branch ref is watched in the common dir; the worktree's own refs dir \
-         is watched because every write beneath it moves this worktree's HEAD"
+        "`refs/heads/*` resolves against the common dir, so the branch ref is \
+         watched there. The worktree base cannot hold this HEAD's ref, so it \
+         falls back to its own `refs` dir, which over-triggers harmlessly"
     );
+
+    let _ = fs::remove_dir_all(manifest_dir);
+}
+
+/// `HEAD` reaches a per-worktree ref via `git symbolic-ref HEAD refs/worktree/x`,
+/// and that ref exists only in the worktree git dir. Consulting the common dir
+/// alone would watch nothing that moves this `HEAD`.
+#[test]
+fn linked_worktree_per_worktree_head_ref_watches_the_worktree_ref() {
+    let (manifest_dir, common_dir, worktree_git_dir) =
+        linked_worktree_fixture("linked-worktree-per-wt", "refs/worktree/scratch");
+    write_loose_ref(&worktree_git_dir, "refs/worktree/scratch");
+
+    let paths = build_script::git_head_rerun_paths(&manifest_dir);
+    let common_dir = fs::canonicalize(&common_dir).expect("common dir should canonicalize");
+    let worktree_git_dir =
+        fs::canonicalize(&worktree_git_dir).expect("worktree git dir should canonicalize");
+
+    assert_eq!(
+        paths,
+        vec![
+            worktree_git_dir.join("HEAD"),
+            common_dir.join("refs"),
+            worktree_git_dir
+                .join("refs")
+                .join("worktree")
+                .join("scratch"),
+        ],
+        "the roles are reversed: the worktree base holds the ref, and the common \
+         base is the one that over-triggers on its `refs` dir"
+    );
+    for path in &paths {
+        assert!(path.exists(), "watched path does not exist: {path:?}");
+    }
 
     let _ = fs::remove_dir_all(manifest_dir);
 }

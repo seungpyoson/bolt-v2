@@ -3863,6 +3863,24 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
         raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
 
 
+def assert_deleted_ai_review_model_freshness_workflow_is_unmapped() -> None:
+    verifier = load_verifier()
+    deleted_names = {
+        "ai-review-model-freshness.yml",
+        ".github/workflows/ai-review-model-freshness.yml",
+    }
+    mapped_names = set(verifier.WORKFLOW_RUNNER_CONFIG_KEYS)
+    stale_names = sorted(mapped_names & deleted_names)
+    if stale_names:
+        raise AssertionError(
+            f"deleted workflow must not remain in WORKFLOW_RUNNER_CONFIG_KEYS: {stale_names}"
+        )
+    if "ai_review_model_freshness" in verifier.WORKFLOW_RUNNER_CONFIG_KEYS.values():
+        raise AssertionError(
+            "deleted workflow runner config key ai_review_model_freshness must not remain mapped"
+        )
+
+
 def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
     verifier = load_verifier()
     detection_workflow_name = ".github/workflows/flaky-test-detection.yml"
@@ -12360,6 +12378,7 @@ def main() -> int:
     assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
+    assert_deleted_ai_review_model_freshness_workflow_is_unmapped()
     assert_runner_contract_accepts_flaky_detection_workflow_mapping()
     assert_flaky_detection_workflow_uses_supported_mergify_contract()
     assert_runner_config_floor_handles_missing_and_empty_inputs()

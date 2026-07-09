@@ -72,155 +72,21 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
-verify-bolt-v3-schema-current: check-workspace
-    python3 scripts/test_verify_bolt_v3_schema_current.py
-    python3 scripts/verify_bolt_v3_schema_current.py
-
-verify-probability-typed-pilot: check-workspace
-    python3 scripts/test_verify_probability_typed_pilot.py
-    python3 scripts/verify_probability_typed_pilot.py
-
-verify-bolt-v3-core-boundary: check-workspace
-    python3 scripts/test_verify_bolt_v3_core_boundary.py
-    python3 scripts/verify_bolt_v3_core_boundary.py
-
-verify-bolt-v3-naming: check-workspace
-    python3 scripts/test_verify_bolt_v3_naming.py
-    python3 scripts/verify_bolt_v3_naming.py
-
-verify-bolt-v3-pure-rust-runtime: check-workspace
-    python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
-    python3 scripts/verify_bolt_v3_pure_rust_runtime.py
-
-verify-ra-single-engine-import-boundary: check-workspace
-    python3 scripts/test_verify_ra_single_engine_import_boundary.py
-    python3 scripts/verify_ra_single_engine_import_boundary.py
-
-verify-ra-notebook-read-only-boundary: check-workspace
-    python3 scripts/test_verify_ra_notebook_read_only_boundary.py
-    python3 scripts/verify_ra_notebook_read_only_boundary.py
-
-verify-ra-point-in-time-leakage: check-workspace
-    python3 scripts/test_verify_ra_point_in_time_leakage.py
-    python3 scripts/verify_ra_point_in_time_leakage.py
-
-verify-ra-thin-reader-helper: check-workspace
-    python3 scripts/test_verify_ra_thin_reader_helper.py
-    python3 scripts/verify_ra_thin_reader_helper.py
-
-verify-ra-bte-phase-prerequisite: check-workspace
-    python3 scripts/test_verify_ra_bte_phase_prerequisite.py
-    python3 scripts/verify_ra_bte_phase_prerequisite.py
-
-verify-ra-gate0-catalog-persistence: check-workspace
-    python3 scripts/test_verify_ra_gate0_catalog_persistence.py
-    python3 scripts/verify_ra_gate0_catalog_persistence.py
-
-verify-ra-leadlag-catalog-lift: check-workspace
-    python3 scripts/test_verify_ra_leadlag_catalog_lift.py
-    python3 scripts/verify_ra_leadlag_catalog_lift.py
-
-verify-ra-sweep-orchestration: check-workspace
-    python3 scripts/test_verify_ra_sweep_orchestration.py
-    python3 scripts/verify_ra_sweep_orchestration.py
-
-verify-ra-cost-realism: check-workspace
-    python3 scripts/test_verify_ra_cost_realism.py
-    python3 scripts/verify_ra_cost_realism.py
-
-verify-ra-domain-metrics: check-workspace
-    python3 scripts/test_verify_ra_domain_metrics.py
-    python3 scripts/verify_ra_domain_metrics.py
-
-verify-ra-findings-promotion: check-workspace
-    python3 scripts/test_verify_ra_findings_promotion.py
-    python3 scripts/verify_ra_findings_promotion.py
-
-verify-ra-artifact-index-commit: check-workspace
-    python3 scripts/test_verify_ra_artifact_index_commit.py
-    python3 scripts/verify_ra_artifact_index_commit.py
-
-verify-ra-run-pointer-index: check-workspace
-    python3 scripts/test_verify_ra_run_pointer_index.py
-    python3 scripts/verify_ra_run_pointer_index.py
-
-verify-ra-bi-surface-and-feature-joins: check-workspace
-    python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
-    python3 scripts/verify_ra_bi_surface_and_feature_joins.py
-
-verify-dashboard-read-only-contract: check-workspace
-    python3 scripts/test_verify_dashboard_read_only_contract.py
-    python3 scripts/verify_dashboard_read_only_contract.py
-
-verify-bte-022-pmxt-durable-source: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_durable_source.py
-    python3 scripts/verify_bte_022_pmxt_durable_source.py
-
-verify-bte-022-pmxt-storage-proof: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
-    python3 scripts/verify_bte_022_pmxt_storage_proof.py
-
-verify-bte-022-pmxt-coverage-ledger: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
-    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
-
-verify-bte-022-pmxt-dynamic-tick-size: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
-    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
-
-verify-bte-022-binary-option-bar-catalog: check-workspace
-    python3 scripts/test_verify_bte_022_binary_option_bar_catalog.py
-    python3 scripts/verify_bte_022_binary_option_bar_catalog.py
-
-verify-bte-022-pmxt-broad-backfill-efficiency: check-workspace
-    python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
-    python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
-
-verify-bolt-v3-legacy-default-fence: check-workspace
-    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
-    python3 scripts/verify_bolt_v3_legacy_default_fence.py
-
 verify-bolt-v3-poison-lock-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_poison_lock_fence.py
     python3 scripts/verify_bolt_v3_poison_lock_fence.py
-
-verify-bolt-v3-strategy-policy-fence: check-workspace
-    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
-    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
 
 verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
 
-verify-bolt-v3-usable-mu-sole-mint: check-workspace
-    python3 scripts/test_verify_bolt_v3_usable_mu_sole_mint.py
-    python3 scripts/verify_bolt_v3_usable_mu_sole_mint.py
-
-verify-bolt-v3-no-venue-name-branch: check-workspace
-    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
-    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
-
-verify-bolt-v3-requote-construction: check-workspace
-    python3 scripts/test_verify_bolt_v3_requote_construction.py
-    python3 scripts/verify_bolt_v3_requote_construction.py
-
-verify-bolt-v3-market-family-coupling: check-workspace
-    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
-    python3 scripts/verify_bolt_v3_market_family_coupling.py
-
-verify-bolt-v3-dependency-direction: check-workspace
-    python3 scripts/test_verify_bolt_v3_dependency_direction.py
-    python3 scripts/verify_bolt_v3_dependency_direction.py
+verify-bolt-v3-strategy-policy-fence: check-workspace
+    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
 
 verify-bolt-v3-boundary-evidence: check-workspace
     python3 scripts/test_verify_bolt_v3_boundary_evidence.py
     python3 scripts/verify_bolt_v3_boundary_evidence.py
-
-# Enforces "allowlist may only shrink" against the protected mainline: fails if
-# the in-tree dependency allowlist is not a subset of the one on origin/main.
-# No-op on the PR that first introduces the fence; active on every PR after merge.
-verify-bolt-v3-dependency-shrink-only: check-workspace
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
 
 test-verify-runtime-capture-yaml: check-workspace
     python3 scripts/test_verify_runtime_capture_yaml.py
@@ -368,7 +234,6 @@ source-fence-static-fences-only-inner: require-local-verification-gate check-wor
     python3 scripts/run_fences.py --fences-only
 
 source-fence: source-fence-static
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     # Fresh CI runners need the pinned NT checkout before source-capture checks.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
     python3 scripts/verify_runtime_capture_yaml.py

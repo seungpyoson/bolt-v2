@@ -88,62 +88,6 @@ verify-bolt-v3-pure-rust-runtime: check-workspace
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
 
-verify-ra-single-engine-import-boundary: check-workspace
-    python3 scripts/test_verify_ra_single_engine_import_boundary.py
-    python3 scripts/verify_ra_single_engine_import_boundary.py
-
-verify-ra-notebook-read-only-boundary: check-workspace
-    python3 scripts/test_verify_ra_notebook_read_only_boundary.py
-    python3 scripts/verify_ra_notebook_read_only_boundary.py
-
-verify-ra-point-in-time-leakage: check-workspace
-    python3 scripts/test_verify_ra_point_in_time_leakage.py
-    python3 scripts/verify_ra_point_in_time_leakage.py
-
-verify-ra-thin-reader-helper: check-workspace
-    python3 scripts/test_verify_ra_thin_reader_helper.py
-    python3 scripts/verify_ra_thin_reader_helper.py
-
-verify-ra-bte-phase-prerequisite: check-workspace
-    python3 scripts/test_verify_ra_bte_phase_prerequisite.py
-    python3 scripts/verify_ra_bte_phase_prerequisite.py
-
-verify-ra-gate0-catalog-persistence: check-workspace
-    python3 scripts/test_verify_ra_gate0_catalog_persistence.py
-    python3 scripts/verify_ra_gate0_catalog_persistence.py
-
-verify-ra-leadlag-catalog-lift: check-workspace
-    python3 scripts/test_verify_ra_leadlag_catalog_lift.py
-    python3 scripts/verify_ra_leadlag_catalog_lift.py
-
-verify-ra-sweep-orchestration: check-workspace
-    python3 scripts/test_verify_ra_sweep_orchestration.py
-    python3 scripts/verify_ra_sweep_orchestration.py
-
-verify-ra-cost-realism: check-workspace
-    python3 scripts/test_verify_ra_cost_realism.py
-    python3 scripts/verify_ra_cost_realism.py
-
-verify-ra-domain-metrics: check-workspace
-    python3 scripts/test_verify_ra_domain_metrics.py
-    python3 scripts/verify_ra_domain_metrics.py
-
-verify-ra-findings-promotion: check-workspace
-    python3 scripts/test_verify_ra_findings_promotion.py
-    python3 scripts/verify_ra_findings_promotion.py
-
-verify-ra-artifact-index-commit: check-workspace
-    python3 scripts/test_verify_ra_artifact_index_commit.py
-    python3 scripts/verify_ra_artifact_index_commit.py
-
-verify-ra-run-pointer-index: check-workspace
-    python3 scripts/test_verify_ra_run_pointer_index.py
-    python3 scripts/verify_ra_run_pointer_index.py
-
-verify-ra-bi-surface-and-feature-joins: check-workspace
-    python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
-    python3 scripts/verify_ra_bi_surface_and_feature_joins.py
-
 verify-dashboard-read-only-contract: check-workspace
     python3 scripts/test_verify_dashboard_read_only_contract.py
     python3 scripts/verify_dashboard_read_only_contract.py

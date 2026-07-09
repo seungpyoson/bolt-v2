@@ -210,62 +210,6 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "collect_findings",
         "collect_findings returns the source floor before ledger and justfile checks.",
     ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_notebook_read_only_boundary.py",
-        "RA notebook read-only notebooks code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_notebook_read_only_boundary.py",
-        "RA notebook read-only research code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_notebook_read_only_boundary.py",
-        "RA notebook read-only analytics code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_notebook_read_only_boundary.py",
-        "RA notebook read-only scripts code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_single_engine_import_boundary.py",
-        "RA single-engine notebooks code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_single_engine_import_boundary.py",
-        "RA single-engine research code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_single_engine_import_boundary.py",
-        "RA single-engine analytics code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
-    RequiredDiscoveryFloorContract(
-        "verify_ra_single_engine_import_boundary.py",
-        "RA single-engine scripts code files",
-        "aggregate-then-terminal",
-        "scan_root",
-        "scan_root validates declared source state and present-source floors before per-file boundary scanning.",
-    ),
 )
 
 

@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "a257a8b8ac60",
+  "strategy": "manual-commit",
+  "branch": "chore/704-phase3-batch-plan-eviction",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/src/path_resolution.rs",
+    "crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a2/57a8b8ac60/0/metadata.json",
+      "transcript": "/a2/57a8b8ac60/0/full.jsonl",
+      "compact_transcript": "/a2/57a8b8ac60/0/transcript.jsonl",
+      "content_hash": "/a2/57a8b8ac60/0/content_hash.txt",
+      "prompt": "/a2/57a8b8ac60/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1626,
+    "cache_creation_tokens": 270560,
+    "cache_read_tokens": 10506285,
+    "output_tokens": 51528,
+    "api_call_count": 49
+  }
+}

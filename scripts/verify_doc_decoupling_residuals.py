@@ -17,7 +17,12 @@ from verifier_io import require_nonempty
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = Path("ci/doc-decoupling-residuals.toml")
 VERIFY_SCRIPT_GLOB = "verify_*.py"
-EXTRA_SCRIPT_PATHS = ("scripts/governance_diff_analysis.py",)
+EXTRA_SCRIPT_PATHS = (
+    "scripts/cargo_command_analysis.py",
+    "scripts/shell_dataflow_analysis.py",
+    "scripts/governance_diff_analysis.py",
+    "scripts/workflow_expression_analysis.py",
+)
 RUST_TEST_GLOB = "*.rs"
 MARKDOWN_EXTENSION = chr(46) + chr(109) + chr(100)
 DOCS_WIDE_GLOB = "/".join(("docs", "**", "*"))

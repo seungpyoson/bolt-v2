@@ -237,8 +237,15 @@ def test_stale_ledger_snippet_fails() -> None:
 
 
 def test_relocated_governance_guard_residual_path_is_allowed() -> None:
-    if not VERIFIER.allowed_residual_path("scripts/governance_diff_analysis.py"):
-        raise AssertionError("relocated governance guard residuals must remain ledgerable")
+    expected = {
+        "scripts/cargo_command_analysis.py",
+        "scripts/shell_dataflow_analysis.py",
+        "scripts/governance_diff_analysis.py",
+        "scripts/workflow_expression_analysis.py",
+    }
+    missing = sorted(path for path in expected if not VERIFIER.allowed_residual_path(path))
+    if missing:
+        raise AssertionError(f"relocated analyzer residuals must remain ledgerable: {missing}")
 
 
 def test_relocated_governance_guard_residuals_are_scanned() -> None:

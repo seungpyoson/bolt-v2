@@ -271,6 +271,17 @@ def test_registered_payload_literals_do_not_self_violate() -> None:
             raise AssertionError(f"registered payload literals should be control-plane data, got {findings!r}")
 
 
+def test_registered_bootstrap_payloads_are_present() -> None:
+    present = {(hit.path, hit.value) for hit in VERIFIER.script_literals(VERIFIER.REPO_ROOT)}
+    stale = sorted(
+        (registration.path, registration.value)
+        for registration in VERIFIER.REGISTERED_RETYPE_PAYLOADS
+        if (registration.path, registration.value) not in present
+    )
+    if stale:
+        raise AssertionError(f"registered no-config bootstrap payloads must be present: {stale}")
+
+
 def test_relocated_hygiene_modules_are_strict_paths() -> None:
     expected = {
         "scripts/cargo_command_analysis.py",
@@ -304,6 +315,7 @@ def main() -> int:
         test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline,
         test_ratchet_baseline_matches_current_non_strict_count,
         test_registered_payload_literals_do_not_self_violate,
+        test_registered_bootstrap_payloads_are_present,
         test_relocated_hygiene_modules_are_strict_paths,
     )
     for test in tests:

@@ -5562,26 +5562,45 @@ def assert_command_parse_cache_is_transparent() -> None:
         )
 
 
-def assert_legacy_verifier_has_no_local_functools_cache_decorators() -> None:
-    """Relocated cache decorators must not silently attach to retained helpers."""
-    tree = ast.parse(repo_source_text(VERIFIER_PATH), filename=VERIFIER_PATH)
-    cached_functions: list[str] = []
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef):
+def decorators_separated_from_targets(path: pathlib.Path, source: str) -> list[str]:
+    tree = ast.parse(source, filename=str(path))
+    lines = source.splitlines()
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
-        for decorator in node.decorator_list:
-            if (
-                isinstance(decorator, ast.Attribute)
-                and isinstance(decorator.value, ast.Name)
-                and decorator.value.id == "functools"
-                and decorator.attr == "cache"
-            ):
-                cached_functions.append(f"{node.name}:{node.lineno}")
-    if cached_functions:
-        raise AssertionError(
-            "verify_ci_workflow_hygiene.py must not keep local functools.cache decorators "
-            f"after cache-bearing helpers move out: {cached_functions}"
+        if not node.decorator_list:
+            continue
+        last_decorator_line = max(
+            getattr(decorator, "end_lineno", decorator.lineno) or decorator.lineno
+            for decorator in node.decorator_list
         )
+        if any(
+            not lines[line_number - 1].strip()
+            for line_number in range(last_decorator_line + 1, node.lineno)
+        ):
+            offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}:{node.name}")
+    return offenders
+
+
+def assert_decorator_spacing_guard_covers_reviewed_evasions() -> None:
+    alias_source = "from functools import cache\n@cache\n\ndef cached_alias():\n    return 1\n"
+    sibling_source = "import functools\n@functools.cache\n\ndef sibling_cache():\n    return 1\n"
+    clean_source = "import functools\n@functools.cache\ndef clean_cache():\n    return 1\n"
+    if not decorators_separated_from_targets(REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py", alias_source):
+        raise AssertionError("decorator spacing guard must catch aliased cache decorators")
+    if not decorators_separated_from_targets(REPO_ROOT / "scripts" / "cargo_command_analysis.py", sibling_source):
+        raise AssertionError("decorator spacing guard must catch sibling module decorators")
+    if decorators_separated_from_targets(REPO_ROOT / "scripts" / "workflow_expression_analysis.py", clean_source):
+        raise AssertionError("decorator spacing guard must accept adjacent decorators")
+
+
+def assert_no_decorators_separated_from_targets() -> None:
+    offenders: list[str] = []
+    for path in sorted((REPO_ROOT / "scripts").glob("*.py")):
+        offenders.extend(decorators_separated_from_targets(path, path.read_text(encoding="utf-8")))
+    if offenders:
+        raise AssertionError(f"decorators must stay adjacent to their targets: {offenders}")
 
 
 def assert_relocated_symbols_keep_legacy_exports() -> None:
@@ -5632,10 +5651,36 @@ def assert_relocated_symbols_keep_legacy_exports() -> None:
         "expect_scalar",
         "verify_mergify_config",
     ):
-        if hasattr(preflight, name) and not hasattr(verifier, name):
+        if not hasattr(preflight, name):
+            missing.append(f"merge_queue_preflight.py:{name}")
+        if not hasattr(verifier, name):
             missing.append(f"merge_queue_preflight.py:{name}")
     if missing:
         raise AssertionError(f"legacy verifier re-exports missing moved symbols: {missing}")
+
+
+def imports_giant_twin(source: str) -> bool:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name.split(".")[-1] == "test_verify_ci_workflow_hygiene" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[-1] == "test_verify_ci_workflow_hygiene":
+                return True
+            if any(alias.name == "test_verify_ci_workflow_hygiene" for alias in node.names):
+                return True
+    return False
+
+
+def assert_giant_twin_import_guard_ignores_fixture_strings() -> None:
+    fixture_only = 'COMMAND = "python3 scripts/test_verify_ci_workflow_hygiene.py"\n'
+    if imports_giant_twin(fixture_only):
+        raise AssertionError("giant twin import guard must ignore fixture strings")
+    if not imports_giant_twin("import test_verify_ci_workflow_hygiene\n"):
+        raise AssertionError("giant twin import guard must catch direct imports")
+    if not imports_giant_twin("from scripts import test_verify_ci_workflow_hygiene\n"):
+        raise AssertionError("giant twin import guard must catch package imports")
 
 
 def assert_relocated_tests_do_not_import_giant_twin() -> None:
@@ -5646,8 +5691,9 @@ def assert_relocated_tests_do_not_import_giant_twin() -> None:
         REPO_ROOT / "scripts" / "test_governance_diff_analysis.py",
         REPO_ROOT / "scripts" / "test_workflow_expression_analysis.py",
         REPO_ROOT / "scripts" / "test_merge_queue_preflight.py",
+        REPO_ROOT / "scripts" / "ci_workflow_hygiene_test_helpers.py",
     ):
-        if "test_verify_ci_workflow_hygiene" in path.read_text(encoding="utf-8"):
+        if imports_giant_twin(path.read_text(encoding="utf-8")):
             offenders.append(str(path.relative_to(REPO_ROOT)))
     if offenders:
         raise AssertionError(f"relocated tests must import shared helpers, not the giant twin: {offenders}")
@@ -9860,8 +9906,10 @@ def main() -> int:
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_command_parse_cache_is_transparent()
-    assert_legacy_verifier_has_no_local_functools_cache_decorators()
+    assert_decorator_spacing_guard_covers_reviewed_evasions()
+    assert_no_decorators_separated_from_targets()
     assert_relocated_symbols_keep_legacy_exports()
+    assert_giant_twin_import_guard_ignores_fixture_strings()
     assert_relocated_tests_do_not_import_giant_twin()
     assert_required_job_indentation_is_actionable()
     assert_body_exits_requires_top_level_exit()

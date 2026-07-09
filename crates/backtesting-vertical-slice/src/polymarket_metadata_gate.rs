@@ -5,9 +5,13 @@
 //! Polymarket parser. It deliberately does not synthesize `BinaryOption`
 //! metadata from CLOB-only or row-only fields.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::hashing::sha256_hex;
+use crate::path_resolution::resolve_existing_path;
 use anyhow::{Context, Result};
 use nautilus_polymarket::http::{
     models::GammaMarket,
@@ -56,7 +60,15 @@ pub struct PolymarketMetadataGateReport {
 pub fn evaluate_polymarket_metadata_gate(
     spec: &PolymarketMetadataGateSpec,
 ) -> Result<PolymarketMetadataGateReport> {
-    let gamma_bytes = fs::read(&spec.gamma_markets_path).with_context(|| {
+    evaluate_polymarket_metadata_gate_with_base(spec, Path::new("."))
+}
+
+pub fn evaluate_polymarket_metadata_gate_with_base(
+    spec: &PolymarketMetadataGateSpec,
+    base_dir: &Path,
+) -> Result<PolymarketMetadataGateReport> {
+    let gamma_markets_path = resolve_existing_path(base_dir, &spec.gamma_markets_path);
+    let gamma_bytes = fs::read(&gamma_markets_path).with_context(|| {
         format!(
             "read Gamma markets JSON {}",
             spec.gamma_markets_path.display()

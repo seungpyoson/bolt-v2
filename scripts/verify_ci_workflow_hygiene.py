@@ -417,8 +417,6 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ai-review-kimi-cli.yml": "ai_review_kimi_cli",
     "ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
     ".github/workflows/ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
-    "ai-review-model-freshness.yml": "ai_review_model_freshness",
-    ".github/workflows/ai-review-model-freshness.yml": "ai_review_model_freshness",
     "claude-code-review.yml": "claude_code_review",
     ".github/workflows/claude-code-review.yml": "claude_code_review",
     "advisory.yml": "advisory",

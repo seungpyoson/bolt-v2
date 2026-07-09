@@ -12,6 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_proof::{
     AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
     SourceProofUsageScope, read_source_binding_registry_from_path,
@@ -236,16 +237,19 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_registry =
-        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
-            BackfillSourceProofScopeError::ReadSourceBindings {
-                path: source_bindings_path,
-                error: error.to_string(),
-            }
-        })?;
+    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
+    let source_bindings_registry = read_source_binding_registry_from_path(
+        &resolved_source_bindings_path,
+    )
+    .map_err(|error| BackfillSourceProofScopeError::ReadSourceBindings {
+        path: source_bindings_path,
+        error: error.to_string(),
+    })?;
     let source_proof_path = spec.source_proof_path.display().to_string();
-    let source_proof_text = fs::read_to_string(&spec.source_proof_path).map_err(|error| {
+    let resolved_source_proof_path = resolve_existing_path(base_dir, &spec.source_proof_path);
+    let source_proof_text = fs::read_to_string(&resolved_source_proof_path).map_err(|error| {
         BackfillSourceProofScopeError::ReadSourceProof {
             path: source_proof_path.clone(),
             error: error.to_string(),
@@ -258,7 +262,8 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
         }
     })?;
     let manifest_path = spec.manifest_path.display().to_string();
-    let manifest_text = fs::read_to_string(&spec.manifest_path).map_err(|error| {
+    let resolved_manifest_path = resolve_existing_path(base_dir, &spec.manifest_path);
+    let manifest_text = fs::read_to_string(&resolved_manifest_path).map_err(|error| {
         BackfillSourceProofScopeError::ReadManifest {
             path: manifest_path.clone(),
             error: error.to_string(),
@@ -277,7 +282,8 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
         &source_bindings_registry,
         selected_object_uri_from_config(spec.selected_object_uri),
     );
-    write_backfill_source_proof_scope_report(&spec.output_dir, &report)
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_backfill_source_proof_scope_report(&output_dir, &report)
 }
 
 pub fn write_backfill_source_proof_scope_report(

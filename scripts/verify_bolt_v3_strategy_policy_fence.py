@@ -27,10 +27,8 @@ from bolt_v3_source_roots import (
     STRATEGY_SOURCE_ROOTS,
     source_set_files,
 )
-from verify_bolt_v3_pure_rust_runtime import (
-    production_text,
-    strip_rust_comments_and_literals,
-)
+from rust_source_scanner import strip_rust_comments_and_literals
+from verify_bolt_v3_provider_leaks import production_text
 from verifier_io import require_nonempty
 
 
@@ -548,19 +546,27 @@ def collect_violations() -> list[Violation]:
     for path in strategy_files:
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(
-            find_violations_in_text(rel, production_text(path), STRATEGY_POLICY_RULES)
-        )
-    for path in mutation_files:
-        rel = str(path.relative_to(REPO_ROOT))
-        violations.extend(
-            find_violations_in_text(rel, production_text(path), EXECUTION_POLICY_RULES)
+            find_violations_in_text(
+                rel,
+                production_text(path.read_text(encoding="utf-8")),
+                STRATEGY_POLICY_RULES,
+            )
         )
     for path in mutation_files:
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(
             find_violations_in_text(
                 rel,
-                production_text(path),
+                production_text(path.read_text(encoding="utf-8")),
+                EXECUTION_POLICY_RULES,
+            )
+        )
+    for path in mutation_files:
+        rel = str(path.relative_to(REPO_ROOT))
+        violations.extend(
+            find_violations_in_text(
+                rel,
+                production_text(path.read_text(encoding="utf-8")),
                 (DIRECT_NT_VENUE_MUTATION_RULE, RAW_MSGBUS_NT_VENUE_MUTATION_RULE),
             )
         )

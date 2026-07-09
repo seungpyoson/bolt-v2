@@ -54,6 +54,9 @@ const TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analyt
 const TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/";
 const TIER1_PMXT_SOURCE_PROOFS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/";
+const PHASE3_CONVERSION_BATCHES_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/";
+const PHASE3_CONVERSION_BATCH_PLAN_SUFFIX: &str = "/plan/backfill-conversion-batch-plan.json";
 
 /// Tier-1 subtree prefixes whose generated JSON artifacts are evicted.
 pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
@@ -247,7 +250,20 @@ impl EvictedFixtureIndex {
 
 /// `true` iff `path` is in the declared #704 reference-fixture eviction scope.
 pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
-    is_evicted_execution_pack_record_path(path) || is_tier1_evicted_reference_fixture_path(path)
+    is_evicted_execution_pack_record_path(path)
+        || is_tier1_evicted_reference_fixture_path(path)
+        || is_phase3_conversion_batch_plan_path(path)
+}
+
+/// `true` iff `path` is a Phase-3 generated conversion batch plan.
+pub fn is_phase3_conversion_batch_plan_path(path: &str) -> bool {
+    let Some(scope) = path.strip_prefix(PHASE3_CONVERSION_BATCHES_PREFIX) else {
+        return false;
+    };
+    let Some(scope) = scope.strip_suffix(PHASE3_CONVERSION_BATCH_PLAN_SUFFIX) else {
+        return false;
+    };
+    !scope.is_empty() && !scope.contains('/')
 }
 
 /// `true` iff `path` is a per-record (non-`00000`) execution-pack run artifact.
@@ -331,10 +347,12 @@ fn is_lowercase_sha256_hex(value: &str) -> bool {
 }
 
 /// Resolve the repo root from this crate's manifest dir (`<repo>/crates/<crate>`).
-/// Mirrors the `env!("CARGO_MANIFEST_DIR")/../..` convention used by the crate's tests;
-/// the trailing `..` components are resolved by the OS at access time.
 pub fn repo_root_from_manifest_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root")
+        .to_path_buf()
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::reference_artifact::{
     ReferenceArtifactError, ReferenceArtifactErrorMappers, ReferenceArtifactRewrite,
     canonical_json_sha256, write_reference_artifact_with_len_mapped,
@@ -434,19 +435,23 @@ pub fn write_source_proof_admissibility_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
+    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
     let source_bindings_registry =
-        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
-            SourceProofAdmissibilityFileError::ReadSourceBindings {
+        read_source_binding_registry_from_path(&resolved_source_bindings_path).map_err(
+            |error| SourceProofAdmissibilityFileError::ReadSourceBindings {
                 path: source_bindings_path,
                 error: error.to_string(),
-            }
-        })?;
-    write_source_proof_admissibility_report_from_files(
-        &spec.output_dir,
+            },
+        )?;
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_source_proof_admissibility_report_from_files_with_base(
+        &output_dir,
         spec.report_id,
         spec.source_proofs,
         &source_bindings_registry,
+        base_dir,
     )
 }
 
@@ -456,12 +461,29 @@ pub fn write_source_proof_admissibility_report_from_files(
     source_proof_files: Vec<SourceProofAdmissibilityProofFile>,
     source_bindings_registry: &SourceBindingRegistry,
 ) -> Result<SourceProofAdmissibilityArtifact, SourceProofAdmissibilityFileError> {
+    write_source_proof_admissibility_report_from_files_with_base(
+        output_dir,
+        report_id,
+        source_proof_files,
+        source_bindings_registry,
+        Path::new("."),
+    )
+}
+
+fn write_source_proof_admissibility_report_from_files_with_base(
+    output_dir: &Path,
+    report_id: impl Into<String>,
+    source_proof_files: Vec<SourceProofAdmissibilityProofFile>,
+    source_bindings_registry: &SourceBindingRegistry,
+    base_dir: &Path,
+) -> Result<SourceProofAdmissibilityArtifact, SourceProofAdmissibilityFileError> {
     let source_proofs = source_proof_files
         .into_iter()
         .map(|source_proof| {
             let SourceProofAdmissibilityProofFile { proof_uri, path } = source_proof;
             let path_display = path.display().to_string();
-            let bytes = fs::read(&path).map_err(|error| {
+            let resolved_path = resolve_existing_path(base_dir, &path);
+            let bytes = fs::read(&resolved_path).map_err(|error| {
                 SourceProofAdmissibilityFileError::ReadSourceProof {
                     proof_uri: proof_uri.clone(),
                     path: path_display.clone(),

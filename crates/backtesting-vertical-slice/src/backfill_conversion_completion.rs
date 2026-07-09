@@ -19,6 +19,7 @@ use crate::{
         BackfillConversionBatchPlan, BackfillConversionBatchRecord, BackfillConversionBatchStatus,
     },
     backfill_execution_plan::BackfillExecutionPlan,
+    path_resolution::{resolve_existing_path, resolve_output_dir},
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
     source_proof::SourceProofUsageScope,
     source_universe_batch_execution::{
@@ -442,8 +443,8 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
                 error: error.to_string(),
             }
         })?;
-    let path_base = path_resolution_base(spec_path, &spec.batch_plan_path);
-    let batch_plan_path = resolve_path(&path_base, &spec.batch_plan_path);
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let batch_plan_path = resolve_existing_path(base_dir, &spec.batch_plan_path);
     let batch_path = spec.batch_plan_path.display().to_string();
     let batch_bytes = fs::read(&batch_plan_path).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadBatchPlan {
@@ -466,12 +467,12 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
     let mut inputs = Vec::new();
     for record in spec.records {
         let batch_record = batch_records.get(record.record_id.as_str());
-        inputs.push(read_input(record, batch_record, &path_base)?);
+        inputs.push(read_input(record, batch_record, base_dir)?);
     }
     let batch_execution_report = match &spec.batch_execution_report_path {
         Some(report_path) => {
             let report_display = report_path.display().to_string();
-            let resolved_report_path = resolve_path(&path_base, report_path);
+            let resolved_report_path = resolve_existing_path(base_dir, report_path);
             let report_bytes = fs::read(&resolved_report_path).map_err(|error| {
                 BackfillConversionCompletionLedgerError::ReadBatchExecutionReport {
                     path: report_display.clone(),
@@ -496,7 +497,7 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
         inputs,
         batch_execution_report.as_ref(),
     );
-    let output_dir = resolve_path(&path_base, &spec.output_dir);
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     write_backfill_conversion_completion_ledger(&output_dir, &ledger)
 }
 
@@ -541,10 +542,11 @@ pub fn write_backfill_conversion_completion_ledger(
 fn read_input(
     spec: BackfillConversionCompletionRecordSpec,
     batch_record: Option<&&BackfillConversionBatchRecord>,
-    path_base: &Path,
+    base_dir: &Path,
 ) -> Result<BackfillConversionCompletionInput, BackfillConversionCompletionLedgerError> {
     let publication_path = spec.publication_evidence_path.display().to_string();
-    let resolved_publication_path = resolve_path(path_base, &spec.publication_evidence_path);
+    let resolved_publication_path =
+        resolve_existing_path(base_dir, &spec.publication_evidence_path);
     let publication_bytes = fs::read(&resolved_publication_path).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadPublicationEvidence {
             path: publication_path.clone(),
@@ -561,7 +563,8 @@ fn read_input(
         })?;
 
     let mapping_path = spec.catalog_mapping_evaluation_path.display().to_string();
-    let resolved_mapping_path = resolve_path(path_base, &spec.catalog_mapping_evaluation_path);
+    let resolved_mapping_path =
+        resolve_existing_path(base_dir, &spec.catalog_mapping_evaluation_path);
     let mapping_bytes = fs::read(&resolved_mapping_path).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadCatalogMappingEvaluation {
             path: mapping_path.clone(),
@@ -581,7 +584,7 @@ fn read_input(
         .map(|record| record.execution_plan_path.clone())
         .unwrap_or_default();
     let execution_plan_path_display = execution_plan_path.display().to_string();
-    let resolved_execution_plan_path = resolve_path(path_base, &execution_plan_path);
+    let resolved_execution_plan_path = resolve_existing_path(base_dir, &execution_plan_path);
     let execution_plan_bytes = fs::read(&resolved_execution_plan_path).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadExecutionPlan {
             path: execution_plan_path_display.clone(),
@@ -859,30 +862,6 @@ fn completion_record(
 
 fn repo_ref(path: &Path) -> String {
     format!("repo://{}", path.display())
-}
-
-fn path_resolution_base(spec_path: &Path, probe_path: &Path) -> PathBuf {
-    if probe_path.is_absolute() {
-        return PathBuf::from(".");
-    }
-    if probe_path.exists() {
-        return PathBuf::from(".");
-    }
-    let anchor = spec_path.parent().unwrap_or_else(|| Path::new("."));
-    for ancestor in anchor.ancestors() {
-        if ancestor.join(probe_path).exists() {
-            return ancestor.to_path_buf();
-        }
-    }
-    PathBuf::from(".")
-}
-
-fn resolve_path(base: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

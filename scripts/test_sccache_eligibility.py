@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
+import pathlib
+import tomllib
+
 from sccache_eligibility import resolve_sccache_eligibility
 
 
-LOCATION = {
-    "bucket": "bolt-v2-ci-cache-675819144420-us-east-2",
-    "region": "us-east-2",
-    "key_prefix": "sccache/bolt-v2/arm64/root-nextest/",
-}
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+LOCATION = tomllib.loads((REPO_ROOT / "ci" / "sccache-location.toml").read_text(encoding="utf-8"))["location"]
 
 
 def assert_case(
@@ -132,4 +132,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

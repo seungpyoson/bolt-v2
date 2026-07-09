@@ -25,6 +25,7 @@ GOVERNED_CONFIG_ARTIFACTS = (
     "ci/nextest-fingerprint.toml",
     "ci/rust-ci-inputs.toml",
     "ci/rust-verification.toml",
+    "ci/sccache-location.toml",
     "ci/storage-tripwire.toml",
     "config/clean-merged.toml",
     "config/deploy.toml",
@@ -90,7 +91,7 @@ STRICT_RETYPE_PATHS = frozenset(
 
 # Recompute by running verify_no_config_retype.py after intentional ratchet
 # removals/additions; this value is the exact current non-strict count.
-RATCHET_BASELINE_COUNT = 2573
+RATCHET_BASELINE_COUNT = 2588
 
 
 @dataclass(frozen=True)
@@ -321,6 +322,7 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "[ci_provenance]",
         "[merge_queue_preflight.required_check_workflows]",
         "[merge_queue_preflight]",
+        "[remote_compile_cache]",
         "[remote_fast_linker]",
         "]",
         "backtester-gate",
@@ -330,6 +332,7 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         'ci_env = "GITHUB_ACTIONS"',
         "docs",
         "enabled = true",
+        'enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"',
         "gate",
         "gate-iteration",
         'gate_required = "gate"',
@@ -342,6 +345,9 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         'run_name_iteration = "CI [dispatch:iteration]"',
         "schema_version = 1",
         "source_fence_full_profile_pathspecs = [",
+        "test",
+        'wrapper_env = "SCCACHE_PATH"',
+        'wrapper_program = "sccache"',
         "workflow_dispatch",
         'workflow_name = "CI"',
         'workflow_path = ".github/workflows/ci.yml"',
@@ -382,6 +388,8 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "[local_compile_policy]",
         "[local_lane_policy]",
         "[meter.api_limits]",
+        "[remote_compile_cache]",
+        "[remote_fast_linker]",
         "[remote_verification]",
         "[sets.backtester_detect]",
         "[storage_audit.cleanup_feasibility_alert]",
@@ -424,7 +432,9 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "docs",
         'draft_pr_synchronize = "iteration"',
         "draft_timeline_items = 100",
+        "enabled = false",
         "enabled = true",
+        'enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"',
         'fingerprint_artifact_prefix = "nextest-archive-fingerprint-"',
         'fingerprint_source = "meter"',
         "force_full_ci = false",
@@ -436,6 +446,8 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "heartbeat_seconds = 15",
         "ignore_emit_failure = false",
         "iteration",
+        'ci_env = "GITHUB_ACTIONS"',
+        'linker_env = "BOLT_RUST_FAST_LINKER"',
         'lock_dir = "/tmp/rust-verification-lanes"',
         'lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"',
         "main",
@@ -452,6 +464,7 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         "overall_timeout_seconds = 3600",
         "poll_interval_seconds = 1",
         "poll_interval_seconds = 15",
+        'programs = ["mold", "lld"]',
         'project_id = "backtesting-vertical-slice"',
         'project_id = "bolt-v2"',
         'proof_gate_job = "gate"',
@@ -487,6 +500,8 @@ STRICT_BOOTSTRAP_RETYPE_VALUES_BY_PATH = {
         'workflow_dispatch_full_ci = "full"',
         'workflow_name = "CI"',
         "workflow_runs_per_page = 100",
+        'wrapper_env = "SCCACHE_PATH"',
+        'wrapper_program = "sccache"',
     ),
     "scripts/test_verify_no_config_retype.py": (
         "[ci_provenance]",

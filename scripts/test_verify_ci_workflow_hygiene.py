@@ -9743,7 +9743,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         (
             "sccache location config owns the prefix",
             action_text,
-            config_text.replace('key_prefix = "sccache/bolt-v2/arm64/root-nextest/"', 'key_prefix = ""', 1),
+            re.sub(r'key_prefix = "[^"]+"', 'key_prefix = ""', config_text, count=1),
             "location.key_prefix must be a non-empty string ending in '/'",
         ),
     )

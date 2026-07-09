@@ -824,6 +824,482 @@ class InfraTests(unittest.TestCase):
         # specifically NOT under a per-worktree .git/log path
         self.assertTrue(log.parent.samefile(common))
 
+    def test_best_effort_heartbeat_failure_logs_line_and_summary(self) -> None:
+        common = git_common_dir_compat(self.work)
+        heartbeat = common / "clean-merged.heartbeat"
+        log = common / "clean-merged.log"
+        real_write_text = cm.pathlib.Path.write_text
+
+        def fail_heartbeat(path: pathlib.Path, text: str, *args: Any, **kwargs: Any) -> int:
+            if path == heartbeat:
+                raise OSError("heartbeat boom")
+            return real_write_text(path, text, *args, **kwargs)
+
+        with mock.patch.object(cm.pathlib.Path, "write_text", fail_heartbeat):
+            rc = run_clean_inproc(self.work, "--lane", "h", "--quiet")
+
+        self.assertEqual(rc, 0)
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warning = [record for record in records if record.get("action") == "best-effort-warning"]
+        self.assertTrue(warning, records)
+        self.assertEqual(warning[0].get("label"), "heartbeat-write")
+        self.assertIn("heartbeat boom", warning[0].get("reason", ""))
+        summaries = [record for record in records if record.get("action") == "best-effort-warning-summary"]
+        self.assertTrue(summaries, records)
+        self.assertEqual(summaries[-1].get("count"), 1)
+        self.assertEqual(summaries[-1].get("by_label"), {"heartbeat-write": 1})
+
+    def test_best_effort_pending_warning_flushes_when_purge_quarantine_absent(self) -> None:
+        log = git_common_dir_compat(self.work) / "clean-merged.log"
+
+        def main_root_with_pending_warning(repo_root: pathlib.Path) -> pathlib.Path:
+            cm._record_best_effort_warning(
+                "main-worktree-list",
+                "pre-config warning",
+                repo_root_path=str(repo_root),
+            )
+            return repo_root
+
+        with mock.patch.object(cm, "_main_worktree_root", main_root_with_pending_warning):
+            rc = run_clean_inproc(self.work, "--purge-quarantine", "30", "--quiet")
+
+        self.assertEqual(rc, 0)
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warning = [record for record in records if record.get("action") == "best-effort-warning"]
+        self.assertTrue(warning, records)
+        self.assertEqual(warning[0].get("label"), "main-worktree-list")
+        self.assertEqual(pathlib.Path(warning[0]["repo_root_path"]).resolve(), self.work.resolve())
+        summaries = [record for record in records if record.get("action") == "best-effort-warning-summary"]
+        self.assertTrue(summaries, records)
+        self.assertEqual(summaries[-1].get("count"), len(warning))
+        self.assertEqual(summaries[-1].get("by_label"), {"main-worktree-list": len(warning)})
+
+    def test_main_worktree_root_warning_records_repo_root_context(self) -> None:
+        log = git_common_dir_compat(self.work) / "clean-merged.log"
+        real_run = cm.subprocess.run
+
+        def fail_main_worktree_probes(args: list[str], *call_args: Any, **kwargs: Any) -> Any:
+            if args == ["git", "worktree", "list", "--porcelain"]:
+                raise subprocess.CalledProcessError(1, args, stderr="worktree list boom")
+            if args == ["git", "rev-parse", "--git-common-dir"]:
+                raise subprocess.CalledProcessError(1, args, stderr="common-dir boom")
+            return real_run(args, *call_args, **kwargs)
+
+        cm._reset_best_effort_warnings()
+        try:
+            with mock.patch.object(cm.subprocess, "run", fail_main_worktree_probes):
+                self.assertEqual(cm._main_worktree_root(self.work), self.work)
+            cm._write_best_effort_warning_summary(self.work, cm.load_config(self.work))
+        finally:
+            cm._reset_best_effort_warnings()
+
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warnings = [record for record in records if record.get("action") == "best-effort-warning"]
+        labels = {record.get("label") for record in warnings}
+        self.assertIn("main-worktree-list", labels)
+        self.assertIn("main-worktree-common-dir", labels)
+        for warning in warnings:
+            self.assertEqual(pathlib.Path(warning["repo_root_path"]).resolve(), self.work.resolve())
+
+    def test_best_effort_warning_never_crashes_when_audit_log_unavailable(self) -> None:
+        common = git_common_dir_compat(self.work)
+        blocker = common / "audit-parent-is-file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(
+                config.logging,
+                audit_path=str(blocker / "clean-merged.log"),
+            ),
+        )
+
+        cm._reset_best_effort_warnings()
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                cm._record_best_effort_warning(
+                    "audit-unavailable-probe",
+                    "audit path cannot be opened",
+                    repo_root=self.work,
+                    config=config,
+                )
+                cm._write_best_effort_warning_summary(self.work, config)
+        except OSError as exc:
+            raise AssertionError("best-effort warning logging must not crash cleanup") from exc
+        finally:
+            cm._reset_best_effort_warnings()
+        self.assertIn("audit-unavailable-probe", stderr.getvalue())
+        self.assertIn("audit path cannot be opened", stderr.getvalue())
+
+    def test_best_effort_warning_surfaces_when_audit_lock_is_busy(self) -> None:
+        common = git_common_dir_compat(self.work)
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(
+                config.logging,
+                audit_path=str(common / "locked-clean-merged.log"),
+            ),
+        )
+        lock_fd = cm._acquire_lock(cm._log_lock_path(common / "locked-clean-merged.log"))
+        self.assertIsNotNone(lock_fd)
+
+        cm._reset_best_effort_warnings()
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                cm._record_best_effort_warning(
+                    "audit-lock-busy-probe",
+                    "audit lock is busy",
+                    repo_root=self.work,
+                    config=config,
+                )
+                cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+            if lock_fd is not None:
+                cm._release_lock(lock_fd)
+        self.assertIn("audit-lock-busy-probe", stderr.getvalue())
+
+    def test_best_effort_warning_surfaces_git_common_dir_audit_failure(self) -> None:
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(
+                config.logging,
+                audit_path="<git-common-dir>/clean-merged.log",
+            ),
+        )
+
+        cm._reset_best_effort_warnings()
+        stderr = io.StringIO()
+        try:
+            with mock.patch.object(
+                cm,
+                "git_common_dir",
+                side_effect=subprocess.CalledProcessError(1, ["git", "rev-parse"], stderr="common-dir fail"),
+            ):
+                with contextlib.redirect_stderr(stderr):
+                    cm._record_best_effort_warning(
+                        "git-common-dir-probe",
+                        "git common dir failed",
+                        repo_root=self.work,
+                        config=config,
+                    )
+                    cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+        self.assertIn("git-common-dir-probe", stderr.getvalue())
+        self.assertIn("git common dir failed", stderr.getvalue())
+
+    def test_best_effort_flush_processes_warning_recorded_during_audit_write(self) -> None:
+        common = git_common_dir_compat(self.work)
+        log = common / "clean-merged.log"
+        log.write_text(("x" * 4096) + "\n", encoding="utf-8")
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(config.logging, max_log_bytes=1),
+        )
+        real_rename = cm.pathlib.Path.rename
+        failed_once = False
+
+        def fail_first_log_rotation(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+            nonlocal failed_once
+            if path == log and not failed_once:
+                failed_once = True
+                raise OSError("rotate once")
+            return real_rename(path, target)
+
+        cm._reset_best_effort_warnings()
+        try:
+            cm._record_best_effort_warning("queued-before-flush", "queued warning")
+            with mock.patch.object(cm.pathlib.Path, "rename", fail_first_log_rotation):
+                cm._write_best_effort_warning_summary(self.work, config)
+            self.assertEqual(cm._BEST_EFFORT_PENDING_WARNINGS, [])
+        finally:
+            cm._reset_best_effort_warnings()
+
+        records = []
+        for record_path in [log, *cm._rotated_log_paths(log)]:
+            if record_path.exists():
+                records.extend(
+                    json.loads(line)
+                    for line in record_path.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("{")
+                )
+        labels = {record.get("label") for record in records if record.get("action") == "best-effort-warning"}
+        self.assertIn("queued-before-flush", labels)
+        self.assertIn("rotating-log-rotate", labels)
+
+    def test_best_effort_summary_drains_warning_recorded_during_summary_write(self) -> None:
+        common = git_common_dir_compat(self.work)
+        log = common / "clean-merged.log"
+        log.write_text(("x" * 4096) + "\n", encoding="utf-8")
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(config.logging, max_log_bytes=1),
+        )
+        real_rename = cm.pathlib.Path.rename
+
+        def fail_log_rotation(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+            if path == log:
+                raise OSError("persistent rotate failure")
+            return real_rename(path, target)
+
+        cm._reset_best_effort_warnings()
+        stderr = io.StringIO()
+        try:
+            cm._record_best_effort_warning("queued-before-summary", "queued warning")
+            with mock.patch.object(cm.pathlib.Path, "rename", fail_log_rotation):
+                with contextlib.redirect_stderr(stderr):
+                    cm._write_best_effort_warning_summary(self.work, config)
+            self.assertEqual(cm._BEST_EFFORT_PENDING_WARNINGS, [])
+        finally:
+            cm._reset_best_effort_warnings()
+        self.assertIn("rotating-log-rotate", stderr.getvalue())
+        self.assertIn("persistent rotate failure", stderr.getvalue())
+
+    def test_install_hooks_success_drains_pre_config_warnings_to_stderr(self) -> None:
+        def main_root_with_pending_warning(repo_root: pathlib.Path) -> pathlib.Path:
+            cm._record_best_effort_warning(
+                "main-worktree-list",
+                "hook-path boom",
+                repo_root_path=str(repo_root),
+            )
+            return repo_root
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        cm._reset_best_effort_warnings()
+        try:
+            with mock.patch.object(cm, "_main_worktree_root", main_root_with_pending_warning):
+                with mock.patch.object(cm, "install_hooks", return_value=pathlib.Path("/fake/hooks")):
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        rc = run_clean_inproc(self.work, "--install-hooks")
+            self.assertEqual(rc, 0)
+            self.assertEqual(cm._BEST_EFFORT_PENDING_WARNINGS, [])
+        finally:
+            cm._reset_best_effort_warnings()
+        self.assertIn("installed hooks", stdout.getvalue())
+        self.assertIn("main-worktree-list", stderr.getvalue())
+        self.assertIn("hook-path boom", stderr.getvalue())
+
+    def test_no_config_warning_stderr_fallback_redacts_and_bounds_reason(self) -> None:
+        secret = "ghp_" + ("A" * 24)
+        reason = ("x" * 4096) + f" token={secret}"
+        stderr = io.StringIO()
+
+        cm._reset_best_effort_warnings()
+        try:
+            cm._record_best_effort_warning(
+                "main-worktree-list",
+                reason,
+                repo_root_path=str(self.work),
+            )
+            with contextlib.redirect_stderr(stderr):
+                cm._flush_best_effort_warning_records_to_stderr()
+        finally:
+            cm._reset_best_effort_warnings()
+
+        emitted = stderr.getvalue()
+        self.assertIn("main-worktree-list", emitted)
+        self.assertNotIn(secret, emitted)
+        self.assertLess(len(emitted), 1000)
+
+    def test_pre_config_stderr_fallback_bound_matches_default_config(self) -> None:
+        config = cm.load_config(self.work)
+
+        self.assertEqual(
+            cm.PRE_CONFIG_REPORT_ERROR_MAX_CHARS,
+            config.logging.report_error_max_chars,
+        )
+
+    def test_stderr_fallback_redacts_and_bounds_non_reason_fields(self) -> None:
+        secret = "ghp_" + ("A" * 24)
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(config.logging, report_error_max_chars=80),
+        )
+        record = {
+            "action": "probe",
+            "path": f"/tmp/{secret}/repo",
+            "huge": "x" * 5000,
+            "nested": {"url": f"https://token={secret}@example.invalid/repo"},
+        }
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            cm._emit_best_effort_audit_fallback(
+                cm._audit_record_for_stderr(record, config),
+                report_error_max_chars=config.logging.report_error_max_chars,
+            )
+
+        emitted = stderr.getvalue()
+        payload = json.loads(emitted)
+        self.assertNotIn(secret, emitted)
+        self.assertLessEqual(len(payload["huge"]), config.logging.report_error_max_chars)
+        self.assertLessEqual(len(payload["path"]), config.logging.report_error_max_chars)
+        self.assertLessEqual(len(payload["nested"]["url"]), config.logging.report_error_max_chars)
+
+    def test_stderr_fallback_serializes_non_json_fields(self) -> None:
+        config = cm.load_config(self.work)
+        common = git_common_dir_compat(self.work)
+        blocker = common / "audit-parent-is-file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(
+                config.logging,
+                audit_path=str(blocker / "clean-merged.log"),
+            ),
+        )
+        stderr = io.StringIO()
+
+        cm._reset_best_effort_warnings()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                cm._record_best_effort_warning(
+                    "non-json-field-probe",
+                    "audit path cannot be opened",
+                    repo_root=self.work,
+                    config=config,
+                    field=object(),
+                )
+                cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+        self.assertIn("non-json-field-probe", stderr.getvalue())
+
+    def test_direct_audit_record_falls_back_to_stderr_when_log_unavailable(self) -> None:
+        common = git_common_dir_compat(self.work)
+        blocker = common / "audit-parent-is-file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'audit_path = "<git-common-dir>/clean-merged.log"',
+                f'audit_path = "{blocker / "clean-merged.log"}"',
+            ),
+            encoding="utf-8",
+        )
+
+        _run(["git", "branch", "feat/direct-audit"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        proc = run_clean_proc(self.work, "--lane", "h", "--apply", "--quiet")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("feat/direct-audit", git(self.work, "branch", "--list"))
+        self.assertIn('"action": "deleted"', proc.stderr)
+
+    def test_direct_audit_record_falls_back_to_stderr_when_lock_is_busy(self) -> None:
+        common = git_common_dir_compat(self.work)
+        lock_fd = cm._acquire_lock(cm._log_lock_path(common / "clean-merged.log"))
+        self.assertIsNotNone(lock_fd)
+
+        try:
+            _run(["git", "branch", "feat/direct-lock"], cwd=self.work)
+            _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+            proc = run_clean_proc(self.work, "--lane", "h", "--apply", "--quiet")
+        finally:
+            if lock_fd is not None:
+                cm._release_lock(lock_fd)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("feat/direct-lock", git(self.work, "branch", "--list"))
+        self.assertIn('"action": "deleted"', proc.stderr)
+
+    def test_best_effort_warning_reason_uses_configured_report_limit(self) -> None:
+        config = cm.load_config(self.work)
+        config = cm.dataclasses.replace(
+            config,
+            logging=cm.dataclasses.replace(config.logging, report_error_max_chars=7),
+        )
+        log = git_common_dir_compat(self.work) / "clean-merged.log"
+
+        cm._reset_best_effort_warnings()
+        try:
+            cm._record_best_effort_warning(
+                "immediate-warning",
+                "x" * 50,
+                repo_root=self.work,
+                config=config,
+            )
+            cm._record_best_effort_warning("pending-warning", "y" * 50)
+            cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        warning_reasons = {
+            record["label"]: record["reason"]
+            for record in records
+            if record.get("action") == "best-effort-warning"
+        }
+        self.assertEqual(warning_reasons["immediate-warning"], "x" * 7)
+        self.assertEqual(warning_reasons["pending-warning"], "y" * 7)
+
+    def test_rotating_log_prune_and_rotate_failures_emit_best_effort_warnings(self) -> None:
+        common = git_common_dir_compat(self.work)
+        config = cm.load_config(self.work)
+        log_path = common / "rotating.log"
+        log_path.write_text("x" * 20, encoding="utf-8")
+        rotated = common / "rotating.log.1"
+        rotated.write_text("old", encoding="utf-8")
+        old_ts = time.time() - 31 * 86400
+        os.utime(rotated, (old_ts, old_ts))
+        audit_log = common / "clean-merged.log"
+        real_unlink = cm.pathlib.Path.unlink
+        real_rename = cm.pathlib.Path.rename
+
+        def fail_rotated_unlink(path: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+            if path == rotated:
+                raise OSError("prune boom")
+            return real_unlink(path, *args, **kwargs)
+
+        def fail_log_rename(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+            if path == log_path:
+                raise OSError("rotate boom")
+            return real_rename(path, target)
+
+        cm._reset_best_effort_warnings()
+        try:
+            with mock.patch.object(cm.pathlib.Path, "unlink", fail_rotated_unlink):
+                cm._prune_expired_rotated_logs(
+                    log_path,
+                    config.logging.rotated_log_retention_days,
+                    repo_root=self.work,
+                    config=config,
+                )
+            with mock.patch.object(cm.pathlib.Path, "rename", fail_log_rename):
+                cm._rotate_log_if_needed(
+                    log_path,
+                    1,
+                    repo_root=self.work,
+                    config=config,
+                )
+            cm._write_best_effort_warning_summary(self.work, config)
+        finally:
+            cm._reset_best_effort_warnings()
+
+        records = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
+        labels = [
+            record.get("label")
+            for record in records
+            if record.get("action") == "best-effort-warning"
+        ]
+        self.assertIn("rotating-log-prune", labels)
+        self.assertIn("rotating-log-rotate", labels)
+        summaries = [record for record in records if record.get("action") == "best-effort-warning-summary"]
+        self.assertTrue(summaries, records)
+        self.assertEqual(summaries[-1].get("by_label"), {
+            "rotating-log-prune": 1,
+            "rotating-log-rotate": 1,
+        })
+
     def test_backup_ref_is_sha_addressed(self) -> None:
         _run(["git", "checkout", "-b", "feat/sha"], cwd=self.work)
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)

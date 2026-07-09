@@ -8,16 +8,6 @@ max_comment_chars = 60000
 response_chars_per_chunk = 8000
 
 [model_freshness]
-user_agent = "bolt-v2-ai-review-model-freshness/1.0"
-github_api_version = "2022-11-28"
-kimi_chat_docs_url = "https://platform.kimi.ai/docs/api/chat"
-glm_docs_index_url = "https://docs.z.ai/llms.txt"
-glm_migration_docs_url = "https://docs.z.ai/guides/overview/migrate-to-glm-new"
-claude_models_docs_url = "https://docs.anthropic.com/en/docs/about-claude/models/overview"
-request_timeout_seconds = 30
-github_issues_per_page = 100
-issue_marker = "<!-- ai-review-model-freshness-issue -->"
-issue_title = "AI review model pin update available"
 notice_marker_template = "<!-- ai-review-model-freshness-notice-{provider} -->"
 
 [review.output_contract]

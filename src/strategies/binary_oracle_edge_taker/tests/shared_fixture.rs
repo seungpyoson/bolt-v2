@@ -910,6 +910,12 @@ pub(super) fn register_test_strategy_with_clock(
     strategy: &mut BinaryOracleEdgeTaker,
 ) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
     install_test_data_command_sender();
+    if strategy.is_registered() {
+        let cache = strategy.core.cache_rc();
+        let clock = registered_test_clock_for_cache(&cache);
+        return (cache, clock);
+    }
+
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
@@ -926,6 +932,7 @@ pub(super) fn register_test_strategy_with_clock(
         .core
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
+    record_registered_test_clock(&cache_handle, &clock_handle);
     (cache_handle, clock_handle)
 }
 
@@ -946,6 +953,30 @@ impl DataCommandSender for RecordingDataCommandSender {
 thread_local! {
     static TEST_DATA_COMMANDS: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    static REGISTERED_TEST_CLOCKS: RefCell<std::collections::HashMap<usize, Rc<RefCell<TestClock>>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn test_cache_key(cache: &Rc<RefCell<Cache>>) -> usize {
+    Rc::as_ptr(cache) as usize
+}
+
+fn record_registered_test_clock(cache: &Rc<RefCell<Cache>>, clock: &Rc<RefCell<TestClock>>) {
+    REGISTERED_TEST_CLOCKS.with(|clocks| {
+        clocks
+            .borrow_mut()
+            .insert(test_cache_key(cache), Rc::clone(clock));
+    });
+}
+
+fn registered_test_clock_for_cache(cache: &Rc<RefCell<Cache>>) -> Rc<RefCell<TestClock>> {
+    REGISTERED_TEST_CLOCKS.with(|clocks| {
+        clocks
+            .borrow()
+            .get(&test_cache_key(cache))
+            .cloned()
+            .expect("registered test strategy should retain its TestClock")
+    })
 }
 
 fn install_test_data_command_sender() {
@@ -1331,6 +1362,7 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     let mut strategy = test_strategy();
     configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
+    register_test_strategy(&mut strategy);
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
     strategy.active.interval_open = Some(3_100.0);
@@ -1401,6 +1433,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
     configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
+    register_test_strategy(&mut strategy);
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
     strategy.active.interval_open = Some(3_100.0);

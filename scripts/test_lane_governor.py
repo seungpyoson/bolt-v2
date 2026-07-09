@@ -121,7 +121,7 @@ _LOADER_CALLS = frozenset(
         "run_module",
     }
 )
-RUN_FENCES_SOURCE_SHA256 = "a9c3e0e69a86f5fa32bd4e7f4d5a24b093e75e5dc4bd769eb9c013339bf7bf8e"
+RUN_FENCES_SOURCE_SHA256 = "514e46063ead235ec5c60882b0d42cd9253be1ea350b702a07b711c39e96792e"
 _RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES = _LOADER_CALLS | frozenset(
     {"__import__", "eval", "exec", "import_module_from_path"}
 )

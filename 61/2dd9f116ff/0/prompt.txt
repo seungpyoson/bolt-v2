@@ -1,0 +1,30 @@
+we are keep getting flagged for Fable 5 safeguard -  Iwant you to generate a handoff prompt (detailed) for a new Fable 5 session
+
+---
+
+oh this should have been ignored - 
+• Probe complete and cleaned up. Raw evidence is saved at /private/tmp/bolt-v2-merge-gate-probe-evidence.txt (57 lines, 28K), containing the exact requested
+  command outputs plus the duplicate-gate query.
+
+  Key raw duplicate evidence:
+
+  [
+    {"app":"github-actions","check_suite_id":78419417273,"completed_at":"2026-07-09T04:24:05Z","conclusion":"failure","details_url":"https://github.com/
+    seungpyoson/bolt-v2/actions/runs/28993517813/job/86039442158","id":86039442158,"name":"gate","started_at":"2026-07-09T04:23:43Z"},
+    {"app":"github-actions","check_suite_id":78419409315,"completed_at":"2026-07-09T04:13:06Z","conclusion":"success","details_url":"https://github.com/
+    seungpyoson/bolt-v2/runs/86038257416","id":86038257416,"name":"gate","started_at":"2026-07-09T04:13:06Z"}
+  ]
+
+  5-line verdict:
+
+  1. The PR did successfully publish its own gate check run using GITHUB_TOKEN with checks: write.
+  2. GitHub initially showed that fake gate success in the required-check rollup.
+  3. The real CI gate later also ran and failed.
+  4. With two gate check runs present, the rollup showed both; the real CI failure kept the PR blocked.
+  5. Final blockers were the real check-success = gate failure and missing approved-reviews-by = sp-reviewer; before real gate posted, review was the last
+     visible blocker.
+
+  Cleanup verified: PR #1308 closed, remote branch deleted, local probe branch/worktree removed, and no local or remote branch contains .github/workflows/
+  probe-fake-gate.yml.
+
+  Goal complete; elapsed about 17 minutes.

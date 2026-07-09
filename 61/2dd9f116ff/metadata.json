@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "612dd9f116ff",
+  "strategy": "manual-commit",
+  "branch": "fix-live-boot-regressions",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tests/bolt_v3_production_entrypoint.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/61/2dd9f116ff/0/metadata.json",
+      "transcript": "/61/2dd9f116ff/0/full.jsonl",
+      "compact_transcript": "/61/2dd9f116ff/0/transcript.jsonl",
+      "content_hash": "/61/2dd9f116ff/0/content_hash.txt",
+      "prompt": "/61/2dd9f116ff/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 134,
+    "cache_creation_tokens": 1860,
+    "cache_read_tokens": 511602,
+    "output_tokens": 5972,
+    "api_call_count": 2
+  }
+}

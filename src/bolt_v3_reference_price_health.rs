@@ -1517,6 +1517,7 @@ configured_source_param = "configured-value"
             .get_mut("chainlink_primary")
             .expect("fixture should carry chainlink_primary source");
         source.required = true;
+        let reconnect_timeout_ms = chainlink_loopback_reconnect_timeout_ms(loaded);
 
         let data = loaded
             .root
@@ -1536,13 +1537,29 @@ configured_source_param = "configured-value"
         data.insert("heartbeat_secs".to_string(), toml::Value::Integer(1));
         data.insert(
             "reconnect_timeout_ms".to_string(),
-            toml::Value::Integer(100),
+            toml::Value::Integer(reconnect_timeout_ms),
         );
         data.insert(
             "reconnect_max_attempts".to_string(),
             toml::Value::String("unlimited".to_string()),
         );
         data.insert("idle_timeout_ms".to_string(), toml::Value::Integer(2000));
+    }
+
+    fn chainlink_loopback_reconnect_timeout_ms(loaded: &LoadedBoltV3Config) -> i64 {
+        let startup_bound = loaded
+            .root
+            .nautilus
+            .timeout_connection_secs
+            .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
+            .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
+            .map(Duration::from_secs)
+            .expect("loopback startup bound should fit");
+        let reconnect_timeout = startup_bound
+            .checked_add(Duration::from_millis(1))
+            .expect("loopback reconnect timeout should fit");
+        i64::try_from(reconnect_timeout.as_millis())
+            .expect("loopback reconnect timeout should fit TOML integer")
     }
 
     fn chainlink_health_report_frame(loaded: &LoadedBoltV3Config) -> Vec<u8> {

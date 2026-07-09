@@ -1116,6 +1116,21 @@ pub(crate) fn resolution_oracle_client_http_timeout_secs(
     chainlink::resolution_oracle_client_http_timeout_secs(root, client_key)
 }
 
+pub(crate) fn reference_provider_reconnect_timeout_ms_for_nt_connect_budget(
+    provider_key: &str,
+    data: &toml::Value,
+) -> Option<(&'static str, u64)> {
+    match provider_key {
+        chainlink_reference::KEY => {
+            chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget(data)
+                .map(|reconnect_timeout_ms| (chainlink_reference::KEY, reconnect_timeout_ms))
+        }
+        polyresearch::KEY => polyresearch::reconnect_timeout_ms_for_nt_connect_budget(data)
+            .map(|reconnect_timeout_ms| (polyresearch::KEY, reconnect_timeout_ms)),
+        _ => None,
+    }
+}
+
 /// Family-agnostic surface read by core startup validation. Routes
 /// each client block to its per-provider validator based on provider
 /// key. Returns the full error list for the client block.

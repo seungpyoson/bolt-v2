@@ -13,6 +13,12 @@ use nautilus_network::{
 
 pub use nautilus_network::websocket::{TransportBackend, WebSocketConfig};
 
+/// NT's WebSocket `reconnect_timeout` also bounds the initial connect dial.
+#[must_use]
+pub(crate) const fn nt_connect_and_reconnect_timeout_ms(reconnect_timeout_ms: u64) -> Option<u64> {
+    Some(reconnect_timeout_ms)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireMessage {
     Text(Vec<u8>),

@@ -14,7 +14,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus};
+use crate::{
+    reference_artifact::{resolve_spec_path, spec_path_resolution_base},
+    source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus},
+};
 
 pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
 pub const BACKFILL_COVERAGE_LEDGER_FILE: &str = "backfill-coverage-ledger.json";
@@ -833,16 +836,19 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let path_base = spec_path_resolution_base(spec_path, &spec.source_bindings_path);
+    let resolved_source_bindings_path = resolve_spec_path(&path_base, &spec.source_bindings_path);
     let registry =
-        crate::source_proof::read_source_binding_registry_from_path(&spec.source_bindings_path)
+        crate::source_proof::read_source_binding_registry_from_path(&resolved_source_bindings_path)
             .map_err(
                 |error| BackfillCoverageManifestFileError::ReadSourceBindings {
                     path: spec.source_bindings_path.display().to_string(),
                     error: error.to_string(),
                 },
             )?;
+    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
     write_coverage_ledger_artifact_from_manifest_files(
-        &spec.output_dir,
+        &output_dir,
         spec.ledger_id,
         spec.manifests,
         spec.inventories,

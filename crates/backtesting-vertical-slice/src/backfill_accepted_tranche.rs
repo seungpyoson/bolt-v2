@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::backfill_source_proof_scope::{
     BackfillSourceProofScopeReport, BackfillSourceProofScopeStatus,
 };
+use crate::reference_artifact::{resolve_spec_path, spec_path_resolution_base};
 use crate::source_proof::SourceProofUsageScope;
 
 pub const BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION: &str = "backfill-accepted-tranche-manifest.v1";
@@ -177,8 +178,10 @@ pub fn write_backfill_accepted_tranche_manifest_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let path_base = spec_path_resolution_base(spec_path, &spec.source_proof_scope_report_path);
     let report_path = spec.source_proof_scope_report_path.display().to_string();
-    let report_bytes = fs::read(&spec.source_proof_scope_report_path).map_err(|error| {
+    let resolved_report_path = resolve_spec_path(&path_base, &spec.source_proof_scope_report_path);
+    let report_bytes = fs::read(&resolved_report_path).map_err(|error| {
         BackfillAcceptedTrancheError::ReadSourceProofScopeReport {
             path: report_path.clone(),
             error: error.to_string(),
@@ -193,7 +196,8 @@ pub fn write_backfill_accepted_tranche_manifest_from_spec_file(
         })?;
     let report_hash = format!("{:x}", Sha256::digest(&report_bytes));
     let manifest = evaluate_backfill_accepted_tranche_report(spec.tranche_id, &report, report_hash);
-    write_backfill_accepted_tranche_manifest(&spec.output_dir, &manifest)
+    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
+    write_backfill_accepted_tranche_manifest(&output_dir, &manifest)
 }
 
 pub fn write_backfill_accepted_tranche_manifest(

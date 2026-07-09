@@ -1,3 +1,4 @@
+use crate::backtesting_vertical_slice_test_support::{rewrite_assignment, tempdir_in_repo_target};
 use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
@@ -3538,22 +3539,6 @@ fn read_required_string(path: &Path) -> String {
         .unwrap_or_else(|error| panic!("read reference artifact {}: {error}", path.display()))
 }
 
-fn rewrite_assignment(source: &str, key: &str, value: &Path) -> String {
-    let replacement = format!("{key} = \"{}\"", value.display());
-    source
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with(&format!("{key} = ")) {
-                replacement.as_str()
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
 fn assert_generated_fixture_matches_index(repo_relative_path: &str, generated_path: &Path) {
     let index =
         EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
@@ -3578,7 +3563,7 @@ fn generated_evicted_conversion_batch_plan(
     scope: &str,
     repo_relative_path: &str,
 ) -> BackfillConversionBatchPlan {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
     let source_spec = batch_root.join("backfill-conversion-batch-plan.toml");
     let temp_spec = temp_dir.path().join("backfill-conversion-batch-plan.toml");

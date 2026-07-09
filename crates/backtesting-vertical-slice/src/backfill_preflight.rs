@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::backfill_coverage::{
     BackfillCoverageLedger, BackfillCoverageRecord, BackfillCoverageStatus,
 };
+use crate::reference_artifact::{resolve_spec_path, spec_path_resolution_base};
 
 pub const BACKFILL_PREFLIGHT_REPORT_SCHEMA_VERSION: &str = "backfill-preflight-report.v1";
 pub const BACKFILL_PREFLIGHT_REPORT_FILE: &str = "backfill-preflight-report.json";
@@ -264,13 +265,14 @@ pub fn write_backfill_preflight_report_from_spec_file(
             path: path.clone(),
             error: error.to_string(),
         })?;
+    let path_base = spec_path_resolution_base(spec_path, &spec.coverage_ledger_path);
     let ledger_path = spec.coverage_ledger_path.display().to_string();
-    let ledger_bytes = fs::read(&spec.coverage_ledger_path).map_err(|error| {
-        BackfillPreflightError::ReadLedger {
+    let resolved_ledger_path = resolve_spec_path(&path_base, &spec.coverage_ledger_path);
+    let ledger_bytes =
+        fs::read(&resolved_ledger_path).map_err(|error| BackfillPreflightError::ReadLedger {
             path: ledger_path.clone(),
             error: error.to_string(),
-        }
-    })?;
+        })?;
     let ledger: BackfillCoverageLedger =
         serde_json::from_slice(&ledger_bytes).map_err(|error| {
             BackfillPreflightError::ParseLedgerJson {
@@ -279,7 +281,8 @@ pub fn write_backfill_preflight_report_from_spec_file(
             }
         })?;
     let report = evaluate_backfill_preflight(spec.preflight_id, &ledger, &spec.selection);
-    write_backfill_preflight_report(&spec.output_dir, &report)
+    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
+    write_backfill_preflight_report(&output_dir, &report)
 }
 
 fn is_eligible(record: &BackfillCoverageRecord, selection: &BackfillPreflightSelection) -> bool {

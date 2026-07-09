@@ -1,3 +1,6 @@
+use crate::backtesting_vertical_slice_test_support::{
+    repo_root, rewrite_assignment, tempdir_in_repo_target,
+};
 use backtesting_vertical_slice::{
     backfill_conversion_batch::write_backfill_conversion_batch_plan_from_spec_file,
     backfill_conversion_completion::{
@@ -11,22 +14,6 @@ use backtesting_vertical_slice::{
     },
 };
 use std::{fs, path::Path};
-
-fn rewrite_assignment(source: &str, key: &str, value: &Path) -> String {
-    let replacement = format!("{key} = \"{}\"", value.display());
-    source
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with(&format!("{key} = ")) {
-                replacement.as_str()
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
 
 fn assert_generated_fixture_matches_index(repo_relative_path: &str, generated_path: &Path) {
     let index =
@@ -78,10 +65,15 @@ fn generate_completion_ledger_with_temp_batch_plan(
     scope: &str,
     evicted_batch_plan_path: &str,
 ) -> BackfillConversionCompletionLedger {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
     let batch_plan_path =
         generate_evicted_batch_plan(&batch_root, evicted_batch_plan_path, temp_dir.path());
+    let repo_root = repo_root();
+    let batch_plan_path = batch_plan_path
+        .strip_prefix(&repo_root)
+        .unwrap_or(&batch_plan_path)
+        .to_path_buf();
 
     let ledger_root =
         reference_root.join(format!("backfill-conversion-completion-ledgers/{scope}"));

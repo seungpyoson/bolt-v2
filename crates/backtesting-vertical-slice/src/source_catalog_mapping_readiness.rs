@@ -15,6 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::sha256_hex;
+use crate::reference_artifact::{resolve_spec_path, spec_path_resolution_base};
 use crate::source_proof::SourceProofUsageScope;
 
 pub const SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION: &str =
@@ -432,8 +433,11 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let path_base = spec_path_resolution_base(spec_path, &spec.catalog_mapping_evaluation_path);
     let evaluation_path = spec.catalog_mapping_evaluation_path.display().to_string();
-    let evaluation_bytes = fs::read(&spec.catalog_mapping_evaluation_path).map_err(|error| {
+    let resolved_evaluation_path =
+        resolve_spec_path(&path_base, &spec.catalog_mapping_evaluation_path);
+    let evaluation_bytes = fs::read(&resolved_evaluation_path).map_err(|error| {
         SourceCatalogMappingReadinessError::ReadCatalogMappingEvaluation {
             path: evaluation_path.clone(),
             error: error.to_string(),
@@ -462,7 +466,8 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
         allowed_parquet_catalog_statuses: spec.allowed_parquet_catalog_statuses,
         allowed_usage_scopes: spec.allowed_usage_scopes,
     });
-    write_source_catalog_mapping_readiness_report(&spec.output_dir, &report)
+    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
+    write_source_catalog_mapping_readiness_report(&output_dir, &report)
 }
 
 pub fn write_source_catalog_mapping_readiness_report(

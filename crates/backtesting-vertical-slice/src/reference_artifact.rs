@@ -71,6 +71,32 @@ impl fmt::Display for ReferenceArtifactError {
 
 impl Error for ReferenceArtifactError {}
 
+#[must_use]
+pub fn spec_path_resolution_base(spec_path: &Path, probe_path: &Path) -> PathBuf {
+    if probe_path.is_absolute() {
+        return PathBuf::from(".");
+    }
+    if probe_path.exists() {
+        return PathBuf::from(".");
+    }
+    let anchor = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    for ancestor in anchor.ancestors() {
+        if ancestor.join(probe_path).exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+    PathBuf::from(".")
+}
+
+#[must_use]
+pub fn resolve_spec_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
 pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(value)
         .map_err(|error| ReferenceArtifactError::Serialize(error.to_string()))
@@ -374,5 +400,20 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), expected_bytes);
         assert_eq!(written.pin.sha256, sha256_hex(&expected_bytes));
         assert_eq!(written.bytes, expected_bytes.len() as u64);
+    }
+
+    #[test]
+    fn spec_path_resolution_base_finds_repo_relative_inputs_from_temp_spec_under_repo() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        let temp_dir = tempfile::tempdir_in(repo_root.join("target")).unwrap();
+        let temp_spec = temp_dir.path().join("spec.toml");
+        let probe = Path::new("crates/backtesting-vertical-slice/Cargo.toml");
+
+        let base = spec_path_resolution_base(&temp_spec, probe);
+
+        assert_eq!(resolve_spec_path(&base, probe), repo_root.join(probe));
     }
 }

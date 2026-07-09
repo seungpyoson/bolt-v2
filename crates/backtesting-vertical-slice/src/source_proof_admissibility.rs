@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use crate::reference_artifact::{
     ReferenceArtifactError, ReferenceArtifactErrorMappers, ReferenceArtifactRewrite,
-    canonical_json_sha256, write_reference_artifact_with_len_mapped,
+    canonical_json_sha256, resolve_spec_path, spec_path_resolution_base,
+    write_reference_artifact_with_len_mapped,
 };
 use crate::source_proof::{
     SourceBindingRegistry, SourceProofReport, read_source_binding_registry_from_path,
@@ -434,16 +435,19 @@ pub fn write_source_proof_admissibility_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let path_base = spec_path_resolution_base(spec_path, &spec.source_bindings_path);
     let source_bindings_path = spec.source_bindings_path.display().to_string();
+    let resolved_source_bindings_path = resolve_spec_path(&path_base, &spec.source_bindings_path);
     let source_bindings_registry =
-        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
-            SourceProofAdmissibilityFileError::ReadSourceBindings {
+        read_source_binding_registry_from_path(&resolved_source_bindings_path).map_err(
+            |error| SourceProofAdmissibilityFileError::ReadSourceBindings {
                 path: source_bindings_path,
                 error: error.to_string(),
-            }
-        })?;
+            },
+        )?;
+    let output_dir = resolve_spec_path(&path_base, &spec.output_dir);
     write_source_proof_admissibility_report_from_files(
-        &spec.output_dir,
+        &output_dir,
         spec.report_id,
         spec.source_proofs,
         &source_bindings_registry,

@@ -72,8 +72,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: |
           if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
@@ -159,8 +161,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: |
           if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
@@ -245,8 +249,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: |
           if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"

@@ -13016,10 +13016,10 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
         return value
 
     old_execution_tails = (
-        (run_suffix, ("rc=$?", "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"")),
+        (run_suffix, ("rc=$?", "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"", 'exit "$rc"')),
         (
             run_tee_suffix,
-            ('rc="${PIPESTATUS[0]}"', "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\""),
+            ('rc="${PIPESTATUS[0]}"', "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"", 'exit "$rc"'),
         ),
     )
     for command_suffix, tail in old_execution_tails:
@@ -13089,6 +13089,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "rc=$?",
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'exit "$rc"',
                     'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13101,6 +13102,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "rc=$?",
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'exit "$rc"',
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13113,6 +13115,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "rc=$?",
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'exit "$rc"',
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13133,6 +13136,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     'rc="${PIPESTATUS[0]}"',
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'exit "$rc"',
                     'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13147,6 +13151,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     'rc="${PIPESTATUS[0]}"',
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'exit "$rc"',
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13160,6 +13165,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     'rc="${PIPESTATUS[0]}"',
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'exit "$rc"',
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13205,6 +13211,14 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             errors.append(f"flaky-test-detection missing {label} {job_id}")
             continue
         job_text = job_texts[job_id]
+        run_block = named_step_run_block(job_text, "Run tests")
+        run_lines = simple_shell_lines(run_block or "")
+        if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' in run_lines and 'exit "$rc"' not in run_lines:
+            errors.append(f"flaky-test-detection {label} missing 'exit \"$rc\"'")
+        stage_block = named_step_block(jobs[job_id], "Stage JUnit report")
+        stage_text = uncommented_text(stage_block) if stage_block is not None else ""
+        if "if: success() || failure()" not in stage_text:
+            errors.append(f"flaky-test-detection {label} missing 'if: success() || failure()'")
         errors.extend(
             f"flaky-test-detection {label} missing {fragment!r}"
             for fragment in fragments

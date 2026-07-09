@@ -22,7 +22,7 @@ archive payloads do not write to the branch-scoped Actions cache.
   is used for nextest-archive restores by PR, merge queue, and manual dispatch
   restore attempts, and for sccache read-only access by CI test-archive PR,
   merge queue, and manual dispatch builds, Rust Probe, Debug Test, and
-  scheduled Flaky Test Smoke.
+  scheduled and manually dispatched Flaky Test Smoke.
 
 Tag pushes intentionally rebuild nextest archive payloads locally. They do not
 receive an S3 cache role or `cache_mode`, so deploy-lane tag runs fail open to

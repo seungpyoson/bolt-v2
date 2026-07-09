@@ -7878,6 +7878,8 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "schedule:" in full_workflow:
         raise AssertionError("flaky-test-detection.yml must remain manual-only")
+    if full_workflow.count('exit "$rc"') != 3:
+        raise AssertionError("flaky-test-detection.yml run steps must exit with the captured rc")
     if "workflow_dispatch:" not in smoke_workflow:
         raise AssertionError("flaky-test-smoke.yml must remain schedule-driven and manually dispatchable")
     for workflow_path, workflow in (
@@ -7977,9 +7979,14 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -8004,8 +8011,10 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: |
           if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
@@ -8033,9 +8042,14 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -8067,9 +8081,14 @@ jobs:
           rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -8094,8 +8113,10 @@ jobs:
           rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
+        if: success() || failure()
         run: |
           if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
@@ -8123,9 +8144,14 @@ jobs:
           rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -8136,7 +8162,8 @@ jobs:
           job_name: bvs-test issue-789
           report_path: "junit-*.xml"
 """
-    smoke_bvs_stage_step = """        run: |
+    smoke_bvs_stage_step = """        if: success() || failure()
+        run: |
           if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
           fi"""
@@ -8690,6 +8717,16 @@ jobs:
     )
 
     drift_cases = (
+        (
+            "root full job missing 'exit \"$rc\"'",
+            good_full_workflow.replace("          exit \"$rc\"\n", "", 1),
+            good_smoke_workflow,
+        ),
+        (
+            "root full job missing 'if: success() || failure()'",
+            good_full_workflow.replace("        if: success() || failure()\n", "", 1),
+            good_smoke_workflow,
+        ),
         (
             "workflow triggers must be ['workflow_dispatch']",
             good_full_workflow.replace(
@@ -9587,7 +9624,7 @@ def assert_cache_docs_cover_debug_schedule_consumers() -> None:
         "sccache read-only access",
         "Rust Probe",
         "Debug Test",
-        "scheduled Flaky Test Smoke",
+        "scheduled and manually dispatched Flaky Test Smoke",
         "AWS_CI_CACHE_PR_READONLY_ROLE_ARN",
     )
     missing = [fragment for fragment in required_fragments if fragment not in text]

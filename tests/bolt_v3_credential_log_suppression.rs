@@ -31,6 +31,7 @@ use crate::support;
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
@@ -146,7 +147,7 @@ fn capture_standard_streams(action: impl FnOnce()) -> (String, String) {
         libc::dup2(stderr_capture.as_raw_fd(), 2);
     }
 
-    action();
+    let action_result = catch_unwind(AssertUnwindSafe(action));
 
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
@@ -173,6 +174,13 @@ fn capture_standard_streams(action: impl FnOnce()) -> (String, String) {
     stderr_capture
         .read_to_string(&mut stderr_text)
         .expect("stderr read");
+
+    if action_result.is_err() {
+        panic!(
+            "captured logger-survival action panicked; captured stdout=`{stdout_text}`; \
+             captured stderr=`{stderr_text}`"
+        );
+    }
 
     (stdout_text, stderr_text)
 }

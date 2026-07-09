@@ -2544,13 +2544,13 @@ fn live_node_not_connected_client_labels_from_statuses(
 ) -> Vec<String> {
     data_client_status
         .into_iter()
-        .filter_map(|(client_id, connected)| (!connected).then(|| format!("data:{client_id}")))
+        .filter(|(_, connected)| !*connected)
+        .map(|(client_id, _connected)| format!("data:{client_id}"))
         .chain(
             exec_client_status
                 .into_iter()
-                .filter_map(|(client_id, connected)| {
-                    (!connected).then(|| format!("exec:{client_id}"))
-                }),
+                .filter(|(_, connected)| !*connected)
+                .map(|(client_id, _connected)| format!("exec:{client_id}")),
         )
         .collect()
 }

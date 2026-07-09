@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "f90cfc812781",
+  "strategy": "manual-commit",
+  "branch": "fix-live-boot-regressions",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "src/main.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f9/0cfc812781/0/metadata.json",
+      "transcript": "/f9/0cfc812781/0/full.jsonl",
+      "compact_transcript": "/f9/0cfc812781/0/transcript.jsonl",
+      "content_hash": "/f9/0cfc812781/0/content_hash.txt",
+      "prompt": "/f9/0cfc812781/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 336723,
+    "cache_creation_tokens": 13530944,
+    "cache_read_tokens": 860246704,
+    "output_tokens": 2227575,
+    "api_call_count": 1898
+  }
+}

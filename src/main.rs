@@ -592,6 +592,32 @@ fn run_ops_launch_stage(
     stage: OpsLaunchStage,
     context: &mut OpsLaunchContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut reference_current_price_health =
+        |config: &Path| run_reference_current_price_health_subprocess(config);
+    let mut start_loaded_node = |loaded, resolved: &ResolvedBoltV3Secrets| {
+        start_loaded_node_with_resolved(loaded, resolved)
+    };
+    let mut runners = OpsLaunchStageRunners {
+        reference_current_price_health: &mut reference_current_price_health,
+        start_loaded_node: &mut start_loaded_node,
+    };
+    run_ops_launch_stage_with_runners(stage, context, &mut runners)
+}
+
+struct OpsLaunchStageRunners<'a> {
+    reference_current_price_health:
+        &'a mut dyn FnMut(&Path) -> Result<(), Box<dyn std::error::Error>>,
+    start_loaded_node: &'a mut dyn FnMut(
+        LoadedBoltV3Config,
+        &ResolvedBoltV3Secrets,
+    ) -> Result<(), Box<dyn std::error::Error>>,
+}
+
+fn run_ops_launch_stage_with_runners(
+    stage: OpsLaunchStage,
+    context: &mut OpsLaunchContext,
+    runners: &mut OpsLaunchStageRunners<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
     match stage {
         OpsLaunchStage::VerifyConfig => {
             let verification = verify_live_config(&context.config_root, &context.profile)?;
@@ -612,10 +638,11 @@ fn run_ops_launch_stage(
         }
         OpsLaunchStage::PrestartCheck => run_loaded_prestart_check(context.loaded()?, None),
         OpsLaunchStage::ReferenceCurrentPriceHealth => {
-            let resolved = context.resolved_secrets.as_ref().ok_or(
+            let _loaded = context.loaded()?;
+            let _resolved = context.resolved_secrets.as_ref().ok_or(
                 "ops launch secrets-resolve stage must run before reference-current-price-health",
             )?;
-            run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)
+            (runners.reference_current_price_health)(&live_config_path(&context.config_root))
         }
         OpsLaunchStage::Start => {
             let loaded = context
@@ -631,9 +658,25 @@ fn run_ops_launch_stage(
                 &loaded,
                 context.observed_host_facts.take(),
             );
-            start_loaded_node_with_resolved(loaded, &resolved)
+            (runners.start_loaded_node)(loaded, &resolved)
         }
     }
+}
+
+fn run_reference_current_price_health_subprocess(
+    config: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let current_exe = std::env::current_exe()?;
+    let status = std::process::Command::new(current_exe)
+        .arg("ops")
+        .arg("reference-current-price-health")
+        .arg("--config")
+        .arg(config)
+        .status()?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(format!("reference-current-price-health subprocess exited with {status}").into())
 }
 
 /// Build the durable launch identity from primitives. Pure: depends only on

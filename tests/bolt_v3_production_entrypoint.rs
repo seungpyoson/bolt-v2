@@ -179,13 +179,15 @@ fn ops_launch_reference_health_stage_is_subprocess_isolated() {
 fn ops_launch_verify_config_reuses_loaded_config_from_verification() {
     let source = include_str!("../src/main.rs");
     let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    let stage_impl_fn = top_level_function_body(source, "fn run_ops_launch_stage_with_runners");
 
     assert!(
-        stage_fn.contains("context.loaded = Some(verification.loaded)"),
+        stage_impl_fn.contains("context.loaded = Some(verification.loaded)"),
         "verify-config must store the config already loaded by verify_live_config"
     );
     assert!(
-        !stage_fn.contains("load_bolt_v3_config(&context.live_config)"),
+        !stage_fn.contains("load_bolt_v3_config(&context.live_config)")
+            && !stage_impl_fn.contains("load_bolt_v3_config(&context.live_config)"),
         "verify-config must not load the deployed config a second time"
     );
 }

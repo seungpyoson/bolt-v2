@@ -604,13 +604,14 @@ fn run_ops_launch_stage(
     run_ops_launch_stage_with_runners(stage, context, &mut runners)
 }
 
+type OpsLaunchStageResult = Result<(), Box<dyn std::error::Error>>;
+type ReferenceCurrentPriceHealthRunner<'a> = &'a mut dyn FnMut(&Path) -> OpsLaunchStageResult;
+type StartLoadedNodeRunner<'a> =
+    &'a mut dyn FnMut(LoadedBoltV3Config, &ResolvedBoltV3Secrets) -> OpsLaunchStageResult;
+
 struct OpsLaunchStageRunners<'a> {
-    reference_current_price_health:
-        &'a mut dyn FnMut(&Path) -> Result<(), Box<dyn std::error::Error>>,
-    start_loaded_node: &'a mut dyn FnMut(
-        LoadedBoltV3Config,
-        &ResolvedBoltV3Secrets,
-    ) -> Result<(), Box<dyn std::error::Error>>,
+    reference_current_price_health: ReferenceCurrentPriceHealthRunner<'a>,
+    start_loaded_node: StartLoadedNodeRunner<'a>,
 }
 
 fn run_ops_launch_stage_with_runners(

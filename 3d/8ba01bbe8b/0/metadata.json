@@ -1,0 +1,98 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "3d8ba01bbe8b",
+  "session_id": "a2712926-fa94-405b-b44f-792003993c06",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-09T04:01:45.40488Z",
+  "branch": "fix-live-boot-regressions",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8[1m]",
+  "turn_id": "1545bde3083a",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 18368,
+    "cache_creation_tokens": 831366,
+    "cache_read_tokens": 20561103,
+    "output_tokens": 169492,
+    "api_call_count": 91
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 3918,
+      "user_lines_removed": 1160,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "scripts/ci_provenance.py": 44,
+        "scripts/contract_engine.py": 588,
+        "scripts/contract_rules.py": 321,
+        "scripts/merge_queue_operator.py": 3,
+        "scripts/test_merge_queue_operator.py": 18,
+        "scripts/test_merge_queue_preflight.py": 107,
+        "scripts/test_rust_verification_decoupling.py": 4,
+        "scripts/test_verifier_io.py": 27,
+        "scripts/test_verify_bolt_v3_core_boundary.py": 16,
+        "scripts/test_verify_bolt_v3_naming.py": 31,
+        "scripts/test_verify_ci_workflow_hygiene.py": 831,
+        "scripts/test_verify_fail_closed_contracts.py": 122,
+        "scripts/test_verify_no_config_retype.py": 156,
+        "scripts/test_verify_ra_notebook_read_only_boundary.py": 100,
+        "scripts/test_verify_ra_single_engine_import_boundary.py": 90,
+        "scripts/verifier_io.py": 93,
+        "scripts/verify_bolt_v3_core_boundary.py": 17,
+        "scripts/verify_bolt_v3_naming.py": 13,
+        "scripts/verify_ci_workflow_hygiene.py": 49,
+        "scripts/verify_dashboard_read_only_contract.py": 5,
+        "scripts/verify_fail_closed_contracts.py": 205,
+        "scripts/verify_no_config_retype.py": 579,
+        "scripts/verify_ra_notebook_read_only_boundary.py": 75,
+        "scripts/verify_ra_single_engine_import_boundary.py": 75,
+        "scripts/workflow_model.py": 349
+      },
+      "user_removed_per_file": {
+        "scripts/merge_queue_operator.py": 4,
+        "scripts/rust_verification.py": 13,
+        "scripts/test_merge_queue_preflight.py": 43,
+        "scripts/test_run_rust_probe.py": 27,
+        "scripts/test_rust_probe_wrapper.py": 19,
+        "scripts/test_verifier_io.py": 3,
+        "scripts/test_verify_ci_workflow_hygiene.py": 309,
+        "scripts/test_verify_ra_notebook_read_only_boundary.py": 41,
+        "scripts/test_verify_ra_single_engine_import_boundary.py": 33,
+        "scripts/verifier_io.py": 6,
+        "scripts/verify_bolt_v3_core_boundary.py": 3,
+        "scripts/verify_bolt_v3_naming.py": 1,
+        "scripts/verify_ci_workflow_hygiene.py": 603,
+        "scripts/verify_dashboard_read_only_contract.py": 5,
+        "scripts/verify_fail_closed_contracts.py": 2,
+        "scripts/verify_ra_notebook_read_only_boundary.py": 24,
+        "scripts/verify_ra_single_engine_import_boundary.py": 24
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 3918,
+      "agent_lines_removed": 1160
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 73,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "src/main.rs": 58,
+        "tests/bolt_v3_production_entrypoint.rs": 15
+      }
+    }
+  ]
+}

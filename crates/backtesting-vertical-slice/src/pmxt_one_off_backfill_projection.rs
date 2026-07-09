@@ -63,7 +63,10 @@ use crate::{
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, MarketStructureFixture, parse_manifest_toml},
+    run_manifest::{
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, MarketStructureFixture,
+        parse_manifest_toml,
+    },
     runner::{
         iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
         result_contract_feed_labels, result_contract_warnings, run_nt_backtest_node,
@@ -1680,6 +1683,13 @@ fn expected_pmxt_backtest_iterations(
 pub fn run_pmxt_one_off_l2_backtest_contract(
     spec: PmxtOneOffBacktestContractSpec<'_>,
 ) -> Result<PmxtOneOffBacktestContractOutput> {
+    run_pmxt_one_off_l2_backtest_contract_with_base(spec, Path::new("."))
+}
+
+fn run_pmxt_one_off_l2_backtest_contract_with_base(
+    spec: PmxtOneOffBacktestContractSpec<'_>,
+    base_dir: &Path,
+) -> Result<PmxtOneOffBacktestContractOutput> {
     let completed = spec.completed;
     ensure!(
         completed.catalog_projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
@@ -1767,7 +1777,9 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         "PMXT one-off manifest source_proof_version does not match conversion fingerprint"
     );
 
-    let nt_run = run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let runtime_manifest = manifest_with_resolved_catalog_paths(spec.manifest, base_dir);
+    let nt_run =
+        run_nt_backtest_node(&runtime_manifest).context("run PMXT one-off L2 BacktestNode")?;
     let nt_result = nt_run.result;
     let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
@@ -1827,6 +1839,21 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
     })
 }
 
+fn manifest_with_resolved_catalog_paths(
+    manifest: &BacktestingRunManifest,
+    base_dir: &Path,
+) -> BacktestingRunManifest {
+    let mut runtime_manifest = manifest.clone();
+    for input in &mut runtime_manifest.catalog_inputs {
+        if input.catalog_fs_protocol == CATALOG_FS_PROTOCOL_NONE {
+            input.catalog_path = resolve_output_dir(base_dir, Path::new(&input.catalog_path))
+                .display()
+                .to_string();
+        }
+    }
+    runtime_manifest
+}
+
 pub fn write_pmxt_one_off_l2_artifact_root_run(
     spec: PmxtOneOffArtifactRootRunSpec,
 ) -> Result<PmxtOneOffArtifactRootRun> {
@@ -1870,8 +1897,8 @@ fn write_pmxt_one_off_l2_artifact_root_run_with_base(
         base_dir,
     )
     .context("write PMXT one-off conversion artifacts")?;
-    let mut contract_output =
-        run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
+    let mut contract_output = run_pmxt_one_off_l2_backtest_contract_with_base(
+        PmxtOneOffBacktestContractSpec {
             completed: &completed,
             manifest: &spec.manifest,
             manifest_hash: &spec.manifest_hash,
@@ -1883,8 +1910,10 @@ fn write_pmxt_one_off_l2_artifact_root_run_with_base(
             artifact_uris: spec.artifact_uris,
             created_at: &spec.created_at,
             claim_limits: spec.claim_limits,
-        })
-        .context("run PMXT one-off L2 backtest contract")?;
+        },
+        base_dir,
+    )
+    .context("run PMXT one-off L2 backtest contract")?;
     let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     fs::create_dir_all(&output_dir).with_context(|| {
         format!(

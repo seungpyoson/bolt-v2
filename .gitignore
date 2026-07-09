@@ -99,5 +99,4 @@ specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-p
 
 # Issue #704 Phase 3: generated venue conversion batch plans are regenerated
 # from committed TOML specs in tests and fingerprinted in the eviction index.
-specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json
-specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json
+specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/*/plan/backfill-conversion-batch-plan.json

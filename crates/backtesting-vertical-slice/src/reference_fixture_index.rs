@@ -252,11 +252,11 @@ impl EvictedFixtureIndex {
 pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
     is_evicted_execution_pack_record_path(path)
         || is_tier1_evicted_reference_fixture_path(path)
-        || is_phase3_evicted_reference_fixture_path(path)
+        || is_phase3_conversion_batch_plan_path(path)
 }
 
 /// `true` iff `path` is a Phase-3 generated conversion batch plan.
-pub fn is_phase3_evicted_reference_fixture_path(path: &str) -> bool {
+pub fn is_phase3_conversion_batch_plan_path(path: &str) -> bool {
     let Some(scope) = path.strip_prefix(PHASE3_CONVERSION_BATCHES_PREFIX) else {
         return false;
     };

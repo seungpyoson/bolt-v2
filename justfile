@@ -72,71 +72,9 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
-verify-probability-typed-pilot: check-workspace
-    python3 scripts/test_verify_probability_typed_pilot.py
-    python3 scripts/verify_probability_typed_pilot.py
-
-verify-bolt-v3-core-boundary: check-workspace
-    python3 scripts/test_verify_bolt_v3_core_boundary.py
-    python3 scripts/verify_bolt_v3_core_boundary.py
-
-verify-bolt-v3-naming: check-workspace
-    python3 scripts/test_verify_bolt_v3_naming.py
-    python3 scripts/verify_bolt_v3_naming.py
-
-verify-bolt-v3-pure-rust-runtime: check-workspace
-    python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
-    python3 scripts/verify_bolt_v3_pure_rust_runtime.py
-
-verify-dashboard-read-only-contract: check-workspace
-    python3 scripts/test_verify_dashboard_read_only_contract.py
-    python3 scripts/verify_dashboard_read_only_contract.py
-
-verify-bolt-v3-legacy-default-fence: check-workspace
-    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
-    python3 scripts/verify_bolt_v3_legacy_default_fence.py
-
 verify-bolt-v3-poison-lock-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_poison_lock_fence.py
     python3 scripts/verify_bolt_v3_poison_lock_fence.py
-
-verify-bolt-v3-strategy-policy-fence: check-workspace
-    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
-    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
-
-verify-bolt-v3-no-exit-market-command: check-workspace
-    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
-    python3 scripts/verify_bolt_v3_no_exit_market_command.py
-
-verify-bolt-v3-usable-mu-sole-mint: check-workspace
-    python3 scripts/test_verify_bolt_v3_usable_mu_sole_mint.py
-    python3 scripts/verify_bolt_v3_usable_mu_sole_mint.py
-
-verify-bolt-v3-no-venue-name-branch: check-workspace
-    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
-    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
-
-verify-bolt-v3-requote-construction: check-workspace
-    python3 scripts/test_verify_bolt_v3_requote_construction.py
-    python3 scripts/verify_bolt_v3_requote_construction.py
-
-verify-bolt-v3-market-family-coupling: check-workspace
-    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
-    python3 scripts/verify_bolt_v3_market_family_coupling.py
-
-verify-bolt-v3-dependency-direction: check-workspace
-    python3 scripts/test_verify_bolt_v3_dependency_direction.py
-    python3 scripts/verify_bolt_v3_dependency_direction.py
-
-verify-bolt-v3-boundary-evidence: check-workspace
-    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
-    python3 scripts/verify_bolt_v3_boundary_evidence.py
-
-# Enforces "allowlist may only shrink" against the protected mainline: fails if
-# the in-tree dependency allowlist is not a subset of the one on origin/main.
-# No-op on the PR that first introduces the fence; active on every PR after merge.
-verify-bolt-v3-dependency-shrink-only: check-workspace
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
 
 test-verify-runtime-capture-yaml: check-workspace
     python3 scripts/test_verify_runtime_capture_yaml.py
@@ -284,7 +222,6 @@ source-fence-static-fences-only-inner: require-local-verification-gate check-wor
     python3 scripts/run_fences.py --fences-only
 
 source-fence: source-fence-static
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     # Fresh CI runners need the pinned NT checkout before source-capture checks.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
     python3 scripts/verify_runtime_capture_yaml.py

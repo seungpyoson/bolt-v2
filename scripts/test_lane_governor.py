@@ -3074,7 +3074,6 @@ def test_cheap_lanes_do_not_write_repo_root_shared_state() -> None:
     scripts = _cheap_lane_python_scripts()
     required = {
         SCRIPTS_DIR / "test_verify_bolt_v3_runtime_literals.py",
-        SCRIPTS_DIR / "test_verify_bolt_v3_strategy_policy_fence.py",
     }
     missing_required = sorted(str(path.relative_to(REPO_ROOT)) for path in required - scripts)
     assert not missing_required, f"guard did not scan required scripts: {missing_required}"

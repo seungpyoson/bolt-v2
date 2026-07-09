@@ -2,28 +2,6 @@
 version = 1
 
 [[doc_decoupling_residuals.allowed_markdown_references]]
-path = "scripts/verify_bolt_v3_dependency_direction.py"
-kind = "docstring_pointer_false_positive"
-tracking_issue = "#1027"
-read_purpose = "none"
-snippets = [
-  "(`specs/522-decompose-strategy-monolith/architecture-contract.md` \u00a72) requires a",
-]
-
-[[doc_decoupling_residuals.allowed_markdown_references]]
-path = "scripts/verify_bolt_v3_naming.py"
-kind = "deliberate_guard"
-owner_issue = "#711"
-tracking_issue = "#1027"
-read_purpose = "rename_guard"
-snippets = [
-  '"docs/bolt-v3/*.md",',
-  '"docs/**/*",',
-  '"specs/**/*.md",',
-  '".md",',
-]
-
-[[doc_decoupling_residuals.allowed_markdown_references]]
 path = "scripts/verify_ci_workflow_hygiene.py"
 kind = "deliberate_guard"
 owner_issue = "#711"

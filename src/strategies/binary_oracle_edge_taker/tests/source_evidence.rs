@@ -1,6 +1,10 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_common::{
+    messages::data::{DataCommand, SubscribeCommand},
+    runner::{DataCommandSender, SyncDataCommandSender, replace_data_cmd_sender},
+};
 
 const TEST_SURFACE_ID: &str = "<surface_id>";
 const TEST_SOURCE_ID: &str = "<SOURCE_ID_A>";
@@ -102,6 +106,39 @@ fn replay_reference_update_at(
     )
     .expect("replay reference quote should construct")
     .to_custom_data()
+}
+
+#[derive(Debug)]
+struct RecordingDataCommandSender {
+    commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
+}
+
+impl DataCommandSender for RecordingDataCommandSender {
+    fn execute(&self, command: DataCommand) {
+        self.commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned")
+            .push(command);
+    }
+}
+
+struct DataCommandSenderRestore;
+
+impl Drop for DataCommandSenderRestore {
+    fn drop(&mut self) {
+        replace_data_cmd_sender(std::sync::Arc::new(SyncDataCommandSender));
+    }
+}
+
+fn capture_data_commands() -> (
+    std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
+    DataCommandSenderRestore,
+) {
+    let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender {
+        commands: commands.clone(),
+    }));
+    (commands, DataCommandSenderRestore)
 }
 
 #[derive(Default)]
@@ -291,6 +328,55 @@ fn test_strategy_with_realized_volatility_surface(
     )
     .with_realized_volatility_surfaces(surfaces);
     BinaryOracleEdgeTaker::new(config, context)
+}
+
+#[test]
+fn strategy_on_start_dispatches_real_data_subscribe_commands() {
+    let replay = strategy_input_quote_replay();
+    let (commands, _restore_sender) = capture_data_commands();
+    let mut strategy =
+        test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
+    strategy.config.reference_current_price = Some(replay_reference_price_config(&replay));
+    register_test_strategy(&mut strategy);
+
+    DataActor::on_start(&mut strategy).expect("strategy should start");
+
+    let commands = commands
+        .lock()
+        .expect("recorded data commands lock should not be poisoned");
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Quotes(command))
+                if command.instrument_id
+                    == strategy
+                        .signal_instrument_id()
+                        .expect("signal instrument should parse")
+                    && command.client_id == strategy.signal_client_id()
+        )),
+        "on_start must enqueue the configured signal quote subscription through NT DataActor; commands={commands:#?}",
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Data(command))
+                if command.client_id
+                    == Some(nautilus_model::identifiers::ClientId::from("chainlink_reference"))
+                    && command.data_type.type_name() == "BoltV3ReferencePriceUpdate"
+        )),
+        "on_start must enqueue configured reference-current-price custom-data subscriptions through NT DataActor; commands={commands:#?}",
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Quotes(command))
+                if command.instrument_id
+                    == nautilus_model::identifiers::InstrumentId::from(TEST_RV_INSTRUMENT_ID)
+                    && command.client_id
+                        == Some(nautilus_model::identifiers::ClientId::from("<DATA_CLIENT_ID>"))
+        )),
+        "on_start must enqueue configured realized-volatility source subscriptions through NT DataActor; commands={commands:#?}",
+    );
 }
 
 #[test]

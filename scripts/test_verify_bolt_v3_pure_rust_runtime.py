@@ -463,6 +463,37 @@ fn production_subprocess_after_cfg_string_brace() {
     )
 
 
+def test_reference_current_price_health_subprocess_exception_is_function_scoped() -> None:
+    allowed = """
+fn run_reference_current_price_health_subprocess(config: &Path) {
+    std::process::Command::new(current_exe);
+}
+"""
+    allowed_pos = allowed.index("std::process::Command::new")
+    if not VERIFIER.allowed_runtime_subprocess("src/main.rs", allowed, allowed_pos):
+        raise AssertionError("reference-current-price health subprocess exception should apply")
+
+    wrong_function = """
+fn run_other_launch_stage(config: &Path) {
+    std::process::Command::new(current_exe);
+}
+"""
+    wrong_function_pos = wrong_function.index("std::process::Command::new")
+    if VERIFIER.allowed_runtime_subprocess("src/main.rs", wrong_function, wrong_function_pos):
+        raise AssertionError("subprocess exception must not apply outside the named health runner")
+
+    wrong_file = """
+fn run_reference_current_price_health_subprocess(config: &Path) {
+    std::process::Command::new(current_exe);
+}
+"""
+    wrong_file_pos = wrong_file.index("std::process::Command::new")
+    if VERIFIER.allowed_runtime_subprocess(
+        "src/bolt_v3_live_node.rs", wrong_file, wrong_file_pos
+    ):
+        raise AssertionError("subprocess exception must not apply outside src/main.rs")
+
+
 def test_main_rs_entrypoint_calls_pass_when_present_and_flag_missing() -> None:
     # Passing fixture: a src/main.rs body that contains every required
     # bolt-v3 entrypoint call-site.
@@ -516,6 +547,7 @@ def main() -> int:
         test_forbidden_rust_scan_ignores_comments_and_literals,
         test_cfg_test_items_are_ignored_but_production_items_remain,
         test_runtime_subprocess_detection_survives_comments_literals_and_cfg_fixtures,
+        test_reference_current_price_health_subprocess_exception_is_function_scoped,
         test_main_rs_entrypoint_calls_pass_when_present_and_flag_missing,
         test_main_rs_entrypoint_calls_ignore_comments_and_literals,
     ]

@@ -1,21 +1,123 @@
-use backtesting_vertical_slice::backfill_conversion_completion::{
-    BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
-    write_backfill_conversion_completion_ledger_from_spec_file,
+use backtesting_vertical_slice::{
+    backfill_conversion_batch::write_backfill_conversion_batch_plan_from_spec_file,
+    backfill_conversion_completion::{
+        BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
+        write_backfill_conversion_completion_ledger_from_spec_file,
+    },
+    hashing::sha256_hex,
+    reference_fixture_index::{
+        EvictedFixtureIndex, PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, repo_root_from_manifest_dir,
+    },
 };
-use std::path::Path;
+use std::{fs, path::Path};
+
+fn rewrite_assignment(source: &str, key: &str, value: &Path) -> String {
+    let replacement = format!("{key} = \"{}\"", value.display());
+    source
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with(&format!("{key} = ")) {
+                replacement.as_str()
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn assert_generated_fixture_matches_index(repo_relative_path: &str, generated_path: &Path) {
+    let index =
+        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
+    let entry = index
+        .entry_for(repo_relative_path)
+        .unwrap_or_else(|| panic!("eviction index must contain {repo_relative_path}"));
+    let bytes = fs::read(generated_path).unwrap_or_else(|error| {
+        panic!(
+            "read generated fixture {}: {error}",
+            generated_path.display()
+        )
+    });
+    assert_eq!(
+        bytes.len() as u64,
+        entry.bytes,
+        "generated fixture byte length must match eviction index for {repo_relative_path}"
+    );
+    assert_eq!(
+        sha256_hex(&bytes),
+        entry.sha256,
+        "generated fixture sha256 must match eviction index for {repo_relative_path}"
+    );
+}
+
+fn generate_evicted_batch_plan(
+    batch_root: &Path,
+    repo_relative_path: &str,
+    temp_dir: &Path,
+) -> std::path::PathBuf {
+    let spec_path = batch_root.join("backfill-conversion-batch-plan.toml");
+    let temp_spec_path = temp_dir.join("backfill-conversion-batch-plan.toml");
+    let temp_output_dir = temp_dir.join("plan");
+    let spec = fs::read_to_string(&spec_path)
+        .unwrap_or_else(|error| panic!("read batch spec {}: {error}", spec_path.display()));
+    fs::write(
+        &temp_spec_path,
+        rewrite_assignment(&spec, "output_dir", &temp_output_dir),
+    )
+    .expect("write temp batch spec");
+    let artifact = write_backfill_conversion_batch_plan_from_spec_file(&temp_spec_path)
+        .expect("batch plan generation succeeds");
+    assert_generated_fixture_matches_index(repo_relative_path, &artifact.path);
+    artifact.path
+}
+
+fn generate_completion_ledger_with_temp_batch_plan(
+    reference_root: &Path,
+    scope: &str,
+    evicted_batch_plan_path: &str,
+) -> BackfillConversionCompletionLedger {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
+    let batch_plan_path =
+        generate_evicted_batch_plan(&batch_root, evicted_batch_plan_path, temp_dir.path());
+
+    let ledger_root =
+        reference_root.join(format!("backfill-conversion-completion-ledgers/{scope}"));
+    let ledger_spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
+    let temp_ledger_spec_path = temp_dir
+        .path()
+        .join("backfill-conversion-completion-ledger.toml");
+    let ledger_spec = fs::read_to_string(&ledger_spec_path).unwrap_or_else(|error| {
+        panic!(
+            "read completion ledger spec {}: {error}",
+            ledger_spec_path.display()
+        )
+    });
+    let ledger_spec = rewrite_assignment(&ledger_spec, "batch_plan_path", &batch_plan_path);
+    let ledger_spec = rewrite_assignment(
+        &ledger_spec,
+        "output_dir",
+        &temp_dir.path().join("completion-ledger"),
+    );
+    fs::write(&temp_ledger_spec_path, ledger_spec).expect("write temp completion ledger spec");
+
+    let artifact =
+        write_backfill_conversion_completion_ledger_from_spec_file(&temp_ledger_spec_path)
+            .expect("completion ledger generation succeeds");
+    serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger")).expect("ledger parses")
+}
 
 #[test]
 fn completion_ledger_proves_entire_binance_bnbusdc_venue_batch_is_published() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let ledger_root = reference_root
-        .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31");
-    let spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
-    let artifact = write_backfill_conversion_completion_ledger_from_spec_file(&spec_path)
-        .expect("completion ledger generation succeeds");
-    let ledger: BackfillConversionCompletionLedger =
-        serde_json::from_slice(&std::fs::read(&artifact.path).expect("read ledger"))
-            .expect("ledger parses");
+    let ledger = generate_completion_ledger_with_temp_batch_plan(
+        &reference_root,
+        "binance-bnbusdc-2026-03-01-2026-05-31",
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    );
 
     assert_eq!(
         ledger.ledger_id,
@@ -67,14 +169,11 @@ fn completion_ledger_proves_entire_binance_bnbusdc_venue_batch_is_published() {
 fn completion_ledger_proves_entire_bybit_bnbusdc_venue_batch_is_published() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let ledger_root = reference_root
-        .join("backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01");
-    let spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
-    let artifact = write_backfill_conversion_completion_ledger_from_spec_file(&spec_path)
-        .expect("completion ledger generation succeeds");
-    let ledger: BackfillConversionCompletionLedger =
-        serde_json::from_slice(&std::fs::read(&artifact.path).expect("read ledger"))
-            .expect("ledger parses");
+    let ledger = generate_completion_ledger_with_temp_batch_plan(
+        &reference_root,
+        "bybit-bnbusdc-2026-03-01-2026-06-01",
+        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    );
 
     assert_eq!(
         ledger.ledger_id,

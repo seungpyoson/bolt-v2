@@ -5,7 +5,10 @@ use backtesting_vertical_slice::{
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus,
         evaluate_backfill_accepted_tranche,
     },
-    backfill_conversion_batch::{BackfillConversionBatchPlan, BackfillConversionBatchStatus},
+    backfill_conversion_batch::{
+        BackfillConversionBatchPlan, BackfillConversionBatchStatus,
+        write_backfill_conversion_batch_plan_from_spec_file,
+    },
     backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus},
     backfill_execution_plan::{
         BackfillExecutionPlan, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
@@ -22,6 +25,10 @@ use backtesting_vertical_slice::{
         evaluate_backfill_source_proof_scope_for_selected_object,
     },
     operator::RunSpec,
+    reference_fixture_index::{
+        EvictedFixtureIndex, PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, repo_root_from_manifest_dir,
+    },
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessBlocker, SourceCatalogMappingReadinessInput,
         SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessSpec,
@@ -1965,7 +1972,6 @@ fn binance_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_in
         "../../specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31",
     );
     let spec_path = batch_root.join("backfill-conversion-batch-plan.toml");
-    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
     let spec: toml::Value =
         toml::from_str(&read_required_string(&spec_path)).expect("conversion batch spec parses");
     let inputs = spec["input"]
@@ -1987,8 +1993,9 @@ fn binance_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_in
     );
     assert_eq!(spec["selection"]["allow_gaps"].as_bool(), Some(false));
 
-    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
-        .expect("conversion batch plan parses");
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let plan = generated_binance_bnbusdc_conversion_batch_plan(&reference_root);
     assert_eq!(
         plan.batch_id,
         "backfill-conversion-batch-binance-bnbusdc-2026-03-01-2026-05-31"
@@ -2027,11 +2034,7 @@ fn binance_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_in
 fn binance_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let batch_root =
-        reference_root.join("backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31");
-    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
-    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
-        .expect("conversion batch plan parses");
+    let plan = generated_binance_bnbusdc_conversion_batch_plan(&reference_root);
     assert_eq!(plan.records.len(), 92);
 
     for record in &plan.records {
@@ -2099,11 +2102,7 @@ fn binance_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tra
 fn bybit_bnbusdc_venue_backfill_gate_reference_artifacts_match_generic_evaluators() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let batch_root =
-        reference_root.join("backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01");
-    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
-    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
-        .expect("conversion batch plan parses");
+    let plan = generated_bybit_bnbusdc_conversion_batch_plan(&reference_root);
     assert_eq!(plan.records.len(), 93);
 
     for record in &plan.records {
@@ -2181,7 +2180,6 @@ fn bybit_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_inpu
         "../../specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01",
     );
     let spec_path = batch_root.join("backfill-conversion-batch-plan.toml");
-    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
     let spec: toml::Value =
         toml::from_str(&read_required_string(&spec_path)).expect("conversion batch spec parses");
     let inputs = spec["input"]
@@ -2203,8 +2201,9 @@ fn bybit_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_inpu
     );
     assert_eq!(spec["selection"]["allow_gaps"].as_bool(), Some(false));
 
-    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
-        .expect("conversion batch plan parses");
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let plan = generated_bybit_bnbusdc_conversion_batch_plan(&reference_root);
     assert_eq!(
         plan.batch_id,
         "backfill-conversion-batch-bybit-bnbusdc-2026-03-01-2026-06-01"
@@ -3237,11 +3236,7 @@ fn bybit_public_archive_tick_trade_category_object_manifests_cover_all_staged_ob
 fn bybit_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let batch_root =
-        reference_root.join("backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01");
-    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
-    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
-        .expect("conversion batch plan parses");
+    let plan = generated_bybit_bnbusdc_conversion_batch_plan(&reference_root);
     assert_eq!(plan.records.len(), 93);
 
     for record in &plan.records {
@@ -3541,6 +3536,84 @@ fn read_required_string(path: &Path) -> String {
     );
     fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("read reference artifact {}: {error}", path.display()))
+}
+
+fn rewrite_assignment(source: &str, key: &str, value: &Path) -> String {
+    let replacement = format!("{key} = \"{}\"", value.display());
+    source
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with(&format!("{key} = ")) {
+                replacement.as_str()
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn assert_generated_fixture_matches_index(repo_relative_path: &str, generated_path: &Path) {
+    let index =
+        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
+    let entry = index
+        .entry_for(repo_relative_path)
+        .unwrap_or_else(|| panic!("eviction index must contain {repo_relative_path}"));
+    let bytes = read_required_bytes(generated_path);
+    assert_eq!(
+        bytes.len() as u64,
+        entry.bytes,
+        "generated fixture byte length must match eviction index for {repo_relative_path}"
+    );
+    assert_eq!(
+        sha256_hex(&bytes),
+        entry.sha256,
+        "generated fixture sha256 must match eviction index for {repo_relative_path}"
+    );
+}
+
+fn generated_evicted_conversion_batch_plan(
+    reference_root: &Path,
+    scope: &str,
+    repo_relative_path: &str,
+) -> BackfillConversionBatchPlan {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
+    let source_spec = batch_root.join("backfill-conversion-batch-plan.toml");
+    let temp_spec = temp_dir.path().join("backfill-conversion-batch-plan.toml");
+    let temp_output_dir = temp_dir.path().join("plan");
+    let spec = read_required_string(&source_spec);
+    fs::write(
+        &temp_spec,
+        rewrite_assignment(&spec, "output_dir", &temp_output_dir),
+    )
+    .expect("write temp conversion batch spec");
+    let artifact = write_backfill_conversion_batch_plan_from_spec_file(&temp_spec)
+        .expect("conversion batch plan generation succeeds");
+    assert_generated_fixture_matches_index(repo_relative_path, &artifact.path);
+    serde_json::from_slice(&read_required_bytes(&artifact.path))
+        .expect("conversion batch plan parses")
+}
+
+fn generated_binance_bnbusdc_conversion_batch_plan(
+    reference_root: &Path,
+) -> BackfillConversionBatchPlan {
+    generated_evicted_conversion_batch_plan(
+        reference_root,
+        "binance-bnbusdc-2026-03-01-2026-05-31",
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    )
+}
+
+fn generated_bybit_bnbusdc_conversion_batch_plan(
+    reference_root: &Path,
+) -> BackfillConversionBatchPlan {
+    generated_evicted_conversion_batch_plan(
+        reference_root,
+        "bybit-bnbusdc-2026-03-01-2026-06-01",
+        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    )
 }
 
 fn read_required_bytes(path: &Path) -> Vec<u8> {

@@ -96,3 +96,8 @@ specs/023-nt-research-analytics-platform/reference/source-universe-conversion-ru
 specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/*-source-universe.json
 specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/*/ledger/*.json
 specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/*.json
+
+# Issue #704 Phase 3: generated venue conversion batch plans are regenerated
+# from committed TOML specs in tests and fingerprinted in the eviction index.
+specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json
+specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01/plan/backfill-conversion-batch-plan.json

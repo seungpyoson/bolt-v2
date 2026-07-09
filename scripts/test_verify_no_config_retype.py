@@ -236,6 +236,19 @@ def test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline() -> None:
             raise AssertionError(f"expected ratchet finding, got {findings!r}")
 
 
+def test_ratchet_baseline_matches_current_non_strict_count() -> None:
+    violations = VERIFIER.collect_violations(VERIFIER.REPO_ROOT)
+    ratchet_violations = tuple(
+        item for item in violations if item[0].path not in VERIFIER.STRICT_RETYPE_PATHS
+    )
+    actual = len(ratchet_violations)
+    if VERIFIER.RATCHET_BASELINE_COUNT != actual:
+        raise AssertionError(
+            "RATCHET_BASELINE_COUNT must match the current non-strict count: "
+            f"{VERIFIER.RATCHET_BASELINE_COUNT} != {actual}"
+        )
+
+
 def test_registered_payload_literals_do_not_self_violate() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -289,6 +302,7 @@ def main() -> int:
         test_extensionless_strict_script_syntax_error_is_loud,
         test_registered_payload_assignment_skip_is_limited_to_verifier_file,
         test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline,
+        test_ratchet_baseline_matches_current_non_strict_count,
         test_registered_payload_literals_do_not_self_violate,
         test_relocated_hygiene_modules_are_strict_paths,
     )

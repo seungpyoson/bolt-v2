@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Iterable, Mapping
 import difflib
-import functools
 import hashlib
 import json
 import pathlib
@@ -1546,13 +1545,6 @@ CI_INSTALL_ACTION_TOOLS = {
     "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
     "build": ("cargo-zigbuild", "steps.setup.outputs.zigbuild_version"),
 }
-
-
-# verify_text re-parses the same shell strings tens of thousands of times across
-# a run (e.g. `fi`, `exit 1`); these helpers are pure functions of a single str,
-# so memoize. An unbounded cache is safe: the distinct-string set is bounded by
-# the workflow corpus and the process is a short-lived CLI/test invocation.
-@functools.cache
 
 
 def extract_paths_ignore_for_trigger(

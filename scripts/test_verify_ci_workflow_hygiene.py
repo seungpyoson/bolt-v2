@@ -5562,6 +5562,28 @@ def assert_command_parse_cache_is_transparent() -> None:
         )
 
 
+def assert_legacy_verifier_has_no_local_functools_cache_decorators() -> None:
+    """Relocated cache decorators must not silently attach to retained helpers."""
+    tree = ast.parse(repo_source_text(VERIFIER_PATH), filename=VERIFIER_PATH)
+    cached_functions: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Attribute)
+                and isinstance(decorator.value, ast.Name)
+                and decorator.value.id == "functools"
+                and decorator.attr == "cache"
+            ):
+                cached_functions.append(f"{node.name}:{node.lineno}")
+    if cached_functions:
+        raise AssertionError(
+            "verify_ci_workflow_hygiene.py must not keep local functools.cache decorators "
+            f"after cache-bearing helpers move out: {cached_functions}"
+        )
+
+
 def assert_relocated_symbols_keep_legacy_exports() -> None:
     verifier = load_verifier()
     moved_modules = (
@@ -9838,6 +9860,7 @@ def main() -> int:
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_command_parse_cache_is_transparent()
+    assert_legacy_verifier_has_no_local_functools_cache_decorators()
     assert_relocated_symbols_keep_legacy_exports()
     assert_relocated_tests_do_not_import_giant_twin()
     assert_required_job_indentation_is_actionable()

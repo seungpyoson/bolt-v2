@@ -11,6 +11,9 @@ YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")
 IF_OR_ELIF_RE = re.compile(r"^\s*(if|elif)\s+\[\[\s*(?P<condition>.*?)\s*\]\];\s*then\s*$")
 ELSE_RE = re.compile(r"^\s*else\s*$")
 FI_RE = re.compile(r"^\s*fi\s*$")
+
+# verify_text re-parses the same workflow lines many times across a run; this
+# helper is a pure function of a single str, so an unbounded short-lived cache is safe.
 @functools.cache
 def strip_comment(line: str) -> str:
     quote: str | None = None

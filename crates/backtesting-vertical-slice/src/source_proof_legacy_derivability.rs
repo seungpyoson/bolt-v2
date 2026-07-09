@@ -15,6 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_proof::EvidenceState;
 
 pub const SOURCE_PROOF_LEGACY_DERIVABILITY_SCHEMA_VERSION: &str =
@@ -456,11 +457,16 @@ pub fn write_source_proof_legacy_derivability_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    write_source_proof_legacy_derivability_report_from_files(
-        &spec.output_dir,
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    let acceptance_manifest_path = resolve_existing_path(base_dir, &spec.acceptance_manifest_path);
+    write_source_proof_legacy_derivability_report_from_files_with_base(
+        &output_dir,
         spec.report_id,
+        &acceptance_manifest_path,
         &spec.acceptance_manifest_path,
         spec.source_proofs,
+        base_dir,
     )
 }
 
@@ -470,7 +476,25 @@ pub fn write_source_proof_legacy_derivability_report_from_files(
     acceptance_manifest_path: &Path,
     source_proof_files: Vec<SourceProofLegacyDerivabilityProofFile>,
 ) -> Result<SourceProofLegacyDerivabilityArtifact, SourceProofLegacyDerivabilityFileError> {
-    let acceptance_path_display = acceptance_manifest_path.display().to_string();
+    write_source_proof_legacy_derivability_report_from_files_with_base(
+        output_dir,
+        report_id,
+        acceptance_manifest_path,
+        acceptance_manifest_path,
+        source_proof_files,
+        Path::new("."),
+    )
+}
+
+fn write_source_proof_legacy_derivability_report_from_files_with_base(
+    output_dir: &Path,
+    report_id: impl Into<String>,
+    acceptance_manifest_path: &Path,
+    acceptance_manifest_display_path: &Path,
+    source_proof_files: Vec<SourceProofLegacyDerivabilityProofFile>,
+    base_dir: &Path,
+) -> Result<SourceProofLegacyDerivabilityArtifact, SourceProofLegacyDerivabilityFileError> {
+    let acceptance_path_display = acceptance_manifest_display_path.display().to_string();
     let acceptance_bytes = fs::read(acceptance_manifest_path).map_err(|error| {
         SourceProofLegacyDerivabilityFileError::ReadAcceptanceManifest {
             path: acceptance_path_display.clone(),
@@ -490,7 +514,8 @@ pub fn write_source_proof_legacy_derivability_report_from_files(
         .map(|source_proof| {
             let SourceProofLegacyDerivabilityProofFile { proof_uri, path } = source_proof;
             let path_display = path.display().to_string();
-            let bytes = fs::read(&path).map_err(|error| {
+            let resolved_path = resolve_existing_path(base_dir, &path);
+            let bytes = fs::read(&resolved_path).map_err(|error| {
                 SourceProofLegacyDerivabilityFileError::ReadSourceProof {
                     proof_uri: proof_uri.clone(),
                     path: path_display.clone(),

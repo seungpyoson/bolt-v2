@@ -309,8 +309,9 @@ fn evaluate_and_write_source_universe_source_proofs(
     );
     validate_acceptance_provenance_config(spec)?;
 
+    let source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
     let registry =
-        crate::source_proof::read_source_binding_registry_from_path(&spec.source_bindings_path)
+        crate::source_proof::read_source_binding_registry_from_path(&source_bindings_path)
             .with_context(|| {
                 format!(
                     "read source-binding registry {}",

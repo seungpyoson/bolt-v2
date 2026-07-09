@@ -1,21 +1,67 @@
-use backtesting_vertical_slice::backfill_conversion_completion::{
-    BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
-    write_backfill_conversion_completion_ledger_from_spec_file,
+use crate::backtesting_vertical_slice_test_support::{
+    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, generate_evicted_batch_plan,
+    rewrite_assignment, tempdir_in_repo_target,
 };
-use std::path::Path;
+use backtesting_vertical_slice::{
+    backfill_conversion_completion::{
+        BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
+        write_backfill_conversion_completion_ledger_from_spec_file,
+    },
+    reference_fixture_index::repo_root_from_manifest_dir,
+};
+use std::{fs, path::Path};
+
+fn generate_completion_ledger_with_temp_batch_plan(
+    reference_root: &Path,
+    scope: &str,
+    evicted_batch_plan_path: &str,
+) -> BackfillConversionCompletionLedger {
+    let temp_dir = tempdir_in_repo_target();
+    let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
+    let batch_plan_path =
+        generate_evicted_batch_plan(&batch_root, evicted_batch_plan_path, temp_dir.path());
+    let repo_root = repo_root_from_manifest_dir();
+    let batch_plan_path = batch_plan_path
+        .strip_prefix(&repo_root)
+        .unwrap_or(&batch_plan_path)
+        .to_path_buf();
+
+    let ledger_root =
+        reference_root.join(format!("backfill-conversion-completion-ledgers/{scope}"));
+    let ledger_spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
+    let temp_ledger_spec_path = temp_dir
+        .path()
+        .join("backfill-conversion-completion-ledger.toml");
+    let ledger_spec = fs::read_to_string(&ledger_spec_path).unwrap_or_else(|error| {
+        panic!(
+            "read completion ledger spec {}: {error}",
+            ledger_spec_path.display()
+        )
+    });
+    let ledger_spec = rewrite_assignment(&ledger_spec, "batch_plan_path", &batch_plan_path);
+    let ledger_spec = rewrite_assignment(
+        &ledger_spec,
+        "output_dir",
+        &temp_dir.path().join("completion-ledger"),
+    );
+    fs::write(&temp_ledger_spec_path, ledger_spec).expect("write temp completion ledger spec");
+
+    let artifact =
+        write_backfill_conversion_completion_ledger_from_spec_file(&temp_ledger_spec_path)
+            .expect("completion ledger generation succeeds");
+    serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger")).expect("ledger parses")
+}
 
 #[test]
 fn completion_ledger_proves_entire_binance_bnbusdc_venue_batch_is_published() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let ledger_root = reference_root
-        .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31");
-    let spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
-    let artifact = write_backfill_conversion_completion_ledger_from_spec_file(&spec_path)
-        .expect("completion ledger generation succeeds");
-    let ledger: BackfillConversionCompletionLedger =
-        serde_json::from_slice(&std::fs::read(&artifact.path).expect("read ledger"))
-            .expect("ledger parses");
+    let ledger = generate_completion_ledger_with_temp_batch_plan(
+        &reference_root,
+        "binance-bnbusdc-2026-03-01-2026-05-31",
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    );
 
     assert_eq!(
         ledger.ledger_id,
@@ -67,14 +113,11 @@ fn completion_ledger_proves_entire_binance_bnbusdc_venue_batch_is_published() {
 fn completion_ledger_proves_entire_bybit_bnbusdc_venue_batch_is_published() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let ledger_root = reference_root
-        .join("backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01");
-    let spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
-    let artifact = write_backfill_conversion_completion_ledger_from_spec_file(&spec_path)
-        .expect("completion ledger generation succeeds");
-    let ledger: BackfillConversionCompletionLedger =
-        serde_json::from_slice(&std::fs::read(&artifact.path).expect("read ledger"))
-            .expect("ledger parses");
+    let ledger = generate_completion_ledger_with_temp_batch_plan(
+        &reference_root,
+        "bybit-bnbusdc-2026-03-01-2026-06-01",
+        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    );
 
     assert_eq!(
         ledger.ledger_id,

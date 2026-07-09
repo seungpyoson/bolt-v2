@@ -24,6 +24,7 @@ use crate::first_proof_selector::{
     FirstProofSelectorReport, FirstProofSelectorStatus, SelectedFirstProofAsset,
 };
 use crate::hashing::sha256_hex;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 
 pub const SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION: &str = "selected-source-slice-report.v1";
 
@@ -92,11 +93,41 @@ pub fn write_selected_source_slice_from_spec_file(
         .with_context(|| format!("read selected source slice spec {}", spec_path.display()))?;
     let spec: SelectedSourceSliceSpec = toml::from_str(&spec_text)
         .with_context(|| format!("parse selected source slice spec {}", spec_path.display()))?;
-    write_selected_source_slice(&spec)
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let source_parquet_path = spec.source_parquet_path.clone();
+    let selector_report_path = spec.selector_report_path.clone();
+    let output_parquet_path = spec.output_parquet_path.clone();
+    let resolved_spec = SelectedSourceSliceSpec {
+        source_parquet_path: resolve_existing_path(base_dir, &spec.source_parquet_path),
+        selector_report_path: resolve_existing_path(base_dir, &spec.selector_report_path),
+        output_parquet_path: resolve_output_dir(base_dir, &spec.output_parquet_path),
+        report_path: resolve_output_dir(base_dir, &spec.report_path),
+        ..spec
+    };
+    write_selected_source_slice_with_report_paths(
+        &resolved_spec,
+        &source_parquet_path,
+        &selector_report_path,
+        &output_parquet_path,
+    )
 }
 
 pub fn write_selected_source_slice(
     spec: &SelectedSourceSliceSpec,
+) -> Result<SelectedSourceSliceArtifact> {
+    write_selected_source_slice_with_report_paths(
+        spec,
+        &spec.source_parquet_path,
+        &spec.selector_report_path,
+        &spec.output_parquet_path,
+    )
+}
+
+fn write_selected_source_slice_with_report_paths(
+    spec: &SelectedSourceSliceSpec,
+    report_source_parquet_path: &Path,
+    report_selector_report_path: &Path,
+    report_output_parquet_path: &Path,
 ) -> Result<SelectedSourceSliceArtifact> {
     ensure!(
         spec.projected_columns
@@ -257,11 +288,11 @@ pub fn write_selected_source_slice(
     )?;
     let report = SelectedSourceSliceReport {
         schema_version: SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION.to_string(),
-        source_parquet_path: spec.source_parquet_path.display().to_string(),
+        source_parquet_path: report_source_parquet_path.display().to_string(),
         source_parquet_sha256,
-        selector_report_path: spec.selector_report_path.display().to_string(),
+        selector_report_path: report_selector_report_path.display().to_string(),
         selector_report_sha256,
-        output_parquet_path: spec.output_parquet_path.display().to_string(),
+        output_parquet_path: report_output_parquet_path.display().to_string(),
         asset_id_column: spec.asset_id_column.clone(),
         usage_scope: spec.usage_scope,
         projected_columns: spec.projected_columns.clone(),

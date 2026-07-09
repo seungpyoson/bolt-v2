@@ -16,11 +16,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::backtesting_vertical_slice_test_support::PHASE3_EVICTED_REFERENCE_PATHS;
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
     TIER1_KEPT_REFERENCE_PATHS, is_evicted_execution_pack_record_path,
-    is_evicted_reference_fixture_path, is_tier1_evicted_reference_fixture_path,
-    repo_root_from_manifest_dir,
+    is_evicted_reference_fixture_path, is_phase3_conversion_batch_plan_path,
+    is_tier1_evicted_reference_fixture_path, repo_root_from_manifest_dir,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPack;
 
@@ -488,4 +489,74 @@ fn tier1_keep_list_fixtures_are_present_and_not_indexed() {
             "Tier 1 keep-list fixture {path:?} must not be recorded as evicted"
         );
     }
+}
+
+#[test]
+fn phase3_index_entries_match_declared_exact_scope() {
+    let repo_root = repo_root_from_manifest_dir();
+    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
+    let phase3_entries: BTreeSet<String> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .filter(|path| is_phase3_conversion_batch_plan_path(path))
+        .collect();
+    let declared: BTreeSet<String> = PHASE3_EVICTED_REFERENCE_PATHS
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect();
+
+    assert_eq!(
+        phase3_entries,
+        declared,
+        "Phase 3 index entries must exactly match the declared generated-reference eviction scope; \
+         indexed but undeclared: {:?}; declared but unindexed: {:?}",
+        phase3_entries.difference(&declared).collect::<Vec<_>>(),
+        declared.difference(&phase3_entries).collect::<Vec<_>>(),
+    );
+
+    for path in &declared {
+        assert!(
+            !repo_root.join(path).exists(),
+            "Phase 3 generated reference artifact {path:?} must be absent from the working tree"
+        );
+    }
+}
+
+#[test]
+fn phase3_evicted_scope_has_no_regrown_working_tree_artifacts() {
+    let repo_root = repo_root_from_manifest_dir();
+    let batch_root = repo_root
+        .join("specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches");
+    for path in files_under(&batch_root) {
+        let repo_relative = repo_relative_path(&repo_root, &path);
+        assert!(
+            !is_phase3_conversion_batch_plan_path(&repo_relative),
+            "Phase 3 generated reference artifact {repo_relative:?} must remain evicted from the working tree"
+        );
+    }
+}
+
+#[test]
+fn phase3_gitignore_patterns_match_eviction_predicates() {
+    let repo_root = repo_root_from_manifest_dir();
+    for &path in PHASE3_EVICTED_REFERENCE_PATHS {
+        assert!(
+            is_phase3_conversion_batch_plan_path(path),
+            "Phase 3 declared path {path:?} must be in the eviction predicate"
+        );
+        assert!(
+            git_check_ignore(&repo_root, path),
+            "Phase 3 declared path {path:?} must be ignored by .gitignore"
+        );
+    }
+    let hypothetical = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/hypothetical-new-scope/plan/backfill-conversion-batch-plan.json";
+    assert!(
+        is_phase3_conversion_batch_plan_path(hypothetical),
+        "hypothetical Phase 3 scope path must be in the eviction predicate"
+    );
+    assert!(
+        git_check_ignore(&repo_root, hypothetical),
+        "hypothetical Phase 3 scope path must be ignored by .gitignore"
+    );
 }

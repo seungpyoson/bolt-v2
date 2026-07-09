@@ -12,13 +12,14 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::hashing::sha256_hex;
 use crate::{
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
         BackfillAcceptedTrancheStatus,
     },
+    hashing::sha256_hex,
     operator::RunSpec,
+    path_resolution::{resolve_existing_path, resolve_output_dir},
     source_proof::SourceProofUsageScope,
 };
 
@@ -402,9 +403,15 @@ pub fn write_backfill_execution_plan_from_spec_file(
             path: spec_path.display().to_string(),
             error: error.to_string(),
         })?;
-    let (tranche, accepted_tranche_manifest_hash) =
-        read_accepted_tranche_manifest(&spec.accepted_tranche_manifest_path)?;
-    let (run_spec, run_spec_hash) = read_run_spec(&spec.run_spec_path)?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let resolved_accepted_tranche_manifest_path =
+        resolve_existing_path(base_dir, &spec.accepted_tranche_manifest_path);
+    let (tranche, accepted_tranche_manifest_hash) = read_accepted_tranche_manifest(
+        &resolved_accepted_tranche_manifest_path,
+        &spec.accepted_tranche_manifest_path,
+    )?;
+    let resolved_run_spec_path = resolve_existing_path(base_dir, &spec.run_spec_path);
+    let (run_spec, run_spec_hash) = read_run_spec(&resolved_run_spec_path, &spec.run_spec_path)?;
     let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
     let work_budget = BackfillExecutionWorkBudget {
         max_source_rows: spec.max_source_rows,
@@ -420,7 +427,8 @@ pub fn write_backfill_execution_plan_from_spec_file(
         &run_binding,
         work_budget,
     );
-    write_backfill_execution_plan(&spec.output_dir, &plan)
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_backfill_execution_plan(&output_dir, &plan)
 }
 
 pub fn write_backfill_execution_plan(
@@ -470,38 +478,42 @@ pub fn write_backfill_execution_plan_with_overwrite(
 
 fn read_accepted_tranche_manifest(
     path: &Path,
+    display_path: &Path,
 ) -> Result<(BackfillAcceptedTrancheManifest, String), BackfillExecutionPlanError> {
     let bytes = fs::read(path).map_err(|error| {
         BackfillExecutionPlanError::ReadAcceptedTrancheManifest {
-            path: path.display().to_string(),
+            path: display_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
     let hash = sha256_hex(&bytes);
     let manifest = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionPlanError::ParseAcceptedTrancheManifestJson {
-            path: path.display().to_string(),
+            path: display_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
     Ok((manifest, hash))
 }
 
-fn read_run_spec(path: &Path) -> Result<(RunSpec, String), BackfillExecutionPlanError> {
+fn read_run_spec(
+    path: &Path,
+    display_path: &Path,
+) -> Result<(RunSpec, String), BackfillExecutionPlanError> {
     let bytes = fs::read(path).map_err(|error| BackfillExecutionPlanError::ReadRunSpec {
-        path: path.display().to_string(),
+        path: display_path.display().to_string(),
         error: error.to_string(),
     })?;
     let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).map_err(|error| {
         BackfillExecutionPlanError::ParseRunSpecToml {
-            path: path.display().to_string(),
+            path: display_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
     let run_spec =
         toml::from_str(text).map_err(|error| BackfillExecutionPlanError::ParseRunSpecToml {
-            path: path.display().to_string(),
+            path: display_path.display().to_string(),
             error: error.to_string(),
         })?;
     Ok((run_spec, hash))

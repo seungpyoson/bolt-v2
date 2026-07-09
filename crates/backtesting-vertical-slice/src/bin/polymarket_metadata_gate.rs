@@ -37,7 +37,10 @@ fn main() -> Result<()> {
         .with_context(|| format!("read metadata gate spec {}", cli.spec.display()))?;
     let file_spec: FileSpec = toml::from_str(&spec_text)
         .with_context(|| format!("parse metadata gate spec TOML {}", cli.spec.display()))?;
-    let base_dir = cli.spec.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let base_dir = cli
+        .spec
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     let output_path = resolve_output_dir(base_dir, &file_spec.output_path);
     let report = evaluate_polymarket_metadata_gate_with_base(
         &PolymarketMetadataGateSpec {
@@ -59,15 +62,16 @@ fn main() -> Result<()> {
         &report,
         backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
-    .with_context(|| {
-        format!("write metadata gate report {}", output_path.display())
-    })?;
+    .with_context(|| format!("write metadata gate report {}", output_path.display()))?;
 
     let status = serde_json::to_value(report.status)?
         .as_str()
         .unwrap_or_default()
         .to_string();
-    println!("polymarket_metadata_gate_report = {}", output_path.display());
+    println!(
+        "polymarket_metadata_gate_report = {}",
+        output_path.display()
+    );
     println!("status = {status}");
     println!("gamma_market_count = {}", report.gamma_market_count);
     println!(

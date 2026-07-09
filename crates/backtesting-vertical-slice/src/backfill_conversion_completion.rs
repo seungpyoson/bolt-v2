@@ -545,7 +545,8 @@ fn read_input(
     base_dir: &Path,
 ) -> Result<BackfillConversionCompletionInput, BackfillConversionCompletionLedgerError> {
     let publication_path = spec.publication_evidence_path.display().to_string();
-    let resolved_publication_path = resolve_existing_path(base_dir, &spec.publication_evidence_path);
+    let resolved_publication_path =
+        resolve_existing_path(base_dir, &spec.publication_evidence_path);
     let publication_bytes = fs::read(&resolved_publication_path).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadPublicationEvidence {
             path: publication_path.clone(),

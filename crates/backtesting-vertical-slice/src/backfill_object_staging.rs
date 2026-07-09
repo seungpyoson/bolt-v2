@@ -323,16 +323,16 @@ where
         }],
     };
     let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
-    write_manifest(&output_dir, &manifest).map(
-        |(manifest_path, manifest_hash, manifest_bytes)| BackfillObjectStagingArtifact {
+    write_manifest(&output_dir, &manifest).map(|(manifest_path, manifest_hash, manifest_bytes)| {
+        BackfillObjectStagingArtifact {
             manifest_path,
             manifest_hash,
             manifest_bytes,
             object_uri: spec.output_object_uri.clone(),
             object_sha256: spec.expected_sha256.clone(),
             object_bytes: actual_bytes,
-        },
-    )
+        }
+    })
 }
 
 fn validate_spec(spec: &BackfillObjectStagingSpec) -> Result<(), BackfillObjectStagingError> {

@@ -395,8 +395,7 @@ mod tests {
             .ancestors()
             .nth(2)
             .expect("repo root");
-        let absolute_target_artifact =
-            repo_root.join("target/reference-regen/scope/artifact.json");
+        let absolute_target_artifact = repo_root.join("target/reference-regen/scope/artifact.json");
 
         assert_eq!(
             portable_artifact_path_for_spec(

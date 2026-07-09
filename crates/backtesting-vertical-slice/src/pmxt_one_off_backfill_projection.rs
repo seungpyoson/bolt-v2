@@ -384,13 +384,12 @@ fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
 ) -> Result<PmxtOneOffArtifactRootRunArtifact> {
     let gamma_markets_path =
         resolve_existing_path(base_dir, &spec.selected_source.gamma_markets_json_path);
-    let gamma_markets_bytes = fs::read(&gamma_markets_path)
-        .with_context(|| {
-            format!(
-                "read PMXT Gamma metadata {}",
-                spec.selected_source.gamma_markets_json_path.display()
-            )
-        })?;
+    let gamma_markets_bytes = fs::read(&gamma_markets_path).with_context(|| {
+        format!(
+            "read PMXT Gamma metadata {}",
+            spec.selected_source.gamma_markets_json_path.display()
+        )
+    })?;
     let gamma_markets: Vec<GammaMarket> = serde_json::from_slice(&gamma_markets_bytes)
         .with_context(|| {
             format!(
@@ -1264,7 +1263,11 @@ pub fn write_pmxt_one_off_projection_to_catalog(
     catalog_root: &Path,
     projection: &PmxtOneOffNtProjection,
 ) -> Result<PmxtOneOffCatalogProjection> {
-    write_pmxt_one_off_projection_to_catalog_with_report_root(catalog_root, projection, catalog_root)
+    write_pmxt_one_off_projection_to_catalog_with_report_root(
+        catalog_root,
+        projection,
+        catalog_root,
+    )
 }
 
 fn write_pmxt_one_off_projection_to_catalog_with_report_root(

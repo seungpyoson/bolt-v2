@@ -96,8 +96,13 @@ pub fn generated_evicted_conversion_batch_plan(
 ) -> BackfillConversionBatchPlan {
     let temp_dir = tempdir_in_repo_target();
     let batch_root = reference_root.join(format!("backfill-conversion-batches/{scope}"));
-    let artifact_path = generate_evicted_batch_plan(&batch_root, repo_relative_path, temp_dir.path());
-    let bytes = fs::read(&artifact_path)
-        .unwrap_or_else(|error| panic!("read generated fixture {}: {error}", artifact_path.display()));
+    let artifact_path =
+        generate_evicted_batch_plan(&batch_root, repo_relative_path, temp_dir.path());
+    let bytes = fs::read(&artifact_path).unwrap_or_else(|error| {
+        panic!(
+            "read generated fixture {}: {error}",
+            artifact_path.display()
+        )
+    });
     serde_json::from_slice(&bytes).expect("conversion batch plan parses")
 }

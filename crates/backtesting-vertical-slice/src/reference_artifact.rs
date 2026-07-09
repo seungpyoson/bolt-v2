@@ -375,5 +375,4 @@ mod tests {
         assert_eq!(written.pin.sha256, sha256_hex(&expected_bytes));
         assert_eq!(written.bytes, expected_bytes.len() as u64);
     }
-
 }

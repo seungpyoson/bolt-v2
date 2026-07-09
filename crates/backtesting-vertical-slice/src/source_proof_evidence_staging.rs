@@ -355,15 +355,15 @@ where
         evidence_records,
     };
     let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
-    write_manifest(&output_dir, &manifest).map(
-        |(manifest_path, manifest_hash, manifest_bytes)| SourceProofEvidenceStagingArtifact {
+    write_manifest(&output_dir, &manifest).map(|(manifest_path, manifest_hash, manifest_bytes)| {
+        SourceProofEvidenceStagingArtifact {
             manifest_path,
             manifest_hash,
             manifest_bytes,
             record_count: manifest.record_count,
             total_bytes: manifest.total_bytes,
-        },
-    )
+        }
+    })
 }
 
 fn validate_spec(

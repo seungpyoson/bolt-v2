@@ -1045,7 +1045,11 @@ fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_run
         "catalog root should be marker-root anchored at {}",
         anchored_catalog_root.display()
     );
-    assert!(anchored_output_dir.join(CONVERSION_CHECKPOINT_FILE).exists());
+    assert!(
+        anchored_output_dir
+            .join(CONVERSION_CHECKPOINT_FILE)
+            .exists()
+    );
     assert!(anchored_output_dir.join(CONVERSION_MANIFEST_FILE).exists());
     assert!(anchored_output_dir.join(CATALOG_METADATA_FILE).exists());
     assert!(

@@ -43,6 +43,10 @@ name = "wiring_registration"
 path = "tests/wiring_registration.rs"
 
 [[test]]
+name = "chainlink_startup_boot"
+path = "tests/chainlink_startup_boot.rs"
+
+[[test]]
 name = "bolt_v3_risk_reservation_substrate"
 path = "tests/bolt_v3_risk_reservation_substrate.rs"
 

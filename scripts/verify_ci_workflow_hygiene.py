@@ -410,12 +410,13 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_readiness",
     "bolt_v3_strategy_registration",
     "bolt_v3_submit_admission",
+    "chainlink_startup_boot",
     "config_parsing",
     "lake_batch",
     "nt_runtime_capture",
     "venue_contract",
 )
-EXPECTED_HARNESS_COUNT = 12
+EXPECTED_HARNESS_COUNT = 13
 DECLARED_TOP_LEVEL_TEST_HELPERS = {"bolt_v3_iv_support"}
 RUST_TEST_ATTR_RE = re.compile(r"#\s*\[\s*(?:tokio::)?test(?:\s*\([^]]*\))?\s*\]")
 RUST_INNER_ATTR_RE = re.compile(r"#!\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)")

@@ -1,5 +1,12 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::{
+    BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
+    BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
+    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, generate_evicted_completion_ledger,
+    tempdir_in_repo_target,
+};
 use backtesting_vertical_slice::venue_scale_conversion_acceptance::{
     VenueScaleConversionAcceptanceLedger, VenueScaleConversionAcceptanceStatus,
     write_venue_scale_conversion_acceptance_ledger_from_spec_file,
@@ -9,11 +16,29 @@ use backtesting_vertical_slice::venue_scale_conversion_acceptance::{
 fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_without_overclaiming() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("acceptance-ledger");
     let spec_path = temp_dir
         .path()
         .join("venue-scale-conversion-acceptance-ledger.toml");
+    let binance_completion_ledger_dir = temp_dir.path().join("binance-completion-ledger");
+    let bybit_completion_ledger_dir = temp_dir.path().join("bybit-completion-ledger");
+    fs::create_dir_all(&binance_completion_ledger_dir).expect("create binance ledger temp dir");
+    fs::create_dir_all(&bybit_completion_ledger_dir).expect("create bybit ledger temp dir");
+    let binance_completion_ledger = generate_evicted_completion_ledger(
+        &reference_root,
+        "binance-bnbusdc-2026-03-01-2026-05-31",
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
+        &binance_completion_ledger_dir,
+    );
+    let bybit_completion_ledger = generate_evicted_completion_ledger(
+        &reference_root,
+        "bybit-bnbusdc-2026-03-01-2026-06-01",
+        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
+        &bybit_completion_ledger_dir,
+    );
     let binance_archive_seed = temp_dir.path().join("binance-archive-discovery-seed.json");
     let bybit_conversion_run_plan = temp_dir.path().join("bybit-conversion-run-plan.json");
     let pmxt_archive_seed = temp_dir.path().join("pmxt-archive-discovery-seed.json");
@@ -254,9 +279,7 @@ blocking_issues = [
             pmxt_source_manifest = pmxt_source_manifest.display(),
             pmxt_conversion_queue = pmxt_conversion_queue.display(),
             pmxt_source_proof_set = pmxt_source_proof_set.display(),
-            binance_completion_ledger = reference_root
-                .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
-                .display(),
+            binance_completion_ledger = binance_completion_ledger.display(),
             binance_source_manifest = reference_root
                 .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json")
                 .display(),
@@ -269,9 +292,7 @@ blocking_issues = [
             binance_conversion_run_plan = reference_root
                 .join("source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json")
                 .display(),
-            bybit_completion_ledger = reference_root
-                .join("backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json")
-                .display(),
+            bybit_completion_ledger = bybit_completion_ledger.display(),
             bybit_source_manifest = reference_root
                 .join("backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json")
                 .display(),

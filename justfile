@@ -80,6 +80,14 @@ verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
 
+verify-bolt-v3-strategy-policy-fence: check-workspace
+    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
+
+verify-bolt-v3-boundary-evidence: check-workspace
+    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
+    python3 scripts/verify_bolt_v3_boundary_evidence.py
+
 test-verify-runtime-capture-yaml: check-workspace
     python3 scripts/test_verify_runtime_capture_yaml.py
 

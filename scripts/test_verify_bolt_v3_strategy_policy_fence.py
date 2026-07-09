@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+"""Self-tests for the Bolt-v3 strategy policy fence."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import bolt_v3_source_roots as source_roots
+
+
+SCRIPT_PATH = Path(__file__).with_name("verify_bolt_v3_strategy_policy_fence.py")
+SPEC = importlib.util.spec_from_file_location("verify_bolt_v3_strategy_policy_fence", SCRIPT_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"failed to load {SCRIPT_PATH}")
+VERIFIER = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = VERIFIER
+SPEC.loader.exec_module(VERIFIER)
+
+
+class StrategyPolicyFenceTests(unittest.TestCase):
+    def violations_for(
+        self, source: str, path: str = "src/strategies/probe.rs"
+    ) -> list[object]:
+        return VERIFIER.find_violations_in_text(path, source)
+
+    def labels_for(self, source: str) -> set[str]:
+        return {violation.label for violation in self.violations_for(source)}
+
+    def direct_nt_violations_for(
+        self, source: str, path: str = "src/strategies/probe.rs"
+    ) -> list[object]:
+        return [
+            violation
+            for violation in self.violations_for(source, path=path)
+            if violation.label == "direct NT venue mutation call"
+        ]
+
+    def kill_switch_action_violations_for(
+        self, source: str, path: str = "src/strategies/probe.rs"
+    ) -> list[object]:
+        return [
+            violation
+            for violation in self.violations_for(source, path=path)
+            if violation.label == "direct kill-switch action bypass"
+        ]
+
+    def write_source(self, root: Path, relative_path: str, source: str) -> None:
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    def populate_strategy_policy_fixture(self, root: Path) -> None:
+        for relative_root in VERIFIER.STRATEGY_SOURCE_ROOTS:
+            root_path = Path(relative_root)
+            if root_path.suffix == ".rs":
+                relative_path = relative_root
+            else:
+                relative_path = f"{relative_root}/mod.rs"
+            self.write_source(root, relative_path, "pub struct PolicyFenceFixture;\n")
+
+    def collect_violations_for_temp_sources(
+        self, sources: dict[str, str]
+    ) -> list[object]:
+        original_root = VERIFIER.REPO_ROOT
+        original_source_set_files = VERIFIER.source_set_files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.populate_strategy_policy_fixture(temp_root)
+            for relative_path, source in sources.items():
+                self.write_source(temp_root, relative_path, source)
+
+            VERIFIER.REPO_ROOT = temp_root
+            VERIFIER.source_set_files = lambda roots, repo_root=None: original_source_set_files(
+                roots, repo_root=temp_root if repo_root is None else repo_root
+            )
+            try:
+                return VERIFIER.collect_violations()
+            finally:
+                VERIFIER.source_set_files = original_source_set_files
+                VERIFIER.REPO_ROOT = original_root
+
+    def test_live_node_root_is_gated_but_not_strategy_policy_source(self) -> None:
+        for relative in ("src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"):
+            self.assertIn(relative, source_roots.SUBMIT_ADMISSION_SOURCE_ROOTS)
+            self.assertNotIn(relative, source_roots.STRATEGY_SOURCE_ROOTS)
+
+        scanned = {
+            path.relative_to(VERIFIER.REPO_ROOT).as_posix()
+            for path in VERIFIER.source_files_for_strategy_policy_fence()
+        }
+        self.assertFalse(
+            any(
+                relative == "src/bolt_v3_live_node.rs"
+                or relative == "src/bolt_v3_live_node"
+                or relative.startswith("src/bolt_v3_live_node/")
+                for relative in scanned
+            )
+        )
+        self.assertTrue(
+            any(relative.startswith("src/strategies/") for relative in scanned)
+        )
+
+    def test_empty_strategy_policy_source_sets_fail_closed(self) -> None:
+        original_root = VERIFIER.REPO_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                VERIFIER.REPO_ROOT = Path(tmp)
+                violations = VERIFIER.collect_violations()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+        labels = [violation.label for violation in violations]
+        self.assertEqual(
+            labels,
+            [
+                "strategy policy source files: enforcement set is empty",
+                "mutation policy source files: enforcement set is empty",
+            ],
+        )
+
+    def test_empty_strategy_policy_source_sets_use_real_collectors(self) -> None:
+        original_root = VERIFIER.REPO_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                VERIFIER.REPO_ROOT = Path(tmp)
+                strategy_files = VERIFIER.source_files_for_strategy_policy_fence()
+                mutation_files = VERIFIER.source_files_for_mutation_fence()
+                violations = VERIFIER.collect_violations()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+        self.assertEqual(strategy_files, [])
+        self.assertEqual(mutation_files, [])
+        labels = [violation.label for violation in violations]
+        self.assertEqual(
+            labels,
+            [
+                "strategy policy source files: enforcement set is empty",
+                "mutation policy source files: enforcement set is empty",
+            ],
+        )
+
+    def test_missing_configured_strategy_roots_fail_before_supplemental_scan(self) -> None:
+        original_root = VERIFIER.REPO_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.write_source(
+                    root,
+                    "src/strategies/binary_oracle_edge_taker/mod.rs",
+                    "pub struct SupplementalStrategyFixture;\n",
+                )
+                VERIFIER.REPO_ROOT = root
+                strategy_files = VERIFIER.source_files_for_strategy_policy_fence()
+                violations = VERIFIER.collect_violations()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+        self.assertEqual(strategy_files, [])
+        self.assertEqual(
+            [violation.label for violation in violations],
+            ["strategy policy source files: enforcement set is empty"],
+        )
+
+    def test_strategy_policy_source_still_flags_runtime_selection_bus_path(self) -> None:
+        violations = self.collect_violations_for_temp_sources(
+            {
+                "src/strategies/binary_oracle_edge_taker/mod.rs": "fn strategy_violation() { subscribe_any(topic, handler, None); }\n",
+            }
+        )
+
+        self.assertTrue(
+            any(
+                violation.path == "src/strategies/binary_oracle_edge_taker/mod.rs"
+                and violation.label == "dead runtime-selection bus path"
+                for violation in violations
+            )
+        )
+
+    def test_detects_removed_policy_hardcodes(self) -> None:
+        labels = self.labels_for(
+            """
+            subscribe_any(topic, handler, None);
+            if info.get_str("market_slug") == Some("x") {}
+            matches!((a, b, c, d), (
+                OrderSide::Buy,
+                PositionSide::Long,
+                OrderSide::Sell,
+                PositionSide::Long,
+            ));
+            book.max_buy_execution_within_vwap_slippage_bps(50);
+            match side {
+                OutcomeSide::Up => self.active.books.up.best_ask,
+                OutcomeSide::Down => self.active.books.down.best_ask,
+            }
+            let _ = KillSwitchState::Armed;
+            self.kill_switch = true;
+            self.forced_reduction_submit(order);
+            self.cancel_orders(vec![order_id]);
+            self.cancel_all_orders();
+            self.close_position(position_id, None, None);
+            self.close_all_positions(None, None);
+            self.flatten_all_positions();
+            """
+        )
+
+        self.assertIn("dead runtime-selection bus path", labels)
+        self.assertIn("inline updown NT metadata interpretation", labels)
+        self.assertIn("fixed long-only position contract tuple", labels)
+        self.assertIn("buy-only entry VWAP helper", labels)
+        self.assertIn("buy-biased entry price block", labels)
+        self.assertIn("strategy-local kill switch policy", labels)
+        self.assertIn("direct kill-switch action bypass", labels)
+
+    def test_detects_direct_nt_venue_mutation_calls_from_strategy_source(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            self.submit_order(order, None, Some(client_id), None)?;
+            self.submit_order_list(order_list, None, Some(client_id), None)?;
+            self.modify_order(client_order_id, None, None, None, None)?;
+            self.cancel_order(client_order_id, Some(client_id), None)?;
+            self.cancel_orders(&client_order_ids, Some(client_id), None)?;
+            self.cancel_all_orders(None, Some(client_id), None)?;
+            self.close_position(instrument_id, position_id, Some(client_id), None)?;
+            self.close_all_positions(instrument_id, Some(client_id), None)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            8,
+            "every current NT Strategy venue mutation API must be detected",
+        )
+
+    def test_detects_ufcs_direct_nt_venue_mutation_calls_from_strategy_source(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            <Self as Strategy>::submit_order(self, order, None, Some(client_id), None)?;
+            <Self as Strategy>::submit_order_list(self, order_list, None, Some(client_id), None)?;
+            <Self as Strategy>::modify_order(self, client_order_id, None, None, None, None)?;
+            <Self as Strategy>::cancel_order(self, client_order_id, Some(client_id), None)?;
+            <Self as Strategy>::cancel_orders(self, &client_order_ids, Some(client_id), None)?;
+            <Self as Strategy>::cancel_all_orders(self, None, Some(client_id), None)?;
+            <Self as Strategy>::close_position(self, instrument_id, position_id, Some(client_id), None)?;
+            <Self as Strategy>::close_all_positions(self, instrument_id, Some(client_id), None)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            8,
+            "every forbidden NT mutation API must be detected through UFCS syntax",
+        )
+
+    def test_detects_alias_and_type_qualified_nt_venue_mutation_calls(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            use nautilus_trading::Strategy as NtStrategy;
+            NtStrategy::submit_order(self, order, None, Some(client_id), None)?;
+            <Self as NtStrategy>::cancel_order(self, client_order_id, Some(client_id), None)?;
+            Self::modify_order(self, client_order_id, None, None, None, None)?;
+            <BinaryOracleEdgeTaker>::cancel_all_orders(self, instrument_id, None, Some(client_id), None)?;
+            let submit = Self::submit_order;
+            let cancel = <Self as NtStrategy>::cancel_order;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            6,
+            "aliases, inherent-qualified forms, and method pointers must be fenced",
+        )
+
+    def test_detects_lowercase_alias_qualified_nt_venue_mutation_calls(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            use nautilus_trading::Strategy as nt_strategy;
+            nt_strategy::submit_order(self, order, None, Some(client_id), None)?;
+            let submit = nt_strategy::submit_order;
+            Self::submit_order::<Probe>(self, order, None, Some(client_id), None)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            3,
+            "lowercase aliases and turbofish-qualified mutation calls must be fenced",
+        )
+
+    def test_detects_raw_sink_wrapper_methods_outside_policy_boundary(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            self.submit_order_via_nt(order, context)?;
+            self.cancel_order_via_nt(client_order_id, Some(client_id), None)?;
+            self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            3,
+            "private NT sink wrapper names must still be fenced outside the policy module",
+        )
+
+    def test_detects_future_mutation_method_name_variants(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            self.submit_order_with_params(order, params)?;
+            self.submit_order_list_with_params(orders, params)?;
+            self.modify_order_with_params(client_order_id, params)?;
+            self.cancel_order_with_params(client_order_id, params)?;
+            self.cancel_orders_with_params(client_order_ids, params)?;
+            self.cancel_all_orders_with_params(instrument_id, params)?;
+            self.modify_order_in_place(&mut order, Some(quantity), None, None)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            7,
+            "nearby mutation method variants must be fenced before a future NT bump can use them",
+        )
+
+    def test_detects_nt_command_transport_and_managed_lifecycle_mutation_paths(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            self.core_mut();
+            self.core_mut().order_manager().send_risk_command(command);
+            self.core_mut().order_manager().send_exec_command(command);
+            self.core_mut().order_manager().send_emulator_command(command);
+            self.core_mut().order_manager().send_algo_command(command);
+            StrategyCore::order_manager(core);
+            self.expire_gtd_order(event);
+            self.reactivate_gtd_timers();
+            self.set_gtd_expiry(client_order_id, expiry);
+            self.cancel_gtd_expiry(client_order_id);
+            self.finalize_market_exit(position_id);
+            self.cancel_market_exit(position_id);
+            self.deny_order(order);
+            self.deny_order_list(order_list);
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            22,
+            "raw command transport and NT-managed lifecycle helpers must be fenced",
+        )
+
+    def test_detects_raw_msgbus_trading_command_injection_paths(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            use nautilus_common::msgbus::{self, MessagingSwitchboard};
+            use nautilus_common::messages::execution::TradingCommand;
+
+            fn bypass(command: TradingCommand) {
+                msgbus::send_trading_command(
+                    MessagingSwitchboard::risk_engine_queue_execute(),
+                    command,
+                );
+                send_trading_command(
+                    MessagingSwitchboard::exec_engine_queue_execute(),
+                    TradingCommand::SubmitOrder(submit),
+                );
+                let send = msgbus::send_trading_command;
+                let send_any = msgbus::send_any;
+                let send_any_value = msgbus::send_any_value;
+                send_any_value(endpoint, boxed_command);
+                send_any(endpoint, boxed_command);
+            }
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            11,
+            "raw msgbus trading-command injection must be fenced at the primitive layer",
+        )
+
+    def test_detects_strategy_local_execution_policy_construction(self) -> None:
+        labels = self.labels_for(
+            """
+            let live_policy = BoltV3OrderExecutionPolicy::live();
+            let shadow_policy = BoltV3OrderExecutionPolicy::shadow();
+            let custom_policy = BoltV3OrderExecutionPolicy::from_mode(mode);
+            context.with_order_execution_policy(live_policy);
+            """
+        )
+
+        self.assertIn("strategy-local execution policy construction", labels)
+        self.assertIn("strategy-local execution policy override", labels)
+
+    def test_detects_strategy_local_execution_policy_aliases_and_method_pointers(
+        self,
+    ) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy as P;
+            type PolicyAlias = BoltV3OrderExecutionPolicy;
+            let make_live = P::live;
+            let _policy = make_live();
+            let _mode = BoltV3OrderExecutionMode::Live;
+            """
+        )
+
+        self.assertIn("strategy-local execution policy type reference", labels)
+
+    def test_policy_reference_is_repo_wide_not_strategy_path_scoped(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.collect_violations_for_temp_sources(
+                {
+                    "src/rogue_registered_strategy.rs": (
+                        "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
+                        "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
+                        "}\n"
+                    )
+                }
+            )
+            if violation.path == "src/rogue_registered_strategy.rs"
+        }
+
+        self.assertIn("strategy-local execution policy construction", labels)
+        self.assertIn("strategy-local execution policy type reference", labels)
+
+    def test_production_strategy_registry_rejects_outside_strategy_module_builders(
+        self,
+    ) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                "fn production_strategy_registry() -> Result<StrategyRegistry> {\n"
+                "    registry.register::<crate::rogue_registered_strategy::RogueBuilder>()?;\n"
+                "    Ok(registry)\n"
+                "}\n",
+                path="src/strategies/mod.rs",
+            )
+        }
+
+        self.assertIn("registered strategy outside strategy module tree", labels)
+
+    def test_maker_strategy_must_not_depend_on_taker_pricing_internals(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                """
+                use crate::bolt_v3_taker_pricing::{TakerPricingConfig, TakerPricingState};
+                use super::super::bolt_v3_taker_pricing::VenueTimingState;
+                """,
+                path="src/strategies/binary_oracle_maker/mod.rs",
+            )
+        }
+
+        self.assertIn("maker dependency on taker pricing internals", labels)
+
+    def test_maker_strategy_can_depend_on_shared_pricing_and_quote_plan(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                """
+                use crate::bolt_v3_fair_value_pricing::FairValuePricingState;
+                use crate::bolt_v3_maker_quote_plan::plan_maker_quote_targets;
+                """,
+                path="src/strategies/binary_oracle_maker/mod.rs",
+            )
+        }
+
+        self.assertNotIn("maker dependency on taker pricing internals", labels)
+
+    def test_taker_strategy_can_depend_on_taker_pricing_internals(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                "use crate::bolt_v3_taker_pricing::TakerPricingState;\n",
+                path="src/strategies/binary_oracle_edge_taker/mod.rs",
+            )
+        }
+
+        self.assertNotIn("maker dependency on taker pricing internals", labels)
+
+    def test_direct_nt_mutation_allowlist_is_exactly_the_policy_module(self) -> None:
+        source = """
+        self.submit_order(order, None, Some(client_id), None)?;
+        self.submit_order_via_nt(order, context)?;
+        self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
+        """
+
+        self.assertEqual(
+            self.direct_nt_violations_for(source, path="src/bolt_v3_order_execution.rs"),
+            [],
+            "the policy module is the only direct mutation allowlist path",
+        )
+        self.assertEqual(
+            len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
+            3,
+            "the same calls must be rejected from strategy code",
+        )
+
+    def test_cancel_all_allowlist_is_exactly_the_policy_module(self) -> None:
+        source = """
+        self.cancel_all_orders(instrument_id, None, Some(client_id), None)?;
+        self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
+        """
+
+        self.assertEqual(
+            self.kill_switch_action_violations_for(
+                source, path="src/bolt_v3_order_execution.rs"
+            ),
+            [],
+            "the policy module is the only cancel-all mutation allowlist path",
+        )
+        self.assertEqual(
+            len(self.kill_switch_action_violations_for(source)),
+            1,
+            "the same cancel-all names must be rejected from strategy code",
+        )
+
+    def test_shared_order_execution_can_attach_kill_switch_flatten_claim(self) -> None:
+        source = """
+        use crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand;
+        fn route(command: &BoltV3KillSwitchFlattenCommand) {
+            request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
+            let _ = command.forced_reduction_claim();
+        }
+        """
+
+        self.assertEqual(
+            self.violations_for(source, path="src/bolt_v3_order_execution.rs"),
+            [],
+            "shared execution may attach the already-planned kill-switch flatten claim",
+        )
+        labels = {
+            violation.label
+            for violation in self.violations_for(source, path="src/strategies/future.rs")
+        }
+        self.assertIn("strategy-local kill switch policy", labels)
+        self.assertIn("global kill-switch flatten supervisor policy", labels)
+
+    def test_live_node_flatten_sink_exact_nt_submit_surface_is_allowed(self) -> None:
+        source = """
+        messages::execution::{SubmitOrder, TradingCommand},
+        let command = SubmitOrder::new(
+            trader_id,
+            context.client_id,
+        );
+        risk_engine
+            .borrow_mut()
+            .execute(TradingCommand::SubmitOrder(command));
+        """
+
+        self.assertEqual(
+            self.direct_nt_violations_for(
+                source, path="src/bolt_v3_live_node/risk_admission_loss.rs"
+            ),
+            [],
+            "live-node flatten sink may hand already-admitted submit commands to NT",
+        )
+        self.assertEqual(
+            len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
+            3,
+            "the same NT submit primitives must remain forbidden in strategy code",
+        )
+
+    def test_live_node_flatten_sink_may_use_shared_execution_policy(self) -> None:
+        source = """
+        fn make(mode: BoltV3OrderExecutionMode) {
+            let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);
+        }
+        """
+
+        self.assertEqual(
+            self.violations_for(
+                source, path="src/bolt_v3_live_node/risk_admission_loss.rs"
+            ),
+            [],
+            "live-node flatten sink may instantiate the shared execution policy",
+        )
+        labels = self.labels_for(source)
+        self.assertIn("strategy-local execution policy construction", labels)
+        self.assertIn("strategy-local execution policy type reference", labels)
+
+    def test_mutation_fence_scans_all_production_src_files(self) -> None:
+        scanned = {
+            str(path.relative_to(VERIFIER.REPO_ROOT))
+            for path in VERIFIER.source_files_for_mutation_fence()
+        }
+
+        self.assertIn("src/strategies/mod.rs", scanned)
+        self.assertIn("src/bin/shadow_pnl_report.rs", scanned)
+        self.assertIn("src/bolt_v3_order_execution.rs", scanned)
+        self.assertNotIn(
+            "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
+            scanned,
+        )
+
+    def test_strategy_policy_fence_scans_future_strategy_modules(self) -> None:
+        violations = [
+            violation
+            for violation in self.collect_violations_for_temp_sources(
+                {
+                    "src/strategies/__policy_fence_probe.rs": (
+                        "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
+                        "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
+                        "}\n"
+                    )
+                }
+            )
+            if violation.path == "src/strategies/__policy_fence_probe.rs"
+        ]
+
+        self.assertIn(
+            "strategy-local execution policy construction",
+            [violation.label for violation in violations],
+            "future strategy modules must not escape strategy-policy rules",
+        )
+
+    def test_strategy_source_roots_must_be_digest_gated(self) -> None:
+        violations = [
+            violation
+            for violation in self.collect_violations_for_temp_sources(
+                {"src/strategies/__digest_probe/mod.rs": "pub struct ProbeStrategy;\n"}
+            )
+            if violation.path == "src/strategies/__digest_probe"
+        ]
+
+        self.assertEqual(
+            [violation.label for violation in violations],
+            ["ungated production strategy source root"],
+            "every production strategy source root must be covered by gated source integrity",
+        )
+
+    def test_maker_strategy_source_root_is_recognized_as_gated(self) -> None:
+        # The maker is sealed by its own digest (`MAKER_SOURCE_ROOTS`), a
+        # separate seal from the taker's `STRATEGY_SOURCE_ROOTS`. The policy
+        # fence must still count it as gated; were the gated set derived from the
+        # taker tuple alone, this root would be wrongly flagged as ungated.
+        self.assertIn(
+            "src/strategies/binary_oracle_maker",
+            VERIFIER.gated_strategy_source_root_names(),
+        )
+        self.assertNotIn(
+            "src/strategies/binary_oracle_maker",
+            VERIFIER.ungated_production_strategy_source_roots(),
+        )
+
+
+    def test_shared_policy_does_not_blanket_impl_raw_sink_for_every_strategy(self) -> None:
+        source = (VERIFIER.REPO_ROOT / "src/bolt_v3_order_execution.rs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotRegex(
+            source,
+            r"impl\s*<\s*T\s*>\s*BoltV3NtVenueMutationSink\s+for\s+T",
+            "raw NT mutation sink must not be blanket-implemented for every Strategy",
+        )
+
+    def test_source_roots_include_shared_order_execution_policy(self) -> None:
+        self.assertIn(
+            "src/bolt_v3_order_execution.rs",
+            VERIFIER.STRATEGY_SOURCE_ROOTS,
+            "shared order execution policy must stay in the strategy source fence set",
+        )
+
+    def test_identifier_rules_do_not_match_substrings(self) -> None:
+        labels = self.labels_for(
+            """
+            let runtime_selection_topic_suffix = "configured";
+            not_subscribe_any(topic, handler, None);
+            platform.runtime.selection_mode();
+            actor.try_get_actor_unchecked_extra();
+            book.not_max_buy_execution_within_vwap_slippage_bps(50);
+            let not_a_kill_switch_suffix = true;
+            self.cancel_allocation();
+            """
+        )
+
+        self.assertEqual(labels, set())
+
+    def test_detects_nt_batch_cancel_and_close_position_bypass_helpers(self) -> None:
+        labels = self.labels_for(
+            """
+            self.cancel_orders(vec![order_id]);
+            self.close_position(position_id, None, None);
+            self.close_all_positions(None, None);
+            """
+        )
+
+        self.assertIn("direct kill-switch action bypass", labels)
+
+    def test_detects_global_flatten_supervisor_imports_and_calls(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenSupervisor;
+            let flatten_supervisor = BoltV3KillSwitchFlattenSupervisor;
+            let plan = flatten_supervisor.plan_flatten(request);
+            """
+        )
+
+        self.assertIn("global kill-switch flatten supervisor policy", labels)
+
+    def test_detects_global_cancel_supervisor_imports_and_calls(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchCancelSupervisor;
+            let cancel_supervisor = BoltV3KillSwitchCancelSupervisor;
+            let plan = cancel_supervisor.plan_cancel(request);
+            """
+        )
+
+        self.assertIn("global kill-switch cancel supervisor policy", labels)
+
+    def test_code_rules_ignore_banned_tokens_inside_strings_and_comments(self) -> None:
+        # An error/doc string or comment that *names* a banned action is not a code
+        # bypass. This mirrors the production archetype validation message that
+        # references `close_all_positions` to explain a config rule.
+        labels = self.labels_for(
+            """
+            let _ = make_error(
+                "manage_stop=true uses Strategy::close_all_positions market orders; set manage_stop=false to route a non-market forced_exit_order through the forced-flat path",
+            );
+            // cancel_all_orders and flatten_all_positions live in the supervisor module
+            let note = "cancel_orders and close_position are documented helpers";
+            """
+        )
+
+        self.assertEqual(labels, set())
+
+    def test_string_mention_does_not_mask_adjacent_real_call(self) -> None:
+        # A literal mention must not blank out a genuine adjacent code call.
+        labels = self.labels_for(
+            """
+            let msg = "close_all_positions is the NT market-exit path";
+            self.close_all_positions(None, None);
+            """
+        )
+
+        self.assertIn("direct kill-switch action bypass", labels)
+
+    def test_literal_targeting_rule_still_matches_inside_strings(self) -> None:
+        # Stripping literals for code rules must not disable the one rule that
+        # deliberately targets hardcoded NT metadata string content.
+        labels = self.labels_for('let slug = info.get_str("market_slug");')
+
+        self.assertIn("inline updown NT metadata interpretation", labels)
+
+    def test_current_strategy_has_no_policy_hardcode_violations(self) -> None:
+        self.assertEqual(VERIFIER.collect_violations(), [])
+
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    unittest.main()

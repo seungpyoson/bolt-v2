@@ -33,6 +33,14 @@ class RequiredDiscoveryFloorContract:
 
 REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
     RequiredDiscoveryFloorContract(
+        "verify_bolt_v3_boundary_evidence.py",
+        "Bolt-v3 boundary Rust source files",
+        "helper-and-entrypoint-terminal",
+        "scan_root",
+        "scan_root checks the source floor before registry, exemption, fixture, and static checks; scan_wire_boundary repeats the helper guard.",
+        call_count=2,
+    ),
+    RequiredDiscoveryFloorContract(
         "verify_bolt_v3_no_exit_market_command.py",
         "Rust source files under src",
         "helper-terminal",
@@ -73,6 +81,20 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "entrypoint-terminal",
         "main",
         "main prints the floor and returns before runtime literal audit config validation, literal scanning, and stale allowlist checks.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_bolt_v3_strategy_policy_fence.py",
+        "strategy policy source files",
+        "aggregate-then-terminal",
+        "collect_violations",
+        "collect_violations floors configured source discovery before root checks, supplemental scans, and policy scans.",
+    ),
+    RequiredDiscoveryFloorContract(
+        "verify_bolt_v3_strategy_policy_fence.py",
+        "mutation policy source files",
+        "aggregate-then-terminal",
+        "collect_violations",
+        "collect_violations returns floor findings before mutation policy scans.",
     ),
     RequiredDiscoveryFloorContract(
         "verify_ci_workflow_hygiene.py",

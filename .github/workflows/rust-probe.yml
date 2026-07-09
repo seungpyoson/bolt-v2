@@ -36,6 +36,7 @@ on:
           - check-lib
           - check-test-target
           - nextest-no-run-test-target
+          - nextest-lib-name
           - nextest-test-target
           - nextest-test-target-name
       test_target:
@@ -109,6 +110,8 @@ jobs:
           include-build-values: "true"
           include-deny-version: "true"
           include-nextest-version: "true"
+          install-rust-linker: "true"
+          build-jobs-key: rust_probe.probe-heavy
 
       - name: Install cargo-nextest
         if: ${{ startsWith(inputs.mode, 'nextest-') }}
@@ -146,6 +149,8 @@ jobs:
           include-build-values: "true"
           include-deny-version: "true"
           include-nextest-version: "true"
+          install-rust-linker: "true"
+          build-jobs-key: rust_probe.probe-light
 
       - name: Install cargo-nextest
         if: ${{ startsWith(inputs.mode, 'nextest-') }}

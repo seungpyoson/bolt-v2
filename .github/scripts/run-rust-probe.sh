@@ -23,6 +23,7 @@ probe_id="${RUST_PROBE_ID:-}"
 #   "<member_stem>::" for consolidated harness members so nextest stays scoped
 #   to that module instead of matching same-named tests in sibling modules.
 # - check-test-target and nextest-no-run-test-target compile the whole harness.
+# - nextest-lib-name runs a single nextest filter against lib tests.
 
 if [ -z "$workspace" ]; then
   reject "GITHUB_WORKSPACE is required"
@@ -96,6 +97,11 @@ case "$mode" in
     require_target
     forbid_name
     probe_args=(nextest run --locked --no-run --test "$test_target")
+    ;;
+  nextest-lib-name)
+    forbid_target
+    require_name
+    probe_args=(nextest run --locked --lib "$test_name")
     ;;
   nextest-test-target)
     require_target

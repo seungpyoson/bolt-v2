@@ -243,7 +243,7 @@ fn live_node_runner_does_not_require_evidence_gate_admission_before_nt_run() {
         .find("let run_future = node.run();")
         .expect("live runner should enter NT run through the wrapper");
     let capture_index = runner
-        .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")
+        .find("wire_bolt_v3_runtime_capture(node, node_handle.clone(), loaded)")
         .expect("live runner should wire runtime capture before NT run");
 
     assert!(

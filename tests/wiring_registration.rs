@@ -1,5 +1,5 @@
 //! wiring_registration integration-test harness (#990 slice 2) - consolidates
-//! 14 wiring-registration integration tests into one [[test]] binary; tests are
+//! 13 wiring-registration integration tests into one [[test]] binary; tests are
 //! unchanged, re-homed as wiring_registration::<member>::.
 
 mod bolt_v3_chainlink_config;

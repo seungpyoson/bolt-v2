@@ -1094,18 +1094,30 @@ fn chainlink_reference_remove_input_health_report_liveness_for_subscription(
     }
 }
 
-fn chainlink_reference_refresh_input_health_report_liveness(
+fn chainlink_reference_input_health_sources_for_report_instrument(
     config: &ChainlinkReferencePriceClientConfig,
-    report_liveness: &ChainlinkReferenceInputHealthReportLiveness,
-    updates: &[ReferencePriceUpdate],
-    received_ts_ms: u64,
-) {
-    let sources = chainlink_reference_recovered_input_health_sources(config, updates);
-    chainlink_reference_seed_input_health_report_liveness_for_sources(
-        report_liveness,
-        sources.iter(),
-        received_ts_ms,
-    );
+    provider_instrument: &str,
+) -> Vec<BoltV3MissingInputSource> {
+    let mut sources = BTreeMap::new();
+    for source in &config.input_health_sources {
+        if source.provider == REFERENCE_PRICE_PROVIDER_KEY
+            && source.provider_instrument == provider_instrument
+        {
+            let mut recovered = source.clone();
+            recovered.reason = CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED.to_string();
+            sources.insert(
+                (
+                    recovered.strategy_instance_id.clone(),
+                    recovered.source_id.clone(),
+                    recovered.asset.clone(),
+                    recovered.provider.clone(),
+                    recovered.provider_instrument.clone(),
+                ),
+                recovered,
+            );
+        }
+    }
+    sources.into_values().collect()
 }
 
 fn chainlink_reference_stale_input_health_sources(
@@ -1391,7 +1403,7 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
                 return;
             }
         };
-        let updates = match subscriptions.lock() {
+        let frame_updates = match subscriptions.lock() {
             Ok(subscriptions) => chainlink_reference_updates_from_report_frame(
                 &feed_bindings,
                 &subscriptions,
@@ -1402,21 +1414,24 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
                 "Chainlink reference subscription state poisoned: {error}"
             )),
         };
-        match updates {
-            Ok(updates) => {
-                if !updates.is_empty() {
-                    last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
-                    if let Some(recovery) = &input_health_recovery {
-                        chainlink_reference_refresh_input_health_report_liveness(
-                            &recovery.config,
-                            &recovery.input_health_report_liveness,
-                            &updates,
-                            received_ts_ms,
-                        );
-                    }
-                }
+        match frame_updates {
+            Ok(frame_updates) => {
+                let ChainlinkReferenceReportFrameUpdates {
+                    instrument_id,
+                    updates,
+                } = frame_updates;
+                last_report_unix_ms.store(received_ts_ms, Ordering::SeqCst);
                 if let Some(recovery) = &input_health_recovery {
-                    chainlink_reference_emit_recovered_input_health_for_updates(recovery, &updates);
+                    let sources = chainlink_reference_input_health_sources_for_report_instrument(
+                        &recovery.config,
+                        &instrument_id,
+                    );
+                    chainlink_reference_seed_input_health_report_liveness_for_sources(
+                        &recovery.input_health_report_liveness,
+                        sources.iter(),
+                        received_ts_ms,
+                    );
+                    chainlink_reference_emit_recovered_input_health_for_sources(recovery, sources);
                 }
                 for update in updates {
                     if let Err(error) =
@@ -1431,20 +1446,16 @@ fn chainlink_reference_message_handler_with_input_health_recovery(
     })
 }
 
-fn chainlink_reference_emit_recovered_input_health_for_updates(
+fn chainlink_reference_emit_recovered_input_health_for_sources(
     recovery: &ChainlinkReferenceInputHealthRecovery,
-    updates: &[ReferencePriceUpdate],
+    sources: Vec<BoltV3MissingInputSource>,
 ) {
-    if updates.is_empty() {
+    if sources.is_empty() {
         return;
     }
     let Some(emitter) = recovery.config.input_health_transition_emitter.as_ref() else {
         return;
     };
-    let sources = chainlink_reference_recovered_input_health_sources(&recovery.config, updates);
-    if sources.is_empty() {
-        return;
-    }
     let recovered_sources = {
         let mut missing_sources = match recovery.input_health_missing_sources.lock() {
             Ok(missing_sources) => missing_sources,
@@ -1474,34 +1485,9 @@ fn chainlink_reference_emit_recovered_input_health_for_updates(
     }
 }
 
-fn chainlink_reference_recovered_input_health_sources(
-    config: &ChainlinkReferencePriceClientConfig,
-    updates: &[ReferencePriceUpdate],
-) -> Vec<BoltV3MissingInputSource> {
-    let mut sources = BTreeMap::new();
-    for update in updates {
-        for source in &config.input_health_sources {
-            if source.asset == update.asset()
-                && source.source_id == update.source_id()
-                && source.provider == update.provider()
-                && source.provider_instrument == update.provider_instrument()
-            {
-                let mut recovered = source.clone();
-                recovered.reason = CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED.to_string();
-                sources.insert(
-                    (
-                        recovered.strategy_instance_id.clone(),
-                        recovered.source_id.clone(),
-                        recovered.asset.clone(),
-                        recovered.provider.clone(),
-                        recovered.provider_instrument.clone(),
-                    ),
-                    recovered,
-                );
-            }
-        }
-    }
-    sources.into_values().collect()
+struct ChainlinkReferenceReportFrameUpdates {
+    instrument_id: String,
+    updates: Vec<ReferencePriceUpdate>,
 }
 
 fn chainlink_reference_updates_from_report_frame(
@@ -1509,7 +1495,7 @@ fn chainlink_reference_updates_from_report_frame(
     subscriptions: &BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>,
     frame: &str,
     received_ts_ms: u64,
-) -> Result<Vec<ReferencePriceUpdate>, String> {
+) -> Result<ChainlinkReferenceReportFrameUpdates, String> {
     let envelope = serde_json::from_str::<ChainlinkDataStreamsReportApiResponse>(frame)
         .map_err(|error| format!("invalid Chainlink reference report JSON: {error}"))?;
     let binding = feed_bindings
@@ -1533,7 +1519,7 @@ fn chainlink_reference_updates_from_report_frame(
     )
     .map_err(|error| format!("Chainlink reference report decode failed: {error}"))?;
     let instrument_id = binding.instrument_id.to_string();
-    subscriptions
+    let updates = subscriptions
         .values()
         .filter(|subscription| subscription.instrument_id == instrument_id)
         .map(|subscription| {
@@ -1549,8 +1535,13 @@ fn chainlink_reference_updates_from_report_frame(
                 received_ts_ms,
                 ReferenceQuoteProvenance::empty(),
             )
+            .map_err(|error| error.to_string())
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(ChainlinkReferenceReportFrameUpdates {
+        instrument_id,
+        updates,
+    })
 }
 
 fn current_unix_timestamp_ms() -> anyhow::Result<u64> {
@@ -1949,6 +1940,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use futures_util::SinkExt;
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::identifiers::InstrumentId;
     use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -2090,6 +2082,15 @@ mod tests {
             missing_sources.insert(ChainlinkReferenceInputHealthSourceKey::from_source(source));
         }
         Arc::new(Mutex::new(missing_sources))
+    }
+
+    #[derive(Debug)]
+    struct ChainlinkReferenceHandshakeProbe {
+        uri: String,
+        has_authorization: bool,
+        has_authorization_timestamp: bool,
+        has_authorization_signature: bool,
+        has_user_agent: bool,
     }
 
     fn reference_price_update(
@@ -2485,8 +2486,202 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_report_frame_does_not_refresh_report_liveness() {
+    fn unsubscribed_report_frame_refreshes_report_liveness_without_emitting_data() {
         let (client, mut data_receiver) = fixture_client();
+        let last_report = test_last_report_clock();
+        let handler = chainlink_reference_message_handler_with_input_health_recovery(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            Arc::clone(&last_report),
+            None,
+        );
+
+        handler(WireMessage::text(chainlink_report_frame_json()));
+
+        assert!(
+            last_report.load(Ordering::SeqCst) > 0,
+            "valid configured Chainlink reports must refresh stream liveness even before NT subscriptions exist"
+        );
+        let error = data_receiver
+            .try_recv()
+            .expect_err("unsubscribed Chainlink report frame must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "unsubscribed report should leave the data channel open and empty, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_connect_path_refreshes_source_liveness_before_subscription() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local Chainlink WebSocket fixture should bind");
+        let local_addr = listener
+            .local_addr()
+            .expect("local Chainlink WebSocket fixture should expose its address");
+        let report_frame = chainlink_report_frame_json();
+        let (handshake_sender, handshake_receiver) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("runtime Chainlink client should connect to the local fixture");
+            let mut websocket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      response| {
+                    let headers = request.headers();
+                    let probe = ChainlinkReferenceHandshakeProbe {
+                        uri: request.uri().to_string(),
+                        has_authorization: headers.contains_key("authorization"),
+                        has_authorization_timestamp: headers
+                            .contains_key("x-authorization-timestamp"),
+                        has_authorization_signature: headers
+                            .contains_key("x-authorization-signature-sha256"),
+                        has_user_agent: headers.contains_key("user-agent"),
+                    };
+                    let _ = handshake_sender.send(probe);
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("runtime Chainlink client should complete the WebSocket handshake");
+            websocket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    report_frame.into(),
+                ))
+                .await
+                .expect("local fixture should send a Chainlink report frame");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        });
+
+        let (client, mut data_receiver) = fixture_client();
+        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
+        let btc_key = ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source);
+        let mut config = client.config.clone();
+        config.websocket_endpoint = format!("ws://{local_addr}");
+        config.transport_backend = TransportBackend::Tungstenite;
+        config.idle_timeout_ms = 60_000;
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&transitions);
+        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
+            recorded
+                .lock()
+                .expect("transition recorder should be available")
+                .push((reason, transition));
+        });
+        config.input_health_transition_emitter = Some(emitter);
+        config.input_health_sources = vec![btc_source.clone()];
+        let last_report = test_last_report_clock();
+        let report_liveness = Arc::new(Mutex::new(BTreeMap::new()));
+        let missing_sources = input_health_missing_sources_with(vec![&btc_source]);
+
+        let websocket = chainlink_reference_connect_websocket(
+            &config,
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+            Arc::clone(&last_report),
+            Arc::clone(&report_liveness),
+            Arc::clone(&missing_sources),
+        )
+        .await
+        .expect("runtime Chainlink connect path should complete against the local fixture");
+        assert_eq!(websocket.connection_mode(), ConnectionMode::Active);
+        let handshake = handshake_receiver
+            .await
+            .expect("local fixture should capture the Chainlink handshake");
+        assert_eq!(handshake.uri, format!("/api/v1/ws?feedIDs={TEST_FEED_ID}"));
+        assert!(handshake.has_authorization);
+        assert!(handshake.has_authorization_timestamp);
+        assert!(handshake.has_authorization_signature);
+        assert!(handshake.has_user_agent);
+
+        let report_ms = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let report_ms = last_report.load(Ordering::SeqCst);
+                if report_ms > 0 {
+                    break report_ms;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("valid configured report should refresh client-level liveness");
+        {
+            let report_liveness = report_liveness
+                .lock()
+                .expect("report liveness should be available");
+            assert_eq!(
+                report_liveness.get(&btc_key).copied(),
+                Some(report_ms),
+                "valid configured reports must refresh source liveness before NT subscriptions exist"
+            );
+        }
+        {
+            let recorded = transitions
+                .lock()
+                .expect("transition recorder should be available");
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(
+                recorded[0].0,
+                CHAINLINK_REFERENCE_INPUT_HEALTH_REASON_RECOVERED
+            );
+            assert!(!recorded[0].1.missing);
+            assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ASSET);
+        }
+        assert!(
+            missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty(),
+            "valid configured reports must clear matching source-health missing state before subscriptions exist"
+        );
+        let error = data_receiver
+            .try_recv()
+            .expect_err("pre-subscription Chainlink report must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "pre-subscription report should leave the data channel open and empty, got {error:?}"
+        );
+
+        let mut supervisor_state = ChainlinkReferenceLivenessSupervisorState::new();
+        let tick = chainlink_reference_liveness_supervisor_tick(
+            ChainlinkReferenceLivenessTickContext {
+                config: &config,
+                subscriptions: &client.subscriptions,
+                input_health_report_liveness: &report_liveness,
+                input_health_missing_sources: &missing_sources,
+                last_report_unix_ms: last_report.as_ref(),
+            },
+            report_ms.saturating_sub(1),
+            &mut supervisor_state,
+            report_ms + 1,
+            Some(ConnectionMode::Active),
+        );
+
+        assert!(!tick.reconnect);
+        assert!(!tick.stream_stale);
+        assert!(!tick.source_stale);
+        assert!(!tick.source_reconnect);
+        assert!(!tick.transport_dead);
+        assert!(
+            missing_sources
+                .lock()
+                .expect("missing source set should be available")
+                .is_empty()
+        );
+
+        websocket.disconnect().await;
+        server
+            .await
+            .expect("local Chainlink WebSocket fixture should finish cleanly");
+    }
+
+    #[test]
+    fn unknown_feed_report_does_not_refresh_report_liveness() {
+        let (client, mut data_receiver) =
+            fixture_client_with_bindings(vec![fixture_eth_feed_binding()]);
         let last_report = test_last_report_clock();
         let handler = chainlink_reference_message_handler_with_input_health_recovery(
             client.config.feed_bindings.clone(),
@@ -2501,14 +2696,14 @@ mod tests {
         assert_eq!(
             last_report.load(Ordering::SeqCst),
             0,
-            "valid Chainlink reports that produce no tracked update must not refresh report-data liveness"
+            "unknown Chainlink feed frames must not refresh report-data liveness"
         );
         let error = data_receiver
             .try_recv()
-            .expect_err("unmatched Chainlink report frame must not emit data");
+            .expect_err("unknown Chainlink report frame must not emit data");
         assert!(
             matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
-            "unmatched report should leave the data channel open and empty, got {error:?}"
+            "unknown feed should leave the data channel open and empty, got {error:?}"
         );
     }
 
@@ -2722,69 +2917,6 @@ mod tests {
         );
         assert!(!recorded[0].1.missing);
         assert_eq!(recorded[0].1.source.source_id.as_str(), TEST_SOURCE_ID);
-        assert!(
-            input_health_missing_sources
-                .lock()
-                .expect("missing source set should be available")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn recovered_input_health_clears_only_matching_missing_source() {
-        let btc_source = input_health_source(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
-        let eth_source =
-            input_health_source(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
-        let transitions = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&transitions);
-        let emitter: BoltV3InputHealthTransitionEmitter = Arc::new(move |reason, transition| {
-            recorded
-                .lock()
-                .expect("transition recorder should be available")
-                .push((reason, transition));
-        });
-        let mut config = fixture_config();
-        config.input_health_transition_emitter = Some(emitter);
-        config.input_health_sources = vec![btc_source.clone(), eth_source.clone()];
-        let input_health_missing_sources =
-            input_health_missing_sources_with(vec![&btc_source, &eth_source]);
-        let recovery = ChainlinkReferenceInputHealthRecovery {
-            config,
-            input_health_report_liveness: Arc::new(Mutex::new(BTreeMap::new())),
-            input_health_missing_sources: Arc::clone(&input_health_missing_sources),
-        };
-        let btc_update = reference_price_update(TEST_ASSET, TEST_SOURCE_ID, TEST_INSTRUMENT_ID);
-        let eth_update =
-            reference_price_update(TEST_ETH_ASSET, TEST_SOURCE_ID, TEST_ETH_INSTRUMENT_ID);
-
-        chainlink_reference_emit_recovered_input_health_for_updates(&recovery, &[btc_update]);
-
-        {
-            let recorded = transitions
-                .lock()
-                .expect("transition recorder should be available");
-            assert_eq!(recorded.len(), 1);
-            assert_eq!(recorded[0].1.source.asset.as_str(), TEST_ASSET);
-        }
-        {
-            let missing_sources = input_health_missing_sources
-                .lock()
-                .expect("missing source set should be available");
-            assert!(!missing_sources.contains(
-                &ChainlinkReferenceInputHealthSourceKey::from_source(&btc_source)
-            ));
-            assert!(missing_sources.contains(
-                &ChainlinkReferenceInputHealthSourceKey::from_source(&eth_source)
-            ));
-        }
-
-        chainlink_reference_emit_recovered_input_health_for_updates(&recovery, &[eth_update]);
-
-        let recorded = transitions
-            .lock()
-            .expect("transition recorder should be available");
-        assert_eq!(recorded.len(), 2);
-        assert_eq!(recorded[1].1.source.asset.as_str(), TEST_ETH_ASSET);
         assert!(
             input_health_missing_sources
                 .lock()
@@ -3227,7 +3359,7 @@ mod tests {
                 Ok(frame) => frame,
                 Err(_) => return,
             };
-            let updates = match subscriptions.lock() {
+            let frame_updates = match subscriptions.lock() {
                 Ok(subscriptions) => chainlink_reference_updates_from_report_frame(
                     &feed_bindings,
                     &subscriptions,
@@ -3238,8 +3370,8 @@ mod tests {
                     "Chainlink reference subscription state poisoned: {error}"
                 )),
             };
-            if let Ok(updates) = updates {
-                for update in updates {
+            if let Ok(frame_updates) = frame_updates {
+                for update in frame_updates.updates {
                     let _ =
                         data_sender.send(DataEvent::Data(Data::Custom(update.to_custom_data())));
                 }

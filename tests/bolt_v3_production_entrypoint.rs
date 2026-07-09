@@ -157,6 +157,8 @@ fn ops_launch_reference_health_stage_is_subprocess_isolated() {
         "ops launch reference-current-price-health must run through the subprocess boundary"
     );
     assert!(
+        !source.contains("fn run_loaded_reference_current_price_health_with_resolved")
+            &&
         !stage_fn.contains(
             "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)"
         ) && !stage_impl_fn.contains(

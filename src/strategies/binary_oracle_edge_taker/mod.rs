@@ -7217,9 +7217,9 @@ impl DataActor for BinaryOracleEdgeTaker {
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         self.refresh_selection_from_cache(now_ms);
         self.register_selection_retry_timer();
-        self.subscribe_reference_prices();
-        self.subscribe_signal_quotes();
-        self.subscribe_realized_volatility_sources();
+        self.subscribe_reference_prices()?;
+        self.subscribe_signal_quotes()?;
+        self.subscribe_realized_volatility_sources()?;
         Ok(())
     }
 
@@ -7236,7 +7236,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         if event.name.as_str() == self.selection_retry_timer_name() {
             self.refresh_selection_from_cache(now_ms);
-            self.retry_missing_live_input_subscriptions_at(now_ms);
+            self.retry_missing_live_input_subscriptions_at(now_ms)?;
             self.reconcile_runtime_venue_state(now_ms);
         }
         self.check_resolution_feed_outage_at_market_end(now_ms)?;

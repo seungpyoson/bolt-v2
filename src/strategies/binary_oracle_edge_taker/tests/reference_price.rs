@@ -271,7 +271,9 @@ fn selection_retry_reissues_missing_live_input_subscriptions() {
     strategy.config.reference_current_price = Some(reference_price_config());
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
-    strategy.retry_missing_live_input_subscriptions_at(1_500);
+    strategy
+        .retry_missing_live_input_subscriptions_at(1_500)
+        .expect("retry should reissue missing live input subscriptions");
 
     assert_eq!(
         strategy.live_input_subscription_retry_events,
@@ -309,7 +311,9 @@ fn selection_retry_does_not_reissue_reference_subscriptions_without_active_inter
 
     let retry_event_count = strategy.live_input_subscription_retry_events.len();
     let subscribe_event_count = strategy.reference_price_subscribe_events.len();
-    strategy.retry_missing_live_input_subscriptions_at(1_500);
+    strategy
+        .retry_missing_live_input_subscriptions_at(1_500)
+        .expect("retry should leave reference subscriptions alone without an active interval");
 
     assert_eq!(
         strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, false,
@@ -354,7 +358,9 @@ fn selection_retry_does_not_reissue_reference_subscriptions_for_current_valid_qu
 
     let retry_event_count = strategy.live_input_subscription_retry_events.len();
     let subscribe_event_count = strategy.reference_price_subscribe_events.len();
-    strategy.retry_missing_live_input_subscriptions_at(1_125);
+    strategy
+        .retry_missing_live_input_subscriptions_at(1_125)
+        .expect("retry should not reissue when a current quote satisfies liveness");
 
     assert_eq!(
         strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, false,
@@ -427,7 +433,9 @@ fn selection_retry_reissues_frozen_reference_stream_with_stale_buffered_quote() 
 
     let retry_event_count = strategy.live_input_subscription_retry_events.len();
     let subscribe_event_count = strategy.reference_price_subscribe_events.len();
-    strategy.retry_missing_live_input_subscriptions_at(1_250);
+    strategy
+        .retry_missing_live_input_subscriptions_at(1_250)
+        .expect("retry should reissue a stale reference stream");
 
     assert_eq!(
         strategy.live_input_subscription_retry_events[retry_event_count].reference_missing,
@@ -518,7 +526,9 @@ fn selection_retry_reissues_wrong_asset_reference_stream_with_fresh_buffered_quo
 
     let retry_event_count = strategy.live_input_subscription_retry_events.len();
     let subscribe_event_count = strategy.reference_price_subscribe_events.len();
-    strategy.retry_missing_live_input_subscriptions_at(1_125);
+    strategy
+        .retry_missing_live_input_subscriptions_at(1_125)
+        .expect("retry should reissue a wrong-asset reference stream");
 
     assert_eq!(
         strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, true,

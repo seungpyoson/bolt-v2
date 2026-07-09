@@ -1,6 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_common::{
+    messages::data::DataCommand,
+    msgbus::TypedIntoHandler,
+    runner::{DataCommandSender, get_data_cmd_sender, replace_data_cmd_sender},
+};
 use nautilus_trading::Strategy;
 
 pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
@@ -904,6 +909,7 @@ pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc
 pub(super) fn register_test_strategy_with_clock(
     strategy: &mut BinaryOracleEdgeTaker,
 ) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
+    install_test_data_command_sender();
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
@@ -921,6 +927,47 @@ pub(super) fn register_test_strategy_with_clock(
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
     (cache_handle, clock_handle)
+}
+
+#[derive(Debug)]
+struct RecordingDataCommandSender {
+    commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
+}
+
+impl DataCommandSender for RecordingDataCommandSender {
+    fn execute(&self, command: DataCommand) {
+        self.commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned")
+            .push(command);
+    }
+}
+
+thread_local! {
+    static TEST_DATA_COMMANDS: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+}
+
+fn install_test_data_command_sender() -> std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>> {
+    msgbus::register_data_command_endpoint(
+        MessagingSwitchboard::data_engine_queue_execute(),
+        TypedIntoHandler::from(|command: DataCommand| {
+            get_data_cmd_sender().execute(command);
+        }),
+    );
+    let commands = TEST_DATA_COMMANDS.with(Clone::clone);
+    commands
+        .lock()
+        .expect("recording data command sender lock should not be poisoned")
+        .clear();
+    replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender {
+        commands: commands.clone(),
+    }));
+    commands
+}
+
+pub(super) fn capture_data_commands() -> std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>> {
+    install_test_data_command_sender()
 }
 
 pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {
@@ -1014,6 +1061,44 @@ pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
             )),
         ),
     )
+}
+
+fn default_test_realized_volatility_surfaces()
+-> std::collections::BTreeMap<String, crate::bolt_v3_realized_volatility::RealizedVolEngineConfig> {
+    std::collections::BTreeMap::from([(
+        "<surface_id>".to_string(),
+        crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
+            surface_id: "<surface_id>".to_string(),
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            estimator: crate::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
+            sources: vec![
+                crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+                    source_id: "<RV_SOURCE_ID>".to_string(),
+                    data_client_id: "<RV_DATA_CLIENT_ID>".to_string(),
+                    instrument_id: "<RV_INSTRUMENT_ID>.<RV_DATA_CLIENT_ID>".to_string(),
+                    source_class:
+                        crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+                    sample_kind:
+                        crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+                    enabled: true,
+                    counts_toward_quorum: true,
+                    canonical_base_asset: "<BASE_ASSET>".to_string(),
+                    canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+                },
+            ],
+        },
+    )])
 }
 
 pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
@@ -1135,6 +1220,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
+        .with_realized_volatility_surfaces(default_test_realized_volatility_surfaces())
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency())),
     )

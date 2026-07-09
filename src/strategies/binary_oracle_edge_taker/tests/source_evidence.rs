@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use nautilus_common::{
-    messages::data::{DataCommand, SubscribeCommand},
-    runner::{DataCommandSender, SyncDataCommandSender, replace_data_cmd_sender},
-};
+use nautilus_common::messages::data::{DataCommand, SubscribeCommand};
 
 const TEST_SURFACE_ID: &str = "<surface_id>";
 const TEST_SOURCE_ID: &str = "<SOURCE_ID_A>";
@@ -106,39 +103,6 @@ fn replay_reference_update_at(
     )
     .expect("replay reference quote should construct")
     .to_custom_data()
-}
-
-#[derive(Debug)]
-struct RecordingDataCommandSender {
-    commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
-}
-
-impl DataCommandSender for RecordingDataCommandSender {
-    fn execute(&self, command: DataCommand) {
-        self.commands
-            .lock()
-            .expect("recording data command sender lock should not be poisoned")
-            .push(command);
-    }
-}
-
-struct DataCommandSenderRestore;
-
-impl Drop for DataCommandSenderRestore {
-    fn drop(&mut self) {
-        replace_data_cmd_sender(std::sync::Arc::new(SyncDataCommandSender));
-    }
-}
-
-fn capture_data_commands() -> (
-    std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
-    DataCommandSenderRestore,
-) {
-    let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender {
-        commands: commands.clone(),
-    }));
-    (commands, DataCommandSenderRestore)
 }
 
 #[derive(Default)]
@@ -333,7 +297,7 @@ fn test_strategy_with_realized_volatility_surface(
 #[test]
 fn strategy_on_start_dispatches_real_data_subscribe_commands() {
     let replay = strategy_input_quote_replay();
-    let (commands, _restore_sender) = capture_data_commands();
+    let commands = capture_data_commands();
     let mut strategy =
         test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
     strategy.config.reference_current_price = Some(replay_reference_price_config(&replay));
@@ -376,6 +340,183 @@ fn strategy_on_start_dispatches_real_data_subscribe_commands() {
                         == Some(nautilus_model::identifiers::ClientId::from("<DATA_CLIENT_ID>"))
         )),
         "on_start must enqueue configured realized-volatility source subscriptions through NT DataActor; commands={commands:#?}",
+    );
+}
+
+#[test]
+fn prod_btc_5m_profile_derives_expected_startup_subscription_requests() {
+    let generated = crate::bolt_v3_prod_profile::generate_live_config(
+        std::path::Path::new("config"),
+        "prod-btc-5m",
+    )
+    .expect("repo-blessed prod-btc-5m profile should compose");
+    let temp = tempfile::tempdir().expect("profile derivation tempdir should create");
+    let strategy_dir = temp.path().join("strategies");
+    std::fs::create_dir_all(&strategy_dir).expect("strategy tempdir should create");
+    std::fs::write(temp.path().join("live.toml"), generated.text)
+        .expect("generated live.toml should stage");
+    std::fs::copy(
+        "config/strategies/binary_oracle_btc.toml",
+        strategy_dir.join("binary_oracle_btc.toml"),
+    )
+    .expect("repo BTC strategy file should stage");
+    let loaded = crate::bolt_v3_config::load_bolt_v3_config(&temp.path().join("live.toml"))
+        .expect("staged generated prod-btc-5m config should load");
+    let loaded_strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == "binary_oracle_btc")
+        .expect("prod-btc-5m should select the BTC taker strategy");
+    let raw = crate::bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config(
+        loaded_strategy,
+        &loaded,
+    )
+    .expect("BTC strategy envelope should map through the taker archetype");
+    let rv_runtime =
+        crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
+            &loaded,
+        )
+        .expect("prod-btc-5m RV surfaces should build runtime");
+    let enabled_rv_source_ids = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .and_then(|surfaces| surfaces.get("btc_usdt_midpoint_rv"))
+        .expect("prod-btc-5m should retain btc_usdt_midpoint_rv")
+        .sources
+        .iter()
+        .filter(|source| source.enabled)
+        .map(|source| source.source_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        enabled_rv_source_ids,
+        std::collections::BTreeSet::from([
+            "binance_btc_usdt_midpoint",
+            "bybit_btc_usdt_midpoint",
+            "okx_btc_usdt_midpoint",
+        ]),
+        "profile-composed btc_usdt_midpoint_rv must retain the three expected enabled spot sources",
+    );
+    let rv_runtime = std::sync::Arc::new(std::sync::Mutex::new(rv_runtime));
+    let decision_evidence = std::sync::Arc::new(RecordingDecisionEvidenceWriter);
+    let submit_admission = std::sync::Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
+    );
+    let execution_venue = loaded
+        .root
+        .clients
+        .get(loaded_strategy.config.execution_client_id.as_str())
+        .expect("execution client should exist in loaded profile")
+        .venue;
+    let context = StrategyBuildContext::new(
+        RecordingFeeProvider::cold(),
+        decision_evidence,
+        submit_admission,
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        execution_venue,
+    )
+    .with_realized_volatility_runtime(rv_runtime);
+    let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(&raw, &context)
+        .expect("profile-derived BTC taker strategy should build");
+
+    let reference_requests = strategy
+        .reference_price_subscription_requests()
+        .expect("profile reference-current-price requests should derive");
+    assert_eq!(reference_requests.len(), 1);
+    assert_eq!(
+        reference_requests[0].source_id.as_str(),
+        "chainlink_primary"
+    );
+    assert_eq!(reference_requests[0].provider.as_str(), "chainlink_ws");
+    assert_eq!(
+        reference_requests[0].client_id,
+        nautilus_model::identifiers::ClientId::from("chainlink_reference")
+    );
+
+    let signal_request = strategy
+        .signal_quote_subscription_request()
+        .expect("profile signal quote route should derive")
+        .expect("profile signal_data.primary should produce a quote route");
+    assert_eq!(
+        signal_request.0,
+        nautilus_model::identifiers::InstrumentId::from("BTCUSDT.BINANCE")
+    );
+    assert_eq!(
+        signal_request.1,
+        Some(nautilus_model::identifiers::ClientId::from(
+            "binance_spot_data"
+        ))
+    );
+
+    let rv_requests = strategy.realized_volatility_subscription_requests();
+    assert_eq!(rv_requests.trade.len(), 0);
+    assert_eq!(rv_requests.index.len(), 0);
+    let rv_quote_routes = rv_requests
+        .quote
+        .iter()
+        .map(|(instrument_id, client_id)| {
+            (
+                instrument_id.to_string(),
+                client_id.as_ref().map(ToString::to_string),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        rv_quote_routes,
+        std::collections::BTreeSet::from([
+            ("BTC-USDT.OKX".to_string(), Some("okx_data".to_string()),),
+            (
+                "BTCUSDT-SPOT.BYBIT".to_string(),
+                Some("bybit_data".to_string()),
+            ),
+            (
+                "BTCUSDT.BINANCE".to_string(),
+                Some("binance_spot_data".to_string()),
+            ),
+        ]),
+        "profile-derived btc_usdt_midpoint_rv must produce the three expected spot quote routes",
+    );
+}
+
+#[test]
+fn strategy_on_start_fails_loud_when_reference_sources_derive_no_subscriptions() {
+    let replay = strategy_input_quote_replay();
+    let mut strategy =
+        test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
+    let mut reference_price = replay_reference_price_config(&replay);
+    for source in reference_price.sources.values_mut() {
+        source.enabled = false;
+    }
+    strategy.config.reference_current_price = Some(reference_price);
+    register_test_strategy(&mut strategy);
+
+    let error = DataActor::on_start(&mut strategy)
+        .expect_err("startup must fail loudly when reference sources derive no subscriptions");
+
+    assert!(
+        error
+            .to_string()
+            .contains("binary_oracle_edge_taker_empty_reference_price_subscription_requests"),
+        "error must name the empty reference-current-price subscription class, got: {error:#}",
+    );
+}
+
+#[test]
+fn strategy_on_start_fails_loud_when_rv_surface_derives_no_subscriptions() {
+    let mut strategy =
+        test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
+    strategy.config.realized_volatility_surface_id = "missing_surface".to_string();
+    register_test_strategy(&mut strategy);
+
+    let error = DataActor::on_start(&mut strategy).expect_err(
+        "startup must fail loudly when the configured RV surface derives no subscriptions",
+    );
+
+    assert!(
+        error
+            .to_string()
+            .contains("binary_oracle_edge_taker_empty_realized_volatility_subscription_requests"),
+        "error must name the empty RV subscription class, got: {error:#}",
     );
 }
 

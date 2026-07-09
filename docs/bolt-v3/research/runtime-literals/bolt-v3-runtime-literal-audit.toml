@@ -20795,3 +20795,91 @@ literal = '''"input_health_transition_emitter_configured"'''
 context = '''"input_health_transition_emitter_configured",'''
 classification = "chainlink_reference_config_debug_field"
 reason = "Debug output field name that reports whether live input-health transition emission was attached before NT registration; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"reference-current-price-health subprocess exited non-zero: {status}"'''
+context = '''"reference-current-price-health subprocess exited non-zero: {status}"'''
+classification = "ops_launch_subprocess_error_template"
+reason = "Stable operator diagnostic for the launch-health child boundary; the exit status is observed from the child process and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"ops"'''
+context = '''.arg("ops")'''
+classification = "ops_launch_health_subcommand_argv"
+reason = "Stable CLI subcommand segment used to invoke the already-reviewed reference-current-price health command in a subprocess; it is command routing, not a runtime trading value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"reference-current-price-health"'''
+context = '''.arg("reference-current-price-health")'''
+classification = "ops_launch_health_subcommand_argv"
+reason = "Stable CLI subcommand segment for the launch health probe child process; the config and runtime values are still supplied through TOML and secrets resolution."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"--config"'''
+context = '''.arg("--config")'''
+classification = "ops_launch_health_subcommand_argv"
+reason = "Stable CLI flag name used to pass the verified live.toml path to the health-probe child; the path value itself is derived from the verified config root."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"targets"'''
+context = '''if value.get("targets").is_none()'''
+classification = "reference_health_operator_report_schema_field"
+reason = "JSON report field name checked when validating the subprocess health report shape; it is output schema, not a runtime setting."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"clients"'''
+context = '''|| value.get("clients").is_none()'''
+classification = "reference_health_operator_report_schema_field"
+reason = "JSON report field name checked when validating the subprocess health report shape; it is output schema, not a runtime setting."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"source_update_observations"'''
+context = '''|| value.get("source_update_observations").is_none()'''
+classification = "reference_health_operator_report_schema_field"
+reason = "JSON report field name checked when validating the subprocess health report shape; it is output schema, not a runtime setting."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"operator_health"'''
+context = '''|| value.get("operator_health").is_none()'''
+classification = "reference_health_operator_report_schema_field"
+reason = "JSON report field name checked when validating the subprocess health report shape; it is output schema, not a runtime setting."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
+kind = "string"
+literal = '''"binary_oracle_edge_taker_empty_realized_volatility_subscription_requests: configured RV surface `{}` has no enabled subscribable sources (strategy_id={})"'''
+context = '''"binary_oracle_edge_taker_empty_realized_volatility_subscription_requests: configured RV surface `{}` has no enabled subscribable sources (strategy_id={})",'''
+classification = "strategy_startup_error_template"
+reason = "Stable fail-loud startup diagnostic for a configured RV surface that derives no data subscriptions; the surface id and strategy id come from TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
+kind = "string"
+literal = '''"binary_oracle_edge_taker_invalid_reference_price_subscription_requests: strategy_id={}"'''
+context = '''"binary_oracle_edge_taker_invalid_reference_price_subscription_requests: strategy_id={}",'''
+classification = "strategy_startup_error_template"
+reason = "Stable fail-loud startup diagnostic for reference-current-price subscription derivation errors; the strategy id comes from TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
+kind = "string"
+literal = '''"binary_oracle_edge_taker_empty_signal_quote_subscription_request: signal_venue is configured but signal_instrument_id is absent (strategy_id={})"'''
+context = '''"binary_oracle_edge_taker_empty_signal_quote_subscription_request: signal_venue is configured but signal_instrument_id is absent (strategy_id={})",'''
+classification = "strategy_startup_error_template"
+reason = "Stable fail-loud startup diagnostic for a configured signal venue without a signal instrument route; the values come from TOML."

@@ -56,9 +56,7 @@ use bolt_v2::{
     bolt_v3_reference_price_health::{
         ReferenceCurrentPriceHealthReport, ReferenceCurrentPriceHealthRun,
         check_reference_current_price_health_forbidden_env_vars,
-        prepare_reference_current_price_health_run,
-        prepare_reference_current_price_health_run_with_resolved,
-        run_prepared_reference_current_price_health,
+        prepare_reference_current_price_health_run, run_prepared_reference_current_price_health,
     },
     bolt_v3_secrets::{
         ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
@@ -638,10 +636,10 @@ fn run_ops_launch_stage_with_runners(
         }
         OpsLaunchStage::PrestartCheck => run_loaded_prestart_check(context.loaded()?, None),
         OpsLaunchStage::ReferenceCurrentPriceHealth => {
-            let _loaded = context.loaded()?;
-            let _resolved = context.resolved_secrets.as_ref().ok_or(
-                "ops launch secrets-resolve stage must run before reference-current-price-health",
-            )?;
+            assert_reference_current_price_health_launch_order(context)?;
+            // Safe for the subprocess probe: VerifyConfig ran first and byte-parity-checks this
+            // live.toml against the freshly composed profile artifact plus the strategy-file
+            // bundle checksum, so the probe child and real node share one config.
             (runners.reference_current_price_health)(&live_config_path(&context.config_root))
         }
         OpsLaunchStage::Start => {
@@ -663,20 +661,106 @@ fn run_ops_launch_stage_with_runners(
     }
 }
 
+fn assert_reference_current_price_health_launch_order(
+    context: &OpsLaunchContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    context.loaded()?;
+    context
+        .resolved_secrets
+        .as_ref()
+        .ok_or("ops launch secrets-resolve stage must run before reference-current-price-health")?;
+    Ok(())
+}
+
+#[derive(Debug)]
+enum ReferenceCurrentPriceHealthSubprocessError {
+    ChildExitedNonZero { status: String },
+    ReportMissing,
+    ReportUnparseable { error: serde_json::Error },
+}
+
+impl std::fmt::Display for ReferenceCurrentPriceHealthSubprocessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChildExitedNonZero { status } => write!(
+                f,
+                "reference-current-price-health subprocess exited non-zero: {status}"
+            ),
+            Self::ReportMissing => write!(
+                f,
+                "reference-current-price-health subprocess did not emit an operator report"
+            ),
+            Self::ReportUnparseable { error } => write!(
+                f,
+                "reference-current-price-health subprocess emitted an unparseable operator report: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReferenceCurrentPriceHealthSubprocessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReportUnparseable { error } => Some(error),
+            Self::ChildExitedNonZero { .. } | Self::ReportMissing => None,
+        }
+    }
+}
+
 fn run_reference_current_price_health_subprocess(
     config: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let current_exe = std::env::current_exe()?;
-    let status = std::process::Command::new(current_exe)
+    let output = std::process::Command::new(current_exe)
         .arg("ops")
         .arg("reference-current-price-health")
         .arg("--config")
         .arg(config)
-        .status()?;
-    if status.success() {
-        return Ok(());
+        .output()?;
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+    if !output.status.success() {
+        return Err(Box::new(
+            ReferenceCurrentPriceHealthSubprocessError::ChildExitedNonZero {
+                status: output.status.to_string(),
+            },
+        ));
     }
-    Err(format!("reference-current-price-health subprocess exited with {status}").into())
+    parse_reference_current_price_health_subprocess_report(&output.stdout)?;
+    Ok(())
+}
+
+fn parse_reference_current_price_health_subprocess_report(
+    stdout: &[u8],
+) -> Result<serde_json::Value, ReferenceCurrentPriceHealthSubprocessError> {
+    let stdout = std::str::from_utf8(stdout).map_err(|error| {
+        ReferenceCurrentPriceHealthSubprocessError::ReportUnparseable {
+            error: serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error,
+            )),
+        }
+    })?;
+    let Some(start) = stdout.find('{') else {
+        return Err(ReferenceCurrentPriceHealthSubprocessError::ReportMissing);
+    };
+    let report = &stdout[start..];
+    let Some(value) = serde_json::Deserializer::from_str(report)
+        .into_iter::<serde_json::Value>()
+        .next()
+    else {
+        return Err(ReferenceCurrentPriceHealthSubprocessError::ReportMissing);
+    };
+    let value = value
+        .map_err(|error| ReferenceCurrentPriceHealthSubprocessError::ReportUnparseable { error })?;
+    if value.get("targets").is_none()
+        || value.get("clients").is_none()
+        || value.get("source_update_observations").is_none()
+        || value.get("operator_health").is_none()
+    {
+        return Err(ReferenceCurrentPriceHealthSubprocessError::ReportMissing);
+    }
+    Ok(value)
 }
 
 /// Build the durable launch identity from primitives. Pure: depends only on
@@ -846,14 +930,6 @@ fn run_loaded_reference_current_price_health(
 ) -> Result<(), Box<dyn std::error::Error>> {
     check_reference_current_price_health_forbidden_env_vars(loaded)?;
     let health_run = prepare_reference_current_price_health_run(loaded)?;
-    run_reference_current_price_health(health_run)
-}
-
-fn run_loaded_reference_current_price_health_with_resolved(
-    loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let health_run = prepare_reference_current_price_health_run_with_resolved(loaded, resolved)?;
     run_reference_current_price_health(health_run)
 }
 
@@ -2367,6 +2443,73 @@ mod tests {
                 "reference-health-subprocess-completed",
                 "real-node-log-after-reference-health"
             ]
+        );
+    }
+
+    #[test]
+    fn ops_launch_reference_health_subprocess_nonzero_aborts_before_start() {
+        let visited = std::rc::Rc::new(std::cell::RefCell::new(Vec::<OpsLaunchStage>::new()));
+        let start_called = std::rc::Rc::new(std::cell::Cell::new(false));
+
+        let result = run_ops_launch_chain_with({
+            let visited = visited.clone();
+            let start_called = start_called.clone();
+            move |stage| -> Result<(), Box<dyn std::error::Error>> {
+                visited.borrow_mut().push(stage);
+                match stage {
+                    OpsLaunchStage::ReferenceCurrentPriceHealth => Err(Box::new(
+                        ReferenceCurrentPriceHealthSubprocessError::ChildExitedNonZero {
+                            status: "exit status: 1".to_string(),
+                        },
+                    )),
+                    OpsLaunchStage::Start => {
+                        start_called.set(true);
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            }
+        });
+
+        let error = result.expect_err("non-zero reference health subprocess must fail launch");
+        assert!(
+            error
+                .to_string()
+                .contains("reference-current-price-health subprocess exited non-zero"),
+            "launch error must name the subprocess failure, got: {error}"
+        );
+        assert!(
+            !start_called.get() && !visited.borrow().contains(&OpsLaunchStage::Start),
+            "Start must not run after a failed reference-current-price-health subprocess; visited={:?}",
+            visited.borrow(),
+        );
+    }
+
+    #[test]
+    fn reference_current_price_health_subprocess_report_parser_accepts_operator_report() {
+        let report = br#"{
+  "targets": [],
+  "clients": [],
+  "source_update_observations": [],
+  "operator_health": "ready"
+}"#;
+
+        parse_reference_current_price_health_subprocess_report(report)
+            .expect("minimal operator report should parse");
+    }
+
+    #[test]
+    fn reference_current_price_health_subprocess_report_parser_rejects_unparseable_stdout() {
+        let error = parse_reference_current_price_health_subprocess_report(
+            b"not a reference-current-price-health report",
+        )
+        .expect_err("unparseable child stdout must fail the launch stage");
+
+        assert!(
+            error
+                .to_string()
+                .contains("reference-current-price-health subprocess did not emit"),
+            "error must name the missing report class, got: {error}"
         );
     }
 

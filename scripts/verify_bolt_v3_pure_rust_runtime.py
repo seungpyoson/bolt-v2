@@ -85,6 +85,10 @@ FORBIDDEN_RUNTIME_SOURCE_PATTERNS = (
     ),
 )
 
+ALLOWED_RUNTIME_SUBPROCESS_FUNCTIONS = {
+    ("src/main.rs", "run_reference_current_price_health_subprocess"),
+}
+
 MAIN_RS_ENTRYPOINT_CALLS = (
     "verify_live_config(&context.config_root, &context.profile)?",
     "build_bolt_v3_live_node_with_resolved(&loaded, resolved)?",
@@ -177,6 +181,19 @@ def missing_main_rs_entrypoint_calls(text: str) -> list[str]:
         if call not in scan_text
     ]
 
+def enclosing_rust_function_name(text: str, pos: int) -> str | None:
+    matches = list(
+        re.finditer(r"(?m)^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", text[:pos])
+    )
+    if not matches:
+        return None
+    return matches[-1].group(1)
+
+
+def allowed_runtime_subprocess(rel: str, text: str, pos: int) -> bool:
+    function_name = enclosing_rust_function_name(text, pos)
+    return (rel, function_name) in ALLOWED_RUNTIME_SUBPROCESS_FUNCTIONS
+
 
 def main() -> int:
     findings: list[str] = []
@@ -230,6 +247,10 @@ def main() -> int:
         text = production_text(path)
         for pattern, label in FORBIDDEN_RUNTIME_SOURCE_PATTERNS:
             for match in pattern.finditer(text):
+                if label == "runtime subprocess" and allowed_runtime_subprocess(
+                    rel, text, match.start()
+                ):
+                    continue
                 findings.append(
                     f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
                 )

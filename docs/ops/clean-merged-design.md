@@ -51,9 +51,9 @@ the operator runs the manual sync lane first.
 ### Lane H — Hook (always-on, offline, fast, reflog-safe)
 
 - **Triggers:** `post-merge` (primary; FF verified — see
-  `clean-merged-triggers.md`), `post-rewrite` (divergent rebase pull),
-  `post-checkout` (shell-gated `$3==1`, then Python-gated
-  `target==configured trunk`, best-effort).
+  `clean-merged-triggers.md`) and `post-checkout` (shell-gated `$3==1`,
+  then Python-gated `target==configured trunk`, best-effort). `post-rewrite`
+  is reserved for Entire CLI session remapping and does not dispatch Lane H.
 - **Synchronous by default.** Typical sweep is sub-second. Detach only if
   profiling demands, with non-blocking `fcntl.flock`, stdin→`/dev/null`,
   stdout/stderr→audit log.
@@ -214,7 +214,9 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
   `core.hooksPath` override when that override would otherwise keep winning.
 - Restructure existing `post-checkout` (its `prev_head != 000…` early-exit
   moves BELOW our dispatch so cleanup runs first when gated).
-- Extend existing `post-rewrite` (Entire CLI line preserved).
+- Leave `post-rewrite` as a tracked Entire CLI hook; clean-merged setup still
+  installs tracked repo hook sources, but Lane H ownership is limited to
+  `post-merge` and `post-checkout`.
 - `git config remote.<configured-remote>.prune true` owned here (NO DUAL PATHS).
 - `post-merge` also spawns Lane R detached.
 - `just clean-merged-doctor`: install state, manifest provenance, config

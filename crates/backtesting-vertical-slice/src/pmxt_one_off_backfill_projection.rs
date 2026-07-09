@@ -51,6 +51,7 @@ use ustr::Ustr;
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::{
     catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
     conversion_boundary::{
@@ -62,7 +63,10 @@ use crate::{
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, MarketStructureFixture, parse_manifest_toml},
+    run_manifest::{
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, MarketStructureFixture,
+        parse_manifest_toml,
+    },
     runner::{
         iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
         result_contract_feed_labels, result_contract_warnings, run_nt_backtest_node,
@@ -364,19 +368,28 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_spec_file(
                 spec_path.display()
             )
         })?;
-    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(spec)
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(spec, base_dir)
 }
 
 pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
     spec: PmxtOneOffArtifactRootRunTomlSpec,
 ) -> Result<PmxtOneOffArtifactRootRunArtifact> {
-    let gamma_markets_bytes = fs::read(&spec.selected_source.gamma_markets_json_path)
-        .with_context(|| {
-            format!(
-                "read PMXT Gamma metadata {}",
-                spec.selected_source.gamma_markets_json_path.display()
-            )
-        })?;
+    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(spec, Path::new("."))
+}
+
+fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
+    spec: PmxtOneOffArtifactRootRunTomlSpec,
+    base_dir: &Path,
+) -> Result<PmxtOneOffArtifactRootRunArtifact> {
+    let gamma_markets_path =
+        resolve_existing_path(base_dir, &spec.selected_source.gamma_markets_json_path);
+    let gamma_markets_bytes = fs::read(&gamma_markets_path).with_context(|| {
+        format!(
+            "read PMXT Gamma metadata {}",
+            spec.selected_source.gamma_markets_json_path.display()
+        )
+    })?;
     let gamma_markets: Vec<GammaMarket> = serde_json::from_slice(&gamma_markets_bytes)
         .with_context(|| {
             format!(
@@ -384,7 +397,8 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
                 spec.selected_source.gamma_markets_json_path.display()
             )
         })?;
-    let manifest_text = fs::read_to_string(&spec.manifest_path).with_context(|| {
+    let manifest_path = resolve_existing_path(base_dir, &spec.manifest_path);
+    let manifest_text = fs::read_to_string(&manifest_path).with_context(|| {
         format!(
             "read PMXT one-off manifest {}",
             spec.manifest_path.display()
@@ -408,35 +422,39 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
     let output_catalog_uri = format!("file://{}", spec.catalog_root.display());
     let execution_catalog_uri = spec.catalog_root.display().to_string();
     let manifest_hash = manifest.manifest_hash();
-    let run = write_pmxt_one_off_l2_artifact_root_run(PmxtOneOffArtifactRootRunSpec {
-        selected_source: PmxtSelectedSourceProjectionSpec {
-            source_binding: spec.selected_source.source_binding,
-            usage_scope: spec.selected_source.usage_scope,
-            selected_condition_id: spec.selected_source.selected_condition_id,
-            selected_token_id: spec.selected_source.selected_token_id,
-            gamma_markets,
-            selected_source_parquet_path: spec.selected_source.selected_source_parquet_path,
-            selected_source_report_path: spec.selected_source.selected_source_report_path,
-            schema: spec.selected_source.schema,
+    let run = write_pmxt_one_off_l2_artifact_root_run_with_base(
+        PmxtOneOffArtifactRootRunSpec {
+            selected_source: PmxtSelectedSourceProjectionSpec {
+                source_binding: spec.selected_source.source_binding,
+                usage_scope: spec.selected_source.usage_scope,
+                selected_condition_id: spec.selected_source.selected_condition_id,
+                selected_token_id: spec.selected_source.selected_token_id,
+                gamma_markets,
+                selected_source_parquet_path: spec.selected_source.selected_source_parquet_path,
+                selected_source_report_path: spec.selected_source.selected_source_report_path,
+                schema: spec.selected_source.schema,
+            },
+            output_dir: spec.output_dir.clone(),
+            catalog_root: spec.catalog_root,
+            fingerprint: spec.fingerprint,
+            manifest,
+            manifest_hash,
+            normalized_schema_version: spec.normalized_schema_version,
+            output_catalog_uri,
+            execution_catalog_uri,
+            direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
+            acceptance_mode: spec.acceptance_mode,
+            accepted_by: spec.accepted_by,
+            accepted_at: spec.accepted_at,
+            artifact_uris: spec.artifact_uris,
+            created_at: spec.created_at,
+            claim_limits: spec.claim_limits,
         },
-        output_dir: spec.output_dir.clone(),
-        catalog_root: spec.catalog_root,
-        fingerprint: spec.fingerprint,
-        manifest,
-        manifest_hash,
-        normalized_schema_version: spec.normalized_schema_version,
-        output_catalog_uri,
-        execution_catalog_uri,
-        direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
-        acceptance_mode: spec.acceptance_mode,
-        accepted_by: spec.accepted_by,
-        accepted_at: spec.accepted_at,
-        artifact_uris: spec.artifact_uris,
-        created_at: spec.created_at,
-        claim_limits: spec.claim_limits,
-    })?;
+        base_dir,
+    )?;
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     Ok(PmxtOneOffArtifactRootRunArtifact {
-        output_dir: spec.output_dir,
+        output_dir,
         result_contract_hash: sha256_file(&run.result_contract_path)?,
         result_contract_path: run.result_contract_path,
         conversion_manifest_hash: run.completed.conversion_manifest_hash,
@@ -452,11 +470,20 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
 pub fn project_pmxt_selected_source_parquet_to_nt(
     spec: PmxtSelectedSourceProjectionSpec,
 ) -> Result<PmxtSelectedSourceNtProjection> {
+    project_pmxt_selected_source_parquet_to_nt_with_base(spec, Path::new("."))
+}
+
+fn project_pmxt_selected_source_parquet_to_nt_with_base(
+    spec: PmxtSelectedSourceProjectionSpec,
+    base_dir: &Path,
+) -> Result<PmxtSelectedSourceNtProjection> {
     ensure!(
         spec.usage_scope == SourceProofUsageScope::OneOffBackfillData,
         "PMXT selected-source projection only accepts one_off_backfill_data usage_scope"
     );
-    let report_bytes = fs::read(&spec.selected_source_report_path).with_context(|| {
+    let selected_source_report_path =
+        resolve_existing_path(base_dir, &spec.selected_source_report_path);
+    let report_bytes = fs::read(&selected_source_report_path).with_context(|| {
         format!(
             "read selected-source report {}",
             spec.selected_source_report_path.display()
@@ -480,14 +507,16 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
         report.output_parquet_path,
         spec.selected_source_parquet_path.display().to_string()
     );
-    let selected_parquet_sha256 = sha256_file(&spec.selected_source_parquet_path)?;
+    let selected_source_parquet_path =
+        resolve_existing_path(base_dir, &spec.selected_source_parquet_path);
+    let selected_parquet_sha256 = sha256_file(&selected_source_parquet_path)?;
     ensure!(
         report.output_parquet_sha256 == selected_parquet_sha256,
         "selected-source parquet sha256 mismatch: report {:?}, actual {:?}",
         report.output_parquet_sha256,
         selected_parquet_sha256
     );
-    let selector_report = read_selected_source_selector_report(&report)?;
+    let selector_report = read_selected_source_selector_report(&report, base_dir)?;
     ensure!(
         selector_report.selected_asset_ids_hash == report.selected_asset_ids_hash,
         "selected-source report selected_asset_ids_hash {:?} does not match selector report {:?}",
@@ -507,7 +536,7 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
     ensure_ignored_event_types_are_allowed(&spec.schema)?;
     ensure_selector_excludes_forbidden_event_types(&selector_report, &spec.schema)?;
 
-    let decoded = decode_selected_source_rows(&spec, &report)?;
+    let decoded = decode_selected_source_rows(&spec, &report, base_dir)?;
     let projected_l2_rows = decoded.rows.len() as u64;
     ensure!(
         projected_l2_rows > 0,
@@ -544,9 +573,11 @@ struct DecodedSelectedSourceRows {
 
 fn read_selected_source_selector_report(
     report: &SelectedSourceSliceReport,
+    base_dir: &Path,
 ) -> Result<FirstProofSelectorReport> {
     let selector_path = Path::new(&report.selector_report_path);
-    let selector_bytes = fs::read(selector_path)
+    let resolved_selector_path = resolve_existing_path(base_dir, selector_path);
+    let selector_bytes = fs::read(&resolved_selector_path)
         .with_context(|| format!("read selector report {}", selector_path.display()))?;
     let selector_sha256 = sha256_hex(&selector_bytes);
     ensure!(
@@ -598,8 +629,11 @@ fn ensure_selector_excludes_forbidden_event_types(
 fn decode_selected_source_rows(
     spec: &PmxtSelectedSourceProjectionSpec,
     report: &SelectedSourceSliceReport,
+    base_dir: &Path,
 ) -> Result<DecodedSelectedSourceRows> {
-    let file = fs::File::open(&spec.selected_source_parquet_path).with_context(|| {
+    let selected_source_parquet_path =
+        resolve_existing_path(base_dir, &spec.selected_source_parquet_path);
+    let file = fs::File::open(&selected_source_parquet_path).with_context(|| {
         format!(
             "open selected-source parquet {}",
             spec.selected_source_parquet_path.display()
@@ -1229,6 +1263,18 @@ pub fn write_pmxt_one_off_projection_to_catalog(
     catalog_root: &Path,
     projection: &PmxtOneOffNtProjection,
 ) -> Result<PmxtOneOffCatalogProjection> {
+    write_pmxt_one_off_projection_to_catalog_with_report_root(
+        catalog_root,
+        projection,
+        catalog_root,
+    )
+}
+
+fn write_pmxt_one_off_projection_to_catalog_with_report_root(
+    catalog_root: &Path,
+    projection: &PmxtOneOffNtProjection,
+    report_catalog_root: &Path,
+) -> Result<PmxtOneOffCatalogProjection> {
     ensure!(
         projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
         "PMXT one-off catalog projection only accepts one_off_backfill_data usage_scope"
@@ -1263,7 +1309,7 @@ pub fn write_pmxt_one_off_projection_to_catalog(
     }
 
     Ok(PmxtOneOffCatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
+        catalog_root: report_catalog_root.to_path_buf(),
         source_binding: projection.source_binding.clone(),
         usage_scope: projection.usage_scope,
         nt_instrument_id: instrument_id,
@@ -1276,6 +1322,13 @@ pub fn write_pmxt_one_off_projection_to_catalog(
 
 pub fn write_pmxt_one_off_conversion_projection(
     spec: PmxtOneOffConversionProjectionSpec,
+) -> Result<PmxtOneOffCompletedConversionProjection> {
+    write_pmxt_one_off_conversion_projection_with_base(spec, Path::new("."))
+}
+
+fn write_pmxt_one_off_conversion_projection_with_base(
+    spec: PmxtOneOffConversionProjectionSpec,
+    base_dir: &Path,
 ) -> Result<PmxtOneOffCompletedConversionProjection> {
     ensure!(
         spec.projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
@@ -1297,14 +1350,19 @@ pub fn write_pmxt_one_off_conversion_projection(
         !spec.completed_at.trim().is_empty(),
         "PMXT one-off conversion projection missing completed_at"
     );
-    match inspect_conversion_output(&spec.output_dir, &spec.fingerprint)? {
-        ConversionOutputState::CleanNew => write_new_pmxt_one_off_conversion_projection(spec),
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    let catalog_root = resolve_output_dir(base_dir, &spec.catalog_root);
+    match inspect_conversion_output(&output_dir, &spec.fingerprint)? {
+        ConversionOutputState::CleanNew => {
+            write_new_pmxt_one_off_conversion_projection(spec, &output_dir, &catalog_root)
+        }
         ConversionOutputState::Complete {
             manifest_hash,
             checkpoint_hash,
             catalog_hash,
         } => reuse_completed_pmxt_one_off_conversion_projection(
             spec,
+            &output_dir,
             manifest_hash,
             checkpoint_hash,
             catalog_hash,
@@ -1319,9 +1377,14 @@ pub fn write_pmxt_one_off_conversion_projection(
 
 fn write_new_pmxt_one_off_conversion_projection(
     spec: PmxtOneOffConversionProjectionSpec,
+    output_dir: &Path,
+    catalog_root: &Path,
 ) -> Result<PmxtOneOffCompletedConversionProjection> {
-    let catalog_projection =
-        write_pmxt_one_off_projection_to_catalog(&spec.catalog_root, &spec.projection)?;
+    let catalog_projection = write_pmxt_one_off_projection_to_catalog_with_report_root(
+        catalog_root,
+        &spec.projection,
+        &spec.catalog_root,
+    )?;
     let canonical_rows = usize::try_from(catalog_projection.order_book_delta_count)
         .context("PMXT one-off OrderBookDelta count does not fit usize")?;
     let catalog_rows_by_nt_data_type =
@@ -1363,7 +1426,7 @@ fn write_new_pmxt_one_off_conversion_projection(
         .content_hash()
         .context("hash PMXT one-off catalog metadata")?;
     write_completed_conversion_artifacts(
-        &spec.output_dir,
+        output_dir,
         &conversion_manifest,
         &conversion_checkpoint,
         &conversion_catalog_metadata,
@@ -1382,16 +1445,17 @@ fn write_new_pmxt_one_off_conversion_projection(
 
 fn reuse_completed_pmxt_one_off_conversion_projection(
     spec: PmxtOneOffConversionProjectionSpec,
+    output_dir: &Path,
     manifest_hash: String,
     checkpoint_hash: String,
     catalog_hash: String,
 ) -> Result<PmxtOneOffCompletedConversionProjection> {
     let conversion_checkpoint: ConversionCheckpoint =
-        read_conversion_json(&spec.output_dir.join(CONVERSION_CHECKPOINT_FILE))?;
+        read_conversion_json(&output_dir.join(CONVERSION_CHECKPOINT_FILE))?;
     let conversion_manifest: ConversionManifest =
-        read_conversion_json(&spec.output_dir.join(CONVERSION_MANIFEST_FILE))?;
+        read_conversion_json(&output_dir.join(CONVERSION_MANIFEST_FILE))?;
     let conversion_catalog_metadata: ConversionCatalogMetadata =
-        read_conversion_json(&spec.output_dir.join(CATALOG_METADATA_FILE))?;
+        read_conversion_json(&output_dir.join(CATALOG_METADATA_FILE))?;
     ensure!(
         conversion_checkpoint.content_hash()? == checkpoint_hash,
         "PMXT one-off completed checkpoint hash changed after validation"
@@ -1622,6 +1686,13 @@ fn expected_pmxt_backtest_iterations(
 pub fn run_pmxt_one_off_l2_backtest_contract(
     spec: PmxtOneOffBacktestContractSpec<'_>,
 ) -> Result<PmxtOneOffBacktestContractOutput> {
+    run_pmxt_one_off_l2_backtest_contract_with_base(spec, Path::new("."))
+}
+
+fn run_pmxt_one_off_l2_backtest_contract_with_base(
+    spec: PmxtOneOffBacktestContractSpec<'_>,
+    base_dir: &Path,
+) -> Result<PmxtOneOffBacktestContractOutput> {
     let completed = spec.completed;
     ensure!(
         completed.catalog_projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
@@ -1709,7 +1780,9 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         "PMXT one-off manifest source_proof_version does not match conversion fingerprint"
     );
 
-    let nt_run = run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let runtime_manifest = manifest_with_resolved_catalog_paths(spec.manifest, base_dir);
+    let nt_run =
+        run_nt_backtest_node(&runtime_manifest).context("run PMXT one-off L2 BacktestNode")?;
     let nt_result = nt_run.result;
     let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
@@ -1769,12 +1842,35 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
     })
 }
 
+fn manifest_with_resolved_catalog_paths(
+    manifest: &BacktestingRunManifest,
+    base_dir: &Path,
+) -> BacktestingRunManifest {
+    let mut runtime_manifest = manifest.clone();
+    for input in &mut runtime_manifest.catalog_inputs {
+        if input.catalog_fs_protocol == CATALOG_FS_PROTOCOL_NONE {
+            input.catalog_path = resolve_output_dir(base_dir, Path::new(&input.catalog_path))
+                .display()
+                .to_string();
+        }
+    }
+    runtime_manifest
+}
+
 pub fn write_pmxt_one_off_l2_artifact_root_run(
     spec: PmxtOneOffArtifactRootRunSpec,
 ) -> Result<PmxtOneOffArtifactRootRun> {
+    write_pmxt_one_off_l2_artifact_root_run_with_base(spec, Path::new("."))
+}
+
+fn write_pmxt_one_off_l2_artifact_root_run_with_base(
+    spec: PmxtOneOffArtifactRootRunSpec,
+    base_dir: &Path,
+) -> Result<PmxtOneOffArtifactRootRun> {
+    let selected_source_parquet_path =
+        resolve_existing_path(base_dir, &spec.selected_source.selected_source_parquet_path);
     ensure!(
-        spec.fingerprint.accepted_object_sha256
-            == sha256_file(&spec.selected_source.selected_source_parquet_path)?,
+        spec.fingerprint.accepted_object_sha256 == sha256_file(&selected_source_parquet_path)?,
         "PMXT one-off conversion fingerprint accepted_object_sha256 must match selected-source parquet"
     );
     ensure!(
@@ -1782,26 +1878,30 @@ pub fn write_pmxt_one_off_l2_artifact_root_run(
         "PMXT one-off result artifact nt_catalog_uri must match conversion output_catalog_uri"
     );
 
-    let selected_projection = project_pmxt_selected_source_parquet_to_nt(spec.selected_source)
-        .context("project selected PMXT source rows into NT data")?;
+    let selected_projection =
+        project_pmxt_selected_source_parquet_to_nt_with_base(spec.selected_source, base_dir)
+            .context("project selected PMXT source rows into NT data")?;
     ensure!(
         selected_projection.selected_source_parquet_hash == spec.fingerprint.accepted_object_sha256,
         "PMXT one-off selected-source hash does not match conversion fingerprint"
     );
-    let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
-        output_dir: spec.output_dir.clone(),
-        catalog_root: spec.catalog_root,
-        projection: selected_projection.projection.clone(),
-        fingerprint: spec.fingerprint,
-        normalized_schema_version: spec.normalized_schema_version,
-        output_catalog_uri: spec.output_catalog_uri,
-        execution_catalog_uri: spec.execution_catalog_uri,
-        direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
-        completed_at: spec.created_at.clone(),
-    })
+    let completed = write_pmxt_one_off_conversion_projection_with_base(
+        PmxtOneOffConversionProjectionSpec {
+            output_dir: spec.output_dir.clone(),
+            catalog_root: spec.catalog_root,
+            projection: selected_projection.projection.clone(),
+            fingerprint: spec.fingerprint,
+            normalized_schema_version: spec.normalized_schema_version,
+            output_catalog_uri: spec.output_catalog_uri,
+            execution_catalog_uri: spec.execution_catalog_uri,
+            direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
+            completed_at: spec.created_at.clone(),
+        },
+        base_dir,
+    )
     .context("write PMXT one-off conversion artifacts")?;
-    let mut contract_output =
-        run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
+    let mut contract_output = run_pmxt_one_off_l2_backtest_contract_with_base(
+        PmxtOneOffBacktestContractSpec {
             completed: &completed,
             manifest: &spec.manifest,
             manifest_hash: &spec.manifest_hash,
@@ -1813,15 +1913,18 @@ pub fn write_pmxt_one_off_l2_artifact_root_run(
             artifact_uris: spec.artifact_uris,
             created_at: &spec.created_at,
             claim_limits: spec.claim_limits,
-        })
-        .context("run PMXT one-off L2 backtest contract")?;
-    fs::create_dir_all(&spec.output_dir).with_context(|| {
+        },
+        base_dir,
+    )
+    .context("run PMXT one-off L2 backtest contract")?;
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    fs::create_dir_all(&output_dir).with_context(|| {
         format!(
             "create PMXT one-off artifact output dir {}",
-            spec.output_dir.display()
+            output_dir.display()
         )
     })?;
-    let result_contract_path = spec.output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
+    let result_contract_path = output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
     contract_output.contract =
         write_result_contract_idempotent(&result_contract_path, &contract_output.contract)
             .with_context(|| format!("write {}", result_contract_path.display()))?;

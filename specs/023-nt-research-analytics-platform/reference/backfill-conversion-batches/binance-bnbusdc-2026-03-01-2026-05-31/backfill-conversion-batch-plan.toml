@@ -1,6 +1,6 @@
 batch_id = "backfill-conversion-batch-binance-bnbusdc-2026-03-01-2026-05-31"
 coverage_ledger_path = "specs/023-nt-research-analytics-platform/reference/backfill-coverage-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-coverage-ledger.json"
-output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan"
+output_dir = "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/plan"
 
 [selection]
 max_records = 92

@@ -14,6 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::sha256_hex;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_proof::{
     FixtureType, NtMappingStatus, SourceBindingRegistry, SourceProofFidelityClass,
     SourceProofReport, SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus,
@@ -329,17 +330,20 @@ pub fn write_source_selection_readiness_report_from_spec_file(
         }
     })?;
 
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_registry =
-        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
-            SourceSelectionReadinessError::ReadSourceBindings {
-                path: source_bindings_path,
-                error: error.to_string(),
-            }
-        })?;
+    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
+    let source_bindings_registry = read_source_binding_registry_from_path(
+        &resolved_source_bindings_path,
+    )
+    .map_err(|error| SourceSelectionReadinessError::ReadSourceBindings {
+        path: source_bindings_path,
+        error: error.to_string(),
+    })?;
 
     let source_proof_path = spec.source_proof_path.display().to_string();
-    let source_proof_bytes = fs::read(&spec.source_proof_path).map_err(|error| {
+    let resolved_source_proof_path = resolve_existing_path(base_dir, &spec.source_proof_path);
+    let source_proof_bytes = fs::read(&resolved_source_proof_path).map_err(|error| {
         SourceSelectionReadinessError::ReadSourceProof {
             path: source_proof_path.clone(),
             error: error.to_string(),
@@ -364,7 +368,8 @@ pub fn write_source_selection_readiness_report_from_spec_file(
         allowed_fidelity_classes: spec.allowed_fidelity_classes,
         allow_lower_fidelity: spec.allow_lower_fidelity,
     });
-    write_source_selection_readiness_report(&spec.output_dir, &report)
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    write_source_selection_readiness_report(&output_dir, &report)
 }
 
 pub fn write_source_selection_readiness_report(

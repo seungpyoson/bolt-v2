@@ -21,7 +21,8 @@ impl RequoteBudget {
     /// `bolt_v3_maker_rate_budget::build_requote_budget_pair` derives these values
     /// from TOML and venue capability facts; this constructor only accounts for
     /// already-resolved values, so it is `pub(crate)` and reached only through that
-    /// bridge in production (enforced by `verify_bolt_v3_requote_construction.py`).
+    /// bridge in production by convention. No static fence currently prevents
+    /// other same-crate code from calling this `pub(crate)` constructor directly.
     pub(crate) fn new(max_cost_per_window: u64, window_ms: u64, min_interval_ms: u64) -> Self {
         Self {
             window_ms,
@@ -156,7 +157,8 @@ impl RequoteBudgetPair {
     /// caps/windows from TOML (`max_order_submit_rate`) and the venue egress
     /// capability fact (`VenueEgressModel::cap_per_minute`); this gate only composes
     /// them, so it is `pub(crate)` and reached only through that bridge in production
-    /// (enforced by `verify_bolt_v3_requote_construction.py`).
+    /// by convention. No static fence currently prevents other same-crate code from
+    /// calling this `pub(crate)` constructor directly.
     pub(crate) fn new(submit_commands: RequoteBudget, rest_calls: RequoteBudget) -> Self {
         Self {
             submit_commands,

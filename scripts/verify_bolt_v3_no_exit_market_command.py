@@ -17,11 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bolt_v3_source_roots import REPO_ROOT
-from verify_bolt_v3_pure_rust_runtime import (
-    production_text,
-    strip_rust_comments_and_literals,
-)
+from rust_source_scanner import strip_rust_comments_and_literals
+from verify_bolt_v3_provider_leaks import production_text as production_source_text
 from verifier_io import require_nonempty
+
+
+def production_text(path: Path) -> str:
+    return production_source_text(path.read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)

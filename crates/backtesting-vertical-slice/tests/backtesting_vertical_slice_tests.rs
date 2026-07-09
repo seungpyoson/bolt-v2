@@ -142,6 +142,8 @@ mod backtesting_vertical_slice_source_universe_portable_paths;
 mod backtesting_vertical_slice_source_universe_source_proofs;
 #[path = "backtesting_vertical_slice_tar_snapshot_adapter.rs"]
 mod backtesting_vertical_slice_tar_snapshot_adapter;
+#[path = "backtesting_vertical_slice_test_support.rs"]
+mod backtesting_vertical_slice_test_support;
 #[path = "backtesting_vertical_slice_venue_scale_conversion_acceptance.rs"]
 mod backtesting_vertical_slice_venue_scale_conversion_acceptance;
 #[path = "dashboard_contract.rs"]

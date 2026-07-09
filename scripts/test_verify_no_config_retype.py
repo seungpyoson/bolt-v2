@@ -149,6 +149,8 @@ def test_wildcard_registered_payload_is_rejected() -> None:
             )
             if not any("wildcard" in finding for finding in findings):
                 raise AssertionError(f"expected wildcard rejection for {wildcard_path!r}, got {findings!r}")
+            if not any(wildcard_path in finding for finding in findings):
+                raise AssertionError(f"expected wildcard finding to name {wildcard_path!r}, got {findings!r}")
 
 
 def test_extensionless_strict_script_is_scanned() -> None:

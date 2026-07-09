@@ -712,7 +712,7 @@ def registration_index(registered_retypes: tuple[RegisteredRetype, ...]) -> dict
         if not registration.path or not registration.value or not registration.reason.strip():
             raise ValueError("registered no-config retype payloads require path, value, and reason")
         if any(marker in registration.path for marker in "*?["):
-            raise ValueError("wildcard registered no-config retype payloads are not allowed")
+            raise ValueError(f"wildcard registered no-config retype path is not allowed: {registration.path}")
         key = (registration.path, registration.value)
         if key in index:
             raise ValueError(f"duplicate registered no-config retype payload: {registration.path}:{registration.value!r}")

@@ -1,0 +1,388 @@
+tell me what to do for codex
+
+---
+
+• Fixed and committed on chore/704-phase3-batch-plan-eviction.
+
+  Commit:
+  d2019cfad fix(backtesting): resolve temp-spec fixture paths
+
+  Verification:
+  Summary [   1.117s] 25 tests run: 25 passed, 1233 skipped
+
+  Also ran:
+
+  - cargo fmt --check
+  - python3 -m json.tool specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json
+  - git diff --check
+  - git diff --cached --check before commit
+
+  No hash mismatch occurred, so the index was not changed except for the stale description text. Branch is
+  clean and ahead of origin by 1 commit; I did not open a PR.
+
+---
+
+<task-notification>
+<task-id>boevbkwnp</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/boevbkwnp.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run targeted tests myself to confirm green" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+so we can merge without having external model reviews?
+
+---
+
+yes generate a review prompt - I'll handle it myself
+
+---
+
+GLM: I have a complete picture. Verified the byte-identity (no resolved-path leak — generators embed original spec strings + hashes), fence strength (regenerate-and-pin is at least as strong as the old committed-bytes read), and harness soundness (rewrite_assignment's count guard, no parallel/CWD race, no use-after-drop). The completion-test CWD concern and the "single probe mis-resolves" concern for the two pinned artifacts do not hold (all batch-spec path fields share the repo-relative base; the temp-under-repo + strip_prefix makes the completion path CWD-independent). Those are excluded from findings per your instruction.
+PR #1311 review — findings
+BLOCKER
+B1. Dual path-resolution implementation (violates AGENTS.md Rule 2 "NO DUAL PATHS" / Rule 6 "single source of truth").
+reference_artifact::spec_path_resolution_base + resolve_spec_path re-implement a weaker subset of the canonical, marker-file-gated path_resolution::resolve_existing_path / resolve_output_dir — whose module doc already declares it the "single owner of repo-relative input/output path resolution for the backfill / source-universe pipeline modules." 13 generator modules + backfill_conversion_completion are routed through the new resolver; ~20 sibling modules and all CLI binaries use the canonical one.
+Concrete failure scenario: spec_path_resolution_base short-circuits on probe_path.exists() checked relative to process CWD with no repo-marker gating (reference_artifact.rs, spec_path_resolution_base). For the two pinned batch-plan artifacts a wrong read fails loud via sha256 mismatch — but the PR routes 14 non-pinned modules (backfill_source_proof_scope, backfill_execution_plan, first_proof_selector, source_selection_readiness, …) through the same weak resolver. Run any of those generators (or their CLIs) from a sibling checkout/worktree that also contains a specs/023-… tree, and probe.exists() resolves inputs from the wrong tree; outputs carry wrong hashes/contents silently. The canonical resolver exists precisely to prevent this (path_resolution.rs, resolve_from_known_anchors requires justfile+AGENTS.md markers; test markerless_absolute_specs_paths_are_not_misclassified_as_repo_relative).
+Fix: delete spec_path_resolution_base/resolve_spec_path; call path_resolution::resolve_existing_path(spec_path.parent(), &field) for inputs and resolve_output_dir(spec_path.parent(), &field) for output dirs. That facility already covers the temp-spec case (marker-gated, CWD-independent) more robustly than the new code, so the tempdir_in_repo_target coupling (S2) disappears with it.
+SHOULD-FIX
+S1. Committed batch-plan spec is an eviction-regrowth footgun.
+backfill-conversion-batch-plan.toml (binance + bybit) still carries output_dir = "…/backfill-conversion-batches/<scope>/plan" — the exact evicted location. Any direct invocation of write_backfill_conversion_batch_plan_from_spec_file on the committed spec (operator, ad-hoc script, or a future test that forgets the temp rewrite) regenerates backfill-conversion-batch-plan.json back into the working tree at the indexed path, tripping phase3_index_entries_match_declared_exact_scope's absence assertion and breaking the eviction invariant on disk. .gitignore blocks the commit but not the regrowth. The PR body acknowledges this for the completion-ledger specs (evicted batch_plan_path → file-not-found, fail-loud), but not the more dangerous batch-spec case (regrowth, not just not-found). This is the class-of-problem that the #704 ~87 MB scale-up inherits — fix the pattern now: point committed evicted-target specs' output_dir at a non-evicted location, or mark them explicitly as test-only templates.
+NIT
+N1. Duplicated test helpers across the two test files.
+assert_generated_fixture_matches_index and the evicted-batch-plan generation helper exist near-identically in both backtesting_vertical_slice_backfill_conversion_completion.rs (generate_evicted_batch_plan) and backtesting_vertical_slice_backfill_gate_reference_artifacts.rs (generated_evicted_conversion_batch_plan). The PR added backtesting_vertical_slice_test_support.rs but stopped short of consolidating these — fold them into the shared module.
+N2. Two divergent repo-root helpers.
+reference_fixture_index::repo_root_from_manifest_dir builds the root as CARGO_MANIFEST_DIR.join("../..") (un-normalized); backtesting_vertical_slice_test_support::repo_root uses ancestors().nth(2) (clean). Path::strip_prefix is lexical, so the completion test's strip_prefix(&repo_root()) works only because it picked the clean form. Collapse to one helper.
+Verdict
+REQUEST_CHANGES. B1 is a governance MUST (NO DUAL PATHS) and a real silent-mis-resolution risk for the 14 non-pinned modules; it is also the root cause of S2 and N2's pressure. S1 is a correctness trap that will scale 400× under the remaining #704 eviction. The eviction mechanics themselves — index validation, bijection guards, absence check, .gitignore agreement, regenerate-and-pin fence — are sound and at least as strong as what they replace; byte-identity is preserved.
+GPT: 
+• Findings
+
+  should-fix — crates/backtesting-vertical-slice/src/reference_artifact.rs spec_path_resolution_base
+
+  The resolver can silently choose the wrong base. It checks probe_path.exists() in the process CWD before
+  walking from the spec file, and then picks the first ancestor containing the probe. Concrete failure: a
+  temp spec under repo/target/... with coverage_ledger_path = "specs/..." will resolve against repo/target
+  if a stale target/specs/... mirror exists, or against an unrelated process CWD if that CWD has the same
+  repo-relative path. All other relative fields then reuse that wrong base. Absolute probe paths are also
+  unsound: an absolute batch_plan_path makes repo-relative record paths resolve from CWD.
+
+  should-fix — crates/backtesting-vertical-slice/src/backfill_coverage.rs
+  write_coverage_ledger_artifact_from_spec_file / write_coverage_ledger_artifact_from_manifest_files
+
+  The spec-level source_bindings_path and output_dir are resolved, but nested manifest[].path and
+  manifest[].source_proof_path are passed through unchanged and read directly. Concrete failure: copying
+  backfill-coverage-ledger.toml to a temp spec under target/ still reads each committed path = "specs/..."
+  relative to process CWD, not the resolved spec base. That can fail under Cargo’s crate CWD or silently
+  read a same-named stale file.
+
+  should-fix — crates/backtesting-vertical-slice/src/source_proof_admissibility.rs
+  write_source_proof_admissibility_report_from_spec_file /
+  write_source_proof_admissibility_report_from_files
+
+  Same nested-path gap: source_bindings_path and output_dir use the computed base, but source_proof[].path
+  is read raw. A temp-copied admissibility spec with repo-relative proof paths will bind the registry from
+  the intended repo while reading proof JSON from CWD or another same-named tree, weakening the class fix.
+
+  I found no issue with the regenerated batch-plan byte identity contract itself: the generated bytes are
+  read from the returned temp artifact and pinned by byte length plus SHA-256 against the eviction index.
+
+  Verdict: REQUEST_CHANGES.
+
+---
+
+• Implemented, committed, and pushed the Round 2 fix.
+
+  Commit: 53e08f64a4c890d9670b876df2540513c33f2fe7
+  Branch: chore/704-phase3-batch-plan-eviction
+  PR state: left draft, not marked ready.
+
+  What changed:
+
+  - Removed the duplicate resolver from reference_artifact.rs.
+  - Routed touched generators and swept spec-carried path reads through canonical path_resolution.
+  - Fixed nested backfill_coverage and source_proof_admissibility paths.
+  - Repointed both batch-plan TOML output_dirs to target/reference-regen/....
+  - Centralized duplicated batch-plan/index test helpers.
+  - Normalized repo_root_from_manifest_dir().
+
+  Verification:
+
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo nextest run phase3 bnbusdc completion_ledger evict tier1 path_resolution
+    coverage admissibility
+
+  - Full summary line: Summary [   1.265s] 89 tests run: 89 passed, 1168 skipped
+  - cargo fmt --check passed
+  - python3 -m json.tool specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json
+    passed
+
+  - git diff --check passed
+
+  just sandbox-safe-push pushed the commit to origin. Local git status may still show ahead because that
+  push path does not update remote-tracking metadata.
+
+---
+
+<task-notification>
+<task-id>bmfhfccgb</task-id>
+<tool-use-id>toolu_01MqMQoSdPcU824Btt2UB7Hs</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/bmfhfccgb.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run round-2 targeted tests myself" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+GPT: 
+• should-fix — crates/backtesting-vertical-slice/src/backfill_conversion_batch.rs
+  write_backfill_conversion_batch_plan_from_spec_file / crates/backtesting-vertical-slice/src/
+  path_resolution.rs resolve_output_dir
+  The committed specs now use output_dir = "target/reference-regen/...", but target is not treated as
+  repo-root-relative. From a fresh checkout, resolve_output_dir(spec_parent, ...) falls back to
+  <spec_parent>/target/reference-regen/.../plan, not repo-root /target/reference-regen/.../plan. That
+  nested specs/.../target/... path is not covered by root /target or the exact anti-regrowth ignores.
+  Concrete failure: running the committed batch-plan TOML regenerates backfill-conversion-batch-plan.json
+  beside the spec under an unignored tree, so the regrowth fence does not protect the actual output.
+
+  should-fix — crates/backtesting-vertical-slice/src/polymarket_metadata_gate.rs
+  evaluate_polymarket_metadata_gate / crates/backtesting-vertical-slice/src/bin/
+  polymarket_metadata_gate.rs main
+  This binary parses a TOML --spec, but gamma_markets_path is resolved with base . and output_path is used
+  raw. Concrete failure: a spec in foo/metadata-gate.toml with gamma_markets_path = "gamma-markets.json"
+  reads repo/gamma-markets.json if present, or fails, instead of foo/gamma-markets.json; output_path =
+  "report.json" similarly writes in the process CWD. A same-named CWD file can silently generate a report
+  for the wrong metadata corpus.
+
+  Verdict: REQUEST_CHANGES.
+GLM: I have a complete, precise picture. The round-1 blocker (B1) and should-fix (S1) are fully resolved; the canonical adoption is uniform and correct everywhere except one module. Verified-and-cleared: byte-identity preserved across all modules (incl. the tricky selected_source_slice and source_proof_legacy_derivability report-original/read-resolved split), public APIs backward-compatible (base = Path::new(".")), eviction guards and index untouched this round, /target gitignored so the regrowth footgun is closed, no consumer reads the repointed output_dir.
+PR #1311 re-review (round 2) — findings
+SHOULD-FIX
+SF1. pmxt_one_off_backfill_projection swept reads but not writes — the one uneven site in an otherwise uniform adoption.
+write_pmxt_one_off_l2_artifact_root_run_with_base resolves its input (spec.selected_source.selected_source_parquet_path via resolve_existing_path(base_dir, …)) but passes output_dir: spec.output_dir.clone() and catalog_root: spec.catalog_root raw into write_pmxt_one_off_conversion_projection, then does fs::create_dir_all(&spec.output_dir) on the unresolved path. Every other swept module (backfill_object_staging, source_proof_evidence_staging, source_proof_admissibility, source_proof_legacy_derivability, backfill_coverage, selected_source_slice, and all 10 *_from_spec_file generators) resolves output_dir through resolve_output_dir(base_dir, …) — pmxt is the lone exception.
+Concrete failure scenario: a repo-relative pmxt spec (the norm for every other module — e.g. output_dir = "specs/…"), run via the pmxt_one_off_l2_artifact_root_run CLI from a non-repo-root CWD. Input reads now resolve correctly (so the run does not fail loud), but fs::create_dir_all("specs/…/backtests/pmxt-run") and the catalog write land relative to the process CWD — e.g. silently materializing a stray specs/ tree under crates/backtesting-vertical-slice/, or writing the NT catalog to the wrong location. Before this PR both reads and writes were raw, so a bad CWD failed fast; this PR makes reads CWD-independent while leaving writes CWD-dependent, converting a loud failure into a silent misplacement. It is latent today only because the one committed pmxt spec (artifact-root-run.toml) happens to use absolute paths (which pass through resolve_existing_path untouched) — but that spec is itself a separate NO-HARDCODES problem and is not a reason to leave the sweep uneven. Fix: let catalog_root = resolve_output_dir(base_dir, &spec.catalog_root); let output_dir = resolve_output_dir(base_dir, &spec.output_dir); and thread those into the projection/contract calls.
+NIT
+N1. The two committed conversion specs now point at different default locations and cannot be hand-chained.
+The batch-plan spec's output_dir was repointed to target/reference-regen/<scope>/plan (correct — closes S1), but the completion-ledger spec's batch_plan_path still references the evicted specs/…/plan/backfill-conversion-batch-plan.json. So the batch generator's default output location no longer matches the completion generator's default input location; only the test harness (which rewrites both to a shared temp dir) wires them together. No consumer breaks (the completion spec was already fail-loud on direct use by design, and no test reads either field), so this is a consistency note, not a defect — but a future operator running the pipeline by hand will find the two committed specs decoupled.
+Verdict
+APPROVE. Round-1 B1 (dual resolver) is fully eliminated — single canonical path_resolution across all 34 modules, base_dir = spec_path.parent() is the correct anchor everywhere (the marker-gated resolver makes this sound even when a module's input fields live at repo root rather than next to the spec), and byte-identity is preserved at every site. S1 is properly closed (/target is gitignored at .gitignore:1, no consumer reads the repointed field). N1/N2 resolved (centralized test_support, single normalized repo_root_from_manifest_dir). The eviction deliverable and its fences are intact and untouched this round.
+SF1 is a real correctness gap in the swept code but is latent, out of the eviction blast radius, and not a regression; it should be filed and fixed as part of the resolver sweep (not the eviction) before the class is considered done. The PR's declared scope is correctly and completely resolved.
+
+---
+
+• Implemented Round 3 and pushed it.
+
+  Commit: e7b50edd252ca5219f0b3d811a637e7b36804c28
+  Branch: chore/704-phase3-batch-plan-eviction
+  PR #1311: left draft, not marked ready.
+
+  Changes made:
+
+  - Anchored target/... output paths in canonical path_resolution.rs without broadening portable artifact
+    serialization.
+
+  - Resolved PMXT output_dir / catalog_root for IO while preserving original catalog strings for manifest/
+    metadata comparisons.
+
+  - Anchored polymarket_metadata_gate CLI paths from the spec parent.
+  - Repointed both completion-ledger specs to target/reference-regen/.../backfill-conversion-batch-
+    plan.json.
+
+  Verification:
+
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo nextest run phase3 bnbusdc completion_ledger evict tier1 path_resolution
+    coverage admissibility pmxt polymarket
+
+  - Full summary line: Summary [  10.437s] 128 tests run: 128 passed, 1132 skipped
+  - cargo fmt --check passed
+  - git diff --check passed
+
+  just sandbox-safe-push pushed the commit to origin. Local status may still show [ahead 1] because that
+  push path does not update remote-tracking metadata.
+
+---
+
+<task-notification>
+<task-id>btll9kmwm</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/btll9kmwm.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run round-3 filtered tests myself" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+GLM:All four round-2 items are correctly resolved and I've cleared the focus areas by inspection + the bounded blast-radius check. Only one observation survives.
+PR #1311 re-review (round 3) — findings
+NIT
+N1. The pmxt report_catalog_root split is correct by inspection but unexercised by any test that distinguishes resolved from original.
+write_pmxt_one_off_projection_to_catalog_with_report_root routes the resolved catalog_root to FS I/O (ensure_clean_catalog_root, create_dir_all, ParquetDataCatalog::new, logical_catalog_hash) and the original spec.catalog_root to the reported PmxtOneOffCatalogProjection.catalog_root, and write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base feeds spec.catalog_root (original) into expected_catalog_root / output_catalog_uri / execution_catalog_uri (pmxt_one_off_backfill_projection.rs, write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base → the ensure!(catalog_input.catalog_path == expected_catalog_root) guard at the manifest-parse site). That is byte-identity-clean by construction.
+The gap: every pmxt test builds catalog_root via tempfile::TempDir → an absolute path, so resolve_output_dir(base_dir, absolute) takes branch 1 (passthrough) and resolved == original. The split — and the catalog_path ensure! — therefore pass trivially without ever proving that a relative catalog_root keeps the resolved path out of serialized/compared values. A future edit that accidentally reports the resolved path would not fail any test. Adding one pmxt test with a repo-relative catalog_root (so resolve_output_dir actually rewrites it to an absolute marker-root path while the reported field stays relative) would convert this from inspection-verified to test-verified. Low urgency — pmxt is outside the eviction blast radius — but it's the one byte-identity-critical claim in this round that the suite cannot independently confirm.
+Cleared (per your "omitted if cleared" instruction, summarized only to show coverage)
+- Scratch branch ordering / marker_repo_root_from_base_dir (focus 1): branch 3 sits correctly after repo-relative (branch 2, which target/ can't hit since target ∉ REPO_TOP_LEVEL_DIRS) and before the base-parent fallback (branch 4, byte-identical to round 2). marker_repo_root_from_base_dir is marker-gated (justfile+AGENTS.md), joins CWD for relative base_dir, and looks_repo_scratch_output rejects parent components (no target/../../ escape). Blast radius bounded: a repo-wide scan shows target/... output paths exist in only the two batch-plan specs; no other committed spec or caller's output placement changes. The target_output_dirs_do_not_expand_portable_artifact_prefixes test correctly pins that target/ is not a portable_artifact_path prefix (so absolute scratch paths stay absolute in serialization).
+- Completion spec repoint (focus 3): no consumer reads batch_plan_path raw; the only references are the two TOMLs and the generator's resolve_existing_path. The hand-chain is sound: batch writes via the marker-anchored scratch branch to <repo>/target/reference-regen/<scope>/plan/…, completion reads via resolve_existing_path's existence-based fallback to the same location, and it fails loud if the batch step hasn't run.
+- Polymarket CLI: output_path and gamma_markets_path both anchor to cli.spec.parent() via resolve_output_dir / evaluate_polymarket_metadata_gate_with_base; the public evaluate_polymarket_metadata_gate (base = ".") is retained for backward compatibility. Index and eviction guards untouched since round 1.
+Verdict
+APPROVE. Round-2 SF1 (pmxt writes), N1 (spec chaining), and the GPT output-anchoring/polymarket items are fully and correctly resolved. The new resolve_output_dir scratch branch is well-placed, marker-gated, existence-independent, narrowly scoped to target/... outputs, and covered by three targeted unit tests (anchor-when-absent, markerless fallback, portable-prefix non-expansion). Byte-identity is preserved across every swept site. N1 is a test-coverage nicety, not a correctness defect, and can land as follow-up.
+GPT: • should-fix — crates/backtesting-vertical-slice/src/backfill_conversion_completion.rs
+  write_backfill_conversion_completion_ledger_from_spec_file
+  The committed completion specs now point batch_plan_path at target/reference-regen/..., but that input
+  is read through resolve_existing_path, whose order is still CWD-first for non-specs paths. The batch
+  writer now deterministically writes target/... under the marker repo root, but the completion reader can
+  silently pick ./target/reference-regen/... from the process CWD first. Concrete failure: run the
+  completion generator from a directory containing a stale same-scope target/reference-regen/.../backfill-
+  conversion-batch-plan.json; it reads that stale plan instead of the freshly generated repo-root batch
+  plan, so the hand-chain can pass against the wrong batch artifact.
+
+  should-fix — crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs
+  write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base / run_pmxt_one_off_l2_backtest_contract
+  The PMXT split preserves original catalog_root strings for comparisons/serialized values, but
+  run_nt_backtest_node also receives the original manifest catalog path for runtime I/O. With a spec using
+  catalog_root = "target/pmxt/nt-catalog" or another spec-relative catalog root, the converter writes the
+  catalog to the resolved base/marker-root path, while NT reads the unresolved target/... relative to the
+  process CWD. Concrete failure: invoke the CLI from crates/backtesting-vertical-slice with a repo spec;
+  conversion writes repo-root target/..., then the backtest looks under crates/backtesting-vertical-slice/
+  target/... and either fails or consumes stale data.
+
+  Verdict: REQUEST_CHANGES.
+
+---
+
+• Implemented and pushed Round 4.
+
+  Changed:
+
+  - crates/backtesting-vertical-slice/src/path_resolution.rs: target/... inputs now anchor to the marker
+    repo root before any CWD probe, with tests for stale CWD decoys and missing anchored inputs.
+
+  - crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs: PMXT now runs NT with a
+    base-resolved runtime manifest clone while preserving original spec strings for validation/
+    serialization.
+
+  - crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs: added
+    repo-relative PMXT catalog differential coverage.
+
+  Differential result: the new PMXT test was red before the fix, failing on NT canonicalizing crates/
+  backtesting-vertical-slice/target/.../nt-catalog; it passed after the runtime manifest fix.
+
+  Verification:
+
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo nextest run phase3 bnbusdc completion_ledger evict tier1 path_resolution
+    coverage admissibility pmxt polymarket
+
+  - Full summary: Summary [   8.422s] 131 tests run: 131 passed, 1132 skipped
+  - cargo fmt --check passed.
+
+  Commit pushed:
+  704a90740288f46a5dc4e552186df32daa4dc6e2
+  fix(backtesting): anchor scratch inputs and pmxt catalog runtime paths
+
+  Remote head confirmed with git ls-remote. PR #1311 remains draft.
+
+---
+
+<task-notification>
+<task-id>brez0tldc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/brez0tldc.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run round-4 filtered tests myself" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+GLM:I've completed the fresh full review of the round-5 commit (path_resolution scratch-branch symmetry + pmxt runtime-manifest split + differential test) against the entire PR diff.
+PR #1311 re-review (round 4) — findings
+No blocker, should-fix, or nit findings.
+The round-3 items are correctly resolved and the new code is sound across all three focus areas:
+- Symmetric scratch branch in resolve_existing_path (focus 1): the new branch is correctly placed after the repo-relative branch and before the CWD path.exists() probe, so a stale CWD-relative target/… decoy can no longer win. A fresh repo-wide scan confirms target/… input paths exist only in this PR's four spec TOMLs (2 batch output_dir, 2 completion batch_plan_path) plus the new test — no pre-existing caller's input resolution changes. The one intended behavior change (completion batch_plan_path reads now anchor to the marker root) makes read and write agree by construction, eliminating the round-3 write/read asymmetry that previously relied on repo/target existing. The two new unit tests (target_input_paths_anchor_to_marker_root_before_cwd_decoys, missing_target_input_paths_report_marker_root_location) pin both the decoy-rejection and the fail-at-anchored-location diagnostics.
+- manifest_with_resolved_catalog_paths protocol gating + leak (focus 2): gating on catalog_fs_protocol == CATALOG_FS_PROTOCOL_NONE is correct — per run_manifest.rs NONE means "catalog_path is already complete" (local-fs, no protocol, no storage options), so non-NONE protocols are URI-style and must not be passed through resolve_output_dir. The runtime clone has exactly one consumer (run_nt_backtest_node), which consumes catalog_path only via to_nt_run_config() to open the catalog; NtBacktestNodeRun carries no manifest/path fields, so nothing flows back. expected_pmxt_backtest_iterations derives its count from completed.catalog_projection.*_count reading only data_type from the manifest — it never touches catalog_path — so there is no path-dependent divergence between expected and actual iterations. The generic run_backtest (runner.rs:1229, with its own catalog_path == catalog_root ensure!) is a separate, unchanged flow.
+- Differential test (round-3 nit closure): the new test uses a genuinely repo-relative target/… catalog_root (so resolve_output_dir actually rewrites it), asserts FS effects land at the marker-anchored location, and asserts the in-memory catalog_projection.catalog_root, the serialized conversion-manifest output_catalog_uri, the serialized catalog-metadata execution_catalog_uri, and the contract nt_catalog_uri all retain the original relative string — while nt_result.iterations matches the projected delta count, proving the resolved runtime path pointed at a real, readable catalog. This converts the split from inspection-verified to test-verified.
+Verdict
+APPROVE.
+GPT: • No findings.
+
+  I did not rerun the already-verified test suite; this was a pinned diff/code-path review of ca0d9d244..704a90740.
+
+  Verdict: APPROVE
+
+---
+
+Round 5 is pushed.
+
+  Commit:
+  07e1858f49dab76047b8adc3ec7da346c39f983a
+  fix(ci): format bvs workspace and repin pmxt fences
+
+  Verification:
+
+  - cargo fmt --check in crates/backtesting-vertical-slice: passed
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo nextest run phase3 bnbusdc completion_ledger evict tier1 path_resolution
+    coverage admissibility pmxt polymarket
+      - Summary: Summary [   8.784s] 131 tests run: 131 passed, 1132 skipped
+
+  - just source-fence-static: passed in a clean final worktree at 07e1858f
+
+  Note: the main worktree still has ignored local config/live.toml, which makes verify_no_config_retype.py
+  fail locally. The clean worktree had no config/live.toml and the full fence suite passed, including PMXT
+  durable-source and broad-backfill.
+
+  Remote head confirmed:
+  07e1858f49dab76047b8adc3ec7da346c39f983a
+
+---
+
+<task-notification>
+<task-id>bkwx2bu0f</task-id>
+<tool-use-id>toolu_0118ti3T3oYC7TnUPVjKqAYG</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/bkwx2bu0f.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 1311 checks until completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+what's the status
+
+---
+
+<task-notification>
+<task-id>bett6n0yn</task-id>
+<tool-use-id>toolu_01WoXdtTMjDFUgA7jwrgwPR4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/cd33816d-3870-451e-b6b8-abd68b662587/tasks/bett6n0yn.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch rerun Backtester CI to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+• Pushed Round 6 fix to origin/chore/704-phase3-batch-plan-eviction.
+
+  Commit: 3b1acf53d4c524d8b4dd392eb4a411b97ba22672
+
+  What changed:
+
+  - Removed Phase 3 exact BNBUSDC paths from production src/reference_fixture_index.rs.
+  - Replaced them with a structural predicate for backfill-conversion-batches/<scope>/plan/backfill-conversion-batch-plan.json.
+  - Moved the two exact Phase 3 paths into test support and updated the regeneration/bijection tests to use that test-only list.
+  - Did not touch index/spec/gitignore.
+
+  Verification:
+
+  - Red confirmed before fix: sample_venue_guard failed on src/reference_fixture_index.rs contains "bnbusdc".
+  - Green after fix: Summary [   0.175s] 3 tests run: 3 passed, 1260 skipped
+  - cargo fmt --check passed in crates/backtesting-vertical-slice.
+  - Root cargo fmt --check passed.
+
+  Full suite did not pass, but not from this change:
+  Summary [ 131.792s] 1263 tests run: 1262 passed (1 leaky), 1 failed, 0 skipped
+
+  Failing test:
+  runner::tests::issue_789_first_real_free_data_taker_pl
+
+  It reproduces in isolation:
+  Summary [ 123.679s] 1 test run: 0 passed, 1 failed, 1262 skipped
+
+  Failure reason: expected first real pUSD P/L to be a loss, but got 1.5737529998878017. This is in src/runner.rs; the Round 6 diff does not touch runner or
+  strategy code. Remote head confirmed at 3b1acf53d4c524d8b4dd392eb4a411b97ba22672.

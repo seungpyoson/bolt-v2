@@ -3,7 +3,7 @@
   "checkpoint_id": "612dd9f116ff",
   "strategy": "manual-commit",
   "branch": "fix-live-boot-regressions",
-  "checkpoints_count": 1,
+  "checkpoints_count": 110,
   "files_touched": [
     "tests/bolt_v3_production_entrypoint.rs"
   ],
@@ -14,13 +14,20 @@
       "compact_transcript": "/61/2dd9f116ff/0/transcript.jsonl",
       "content_hash": "/61/2dd9f116ff/0/content_hash.txt",
       "prompt": "/61/2dd9f116ff/0/prompt.txt"
+    },
+    {
+      "metadata": "/61/2dd9f116ff/1/metadata.json",
+      "transcript": "/61/2dd9f116ff/1/full.jsonl",
+      "compact_transcript": "/61/2dd9f116ff/1/transcript.jsonl",
+      "content_hash": "/61/2dd9f116ff/1/content_hash.txt",
+      "prompt": "/61/2dd9f116ff/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 134,
-    "cache_creation_tokens": 1860,
-    "cache_read_tokens": 511602,
-    "output_tokens": 5972,
-    "api_call_count": 2
+    "input_tokens": 27057,
+    "cache_creation_tokens": 3292785,
+    "cache_read_tokens": 114711620,
+    "output_tokens": 379447,
+    "api_call_count": 280
   }
 }

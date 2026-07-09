@@ -51,7 +51,7 @@ use ustr::Ustr;
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::resolve_existing_path;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::{
     catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
     conversion_boundary::{
@@ -450,8 +450,9 @@ fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
         },
         base_dir,
     )?;
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     Ok(PmxtOneOffArtifactRootRunArtifact {
-        output_dir: spec.output_dir,
+        output_dir,
         result_contract_hash: sha256_file(&run.result_contract_path)?,
         result_contract_path: run.result_contract_path,
         conversion_manifest_hash: run.completed.conversion_manifest_hash,
@@ -1260,6 +1261,14 @@ pub fn write_pmxt_one_off_projection_to_catalog(
     catalog_root: &Path,
     projection: &PmxtOneOffNtProjection,
 ) -> Result<PmxtOneOffCatalogProjection> {
+    write_pmxt_one_off_projection_to_catalog_with_report_root(catalog_root, projection, catalog_root)
+}
+
+fn write_pmxt_one_off_projection_to_catalog_with_report_root(
+    catalog_root: &Path,
+    projection: &PmxtOneOffNtProjection,
+    report_catalog_root: &Path,
+) -> Result<PmxtOneOffCatalogProjection> {
     ensure!(
         projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
         "PMXT one-off catalog projection only accepts one_off_backfill_data usage_scope"
@@ -1294,7 +1303,7 @@ pub fn write_pmxt_one_off_projection_to_catalog(
     }
 
     Ok(PmxtOneOffCatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
+        catalog_root: report_catalog_root.to_path_buf(),
         source_binding: projection.source_binding.clone(),
         usage_scope: projection.usage_scope,
         nt_instrument_id: instrument_id,
@@ -1307,6 +1316,13 @@ pub fn write_pmxt_one_off_projection_to_catalog(
 
 pub fn write_pmxt_one_off_conversion_projection(
     spec: PmxtOneOffConversionProjectionSpec,
+) -> Result<PmxtOneOffCompletedConversionProjection> {
+    write_pmxt_one_off_conversion_projection_with_base(spec, Path::new("."))
+}
+
+fn write_pmxt_one_off_conversion_projection_with_base(
+    spec: PmxtOneOffConversionProjectionSpec,
+    base_dir: &Path,
 ) -> Result<PmxtOneOffCompletedConversionProjection> {
     ensure!(
         spec.projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
@@ -1328,14 +1344,19 @@ pub fn write_pmxt_one_off_conversion_projection(
         !spec.completed_at.trim().is_empty(),
         "PMXT one-off conversion projection missing completed_at"
     );
-    match inspect_conversion_output(&spec.output_dir, &spec.fingerprint)? {
-        ConversionOutputState::CleanNew => write_new_pmxt_one_off_conversion_projection(spec),
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    let catalog_root = resolve_output_dir(base_dir, &spec.catalog_root);
+    match inspect_conversion_output(&output_dir, &spec.fingerprint)? {
+        ConversionOutputState::CleanNew => {
+            write_new_pmxt_one_off_conversion_projection(spec, &output_dir, &catalog_root)
+        }
         ConversionOutputState::Complete {
             manifest_hash,
             checkpoint_hash,
             catalog_hash,
         } => reuse_completed_pmxt_one_off_conversion_projection(
             spec,
+            &output_dir,
             manifest_hash,
             checkpoint_hash,
             catalog_hash,
@@ -1350,9 +1371,14 @@ pub fn write_pmxt_one_off_conversion_projection(
 
 fn write_new_pmxt_one_off_conversion_projection(
     spec: PmxtOneOffConversionProjectionSpec,
+    output_dir: &Path,
+    catalog_root: &Path,
 ) -> Result<PmxtOneOffCompletedConversionProjection> {
-    let catalog_projection =
-        write_pmxt_one_off_projection_to_catalog(&spec.catalog_root, &spec.projection)?;
+    let catalog_projection = write_pmxt_one_off_projection_to_catalog_with_report_root(
+        catalog_root,
+        &spec.projection,
+        &spec.catalog_root,
+    )?;
     let canonical_rows = usize::try_from(catalog_projection.order_book_delta_count)
         .context("PMXT one-off OrderBookDelta count does not fit usize")?;
     let catalog_rows_by_nt_data_type =
@@ -1394,7 +1420,7 @@ fn write_new_pmxt_one_off_conversion_projection(
         .content_hash()
         .context("hash PMXT one-off catalog metadata")?;
     write_completed_conversion_artifacts(
-        &spec.output_dir,
+        output_dir,
         &conversion_manifest,
         &conversion_checkpoint,
         &conversion_catalog_metadata,
@@ -1413,16 +1439,17 @@ fn write_new_pmxt_one_off_conversion_projection(
 
 fn reuse_completed_pmxt_one_off_conversion_projection(
     spec: PmxtOneOffConversionProjectionSpec,
+    output_dir: &Path,
     manifest_hash: String,
     checkpoint_hash: String,
     catalog_hash: String,
 ) -> Result<PmxtOneOffCompletedConversionProjection> {
     let conversion_checkpoint: ConversionCheckpoint =
-        read_conversion_json(&spec.output_dir.join(CONVERSION_CHECKPOINT_FILE))?;
+        read_conversion_json(&output_dir.join(CONVERSION_CHECKPOINT_FILE))?;
     let conversion_manifest: ConversionManifest =
-        read_conversion_json(&spec.output_dir.join(CONVERSION_MANIFEST_FILE))?;
+        read_conversion_json(&output_dir.join(CONVERSION_MANIFEST_FILE))?;
     let conversion_catalog_metadata: ConversionCatalogMetadata =
-        read_conversion_json(&spec.output_dir.join(CATALOG_METADATA_FILE))?;
+        read_conversion_json(&output_dir.join(CATALOG_METADATA_FILE))?;
     ensure!(
         conversion_checkpoint.content_hash()? == checkpoint_hash,
         "PMXT one-off completed checkpoint hash changed after validation"
@@ -1828,17 +1855,20 @@ fn write_pmxt_one_off_l2_artifact_root_run_with_base(
         selected_projection.selected_source_parquet_hash == spec.fingerprint.accepted_object_sha256,
         "PMXT one-off selected-source hash does not match conversion fingerprint"
     );
-    let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
-        output_dir: spec.output_dir.clone(),
-        catalog_root: spec.catalog_root,
-        projection: selected_projection.projection.clone(),
-        fingerprint: spec.fingerprint,
-        normalized_schema_version: spec.normalized_schema_version,
-        output_catalog_uri: spec.output_catalog_uri,
-        execution_catalog_uri: spec.execution_catalog_uri,
-        direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
-        completed_at: spec.created_at.clone(),
-    })
+    let completed = write_pmxt_one_off_conversion_projection_with_base(
+        PmxtOneOffConversionProjectionSpec {
+            output_dir: spec.output_dir.clone(),
+            catalog_root: spec.catalog_root,
+            projection: selected_projection.projection.clone(),
+            fingerprint: spec.fingerprint,
+            normalized_schema_version: spec.normalized_schema_version,
+            output_catalog_uri: spec.output_catalog_uri,
+            execution_catalog_uri: spec.execution_catalog_uri,
+            direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
+            completed_at: spec.created_at.clone(),
+        },
+        base_dir,
+    )
     .context("write PMXT one-off conversion artifacts")?;
     let mut contract_output =
         run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
@@ -1855,13 +1885,14 @@ fn write_pmxt_one_off_l2_artifact_root_run_with_base(
             claim_limits: spec.claim_limits,
         })
         .context("run PMXT one-off L2 backtest contract")?;
-    fs::create_dir_all(&spec.output_dir).with_context(|| {
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    fs::create_dir_all(&output_dir).with_context(|| {
         format!(
             "create PMXT one-off artifact output dir {}",
-            spec.output_dir.display()
+            output_dir.display()
         )
     })?;
-    let result_contract_path = spec.output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
+    let result_contract_path = output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
     contract_output.contract =
         write_result_contract_idempotent(&result_contract_path, &contract_output.contract)
             .with_context(|| format!("write {}", result_contract_path.display()))?;

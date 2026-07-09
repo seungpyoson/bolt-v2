@@ -60,7 +60,14 @@ pub struct PolymarketMetadataGateReport {
 pub fn evaluate_polymarket_metadata_gate(
     spec: &PolymarketMetadataGateSpec,
 ) -> Result<PolymarketMetadataGateReport> {
-    let gamma_markets_path = resolve_existing_path(Path::new("."), &spec.gamma_markets_path);
+    evaluate_polymarket_metadata_gate_with_base(spec, Path::new("."))
+}
+
+pub fn evaluate_polymarket_metadata_gate_with_base(
+    spec: &PolymarketMetadataGateSpec,
+    base_dir: &Path,
+) -> Result<PolymarketMetadataGateReport> {
+    let gamma_markets_path = resolve_existing_path(base_dir, &spec.gamma_markets_path);
     let gamma_bytes = fs::read(&gamma_markets_path).with_context(|| {
         format!(
             "read Gamma markets JSON {}",

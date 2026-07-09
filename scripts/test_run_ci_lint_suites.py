@@ -287,6 +287,7 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
         "python3 scripts/test_ubicloud_runner_minutes.py",
         "python3 scripts/test_verify_ci_path_filters.py",
         "python3 scripts/test_rust_verification.py",
+        "python3 scripts/test_sandbox_safe_push.py",
         "python3 scripts/test_verify_remote.py",
         "python3 scripts/test_command_understanding.py",
         "python3 scripts/test_rust_verification_decoupling.py",

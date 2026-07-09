@@ -113,6 +113,48 @@ impl ReadyRealizedVol {
     pub fn get(self) -> f64 { self.0.get() }
 }
 """,
+        "src/bolt_v3_live_node/risk_admission_loss.rs": """
+#[derive(Default)]
+#[derive(Debug, Default)]
+""",
+        "src/bolt_v3_live_node/tests/data_client_probe.rs": """
+clients: Default::default(),
+""",
+        "src/bolt_v3_live_node/tests/transport_scope.rs": """
+clients: Default::default(),
+clients: Default::default(),
+""",
+        "src/bolt_v3_order_execution.rs": """
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+""",
+        "src/bolt_v3_submit_admission.rs": """
+#[derive(Debug, Default)]
+#[derive(Default)]
+""",
+        "src/shadow_pnl.rs": """
+#[derive(Debug, Clone, Default)]
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs": """
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs": """
+assert_eq!(order.trigger_type(), Some(TriggerType::Default));
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs": """
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+#[derive(Debug, Default)]
+""",
+        "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs": """
+#[derive(Default)]
+""",
+        "src/strategies/registry.rs": """
+..Default::default()
+let raw = toml::Value::Table(Default::default());
+""",
         "src/bolt_v3_market_families/mod.rs": """
 pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<Probability>,
 pub fn fair_probability_up_for_family(family_key: &str, inputs: &FairProbabilityInputs) -> Option<Probability> { None }
@@ -500,7 +542,136 @@ def test_verify_rejects_split_financial_value_owner_use() -> None:
             raise AssertionError(f"expected split owner use finding, got {findings!r}")
 
 
-def test_verify_rejects_cfg_gated_financial_value_default_impl() -> None:
+def test_registered_default_surface_accepts_unrelated_default_derive() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/unrelated_default.rs": """
+#[derive(Default)]
+struct LocalFixtureState {
+    value: u64,
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
+        if findings:
+            raise AssertionError(f"unrelated Default derives must not trip the registered-type fence: {findings!r}")
+
+
+def test_default_token_allowlist_rejects_macro_generated_default_surface() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/cfg_inactive_macro_default.rs": """
+macro_rules! default_many {
+    ($($target:ty),*) => {
+        $(impl Default for $target {
+            fn default() -> Self { todo!() }
+        })*
+    };
+}
+
+#[cfg(target_os = "windows")]
+default_many!(crate::bolt_v3_numeric::Probability, crate::other::NotProbability);
+""",
+            },
+        )
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=tuple(
+                (relative_path, VERIFIER.normalize_source_line(line))
+                for relative_path, source in VERIFIER.rust_sources(root)
+                for line in source.splitlines()
+                if "Default" in line and relative_path != "src/cfg_inactive_macro_default.rs"
+            ),
+        )
+        if not any("unexpected Default token lines" in finding for finding in findings):
+            raise AssertionError(f"expected Default token allowlist finding, got {findings!r}")
+
+
+def test_default_token_allowlist_accepts_reviewed_unrelated_default_surface() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/reviewed_default.rs": """
+#[derive(Default)]
+struct ReviewedFixtureState {
+    value: u64,
+}
+""",
+            },
+        )
+        expected = tuple(
+            (relative_path, VERIFIER.normalize_source_line(line))
+            for relative_path, source in VERIFIER.rust_sources(root)
+            for line in source.splitlines()
+            if "Default" in line
+        )
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=expected,
+        )
+        if findings:
+            raise AssertionError(f"reviewed Default token lines should pass: {findings!r}")
+
+
+def test_default_token_allowlist_uses_normalized_source_lines() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/reviewed_default.rs": """
+#[derive(Debug,  Default)]
+struct ReviewedFixtureState {
+    value: u64,
+}
+""",
+            },
+        )
+        expected = tuple(
+            (
+                relative_path,
+                VERIFIER.normalize_source_line(line),
+            )
+            for relative_path, source in VERIFIER.rust_sources(root)
+            for line in source.splitlines()
+            if "Default" in line and relative_path != "src/reviewed_default.rs"
+        ) + (("src/reviewed_default.rs", "#[derive(Debug, Default)]"),)
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=expected,
+        )
+        if findings:
+            raise AssertionError(f"whitespace-only Default token changes should normalize: {findings!r}")
+
+
+def test_default_token_allowlist_rejects_missing_expected_line() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        expected = tuple(
+            (relative_path, VERIFIER.normalize_source_line(line))
+            for relative_path, source in VERIFIER.rust_sources(root)
+            for line in source.splitlines()
+            if "Default" in line
+        ) + (("src/missing_default.rs", "#[derive(Default)]"),)
+        findings = VERIFIER.verify_financial_value_default_token_allowlist(
+            root,
+            expected_allowlist=expected,
+        )
+        if not any("missing expected Default token lines" in finding for finding in findings):
+            raise AssertionError(f"expected missing Default token finding, got {findings!r}")
+
+
+def test_verify_rejects_cfg_gated_registered_financial_value_default_impl() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         write_sources(
@@ -524,12 +695,142 @@ impl std::default::Default for UsableMu {
             },
         )
         findings = VERIFIER.verify(root)
-        if not any("Default token allowlist" in finding for finding in findings):
-            raise AssertionError(f"expected cfg-gated Default impl finding, got {findings!r}")
-        if not any("source lines containing the text Default" in finding for finding in findings):
-            raise AssertionError(f"expected Default substring guidance, got {findings!r}")
-        if not any("Do not allowlist Default for Probability" in finding for finding in findings):
-            raise AssertionError(f"expected Default allowlist guidance, got {findings!r}")
+        if not any("registered FinancialValue Default impl" in finding for finding in findings):
+            raise AssertionError(f"expected registered Default impl finding, got {findings!r}")
+
+
+def test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_maker_mu_estimator.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, sanitize_probability};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(f64);
+impl UsableMu {
+    fn new(value: f64) -> Self { Self(value) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[cfg(target_os = "windows")]
+impl core::default::Default for UsableMu {
+    fn default() -> Self { Self(0.0) }
+}
+""",
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, ZERO_F64};
+
+#[cfg_attr(target_os = "windows", derive(Default))]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl ValidRealizedVol {
+    pub fn new(value: f64) -> Option<Self> { Some(Self(value)) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+type ReadyRealizedVolAlias = ReadyRealizedVol;
+#[cfg(target_os = "windows")]
+impl Default for ReadyRealizedVolAlias {
+    fn default() -> Self { ReadyRealizedVol(ValidRealizedVol(0.0)) }
+}
+impl ReadyRealizedVol {
+    pub fn get(self) -> f64 { self.0.get() }
+}
+""",
+                "src/cfg_inactive_probability_default.rs": """
+#[cfg(target_os = "windows")]
+impl<T: Into<f64>> Default for ::crate::bolt_v3_numeric::Probability {
+    fn default() -> Self { Self::clamped(0.5).unwrap() }
+}
+
+#[cfg(target_os = "windows")]
+impl Default for ::crate::bolt_v3_numeric::
+    Probability {
+    fn default() -> Self { Self::clamped(0.5).unwrap() }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        expected_types = {
+            "Probability",
+            "UsableMu",
+            "ValidRealizedVol",
+            "ReadyRealizedVol",
+        }
+        missing = {
+            type_name
+            for type_name in expected_types
+            if not any(
+                "registered FinancialValue Default impl/derive" in finding
+                and f"for {type_name} " in f"{finding} "
+                for finding in findings
+            )
+        }
+        if missing:
+            raise AssertionError(f"missing registered Default findings for {sorted(missing)!r}: {findings!r}")
+
+
+def test_verify_rejects_multiline_cfg_attr_default_derive() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_realized_volatility.rs": """
+use crate::bolt_v3_numeric::{is_positive_finite, ZERO_F64};
+
+#[cfg_attr(
+    target_os = "windows",
+    derive(Default)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+impl ValidRealizedVol {
+    pub fn new(value: f64) -> Option<Self> { Some(Self(value)) }
+    pub fn get(self) -> f64 { self.0 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+impl ReadyRealizedVol {
+    pub fn get(self) -> f64 { self.0.get() }
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any(
+            "registered FinancialValue Default impl/derive" in finding
+            and "for ValidRealizedVol" in finding
+            for finding in findings
+        ):
+            raise AssertionError(f"expected multiline cfg_attr Default derive finding, got {findings!r}")
+
+
+def test_registered_default_fence_fails_closed_when_registry_is_empty() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(root)
+        owner = root / "src" / "bolt_v3_numeric.rs"
+        owner.write_text(
+            owner.read_text(encoding="utf-8").replace(
+                "    let _ = <Probability as AmbiguousIfDefault<_>>::_check;\n"
+                "    let _ = <crate::bolt_v3_maker_mu_estimator::UsableMu as AmbiguousIfDefault<_>>::_check;\n"
+                "    let _ = <crate::bolt_v3_realized_volatility::ValidRealizedVol as AmbiguousIfDefault<_>>::_check;\n"
+                "    let _ = <crate::bolt_v3_realized_volatility::ReadyRealizedVol as AmbiguousIfDefault<_>>::_check;\n",
+                "",
+            ),
+            encoding="utf-8",
+        )
+        findings = VERIFIER.verify_registered_financial_value_default_surface(root)
+        if not any("Default fence cannot run" in finding for finding in findings):
+            raise AssertionError(f"expected empty-registry fail-closed finding, got {findings!r}")
 
 
 def test_verify_rejects_public_financial_value_field() -> None:
@@ -759,7 +1060,15 @@ def main() -> int:
         test_verify_rejects_unapproved_financial_value_owner_use,
         test_verify_rejects_visibility_qualified_financial_value_owner_use,
         test_verify_rejects_split_financial_value_owner_use,
-        test_verify_rejects_cfg_gated_financial_value_default_impl,
+        test_registered_default_surface_accepts_unrelated_default_derive,
+        test_default_token_allowlist_rejects_macro_generated_default_surface,
+        test_default_token_allowlist_accepts_reviewed_unrelated_default_surface,
+        test_default_token_allowlist_uses_normalized_source_lines,
+        test_default_token_allowlist_rejects_missing_expected_line,
+        test_verify_rejects_cfg_gated_registered_financial_value_default_impl,
+        test_verify_rejects_cfg_inactive_registered_financial_value_default_spellings,
+        test_verify_rejects_multiline_cfg_attr_default_derive,
+        test_registered_default_fence_fails_closed_when_registry_is_empty,
         test_verify_rejects_public_financial_value_field,
         test_verify_rejects_comment_decoy_private_field,
         test_verify_rejects_unsealed_financial_value_trait,

@@ -1015,6 +1015,36 @@ def test_shrink_only_fetch_uses_actions_token_for_matching_github_repo() -> None
         raise AssertionError(f"expected basic auth extraheader value, got {fetch_env!r}")
 
 
+def test_dependency_shrink_only_ci_invocation_carries_github_identity() -> None:
+    justfile = SCRIPT_PATH.parent.parent / "justfile"
+    ci_workflow = SCRIPT_PATH.parent.parent / ".github" / "workflows" / "ci.yml"
+    just_text = justfile.read_text(encoding="utf-8")
+    ci_text = ci_workflow.read_text(encoding="utf-8")
+
+    if "python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main" not in just_text:
+        raise AssertionError("source-fence must invoke dependency shrink-only verification")
+
+    def named_step(name: str) -> str:
+        marker = f"      - name: {name}\n"
+        if marker not in ci_text:
+            raise AssertionError(f"missing CI step {name}")
+        return ci_text.split(marker, 1)[1].split("      - name:", 1)[0]
+
+    source_fence_step = named_step("source-fence")
+    source_fence_static_step = named_step("source-fence-static")
+    for step_name, step, command in (
+        ("source-fence", source_fence_step, "\n            just source-fence\n"),
+        ("source-fence-static", source_fence_static_step, "run: just source-fence-static"),
+    ):
+        for required in (
+            "GITHUB_TOKEN: ${{ github.token }}",
+            "GITHUB_REPOSITORY: ${{ github.repository }}",
+            command,
+        ):
+            if required not in step:
+                raise AssertionError(f"{step_name} CI step must carry {required}")
+
+
 def test_justfile_dependency_baseline_fetch_is_not_checkout_mutation() -> None:
     justfile = SCRIPT_PATH.parent.parent / "justfile"
     text = justfile.read_text(encoding="utf-8")
@@ -1120,6 +1150,7 @@ def main() -> int:
         test_shrink_only_fetch_failure_includes_git_stderr,
         test_shrink_only_fetches_baseline_without_checkout_tracking_ref,
         test_shrink_only_fetch_uses_actions_token_for_matching_github_repo,
+        test_dependency_shrink_only_ci_invocation_carries_github_identity,
         test_justfile_dependency_baseline_fetch_is_not_checkout_mutation,
         test_remote_url_normalization_uses_shared_helper,
         test_real_repo_is_green_with_committed_allowlist,

@@ -1728,6 +1728,31 @@ def assert_shared_remote_url_normalization_matrix() -> None:
         )
 
 
+def assert_github_actions_auth_helper_fails_without_actions_identity() -> None:
+    for env in (
+        {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "owner/repo"},
+        {"GITHUB_ACTIONS": "true", "GITHUB_TOKEN": "token"},
+    ):
+        try:
+            git_remote_utils.github_actions_git_auth_env(
+                "https://github.com/owner/repo.git",
+                env,
+            )
+        except RuntimeError as exc:
+            if "GITHUB_TOKEN and GITHUB_REPOSITORY are both required in GitHub Actions" not in str(exc):
+                raise AssertionError(f"unexpected missing identity error: {exc}") from exc
+        else:
+            raise AssertionError(f"GitHub Actions identity must fail closed for {env!r}")
+
+
+def assert_github_actions_auth_helper_keeps_local_ambient_auth_optional() -> None:
+    auth = git_remote_utils.github_actions_git_auth_env(
+        "https://github.com/owner/repo.git",
+        {},
+    )
+    assert_equal(auth, {}, "outside Actions, missing ambient GitHub identity stays unauthenticated")
+
+
 def assert_verifier_worktrees_do_not_write_checkout_git_metadata() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -4471,6 +4496,8 @@ def main() -> int:
     assert_private_fetches_do_not_freshen_checkout_objects()
     assert_remote_url_normalization_uses_shared_helper()
     assert_shared_remote_url_normalization_matrix()
+    assert_github_actions_auth_helper_fails_without_actions_identity()
+    assert_github_actions_auth_helper_keeps_local_ambient_auth_optional()
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_verifier_worktrees_can_read_checkout_object_database()
     assert_unsupported_mergify_queue_condition_does_not_match()

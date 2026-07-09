@@ -27,10 +27,8 @@ GLM_DELIVERABLE_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",
     'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("glm_api_base", glm["api_base"])',
-    'smart_trigger_configured = "smart_trigger" in glm',
-    'smart = glm.get("smart_trigger") or {}',
-    'emit("glm_smart_trigger_configured", smart_trigger_configured)',
-    'emit("glm_review_labels", smart.get("review_labels", []))',
+    'smart = glm["smart_trigger"]',
+    'emit("glm_review_labels", smart["review_labels"])',
     'def notice_marker(table):',
     'marker = table.get("notice_marker")',
     'emit("glm_notice_marker", notice_marker(glm))',
@@ -43,9 +41,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "--advisory",
     "Decide whether GLM should review",
     "import sys",
-    "GLM_SMART_TRIGGER_CONFIGURED: ${{ steps.runtime-config.outputs.glm_smart_trigger_configured }}",
     "GLM_REVIEW_LABELS: ${{ steps.runtime-config.outputs.glm_review_labels }}",
-    "legacy-smart-trigger-missing",
     "scripts/ai_review_deliverables.py",
     "retry-needed",
     "--provider",
@@ -106,10 +102,8 @@ KIMI_DELIVERABLE_SNIPPETS = (
     'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("kimi_model_name", kimi["model"])',
     'emit("kimi_model_base_url", kimi["api_base"])',
-    'smart_trigger_configured = "smart_trigger" in kimi',
-    'smart = kimi.get("smart_trigger") or {}',
-    'emit("kimi_smart_trigger_configured", smart_trigger_configured)',
-    'emit("kimi_review_labels", smart.get("review_labels", []))',
+    'smart = kimi["smart_trigger"]',
+    'emit("kimi_review_labels", smart["review_labels"])',
     'emit("kimi_deliverable_marker", kimi["deliverable_marker"])',
     'def notice_marker(table):',
     'marker = table.get("notice_marker")',
@@ -121,9 +115,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "--advisory",
     "Decide whether Kimi should review",
     "import sys",
-    "KIMI_SMART_TRIGGER_CONFIGURED: ${{ steps.runtime-config.outputs.kimi_smart_trigger_configured }}",
     "KIMI_REVIEW_LABELS: ${{ steps.runtime-config.outputs.kimi_review_labels }}",
-    "legacy-smart-trigger-missing",
     ".ai-review/base/scripts/ai_review_deliverables.py",
     "retry-needed",
     "--provider",
@@ -206,6 +198,12 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "retry-check-unavailable",
     "file=sys.stderr",
     "fork-pr-manual-mention",
+    "def notice_failed_changed_files_strategy(strategy, error):",
+    'print(f"::notice::Claude changed-files strategy {strategy} failed; trying next strategy.", file=sys.stderr)',
+    'notice_failed_changed_files_strategy("pushed-range", error)',
+    'notice_failed_changed_files_strategy("head-commit", error)',
+    'notice_failed_changed_files_strategy("pr-diff-fallback", error)',
+    'raise RuntimeError("all Claude changed-files strategies failed") from error',
     "scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude",
     "Capture Claude review window",
     "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
@@ -1174,8 +1172,16 @@ def verify_texts(
                 findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
 
     findings.extend(missing_snippets("GLM workflow", glm_workflow, GLM_DELIVERABLE_SNIPPETS))
+    if "legacy-smart-trigger-missing" in glm_workflow:
+        findings.append("GLM workflow must fail closed when glm.smart_trigger is missing")
+    if 'smart_trigger_configured = "smart_trigger" in glm' in glm_workflow or 'glm.get("smart_trigger") or {}' in glm_workflow:
+        findings.append("GLM workflow must require glm.smart_trigger instead of defaulting legacy behavior")
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_DELIVERABLE_SNIPPETS))
+    if "legacy-smart-trigger-missing" in kimi_workflow:
+        findings.append("Kimi workflow must fail closed when kimi.smart_trigger is missing")
+    if 'smart_trigger_configured = "smart_trigger" in kimi' in kimi_workflow or 'kimi.get("smart_trigger") or {}' in kimi_workflow:
+        findings.append("Kimi workflow must require kimi.smart_trigger instead of defaulting legacy behavior")
     findings.extend(missing_snippets("Claude workflow", claude_workflow, CLAUDE_WORKFLOW_SNIPPETS))
     findings.extend(missing_snippets("Smoke workflow", smoke_workflow, SMOKE_TRUSTED_CONFIG_SNIPPETS))
     if 'track_progress: true' in claude_workflow:

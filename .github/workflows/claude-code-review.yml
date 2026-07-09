@@ -187,13 +187,16 @@ jobs:
                   return None
               return [file["filename"] for file in files if isinstance(file, dict) and isinstance(file.get("filename"), str)]
 
+          def notice_failed_changed_files_strategy(strategy, error):
+              print(f"::notice::Claude changed-files strategy {strategy} failed; trying next strategy.", file=sys.stderr)
+
           def pushed_files():
               try:
                   files = compare_files(event_before_sha, event_after_sha)
                   if files is not None:
                       return files, "pushed-range"
-              except subprocess.CalledProcessError:
-                  pass
+              except subprocess.CalledProcessError as error:
+                  notice_failed_changed_files_strategy("pushed-range", error)
 
               try:
                   commit = gh_json("api", f"repos/{repo}/commits/{event_head_sha}")
@@ -204,13 +207,17 @@ jobs:
                           files = compare_files(parent_sha, event_head_sha)
                           if files is not None:
                               return files, "head-commit"
-              except subprocess.CalledProcessError:
-                  pass
+              except subprocess.CalledProcessError as error:
+                  notice_failed_changed_files_strategy("head-commit", error)
 
-              return subprocess.check_output(
-                  ("gh", "pr", "diff", pr_number, "--repo", repo, "--name-only"),
-                  text=True,
-              ).splitlines(), "pr-diff-fallback"
+              try:
+                  return subprocess.check_output(
+                      ("gh", "pr", "diff", pr_number, "--repo", repo, "--name-only"),
+                      text=True,
+                  ).splitlines(), "pr-diff-fallback"
+              except subprocess.CalledProcessError as error:
+                  notice_failed_changed_files_strategy("pr-diff-fallback", error)
+                  raise RuntimeError("all Claude changed-files strategies failed") from error
 
           if event_name != "pull_request":
               pr_payload = gh_json("api", f"repos/{repo}/pulls/{pr_number}")

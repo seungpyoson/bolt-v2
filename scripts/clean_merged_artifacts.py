@@ -60,7 +60,7 @@ else:
     _TOML_DECODE_ERROR = tomllib.TOMLDecodeError
 
 SCRIPT_NAME = "clean-merged"
-CLEAN_MERGED_HOOKS = ("post-merge", "post-checkout", "post-rewrite")
+CLEAN_MERGED_HOOKS = ("post-merge", "post-checkout")
 HOOK_MANIFEST_NAME = "clean-merged.hooks-manifest.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")

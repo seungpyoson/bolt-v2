@@ -1729,21 +1729,10 @@ class CleanupContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _install_post_rewrite_with_clean_marker(self) -> tuple[pathlib.Path, pathlib.Path]:
+    def _install_post_rewrite_hook(self) -> pathlib.Path:
         hook = self.work / ".git" / "hooks" / "post-rewrite"
         shutil.copy2(REPO_ROOT / ".githooks" / "post-rewrite", hook)
-
-        marker = self.tmp / "clean-merged-dispatched"
-        script = self.work / "scripts" / "clean_merged_artifacts.py"
-        script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(
-            "#!/usr/bin/env python3\n"
-            "import pathlib\n"
-            f"pathlib.Path({json.dumps(str(marker))}).write_text("
-            "'dispatched', encoding='utf-8')\n",
-            encoding="utf-8",
-        )
-        return hook, marker
+        return hook
 
     def _write_clean_merged_hook_sources(
         self,
@@ -2241,7 +2230,7 @@ class CleanupContractTests(unittest.TestCase):
             _run(["git", "config", "--get", "core.hooksPath"], cwd=self.work).stdout.strip(),
             str(runtime_hooks),
         )
-        for hook in ("post-merge", "post-checkout", "post-rewrite"):
+        for hook in cm.CLEAN_MERGED_HOOKS:
             self.assertEqual(
                 (runtime_hooks / hook).read_text(encoding="utf-8"),
                 (source_hooks / hook).read_text(encoding="utf-8"),
@@ -2354,9 +2343,9 @@ class CleanupContractTests(unittest.TestCase):
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks"
         global_hooks.mkdir()
-        global_post_rewrite = global_hooks / "post-rewrite"
-        global_post_rewrite.write_text(
-            "#!/bin/sh\nprintf global-post-rewrite\n",
+        global_post_merge = global_hooks / "post-merge"
+        global_post_merge.write_text(
+            "#!/bin/sh\nprintf global-post-merge\n",
             encoding="utf-8",
         )
         global_commit_msg = global_hooks / "commit-msg"
@@ -2364,7 +2353,7 @@ class CleanupContractTests(unittest.TestCase):
             "#!/bin/sh\nprintf global-commit-msg\n",
             encoding="utf-8",
         )
-        for hook in (global_post_rewrite, global_commit_msg):
+        for hook in (global_post_merge, global_commit_msg):
             hook.chmod(0o755)
         global_config = self.tmp / "global.gitconfig"
         global_config.write_text(
@@ -2382,8 +2371,8 @@ class CleanupContractTests(unittest.TestCase):
         runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         source_hooks = self.work / ".githooks"
         self.assertEqual(
-            (runtime_hooks / "post-rewrite").read_text(encoding="utf-8"),
-            (source_hooks / "post-rewrite").read_text(encoding="utf-8"),
+            (runtime_hooks / "post-merge").read_text(encoding="utf-8"),
+            (source_hooks / "post-merge").read_text(encoding="utf-8"),
         )
         self.assertEqual(
             (runtime_hooks / "commit-msg").read_text(encoding="utf-8"),
@@ -2865,9 +2854,9 @@ class CleanupContractTests(unittest.TestCase):
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-invalid-shadow"
         global_hooks.mkdir()
-        global_post_rewrite = global_hooks / "post-rewrite"
-        global_post_rewrite.write_text("#!/bin/sh\nprintf shadow\n", encoding="utf-8")
-        global_post_rewrite.chmod(0o755)
+        global_post_merge = global_hooks / "post-merge"
+        global_post_merge.write_text("#!/bin/sh\nprintf shadow\n", encoding="utf-8")
+        global_post_merge.chmod(0o755)
         global_config = self.tmp / "global-invalid-shadow.gitconfig"
         global_config.write_text(
             f"[core]\n\thooksPath = {global_hooks}\n",
@@ -2877,14 +2866,14 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
         manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["shadowed_hooks"]["post-rewrite"][0]["source_scope"] = "effective"
+        manifest["shadowed_hooks"]["post-merge"][0]["source_scope"] = "effective"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         proc = run_clean_proc(self.work, "--install-hooks", env=env)
 
         self.assertEqual(proc.returncode, 1)
         self.assertIn(
-            "shadowed_hooks.post-rewrite[0] unsupported source_scope effective",
+            "shadowed_hooks.post-merge[0] unsupported source_scope effective",
             proc.stderr,
         )
 
@@ -2932,10 +2921,10 @@ class CleanupContractTests(unittest.TestCase):
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-shadow"
         global_hooks.mkdir()
-        global_post_rewrite = global_hooks / "post-rewrite"
-        global_post_rewrite.write_text("#!/bin/sh\nprintf global-post-rewrite\n",
-                                       encoding="utf-8")
-        global_post_rewrite.chmod(0o755)
+        global_post_merge = global_hooks / "post-merge"
+        global_post_merge.write_text("#!/bin/sh\nprintf global-post-merge\n",
+                                     encoding="utf-8")
+        global_post_merge.chmod(0o755)
         global_config = self.tmp / "global-shadow.gitconfig"
         global_config.write_text(
             f"[core]\n\thooksPath = {global_hooks}\n",
@@ -2953,9 +2942,9 @@ class CleanupContractTests(unittest.TestCase):
             (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
             .read_text(encoding="utf-8")
         )
-        shadowed = manifest["shadowed_hooks"]["post-rewrite"][0]
+        shadowed = manifest["shadowed_hooks"]["post-merge"][0]
         self.assertEqual(shadowed["source_scope"], "global")
-        self.assertEqual(shadowed["source_path"], str(global_post_rewrite))
+        self.assertEqual(shadowed["source_path"], str(global_post_merge))
 
     def test_install_hooks_preserves_shadowed_hook_after_runtime_path_is_active(
         self,
@@ -2963,9 +2952,9 @@ class CleanupContractTests(unittest.TestCase):
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-shadow-preserve"
         global_hooks.mkdir()
-        global_post_rewrite = global_hooks / "post-rewrite"
-        global_post_rewrite.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
-        global_post_rewrite.chmod(0o755)
+        global_post_merge = global_hooks / "post-merge"
+        global_post_merge.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_post_merge.chmod(0o755)
         global_config = self.tmp / "global-shadow-preserve.gitconfig"
         global_config.write_text(
             f"[core]\n\thooksPath = {global_hooks}\n",
@@ -2981,16 +2970,16 @@ class CleanupContractTests(unittest.TestCase):
             (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
             .read_text(encoding="utf-8")
         )
-        shadowed = manifest["shadowed_hooks"]["post-rewrite"][0]
-        self.assertEqual(shadowed["source_path"], str(global_post_rewrite))
+        shadowed = manifest["shadowed_hooks"]["post-merge"][0]
+        self.assertEqual(shadowed["source_path"], str(global_post_merge))
 
     def test_install_hooks_refreshes_shadowed_hook_source_from_manifest(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-shadow-refresh"
         global_hooks.mkdir()
-        global_post_rewrite = global_hooks / "post-rewrite"
-        global_post_rewrite.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
-        global_post_rewrite.chmod(0o755)
+        global_post_merge = global_hooks / "post-merge"
+        global_post_merge.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_post_merge.chmod(0o755)
         global_config = self.tmp / "global-shadow-refresh.gitconfig"
         global_config.write_text(
             f"[core]\n\thooksPath = {global_hooks}\n",
@@ -2998,7 +2987,7 @@ class CleanupContractTests(unittest.TestCase):
         )
         env = {"GIT_CONFIG_GLOBAL": str(global_config)}
         self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
-        global_post_rewrite.write_text("#!/bin/sh\nprintf global-v2\n", encoding="utf-8")
+        global_post_merge.write_text("#!/bin/sh\nprintf global-v2\n", encoding="utf-8")
 
         proc = run_clean_proc(self.work, "--install-hooks", env=env)
 
@@ -3007,16 +2996,16 @@ class CleanupContractTests(unittest.TestCase):
             (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
             .read_text(encoding="utf-8")
         )
-        shadowed = manifest["shadowed_hooks"]["post-rewrite"][0]
-        self.assertEqual(shadowed["source_sha256"], file_sha256(global_post_rewrite))
+        shadowed = manifest["shadowed_hooks"]["post-merge"][0]
+        self.assertEqual(shadowed["source_sha256"], file_sha256(global_post_merge))
 
     def test_doctor_reports_shadowed_same_name_source_drift(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-shadow-doctor"
         global_hooks.mkdir()
-        global_post_rewrite = global_hooks / "post-rewrite"
-        global_post_rewrite.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
-        global_post_rewrite.chmod(0o755)
+        global_post_merge = global_hooks / "post-merge"
+        global_post_merge.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_post_merge.chmod(0o755)
         global_config = self.tmp / "global-shadow-doctor.gitconfig"
         global_config.write_text(
             f"[core]\n\thooksPath = {global_hooks}\n",
@@ -3024,12 +3013,12 @@ class CleanupContractTests(unittest.TestCase):
         )
         env = {"GIT_CONFIG_GLOBAL": str(global_config)}
         self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
-        global_post_rewrite.write_text("#!/bin/sh\nprintf global-v2\n", encoding="utf-8")
+        global_post_merge.write_text("#!/bin/sh\nprintf global-v2\n", encoding="utf-8")
 
         proc = run_clean_proc(self.work, "--doctor", env=env)
 
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("shadowed hook post-rewrite source changed", proc.stdout)
+        self.assertIn("shadowed hook post-merge source changed", proc.stdout)
 
     def test_install_hooks_adopts_default_runtime_hook_without_copy(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -3761,8 +3750,8 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_install_hooks_refuses_dirty_tracked_hook_sources(self) -> None:
         source_hooks = self._write_clean_merged_hook_sources(self.work)
-        (source_hooks / "post-rewrite").write_text(
-            "#!/bin/sh\n# clean-merged-managed\nprintf dirty-post-rewrite\n",
+        (source_hooks / "post-merge").write_text(
+            "#!/bin/sh\n# clean-merged-managed\nprintf dirty-post-merge\n",
             encoding="utf-8",
         )
 
@@ -3770,7 +3759,7 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 1)
         self.assertIn(
-            "tracked hook source(s) have local changes: .githooks/post-rewrite",
+            "tracked hook source(s) have local changes: .githooks/post-merge",
             proc.stderr,
         )
 
@@ -3972,103 +3961,35 @@ git config "remote.${{clean_merged_remote}}.prune" true
             r"\bGemini\b|code-assist|RECOVERY_HOLE|Design provenance",
         )
 
-    def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
+    def test_post_rewrite_is_not_a_clean_merged_hook_source(self) -> None:
+        self.assertNotIn("post-rewrite", cm.CLEAN_MERGED_HOOKS)
+
+    def test_post_rewrite_is_entire_only_repo_hook(self) -> None:
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
 
         self.assertNotIn("local main", source)
-        self.assertIn("local configured trunk", source)
-        self.assertIn("configured trunk", source)
-
-    def test_post_rewrite_adopts_entire_without_wrapper_split(self) -> None:
-        source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
-
         self.assertIn("# Entire CLI hooks", source)
         self.assertIn(
-            '_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX" '
-            '2>/dev/null || true)"',
+            'entire hooks git post-rewrite "$1" 2>/dev/null || true',
             source,
         )
-        self.assertIn('if [ -n "$_entire_stdin" ]; then', source)
-        self.assertIn('if cat 2>/dev/null > "$_entire_stdin"; then', source)
-        self.assertIn(
-            'entire hooks git post-rewrite "$1" 2>/dev/null < "$_entire_stdin"',
-            source,
-        )
-        self.assertIn("clean-merged Lane H dispatch", source)
+        self.assertNotIn("_entire_stdin", source)
+        self.assertNotIn("mktemp", source)
+        self.assertNotIn("clean-merged", source)
+        self.assertNotIn("clean_merged_artifacts.py", source)
+        self.assertNotIn("configured trunk", source)
         self.assertNotIn("post-rewrite.pre-entire", source)
 
-    def test_post_rewrite_stays_silent_when_mktemp_fails(self) -> None:
-        hook, clean_marker = self._install_post_rewrite_with_clean_marker()
-
-        fake_bin = self.tmp / "fake-bin"
-        fake_bin.mkdir()
-        failing_mktemp = fake_bin / "mktemp"
-        failing_mktemp.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-        failing_mktemp.chmod(0o755)
-
-        proc = _run(
-            [str(hook), "amend"],
-            cwd=self.work,
-            env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
-            check=False,
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stderr, "")
-        self.assertTrue(clean_marker.is_file())
-
-    def test_post_rewrite_stays_silent_when_stdin_stage_fails(self) -> None:
-        hook, clean_marker = self._install_post_rewrite_with_clean_marker()
-
-        fake_bin = self.tmp / "fake-bin-stage-fails"
-        fake_bin.mkdir()
-        unusable_stdin = self.tmp / "missing-stdin-dir" / "stdin"
-        marker = self.tmp / "entire-invoked"
-        fake_mktemp = fake_bin / "mktemp"
-        fake_mktemp.write_text(
-            "#!/bin/sh\n"
-            'printf "%s\\n" "$FAKE_UNUSABLE_STDIN"\n',
-            encoding="utf-8",
-        )
-        fake_mktemp.chmod(0o755)
-        fake_entire = fake_bin / "entire"
-        fake_entire.write_text(
-            "#!/bin/sh\n"
-            'printf invoked > "$FAKE_ENTIRE_MARKER"\n',
-            encoding="utf-8",
-        )
-        fake_entire.chmod(0o755)
-
-        proc = _run(
-            [str(hook), "amend"],
-            cwd=self.work,
-            env={
-                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-                "FAKE_UNUSABLE_STDIN": str(unusable_stdin),
-                "FAKE_ENTIRE_MARKER": str(marker),
-            },
-            check=False,
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stderr, "")
-        self.assertFalse(marker.exists())
-        self.assertTrue(clean_marker.is_file())
-
-    def test_post_rewrite_suppresses_entire_stderr_and_dispatches_clean_merged(self) -> None:
-        """Verify Entire stderr stays silent and clean-merged still dispatches.
-
-        The `|| true` guard is forward-defense for a future stricter shell mode; with
-        the current hook's no-`set -e` semantics and explicit final `exit 0`, it is
-        inert and therefore not independently testable here.
-        """
-        hook, clean_marker = self._install_post_rewrite_with_clean_marker()
+    def test_post_rewrite_suppresses_entire_stderr(self) -> None:
+        hook = self._install_post_rewrite_hook()
 
         fake_bin = self.tmp / "fake-bin-entire-errors"
         fake_bin.mkdir()
+        marker = self.tmp / "entire-invoked"
         fake_entire = fake_bin / "entire"
         fake_entire.write_text(
             "#!/bin/sh\n"
+            'printf invoked > "$FAKE_ENTIRE_MARKER"\n'
             "echo boom >&2\n"
             "exit 1\n",
             encoding="utf-8",
@@ -4078,13 +3999,16 @@ git config "remote.${{clean_merged_remote}}.prune" true
         proc = _run(
             [str(hook), "amend"],
             cwd=self.work,
-            env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            env={
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_ENTIRE_MARKER": str(marker),
+            },
             check=False,
         )
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stderr, "")
-        self.assertTrue(clean_marker.is_file())
+        self.assertTrue(marker.is_file())
 
 
 # ---------------------------------------------------------------------------
@@ -4527,13 +4451,13 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertTrue(fresh.exists())
         self.assertTrue(log_path.with_suffix(log_path.suffix + ".1").exists())
 
-    def test_post_rewrite_fires_on_rebase_pull(self) -> None:
+    def test_post_rewrite_does_not_fire_clean_merged_on_rebase_pull(self) -> None:
         # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.
         _run(["git", "commit", "--allow-empty", "-m", "local-divergent"], cwd=self.work)
         self._advance_remote()
         _run(["git", "pull", "--rebase", "origin", "main"], cwd=self.work)
         hb = self._heartbeat()
-        self.assertIsNotNone(hb, "post-rewrite must fire Lane H which writes the heartbeat")
+        self.assertIsNone(hb, "post-rewrite must not dispatch clean-merged Lane H")
 
     def test_kill_switch_parity_disabled_zero_does_not_silence(self) -> None:
         """round-4.5 self-review: bash hooks used `[ -n ]` (any non-empty disables),

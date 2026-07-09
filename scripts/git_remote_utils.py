@@ -73,10 +73,21 @@ def github_actions_git_auth_env(
     remote_url: str,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
+    """Return GitHub extraheader env for matching repo remotes.
+
+    Outside GitHub Actions, missing ambient GitHub identity intentionally returns
+    an empty env so local runs can use the operator's configured Git auth.
+    Inside GitHub Actions, the workflow must provide the ephemeral token and
+    repository slug explicitly; otherwise fetches fail closed before falling
+    back to unauthenticated GitHub access.
+    """
+
     source_env = os.environ if environ is None else environ
     token = source_env.get("GITHUB_TOKEN", "")
     repository = source_env.get("GITHUB_REPOSITORY", "").removesuffix(".git")
     if not token or not repository:
+        if source_env.get("GITHUB_ACTIONS") == "true":
+            raise RuntimeError("GITHUB_TOKEN and GITHUB_REPOSITORY are both required in GitHub Actions")
         return {}
     remote_repository = github_repository_slug(remote_url)
     if remote_repository is None or remote_repository.lower() != repository.lower():

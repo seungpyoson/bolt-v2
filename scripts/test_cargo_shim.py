@@ -37,6 +37,22 @@ REFUSAL_LINES = [
 ]
 
 
+def _embedded_minimal_toml_source() -> str:
+    return _minimal_toml_block(SHIM.read_text(encoding="utf-8"))
+
+
+def _minimal_toml_module_source() -> str:
+    return _minimal_toml_block((ROOT / "scripts" / "minimal_toml.py").read_text(encoding="utf-8"))
+
+
+def _minimal_toml_block(source: str) -> str:
+    begin = "# BEGIN embedded scripts/minimal_toml.py\n"
+    end = "# END embedded scripts/minimal_toml.py\n"
+    start = source.index(begin) + len(begin)
+    stop = source.index(end, start)
+    return source[start:stop]
+
+
 def _init_repo(path: Path, policy: str = POLICY) -> None:
     write_policy(path, policy_text=policy, write_justfile=False)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
@@ -110,6 +126,34 @@ def test_cargo_shim_has_no_dynamic_module_loader():
     assert "spec_from_file_location" not in source
     assert "importlib" not in source
     assert "import_module" not in source
+
+
+def test_cargo_shim_embedded_minimal_toml_matches_module_source():
+    assert _embedded_minimal_toml_source() == _minimal_toml_module_source()
+
+
+def test_target_namespace_fallback_reads_only_top_level_key(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(
+        repo,
+        policy="""\
+schema_version = 2
+project_id = "bolt-v2"
+
+[local_compile_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+refused_cargo_subcommands = ["build"]
+target_namespace = "nested-is-not-valid"
+""",
+    )
+    shim = _load_shim_module()
+    monkeypatch.setattr(shim, "tomllib", None)
+
+    with pytest.raises(ValueError, match="target_namespace is required"):
+        shim.load_target_namespace(repo / "ci" / "rust-verification.toml")
 
 
 def test_managed_target_dir_formula_matches_rust_verification_for_policy_roots(tmp_path, monkeypatch):
@@ -821,8 +865,9 @@ def test_installer_creates_idempotent_daily_clean_merged_launch_agent(tmp_path):
     assert launch_agent.read_bytes() == first_bytes
 
     payload = plistlib.loads(first_bytes)
+    installer = _load_installer_module()
     assert payload["Label"] == "com.kunchenguid.bolt-v2.daily-maintenance"
-    assert payload["WorkingDirectory"] == str(ROOT)
+    assert payload["WorkingDirectory"] == str(installer.daily_maintenance_install_root(ROOT))
     assert payload["ProgramArguments"] == [
         "/bin/sh",
         "-lc",

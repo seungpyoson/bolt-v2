@@ -55,6 +55,7 @@ CI_LINT_SUITES = (
     CiLintSuite("ubicloud-runner-minutes", ("python3", "scripts/test_ubicloud_runner_minutes.py")),
     CiLintSuite("verify-ci-path-filters-tests", ("python3", "scripts/test_verify_ci_path_filters.py")),
     CiLintSuite("rust-verification", ("python3", "scripts/test_rust_verification.py")),
+    CiLintSuite("sandbox-safe-push", ("python3", "scripts/test_sandbox_safe_push.py")),
     CiLintSuite("verify-remote", ("python3", "scripts/test_verify_remote.py")),
     CiLintSuite("command-understanding", ("python3", "scripts/test_command_understanding.py")),
     CiLintSuite("rust-verification-decoupling", ("python3", "scripts/test_rust_verification_decoupling.py")),

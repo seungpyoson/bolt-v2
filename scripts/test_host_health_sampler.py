@@ -2950,14 +2950,15 @@ class Round6DegradedStateFixTests(unittest.TestCase):
 
         # Differential proof against the pre-fix source: it imports SLOWLY because
         # discovery runs at import and hits the stalled resolve.
-        if PREFIX_SOURCE.exists():
-            elapsed_prefix = run_import(PREFIX_SOURCE)
-            self.assertGreater(
-                elapsed_prefix,
-                2.0,
-                "pre-fix source unexpectedly did not block at import "
-                "(differential guard ineffective)",
-            )
+        if not PREFIX_SOURCE.exists():
+            self.skipTest("fixture /tmp/prefix6.py not present — differential arm skipped")
+        elapsed_prefix = run_import(PREFIX_SOURCE)
+        self.assertGreater(
+            elapsed_prefix,
+            2.0,
+            "pre-fix source unexpectedly did not block at import "
+            "(differential guard ineffective)",
+        )
 
     def test_module_has_no_import_time_default_disk_path(self) -> None:
         # The import-time-discovered constant is GONE: no DEFAULT_DISK_PATH at

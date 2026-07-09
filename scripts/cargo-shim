@@ -6,13 +6,137 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from ast import literal_eval
 from pathlib import Path
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - supported runtime has tomllib
     tomllib = None
+
+
+# BEGIN embedded scripts/minimal_toml.py
+import json
+import pathlib
+import re
+from typing import Any
+
+
+SAFE_TOML_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class MinimalTomlError(ValueError):
+    pass
+
+
+def _display_path(path: pathlib.Path, display_path: pathlib.Path | str | None) -> str:
+    return str(display_path if display_path is not None else path)
+
+
+def _fail(error_cls: type[Exception], message: str) -> None:
+    raise error_cls(message)
+
+
+def check_size(
+    path: pathlib.Path,
+    *,
+    max_bytes: int | None = None,
+    display_path: pathlib.Path | str | None = None,
+    error_cls: type[Exception] = MinimalTomlError,
+) -> None:
+    if max_bytes is None:
+        return
+    size = path.stat().st_size
+    if size > max_bytes:
+        shown = _display_path(path, display_path)
+        _fail(error_cls, f"{shown} exceeds maximum size of {max_bytes} bytes")
+
+
+def load(
+    path: pathlib.Path,
+    *,
+    max_bytes: int | None = None,
+    display_path: pathlib.Path | str | None = None,
+    error_cls: type[Exception] = MinimalTomlError,
+) -> dict[str, Any]:
+    check_size(path, max_bytes=max_bytes, display_path=display_path, error_cls=error_cls)
+    shown = _display_path(path, display_path)
+    data: dict[str, Any] = {}
+    current: dict[str, Any] = data
+    with path.open("r", encoding="utf-8") as handle:
+        lines = enumerate(handle, start=1)
+        for lineno, raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("["):
+                if not line.endswith("]"):
+                    _fail(error_cls, f"{shown}:{lineno}: invalid TOML table header")
+                current = data
+                for part in line[1:-1].split("."):
+                    if not part or not SAFE_TOML_IDENTIFIER_RE.match(part):
+                        _fail(error_cls, f"{shown}:{lineno}: unsupported table name")
+                    child = current.setdefault(part, {})
+                    if not isinstance(child, dict):
+                        _fail(error_cls, f"{shown}:{lineno}: table conflicts with scalar")
+                    current = child
+                continue
+            key, sep, value_text = line.partition("=")
+            if not sep:
+                _fail(error_cls, f"{shown}:{lineno}: expected key = value")
+            key = key.strip()
+            if key.startswith('"') and key.endswith('"'):
+                try:
+                    parsed_key = json.loads(key)
+                except json.JSONDecodeError as exc:
+                    raise error_cls(f"{shown}:{lineno}: invalid key") from exc
+                if not isinstance(parsed_key, str) or not parsed_key:
+                    _fail(error_cls, f"{shown}:{lineno}: invalid key")
+                key = parsed_key
+            elif not SAFE_TOML_IDENTIFIER_RE.match(key):
+                _fail(error_cls, f"{shown}:{lineno}: unsupported key")
+            value_text = value_text.strip()
+            if value_text.startswith('"') and value_text.endswith('"'):
+                try:
+                    value: Any = json.loads(value_text)
+                except json.JSONDecodeError as exc:
+                    raise error_cls(f"{shown}:{lineno}: invalid string") from exc
+            elif value_text.startswith("[") and value_text.endswith("]"):
+                try:
+                    value = json.loads(value_text)
+                except json.JSONDecodeError as exc:
+                    raise error_cls(f"{shown}:{lineno}: invalid array") from exc
+                if not all(isinstance(item, str) for item in value):
+                    _fail(error_cls, f"{shown}:{lineno}: unsupported array")
+            elif value_text == "[":
+                value = []
+                for array_lineno, raw_array_line in lines:
+                    item_text = raw_array_line.strip()
+                    if not item_text or item_text.startswith("#"):
+                        continue
+                    if item_text == "]":
+                        break
+                    if item_text.endswith(","):
+                        item_text = item_text[:-1].strip()
+                    if not item_text.startswith('"') or not item_text.endswith('"'):
+                        _fail(error_cls, f"{shown}:{array_lineno}: unsupported array")
+                    try:
+                        item = json.loads(item_text)
+                    except json.JSONDecodeError as exc:
+                        raise error_cls(f"{shown}:{array_lineno}: invalid string") from exc
+                    if not isinstance(item, str):
+                        _fail(error_cls, f"{shown}:{array_lineno}: unsupported array")
+                    value.append(item)
+                else:
+                    _fail(error_cls, f"{shown}:{lineno}: unterminated array")
+            elif value_text in ("true", "false"):
+                value = value_text == "true"
+            elif value_text.isascii() and value_text.isdigit():
+                value = int(value_text)
+            else:
+                _fail(error_cls, f"{shown}:{lineno}: unsupported value")
+            current[key] = value
+    return data
+# END embedded scripts/minimal_toml.py
 
 
 VALUE_TAKING_GLOBAL_FLAGS = {
@@ -68,9 +192,12 @@ def load_policy(policy_path: Path) -> dict[str, object] | None:
     if not policy_path.exists():
         return None
     if tomllib is None:
-        policy = load_policy_fallback(policy_path)
+        data = load(policy_path)
+        policy = data.get("local_compile_policy")
         if policy is None:
             raise ValueError("local_compile_policy table is required")
+        if not isinstance(policy, dict):
+            raise ValueError("local_compile_policy must be a table")
         return policy
     try:
         with policy_path.open("rb") as f:
@@ -85,27 +212,9 @@ def load_policy(policy_path: Path) -> dict[str, object] | None:
     return policy
 
 
-def load_target_namespace_fallback(policy_path: Path) -> str | None:
-    for raw_line in policy_path.read_text(encoding="utf-8").splitlines():
-        line = strip_toml_comment(raw_line).strip()
-        if not line or "=" not in line:
-            continue
-        key, raw_value = line.split("=", 1)
-        if key.strip() != "target_namespace":
-            continue
-        try:
-            value = literal_eval(raw_value.strip())
-        except (ValueError, SyntaxError) as exc:
-            raise ValueError("target_namespace must be a quoted string") from exc
-        if not isinstance(value, str) or not value:
-            raise ValueError("target_namespace is required")
-        return value
-    return None
-
-
 def load_target_namespace(policy_path: Path) -> str:
     if tomllib is None:
-        namespace = load_target_namespace_fallback(policy_path)
+        namespace = load(policy_path).get("target_namespace")
     else:
         try:
             with policy_path.open("rb") as f:
@@ -127,86 +236,6 @@ def rust_verification_root_base() -> Path:
 
 def managed_target_dir(root: Path) -> Path:
     return rust_verification_root_base() / load_target_namespace(root / "ci" / "rust-verification.toml") / "target"
-
-
-def strip_toml_comment(raw_line: str) -> str:
-    quote: str | None = None
-    escaped = False
-    for index, char in enumerate(raw_line):
-        if escaped:
-            escaped = False
-            continue
-        if quote is not None:
-            if quote == '"' and char == "\\":
-                escaped = True
-                continue
-            if char == quote:
-                quote = None
-            continue
-        if char in {'"', "'"}:
-            quote = char
-            continue
-        if char == "#":
-            return raw_line[:index]
-    return raw_line
-
-
-def load_policy_fallback(policy_path: Path) -> dict[str, object] | None:
-    in_section = False
-    saw_policy_section = False
-    policy: dict[str, object] = {}
-    current_key: str | None = None
-    current_value_parts: list[str] = []
-    for raw_line in policy_path.read_text(encoding="utf-8").splitlines():
-        line = strip_toml_comment(raw_line).strip()
-        if not line:
-            continue
-        if current_key is not None:
-            current_value_parts.append(line)
-            value = " ".join(current_value_parts).strip()
-            if not value.startswith("[") or value.endswith("]"):
-                policy[current_key] = parse_fallback_value(value)
-                current_key = None
-                current_value_parts = []
-            continue
-        if line.startswith("["):
-            if not line.endswith("]"):
-                raise ValueError(f"invalid TOML table header: {raw_line.strip()}")
-            in_section = line == "[local_compile_policy]"
-            saw_policy_section = saw_policy_section or in_section
-            continue
-        if not in_section:
-            continue
-        if current_key is None:
-            if "=" not in line:
-                raise ValueError(f"invalid policy line: {raw_line.strip()}")
-            key, raw_value = line.split("=", 1)
-            current_key = key.strip()
-            current_value_parts = [raw_value.strip()]
-
-        value = " ".join(current_value_parts).strip()
-        if not value.startswith("[") or value.endswith("]"):
-            policy[current_key] = parse_fallback_value(value)
-            current_key = None
-            current_value_parts = []
-    if current_key is not None:
-        policy[current_key] = parse_fallback_value(" ".join(current_value_parts).strip())
-    if saw_policy_section:
-        return policy
-    return None
-
-
-def parse_fallback_value(raw_value: str) -> object:
-    if raw_value == "true":
-        return True
-    if raw_value == "false":
-        return False
-    if raw_value.startswith('"') or raw_value.startswith("'") or raw_value.startswith("["):
-        try:
-            return literal_eval(raw_value)
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"invalid policy value: {raw_value}") from exc
-    raise ValueError(f"unsupported policy value: {raw_value}")
 
 
 def policy_refused_commands(policy: dict[str, object]) -> set[str]:

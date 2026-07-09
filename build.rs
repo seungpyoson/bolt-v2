@@ -169,9 +169,22 @@ fn render_gated_source_roots(entries: &[(String, Vec<String>)]) -> String {
 }
 
 fn emit_git_head_rerun_paths(manifest_dir: &Path) {
-    for path in git_head_rerun_paths(manifest_dir) {
+    for path in emitted_git_head_rerun_paths(manifest_dir) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
+}
+
+/// Cargo treats a `rerun-if-changed` path that does not exist as permanently
+/// dirty, so emitting an absent candidate recompiles this crate on every
+/// invocation. A checkout stores each ref either loosely or packed, never both,
+/// so at least one candidate is always absent. Emit only what is present: when
+/// refs move between the two storages the surviving path changes, which re-runs
+/// this script and re-emits the set that now exists.
+pub fn emitted_git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
+    git_head_rerun_paths(manifest_dir)
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect()
 }
 
 pub fn build_script_rerun_env_vars() -> &'static [&'static str] {

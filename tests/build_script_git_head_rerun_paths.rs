@@ -47,6 +47,51 @@ fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
     let _ = fs::remove_dir_all(manifest_dir);
 }
 
+fn plain_checkout_fixture(name: &str) -> PathBuf {
+    let manifest_dir = temp_git_fixture(name);
+    let git_dir = manifest_dir.join(".git");
+    fs::create_dir_all(git_dir.join("refs").join("heads")).expect("refs dir should be created");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/topic\n").expect("HEAD should be written");
+    manifest_dir
+}
+
+#[test]
+fn emitted_rerun_paths_skip_packed_refs_missing_from_a_loose_ref_checkout() {
+    let manifest_dir = plain_checkout_fixture("loose-refs");
+    let git_dir = manifest_dir.join(".git");
+    fs::write(git_dir.join("refs").join("heads").join("topic"), "0\n")
+        .expect("loose ref should be written");
+
+    let emitted = build_script::emitted_git_head_rerun_paths(&manifest_dir);
+    let git_dir = fs::canonicalize(&git_dir).expect("git dir should canonicalize");
+
+    assert!(emitted.contains(&git_dir.join("HEAD")));
+    assert!(emitted.contains(&git_dir.join("refs").join("heads").join("topic")));
+    assert!(
+        !emitted.contains(&git_dir.join("packed-refs")),
+        "a rerun-if-changed path that does not exist is permanently dirty to Cargo, \
+         which recompiles this crate on every invocation"
+    );
+
+    let _ = fs::remove_dir_all(manifest_dir);
+}
+
+#[test]
+fn emitted_rerun_paths_watch_packed_refs_when_the_ref_is_packed() {
+    let manifest_dir = plain_checkout_fixture("packed-refs");
+    let git_dir = manifest_dir.join(".git");
+    fs::write(git_dir.join("packed-refs"), "# pack-refs with: peeled\n")
+        .expect("packed-refs should be written");
+
+    let emitted = build_script::emitted_git_head_rerun_paths(&manifest_dir);
+    let git_dir = fs::canonicalize(&git_dir).expect("git dir should canonicalize");
+
+    assert!(emitted.contains(&git_dir.join("packed-refs")));
+    assert!(!emitted.contains(&git_dir.join("refs").join("heads").join("topic")));
+
+    let _ = fs::remove_dir_all(manifest_dir);
+}
+
 #[test]
 fn build_script_reruns_when_manifest_dir_env_changes() {
     assert!(

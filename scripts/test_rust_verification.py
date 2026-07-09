@@ -1560,12 +1560,8 @@ def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
         "--cargo-message-format=json",
         "--cargo-metadata",
         "metadata.json",
-        "--config",
-        "profile.default.retries=2",
         "--unit-graph",
-        "unit-graph.json",
         "--future-incompat-report",
-        "report.json",
         "--override-version-check",
         "--tool-config-file",
         "tools.toml",
@@ -1629,8 +1625,8 @@ def assert_known_nextest_option_surface_is_classified() -> None:
         ["--cargo-message-format=json"],
         ["--cargo-metadata", "metadata.json"],
         ["--config", "profile.default.retries=2"],
-        ["--unit-graph", "unit-graph.json"],
-        ["--future-incompat-report", "report.json"],
+        ["--unit-graph"],
+        ["--future-incompat-report"],
         ["--override-version-check"],
         ["--tool-config-file", "tools.toml"],
         ["--user-config-file=user.toml"],
@@ -1640,6 +1636,22 @@ def assert_known_nextest_option_surface_is_classified() -> None:
     for tail in known_tails:
         if owner.nextest_compile_option_tail(tail) is None:
             raise AssertionError(tail)
+
+
+def assert_nextest_option_arity_does_not_drop_compile_selectors() -> None:
+    owner = load_owner_module()
+    cases = [
+        (["--config", 'build.rustflags=["-C","opt-level=1"]'], ["--config", 'build.rustflags=["-C","opt-level=1"]']),
+        (["--unit-graph", "--release"], ["--release"]),
+        (["--future-incompat-report", "--test", "target_name"], ["--test", "target_name"]),
+        (["--retries", "--release"], ["--release"]),
+    ]
+    for tail, expected in cases:
+        compile_tail = owner.nextest_compile_option_tail(tail)
+        if compile_tail != expected:
+            raise AssertionError((tail, compile_tail, expected))
+    if owner.nextest_compile_option_tail(["--test", "--release"]) is not None:
+        raise AssertionError("compile value option consumed another option as its value")
 
 
 def assert_managed_test_refuses_unknown_compile_tail() -> None:
@@ -1804,6 +1816,38 @@ def assert_direct_nextest_no_run_refuses_unknown_tail() -> None:
         raise AssertionError(result)
     run_calls = [call for call in calls if call[0][0] == "cargo"]
     if run_calls:
+        raise AssertionError(run_calls)
+
+
+def assert_direct_nextest_no_run_with_run_only_tail_retries() -> None:
+    owner = load_owner_module()
+    calls: list[tuple[list[str], str | None]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo, policy_text=remote_compile_policy_text())
+        originals = install_owner_process_spies(owner, calls, [42, 0])
+        try:
+            with _patched_environ(
+                {
+                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+                    "GITHUB_ACTIONS": "true",
+                    "SCCACHE_PATH": "/opt/sccache/sccache",
+                }
+            ):
+                result = owner.cmd_cargo(
+                    argparse.Namespace(
+                        repo=str(repo),
+                        args=["--", "nextest", "run", "--locked", "--no-run", "--retries", "2"],
+                    )
+                )
+        finally:
+            restore_owner_process_spies(owner, originals)
+    if result != 0:
+        raise AssertionError(result)
+    run_calls = [call for call in calls if call[0][0] == "cargo"]
+    expected = ["cargo", "nextest", "run", "--locked", "--no-run", "--retries", "2"]
+    if run_calls != [(expected, "/opt/sccache/sccache"), (expected, None)]:
         raise AssertionError(run_calls)
 
 
@@ -2405,11 +2449,13 @@ def main() -> int:
     assert_nextest_compile_preflight_preserves_compile_selectors()
     assert_nextest_compile_preflight_refuses_unknown_flags()
     assert_known_nextest_option_surface_is_classified()
+    assert_nextest_option_arity_does_not_drop_compile_selectors()
     assert_managed_test_refuses_unknown_compile_tail()
     assert_managed_test_allows_unknown_compile_tail_without_cache()
     assert_managed_test_refuses_unknown_no_run_tail()
     assert_direct_nextest_run_refuses_unknown_compile_tail()
     assert_direct_nextest_no_run_refuses_unknown_tail()
+    assert_direct_nextest_no_run_with_run_only_tail_retries()
     assert_direct_nextest_archive_file_remains_no_split()
     assert_compile_args_reject_run_only_and_unknown_flags()
     assert_compile_args_reject_target_routing_override()

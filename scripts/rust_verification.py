@@ -3190,6 +3190,7 @@ NEXTEST_COMPILE_VALUE_OPTIONS = frozenset(
         "--bin",
         "--build-jobs",
         "--cargo-profile",
+        "--config",
         "--config-file",
         "--exclude",
         "--example",
@@ -3211,6 +3212,7 @@ NEXTEST_RUN_ONLY_FLAGS = frozenset(
         "--nff",
         "--cargo-quiet",
         "--cargo-verbose",
+        "--future-incompat-report",
         "--hide-progress-bar",
         "--ignore-default-filter",
         "--no-input-handler",
@@ -3220,6 +3222,7 @@ NEXTEST_RUN_ONLY_FLAGS = frozenset(
         "--no-fail-fast",
         "--override-version-check",
         "--timings",
+        "--unit-graph",
         "--verbose",
     }
 )
@@ -3230,12 +3233,10 @@ NEXTEST_RUN_ONLY_VALUE_OPTIONS = frozenset(
         "--color",
         "--cargo-message-format",
         "--cargo-metadata",
-        "--config",
         "--debugger",
         "--failure-output",
         "--final-status-level",
         "--flaky-result",
-        "--future-incompat-report",
         "--jobs",
         "--max-fail",
         "--max-progress-running",
@@ -3255,7 +3256,6 @@ NEXTEST_RUN_ONLY_VALUE_OPTIONS = frozenset(
         "--test-threads",
         "--tool-config-file",
         "--tracer",
-        "--unit-graph",
         "--user-config-file",
     }
 )
@@ -3323,7 +3323,7 @@ def nextest_compile_option_tail(option_tail: list[str]) -> list[str] | None:
             index += 1
             continue
         if token in NEXTEST_RUN_ONLY_VALUE_OPTIONS:
-            index += 2 if index + 1 < len(option_tail) else 1
+            index += 2 if index + 1 < len(option_tail) and not option_tail[index + 1].startswith("-") else 1
             continue
         if any(token.startswith(f"{flag}=") for flag in NEXTEST_RUN_ONLY_VALUE_OPTIONS):
             index += 1
@@ -3337,7 +3337,7 @@ def nextest_compile_option_tail(option_tail: list[str]) -> list[str] | None:
             index += 1
             continue
         if token in NEXTEST_COMPILE_VALUE_OPTIONS:
-            if index + 1 >= len(option_tail):
+            if index + 1 >= len(option_tail) or option_tail[index + 1].startswith("-"):
                 return None
             compile_tail.extend((token, option_tail[index + 1]))
             index += 2
@@ -3391,7 +3391,16 @@ def cargo_args_are_compile_only(cargo_args: list[str]) -> bool:
         return True
     if nextest_subcommand[1] != "run":
         return False
-    return nextest_run_compile_args_are_safe(cargo_args, allow_separator=True)
+    plan, _compile_args = nextest_run_compile_preflight_plan(cargo_args)
+    if plan is not NextestCompilePreflight.NO_SPLIT:
+        return False
+    nextest_index = index + 1 + nextest_subcommand[0]
+    tail = cargo_args[nextest_index + 1 :]
+    separator_index = tail.index("--") if "--" in tail else len(tail)
+    option_tail = tail[:separator_index]
+    return any(token == "--no-run" for token in option_tail) and not any(
+        token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail
+    )
 
 
 def run_compile_with_remote_cache_fail_open(

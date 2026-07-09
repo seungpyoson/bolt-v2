@@ -20,6 +20,12 @@ from ci_test_manifest import CiTestManifest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
+GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = (
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+)
 
 DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
 GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
@@ -1739,9 +1745,12 @@ def write_repo_text(repo: pathlib.Path, relative: str, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
+def repo_git_command(*args: str) -> list[str]:
+    return ["git", *GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS, *args]
+
 def run_repo_git(repo: pathlib.Path, *args: str) -> str:
     completed = subprocess.run(
-        ["git", *args],
+        repo_git_command(*args),
         cwd=repo,
         check=True,
         text=True,

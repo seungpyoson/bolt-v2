@@ -3,13 +3,18 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import pathlib
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 
+import ci_workflow_hygiene_test_helpers as hygiene_helpers
 from ci_workflow_hygiene_test_helpers import (
     BASE_WORKFLOW,
     DEBUG_TEST_WORKFLOW_PATH,
@@ -25,6 +30,137 @@ from ci_workflow_hygiene_test_helpers import (
     run_repo_git,
     write_repo_text,
 )
+
+def assert_run_repo_git_suppresses_background_maintenance() -> None:
+    calls: list[tuple[str, ...]] = []
+    original_run = hygiene_helpers.subprocess.run
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(command))
+        return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+    hygiene_helpers.subprocess.run = fake_run
+    try:
+        output = hygiene_helpers.run_repo_git(pathlib.Path("/tmp/repo"), "status")
+    finally:
+        hygiene_helpers.subprocess.run = original_run
+
+    if output != "ok\n":
+        raise AssertionError(f"run_repo_git must return stdout, got: {output!r}")
+    expected = (
+        "git",
+        *hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS,
+        "status",
+    )
+    if calls != [expected]:
+        raise AssertionError(f"run_repo_git must suppress background maintenance, got: {calls}")
+
+def assert_temp_git_fixture_cleanup_stress_blocks_background_writer() -> None:
+    real_git = shutil.which("git")
+    if real_git is None:
+        raise AssertionError("git executable not found")
+    writer_code = """
+from __future__ import annotations
+import os
+import pathlib
+import time
+repo = pathlib.Path(os.environ["BOLT1323_WRITER_REPO"])
+log_path = pathlib.Path(os.environ["BOLT1323_WRITER_LOG"])
+objects = repo / ".git" / "objects"
+deadline = time.time() + 1.0
+count = 0
+while time.time() < deadline:
+    try:
+        target_dir = objects / "zz"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / f"race-{os.getpid()}-{count}").write_text("x", encoding="utf-8")
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"write {repo} {count}\\n")
+        count += 1
+    except Exception:
+        pass
+    time.sleep(0.0005)
+"""
+    fake_git_template = """\
+#!{executable}
+from __future__ import annotations
+import os
+import pathlib
+import subprocess
+import sys
+
+args = sys.argv[1:]
+real_git = os.environ["BOLT1323_REAL_GIT"]
+result = subprocess.run([real_git, *args])
+suppression_args = {suppression_args!r}
+missing_suppression = not any(
+    tuple(args[index : index + len(suppression_args)]) == suppression_args
+    for index in range(len(args) - len(suppression_args) + 1)
+)
+if result.returncode == 0 and "commit" in args and missing_suppression:
+    env = os.environ.copy()
+    env["BOLT1323_WRITER_REPO"] = str(pathlib.Path.cwd())
+    subprocess.Popen(
+        [sys.executable, "-c", {writer_code!r}],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+raise SystemExit(result.returncode)
+"""
+    iterations = 12
+    writer_log_text = ""
+    with tempfile.TemporaryDirectory() as harness_tmp:
+        harness = pathlib.Path(harness_tmp)
+        bin_dir = harness / "bin"
+        bin_dir.mkdir()
+        writer_log = harness / "writers.log"
+        fake_git = bin_dir / "git"
+        fake_git.write_text(
+            textwrap.dedent(
+                fake_git_template.format(
+                    executable=sys.executable,
+                    suppression_args=hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS,
+                    writer_code=writer_code,
+                )
+            ),
+            encoding="utf-8",
+        )
+        fake_git.chmod(fake_git.stat().st_mode | stat.S_IXUSR)
+        old_path = os.environ.get("PATH", "")
+        old_real_git = os.environ.get("BOLT1323_REAL_GIT")
+        old_writer_log = os.environ.get("BOLT1323_WRITER_LOG")
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+        os.environ["BOLT1323_REAL_GIT"] = real_git
+        os.environ["BOLT1323_WRITER_LOG"] = str(writer_log)
+        failures = 0
+        try:
+            for index in range(iterations):
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+                        write_repo_text(repo, "head.txt", f"head {index}\n")
+                        commit_repo(repo, f"head {index}")
+                except OSError as exc:
+                    if exc.errno != errno.ENOTEMPTY:
+                        raise
+                    failures += 1
+        finally:
+            os.environ["PATH"] = old_path
+            if old_real_git is None:
+                os.environ.pop("BOLT1323_REAL_GIT", None)
+            else:
+                os.environ["BOLT1323_REAL_GIT"] = old_real_git
+            if old_writer_log is None:
+                os.environ.pop("BOLT1323_WRITER_LOG", None)
+            else:
+                os.environ["BOLT1323_WRITER_LOG"] = old_writer_log
+        writer_log_text = writer_log.read_text(encoding="utf-8") if writer_log.exists() else ""
+    if failures:
+        raise AssertionError(f"background writer raced fixture cleanup {failures}/{iterations} times")
+    if "write " in writer_log_text:
+        raise AssertionError("suppressed git helper still spawned the background writer")
 
 def self_authorizing_errors_for_changes(
     changes: dict[str, str],
@@ -929,6 +1065,8 @@ def assert_debug_test_workflow_contract() -> None:
 
 
 def main() -> int:
+    assert_run_repo_git_suppresses_background_maintenance()
+    assert_temp_git_fixture_cleanup_stress_blocks_background_writer()
     assert_self_authorizing_governance_detector_contract()
     assert_debug_test_workflow_contract()
     print("OK: governance diff analysis tests passed.")

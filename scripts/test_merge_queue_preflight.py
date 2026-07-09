@@ -23,6 +23,7 @@ from ci_workflow_hygiene_test_helpers import (
     load_verifier,
     replace_once,
     replace_once_after,
+    run_repo_git,
     run_verifier_main_with_no_mistakes,
     yaml_scalar_literal,
 )
@@ -130,7 +131,7 @@ def run(command: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[st
 
 
 def git(cwd: pathlib.Path, *args: str) -> str:
-    return run(["git", *args], cwd).stdout.strip()
+    return run_repo_git(cwd, *args).strip()
 
 
 def write(path: pathlib.Path, text: str) -> None:

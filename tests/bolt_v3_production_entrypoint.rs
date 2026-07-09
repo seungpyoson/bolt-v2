@@ -130,17 +130,41 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
     );
 
     let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    let stage_impl_fn = top_level_function_body(source, "fn run_ops_launch_stage_with_runners");
     assert!(
-        stage_fn.contains("OpsLaunchStage::Start"),
+        stage_impl_fn.contains("OpsLaunchStage::Start"),
         "ops launch chain must model start as the final stage"
     );
     assert!(
-        stage_fn.contains("start_loaded_node_with_resolved(loaded, &resolved)"),
+        stage_fn.contains("start_loaded_node_with_resolved(loaded, resolved)")
+            && stage_impl_fn.contains("(runners.start_loaded_node)(loaded, &resolved)"),
         "ops launch start stage must use the already-resolved secrets"
     );
     assert!(
-        !stage_fn.contains("run_live_node"),
+        !stage_fn.contains("run_live_node") && !stage_impl_fn.contains("run_live_node"),
         "ops launch stage execution must not call plain run"
+    );
+}
+
+#[test]
+fn ops_launch_reference_health_stage_is_subprocess_isolated() {
+    let source = include_str!("../src/main.rs");
+    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    let stage_impl_fn = top_level_function_body(source, "fn run_ops_launch_stage_with_runners");
+
+    assert!(
+        stage_fn.contains("run_reference_current_price_health_subprocess"),
+        "ops launch reference-current-price-health must run through the subprocess boundary"
+    );
+    assert!(
+        !source.contains("fn run_loaded_reference_current_price_health_with_resolved")
+            && !stage_fn.contains(
+                "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)"
+            )
+            && !stage_impl_fn.contains(
+                "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)"
+            ),
+        "ops launch must not build/run the reference-current-price health LiveNode in-process"
     );
 }
 

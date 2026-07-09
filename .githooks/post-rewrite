@@ -1,45 +1,6 @@
-#!/usr/bin/env bash
-# Entire CLI hooks - fail-silent: if we can't stage stdin, skip Entire entirely.
-_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX" 2>/dev/null || true)"
-if [ -n "$_entire_stdin" ]; then
-    trap 'rm -f "$_entire_stdin"' EXIT
-    if cat 2>/dev/null > "$_entire_stdin"; then
-        # Post-rewrite hook: remap session linkage after amend/rebase rewrites.
-        if command -v entire >/dev/null 2>&1; then
-            entire hooks git post-rewrite "$1" 2>/dev/null < "$_entire_stdin" || true
-        fi
-    fi
+#!/bin/sh
+# Entire CLI hooks
+# Post-rewrite hook: remap session linkage after amend/rebase rewrites.
+if command -v entire >/dev/null 2>&1; then
+    entire hooks git post-rewrite "$1" 2>/dev/null || true
 fi
-
-# clean-merged-managed
-# clean-merged: post-rewrite hook.
-#
-# Fires after `git pull --rebase` with divergent local (actual rebase, not FF),
-# `git rebase`, and `git commit --amend`. Covers the Lane H trigger gap when an
-# operator has pull.rebase=true and the local configured trunk has divergent commits.
-#
-# Never breaks the git op: every path exits 0.
-
-_cm_disabled() {
-    local v="${CLEAN_MERGED_DISABLED:-}"
-    v="${v#"${v%%[![:space:]]*}"}"
-    v="${v%"${v##*[![:space:]]}"}"
-    case "$v" in
-        ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
-        *) return 0 ;;
-    esac
-}
-
-# clean-merged Lane H dispatch (offline, reflog-safe).
-_cm_disabled && exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
-
-common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-[ -n "$common_dir" ] || exit 0
-main_root="$(dirname "$common_dir")"
-script="$main_root/scripts/clean_merged_artifacts.py"
-[ -f "$script" ] || exit 0
-
-python3 "$script" --lane h --apply --quiet >/dev/null 2>&1 || true
-
-exit 0

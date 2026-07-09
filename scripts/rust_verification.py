@@ -3181,6 +3181,104 @@ def run_process(argv: list[str], *, repo: pathlib.Path, env: dict[str, str]) -> 
     return subprocess.run(argv, cwd=repo, env=env, check=False).returncode
 
 
+def managed_env_without_remote_compile_cache(repo: pathlib.Path, policy: dict[str, Any]) -> dict[str, str]:
+    env = managed_env(repo, policy)
+    env.pop("RUSTC_WRAPPER", None)
+    cache_policy = policy.get("remote_compile_cache")
+    if isinstance(cache_policy, dict):
+        env[str(cache_policy["enable_env"])] = "0"
+    return env
+
+
+def nextest_run_compile_preflight_args(cargo_args: list[str]) -> list[str] | None:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return None
+    index, command = subcommand
+    if command != "nextest":
+        return None
+    nextest_subcommand = nextest_subcommand_with_index(cargo_args[index + 1 :])
+    if nextest_subcommand is None or nextest_subcommand[1] != "run":
+        return None
+    nextest_index = index + 1 + nextest_subcommand[0]
+    tail = cargo_args[nextest_index + 1 :]
+    separator_index = tail.index("--") if "--" in tail else len(tail)
+    option_tail = tail[:separator_index]
+    if any(token == "--no-run" for token in option_tail):
+        return None
+    if any(token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail):
+        return None
+    return cargo_args[: nextest_index + 1] + option_tail + ["--no-run"] + tail[separator_index:]
+
+
+def cargo_args_are_compile_only(cargo_args: list[str]) -> bool:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return False
+    index, command = subcommand
+    if command in {"build", "check", "clippy", "doc", "fetch", "rustc", "zigbuild"}:
+        return True
+    if command != "nextest":
+        return False
+    nextest_subcommand = nextest_subcommand_with_index(cargo_args[index + 1 :])
+    if nextest_subcommand is None:
+        return False
+    if nextest_subcommand[1] == "archive":
+        return True
+    if nextest_subcommand[1] != "run":
+        return False
+    nextest_index = index + 1 + nextest_subcommand[0]
+    tail = cargo_args[nextest_index + 1 :]
+    if "--" in tail:
+        tail = tail[: tail.index("--")]
+    return any(token == "--no-run" for token in tail)
+
+
+def run_compile_with_remote_cache_fail_open(
+    argv: list[str],
+    *,
+    repo: pathlib.Path,
+    env: dict[str, str],
+    retry_env: dict[str, str],
+) -> int:
+    rc = run_process(argv, repo=repo, env=env)
+    if rc == 0 or "RUSTC_WRAPPER" not in env:
+        return rc
+    print(
+        "::warning::compile command failed with sccache active; retrying once without sccache",
+        file=sys.stderr,
+    )
+    return run_process(argv, repo=repo, env=retry_env)
+
+
+def run_cargo_with_remote_cache_fail_open(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    cargo_args: list[str],
+) -> int:
+    env = managed_env(repo, policy)
+    retry_env = managed_env_without_remote_compile_cache(repo, policy)
+    compile_args = nextest_run_compile_preflight_args(cargo_args)
+    if compile_args is not None and "RUSTC_WRAPPER" in env:
+        compile_rc = run_compile_with_remote_cache_fail_open(
+            ["cargo", *compile_args],
+            repo=repo,
+            env=env,
+            retry_env=retry_env,
+        )
+        if compile_rc != 0:
+            return compile_rc
+        return run_process(["cargo", *cargo_args], repo=repo, env=env)
+    if cargo_args_are_compile_only(cargo_args) and "RUSTC_WRAPPER" in env:
+        return run_compile_with_remote_cache_fail_open(
+            ["cargo", *cargo_args],
+            repo=repo,
+            env=env,
+            retry_env=retry_env,
+        )
+    return run_process(["cargo", *cargo_args], repo=repo, env=env)
+
+
 def run_capture(argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
@@ -4766,7 +4864,7 @@ def cmd_cargo(args: argparse.Namespace) -> int:
             return print_refusal(refusal)
     try:
         with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
-            return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+            return run_cargo_with_remote_cache_fail_open(repo, policy, cargo_args)
     except CacheLockTimeoutError as exc:
         return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
 
@@ -4797,6 +4895,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:
             return print_refusal(refusal)
+    if args.command == "test" and managed_remote_compile_cache_env(policy):
+        cargo_args = ["nextest", "run", "--locked", *command_tail]
+        try:
+            with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
+                return run_cargo_with_remote_cache_fail_open(repo, policy, cargo_args)
+        except CacheLockTimeoutError as exc:
+            return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
     run_exclusive = run_args_need_exclusive_cache_lock(
         args.command,
         args.args,

@@ -972,7 +972,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "c47fdfd180ce4afd9b8b6a0995d0251c3b9d057b4f0bf09fc0475501f5861840"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "682af87a5a168c034b281d100f47da66693f24320ca5bb64ea41b16520b8fe5c"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -1082,14 +1082,11 @@ SCCACHE_STATS_ACTION_FILE = ".github/actions/sccache-stats/action.yml"
 SCCACHE_LOCATION_CONFIG_PATH = "ci/sccache-location.toml"
 SCCACHE_LOCATION_CONFIG_DEFAULT = f"default: {SCCACHE_LOCATION_CONFIG_PATH}"
 SCCACHE_READONLY_ROLE_INPUT = "role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}"
-# Value, not mere presence: the fail-open flag must be literally "1", and the build
-# must retry without sccache on failure, so a future edit cannot silently disable
-# either and make the cache able to fail the required build.
+# Value, not mere presence: the fail-open flag must be literally "1", and the
+# Rust verification owner must own the retry so workflows do not grow a second
+# retry/test-execution path.
 TEST_ARCHIVE_SCCACHE_IGNORE_IO = "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
-TEST_ARCHIVE_SCCACHE_RETRY = (
-    'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" '
-    'just test-archive "$NEXTEST_ARCHIVE_PATH"'
-)
+TEST_ARCHIVE_OWNER_COMMAND = 'just test-archive "$NEXTEST_ARCHIVE_PATH"'
 TEST_ARCHIVE_SCCACHE_ACTIVE_INPUT = "active: ${{ steps.nextest-archive-cache.outputs.cache-hit != 'true' && 'true' || 'false' }}"
 TEST_ARCHIVE_SCCACHE_WRITE_ROLE_INPUT = "write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}"
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
@@ -11965,10 +11962,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if TEST_ARCHIVE_SCCACHE_IGNORE_IO not in sccache_action_text:
                 errors.append('test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR: "1" (degrade S3 errors to local compile)')
             # Even a mid-build sccache server crash (which SCCACHE_IGNORE_SERVER_IO_ERROR
-            # does not cover) must not fail the build: it retries once without sccache.
+            # does not cover) must not fail the build: rust_verification.py owns the
+            # retry. Keep the workflow to one managed invocation.
             build_block = named_step_block(archive_lines, "Build nextest archive")
-            if build_block is None or TEST_ARCHIVE_SCCACHE_RETRY not in uncommented_text(build_block):
-                errors.append("test-archive sccache must retry the build without sccache on failure (fail-open)")
+            build_text = uncommented_text(build_block) if build_block is not None else ""
+            if build_block is None or TEST_ARCHIVE_OWNER_COMMAND not in build_text:
+                errors.append("test-archive sccache build must route through the Rust verification owner")
+            if "sccache-fail-open.sh" in build_text:
+                errors.append("test-archive sccache retry must be owned by rust_verification.py, not workflow shell")
             if "AWS_CI_CACHE_ROLE_ARN" in sccache_setup_text.replace(TEST_ARCHIVE_SCCACHE_WRITE_ROLE_INPUT, ""):
                 errors.append("test-archive sccache write role must only be passed to the shared sccache action")
             stats_block = named_step_block(archive_lines, "Print sccache stats")
@@ -12917,7 +12918,6 @@ def bte_test_invocation_count(run_block: str) -> int:
     return sum(
         len(re.findall(r"\bjust\s+bte-test\b", line))
         for line in simple_shell_lines(run_block)
-        if not line.startswith(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER)
     )
 
 
@@ -12938,9 +12938,21 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
         '> "$RUNNER_TEMP/nextest-junit.toml"',
     ),
     "Stage JUnit report": (
-        'if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then',
-        'cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" '
-        '"junit-unit-${{ matrix.run_number }}.xml"',
+        'report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'staged="junit-unit-${{ matrix.run_number }}.xml"',
+        'if [[ -f "$report" ]]; then',
+        'cp "$report" "$staged"',
+        "else",
+        'python3 - > "$staged" <<\'PY\'',
+        "import os",
+        "import xml.sax.saxutils as sax",
+        'rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))',
+        'print(\'<?xml version="1.0" encoding="UTF-8"?>\')',
+        'print(\'<testsuite name="nextest-preflight" tests="1" failures="1">\')',
+        'print(\'<testcase classname="ci" name="missing-nextest-junit">\')',
+        'print(f\'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>\')',
+        "print('</testcase></testsuite>')",
+        "PY",
         "fi",
     ),
 }
@@ -12993,8 +13005,6 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
     lines = simple_shell_lines(run_block)
     if lines and lines[0].startswith('log="$RUNNER_TEMP/'):
         lines = lines[1:]
-    if lines and lines[0].startswith('compile_log="$RUNNER_TEMP/'):
-        lines = lines[1:]
     expected_head = ("rc=0", "set +e")
     if lines[: len(expected_head)] != expected_head:
         return ()
@@ -13026,39 +13036,7 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
         if len(lines) == 1 + len(tail) and lines[1:] == tail:
             denominator = partition_denominator(lines[0], run_prefix, command_suffix)
             return (int(denominator),) if denominator is not None else ()
-
-    compile_prefix = (
-        'bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log" '
-        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run '
-        '--partition "count:${{ matrix.shard }}/'
-    )
-    compile_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
-
-    expected_tail = (
-        'compile_rc="$?"',
-        'if [[ "$compile_rc" -eq 0 ]]; then',
-        None,
-        'rc="${PIPESTATUS[0]}"',
-        "else",
-        'cat "$compile_log" >> "$log"',
-        'rc="$compile_rc"',
-        "fi",
-        "set -e",
-        "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
-        'exit "$rc"',
-    )
-    if len(lines) != 1 + len(expected_tail):
-        return ()
-    compile_command = lines[0]
-    command = lines[3]
-    actual_tail = (*lines[1:3], None, *lines[4:])
-    if actual_tail != expected_tail:
-        return ()
-    compile_denominator = partition_denominator(compile_command, compile_prefix, compile_suffix)
-    denominator = partition_denominator(command, run_prefix, run_tee_suffix)
-    if compile_denominator is None or denominator is None or compile_denominator != denominator:
-        return ()
-    return (int(denominator),)
+    return ()
 
 
 FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS = (
@@ -13091,6 +13069,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'exit "$rc"',
                     'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "missing-nextest-junit",
                     "if: success() || failure()",
                 ),
             ),
@@ -13103,6 +13082,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'exit "$rc"',
+                    "missing-nextest-junit",
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13116,6 +13096,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "set -e",
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'exit "$rc"',
+                    "missing-nextest-junit",
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
                     "if: success() || failure()",
                 ),
@@ -13138,6 +13119,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'exit "$rc"',
                     'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "missing-nextest-junit",
                     "if: success() || failure()",
                 ),
             ),
@@ -13153,6 +13135,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'exit "$rc"',
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "missing-nextest-junit",
                     "if: success() || failure()",
                 ),
             ),
@@ -13167,6 +13150,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                     "MERGIFY_TEST_EXIT_CODE=%s\\n",
                     'exit "$rc"',
                     'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "missing-nextest-junit",
                     "if: success() || failure()",
                 ),
             ),
@@ -13279,8 +13263,8 @@ DEBUG_LANE_SCCACHE_OPT_IN = "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.o
 DEBUG_TEST_SCCACHE_ACTIVE_INPUT = (
     "active: ${{ (steps.debug-archive-ready.outputs.value != 'true' || inputs.package != '') && 'true' || 'false' }}"
 )
-DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh --on cache-error"
-ANY_SCCACHE_FAIL_OPEN_HELPER = "bash .github/scripts/sccache-fail-open.sh --on"
+DEBUG_LANE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
+DEBUG_LANE_DEV_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 
 
 def debug_lane_sccache_workflow_env_errors(workflow_name: str, workflow_text: str) -> list[str]:
@@ -13414,8 +13398,6 @@ def debug_lane_test_execution_lines(compile_lines: tuple[str, ...], command_frag
         for line in compile_lines
         if any(fragment in line for fragment in command_fragments)
         and "--no-run" not in line
-        and not line.startswith(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER)
-        and not line.startswith(f"RUST_PROBE_COMPILE_ONLY=1 {DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER}")
     ]
 
 
@@ -13462,50 +13444,38 @@ def debug_lane_sccache_job_errors(
     compile_text = uncommented_text(compile_block) if compile_block is not None else ""
     if DEBUG_LANE_SCCACHE_OPT_IN not in compile_text:
         errors.append(f"{label} compile step must opt into managed sccache conditionally")
+    for fragment in (DEBUG_LANE_TEST_PROFILE_ENV, DEBUG_LANE_DEV_PROFILE_ENV):
+        if fragment not in compile_text:
+            errors.append(f"{label} compile step must match the test-archive debug profile env")
     compile_lines = simple_shell_lines(compile_text)
-    helper_lines = [line for line in compile_lines if DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER in line]
-    real_helper_lines = [
-        line
-        for line in helper_lines
-        if line.startswith(DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER)
-        or line.startswith(f"RUST_PROBE_COMPILE_ONLY=1 {DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER}")
-    ]
-    if not real_helper_lines:
-        errors.append(f"{label} compile step must retry sccache infrastructure failures without sccache")
-    if helper_lines and not real_helper_lines:
-        errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
+    if "sccache-fail-open.sh" in compile_text or "RUST_PROBE_COMPILE_ONLY" in compile_text:
+        errors.append(f"{label} retry and compile/test split must be owned by rust_verification.py")
     if workflow_name.endswith("flaky-test-smoke.yml"):
-        if any("--no-run" not in line for line in real_helper_lines):
-            errors.append(f"{label} compile preflight must use --no-run")
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just test ", "just bte-test "))
-        if any(ANY_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
-            errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
+        if not test_execution_lines:
+            errors.append(f"{label} run step must execute tests through one managed just invocation")
         if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
             errors.append(f"{label} test execution must not force sccache off")
         if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' in compile_lines and 'exit "$rc"' not in compile_lines:
             errors.append(f"{label} flaky smoke run step must exit with captured rc")
         stage_block = named_step_block(job_lines, "Stage JUnit report")
-        stage_lines = simple_shell_lines(uncommented_text(stage_block) if stage_block is not None else "")
-        if not stage_lines or not any(line.startswith("if [[ -f ") for line in stage_lines):
-            errors.append(f"{label} JUnit staging must tolerate missing reports")
+        stage_text = uncommented_text(stage_block) if stage_block is not None else ""
+        stage_lines = simple_shell_lines(stage_text)
+        if (
+            not stage_lines
+            or not any(line.startswith('if [[ -f "$report" ]]') for line in stage_lines)
+            or "missing-nextest-junit" not in stage_text
+        ):
+            errors.append(f"{label} JUnit staging must synthesize a missing-report failure")
     if workflow_name.endswith("debug-test.yml"):
-        if any("--no-run" not in line for line in real_helper_lines):
-            errors.append(f"{label} compile preflight must use --no-run")
-        if not any("just debug-test" in line and "--no-run" in line for line in real_helper_lines):
-            errors.append(f"{label} compile step must wrap a compile-only command with sccache-fail-open")
         test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just debug-test",))
-        if any(ANY_SCCACHE_FAIL_OPEN_HELPER in line for line in test_execution_lines):
-            errors.append(f"{label} test execution must not be wrapped in sccache fail-open")
+        if not test_execution_lines:
+            errors.append(f"{label} run step must execute debug-test through one managed just invocation")
         if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
             errors.append(f"{label} test execution must not force sccache off")
     if workflow_name.endswith("rust-probe.yml"):
-        split_fragments = (
-            'RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh',
-            "bash .github/scripts/run-rust-probe.sh",
-            'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh',
-        )
-        if not all(fragment in compile_lines for fragment in split_fragments):
-            errors.append(f"{label} Rust Probe test modes must compile with fail-open before unwrapped execution")
+        if compile_lines.count("bash .github/scripts/run-rust-probe.sh") != 1:
+            errors.append(f"{label} Rust Probe must route through one managed owner invocation")
     stats_block = named_step_block(job_lines, "Print sccache stats")
     stats_text = uncommented_text(stats_block) if stats_block is not None else ""
     if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
@@ -15862,10 +15832,7 @@ def verify_debug_test_workflow(
                 errors.append(f"{workflow_name} debug-test workflow must route sccache through the shared read-only setup action")
         run_step = named_step_block(job, "Run debug test")
         run_text = uncommented_text(run_step) if run_step is not None else ""
-        preserves_status = (
-            'rc="${PIPESTATUS[0]}"' in run_text
-            or (DEBUG_LANE_SCCACHE_FAIL_OPEN_HELPER in run_text and 'rc="$?"' in run_text)
-        )
+        preserves_status = 'rc="${PIPESTATUS[0]}"' in run_text
         if "shell: bash" not in run_text or not preserves_status:
             errors.append(f"{workflow_name} debug-test workflow must preserve nextest exit status under bash")
 

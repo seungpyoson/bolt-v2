@@ -136,17 +136,11 @@ jobs:
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
-          case "$RUST_PROBE_MODE" in
-            nextest-test-target|nextest-test-target-name)
-              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
-              bash .github/scripts/run-rust-probe.sh
-              ;;
-            *)
-              bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
-              ;;
-          esac
+          bash .github/scripts/run-rust-probe.sh
 
       - name: Print sccache stats
         if: always()
@@ -200,17 +194,11 @@ jobs:
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
-          case "$RUST_PROBE_MODE" in
-            nextest-test-target|nextest-test-target-name)
-              RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error "$RUNNER_TEMP/rust-probe-compile.log" bash .github/scripts/run-rust-probe.sh
-              bash .github/scripts/run-rust-probe.sh
-              ;;
-            *)
-              bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/rust-probe.log" bash .github/scripts/run-rust-probe.sh
-              ;;
-          esac
+          bash .github/scripts/run-rust-probe.sh
 
       - name: Print sccache stats
         if: always()

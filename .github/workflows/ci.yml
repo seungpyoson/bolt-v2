@@ -1178,7 +1178,7 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
-          bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" just test-archive "$NEXTEST_ARCHIVE_PATH"
+          just test-archive "$NEXTEST_ARCHIVE_PATH"
 
       - name: Print sccache stats
         if: always()

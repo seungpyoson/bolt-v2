@@ -4764,13 +4764,19 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
-            # Dropping the without-sccache retry removes the only cover for a
-            # mid-build sccache server crash.
-            "must retry the build without sccache",
+            "test-archive sccache build must route through the Rust verification owner",
             replace_once(
                 workflow,
-                'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" just test-archive "$NEXTEST_ARCHIVE_PATH"',
+                'just test-archive "$NEXTEST_ARCHIVE_PATH"',
                 "true",
+            ),
+        ),
+        (
+            "test-archive sccache retry must be owned by rust_verification.py",
+            replace_once(
+                workflow,
+                'just test-archive "$NEXTEST_ARCHIVE_PATH"',
+                'bash .github/scripts/sccache-fail-open.sh --on any "$RUNNER_TEMP/test-archive-build.log" just test-archive "$NEXTEST_ARCHIVE_PATH"',
             ),
         ),
         (
@@ -4889,24 +4895,26 @@ def _run_test_archive_build_script(script: str, *, sccache: str, fake_just_mode:
         return result.returncode, count
 
 
-def assert_test_archive_sccache_retry_preserves_compile_failures() -> None:
+def assert_test_archive_build_script_delegates_sccache_retry_to_owner() -> None:
     verifier = load_verifier()
     script = _test_archive_build_script(verifier)
+    if "sccache-fail-open.sh" in script:
+        raise AssertionError("test-archive workflow shell must not own sccache retry")
     rc, count = _run_test_archive_build_script(
         script,
         sccache="1",
         fake_just_mode="transient-cache-failure",
     )
-    if (rc, count) != (0, 2):
-        raise AssertionError(f"sccache transient failure must retry once and pass, got rc={rc} count={count}")
+    if (rc, count) != (86, 1):
+        raise AssertionError(f"workflow shell must delegate retry to the Rust owner, got rc={rc} count={count}")
 
     rc, count = _run_test_archive_build_script(
         script,
         sccache="1",
         fake_just_mode="compile-error",
     )
-    if (rc, count) != (42, 2):
-        raise AssertionError(f"compile failure with sccache must fail after retry, got rc={rc} count={count}")
+    if (rc, count) != (42, 1):
+        raise AssertionError(f"workflow shell must not retry compile failures, got rc={rc} count={count}")
 
     rc, count = _run_test_archive_build_script(
         script,
@@ -4914,7 +4922,7 @@ def assert_test_archive_sccache_retry_preserves_compile_failures() -> None:
         fake_just_mode="no-cache-failure",
     )
     if (rc, count) != (43, 1):
-        raise AssertionError(f"without sccache, build failure must not retry, got rc={rc} count={count}")
+        raise AssertionError(f"workflow shell must call the owner once without sccache, got rc={rc} count={count}")
 
 
 def assert_ci_workflow_run_name_matches_dispatch_config() -> None:
@@ -8162,11 +8170,59 @@ jobs:
           job_name: bvs-test issue-789
           report_path: "junit-*.xml"
 """
-    smoke_bvs_stage_step = """        if: success() || failure()
+    root_stage_step = """        if: success() || failure()
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi"""
+    root_stage_step_with_fallback = """        if: success() || failure()
+        run: |
+          report="target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi"""
+    bvs_stage_step = """        if: success() || failure()
         run: |
           if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
             cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
           fi"""
+    bvs_stage_step_with_fallback = """        if: success() || failure()
+        run: |
+          report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi"""
+    good_full_workflow = good_full_workflow.replace(root_stage_step, root_stage_step_with_fallback).replace(
+        bvs_stage_step, bvs_stage_step_with_fallback
+    )
+    good_smoke_workflow = good_smoke_workflow.replace(root_stage_step, root_stage_step_with_fallback).replace(
+        bvs_stage_step, bvs_stage_step_with_fallback
+    )
+    smoke_bvs_stage_step = bvs_stage_step_with_fallback
     good_errors = verifier.verify_flaky_test_detection_workflows(
         {
             full_workflow_name: good_full_workflow,
@@ -8763,12 +8819,12 @@ jobs:
             raise AssertionError(f"flaky detection verifier must reject {expected!r}, got: {drift_errors}")
 
     managed_target_workflow = good_full_workflow.replace(
-        'cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
-        'cp "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
         1,
     ).replace(
-        'cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
-        'cp "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
         1,
     )
     managed_target_errors = verifier.verify_flaky_test_detection_workflows(
@@ -9237,7 +9293,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     if workflows[".github/workflows/flaky-test-smoke.yml"].count('exit "$rc"') != 3:
         raise AssertionError("flaky smoke run steps must exit with the captured rc")
     if 'run: cp "' in workflows[".github/workflows/flaky-test-smoke.yml"]:
-        raise AssertionError("flaky smoke JUnit staging must tolerate missing reports")
+        raise AssertionError("flaky smoke JUnit staging must synthesize missing-report failures")
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
@@ -9322,33 +9378,33 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must route read-only sccache through the shared sccache action",
         ),
         (
-            "debug compile step must retry cache-infra failures without sccache",
+            "debug compile step must not use workflow-level retry helpers",
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    "bash .github/scripts/sccache-fail-open.sh --on cache-error",
-                    "bash .github/scripts/no-sccache-fail-open.sh",
+                    'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    'bash .github/scripts/sccache-fail-open.sh --on any "$log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
                     1,
                 ),
             },
             bvs_policy,
-            "compile step must retry sccache infrastructure failures without sccache",
+            "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
-            "debug compile step must not spoof the helper in an echo",
+            "debug compile step must match the test-archive profile",
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
-                    'bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log" just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
-                    'echo bash .github/scripts/sccache-fail-open.sh --on cache-error "$compile_log"; just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" --no-run',
+                    '          CARGO_PROFILE_TEST_DEBUG: "0"\n',
+                    "",
                     1,
                 ),
             },
             bvs_policy,
-            "compile step must wrap a compile-only command with sccache-fail-open",
+            "compile step must match the test-archive debug profile env",
         ),
         (
-            "flaky smoke run step must not retry test execution",
+            "flaky smoke run step must not use workflow-level retry helpers",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
@@ -9358,20 +9414,20 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 ),
             },
             bvs_policy,
-            "test execution must not be wrapped in sccache fail-open",
+            "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
-            "flaky smoke compile preflight must stay no-run",
+            "flaky smoke compile step must match the test-archive profile",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
-                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-run',
-                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml"',
+                    '          CARGO_PROFILE_DEV_DEBUG: "0"\n',
+                    "",
                     1,
                 ),
             },
             bvs_policy,
-            "compile preflight must use --no-run",
+            "compile step must match the test-archive debug profile env",
         ),
         (
             "flaky smoke must exit with captured rc",
@@ -9387,23 +9443,20 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "flaky smoke run step must exit with captured rc",
         ),
         (
-            "flaky smoke JUnit staging must tolerate missing reports",
+            "flaky smoke JUnit staging must synthesize missing-report failures",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
-                    '        run: |\n'
-                    '          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then\n'
-                    '            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"\n'
-                    "          fi\n",
-                    '        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"\n',
+                    "missing-nextest-junit",
+                    "missing-nextest-report",
                     1,
                 ),
             },
             bvs_policy,
-            "JUnit staging must tolerate missing reports",
+            "JUnit staging must synthesize a missing-report failure",
         ),
         (
-            "debug test execution must not retry test execution",
+            "debug test execution must not retry test execution in workflow shell",
             {
                 **workflows,
                 ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
@@ -9413,7 +9466,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 ),
             },
             bvs_policy,
-            "test execution must not be wrapped in sccache fail-open",
+            "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
             "debug test execution must not retry test execution via cache-error helper",
@@ -9426,7 +9479,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 ),
             },
             bvs_policy,
-            "compile preflight must use --no-run",
+            "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
             "debug test execution must not force sccache off",
@@ -9442,18 +9495,17 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "test execution must not force sccache off",
         ),
         (
-            "rust-probe test modes must split compile from execution",
+            "rust-probe must not use workflow-level retry helpers",
             {
                 **workflows,
                 ".github/workflows/rust-probe.yml": workflows[".github/workflows/rust-probe.yml"].replace(
-                    "RUST_PROBE_COMPILE_ONLY=1 bash .github/scripts/sccache-fail-open.sh --on cache-error \"$RUNNER_TEMP/rust-probe-compile.log\" bash .github/scripts/run-rust-probe.sh\n"
-                    "              bash .github/scripts/run-rust-probe.sh",
+                    "bash .github/scripts/run-rust-probe.sh",
                     "bash .github/scripts/sccache-fail-open.sh --on any \"$RUNNER_TEMP/rust-probe.log\" bash .github/scripts/run-rust-probe.sh",
                     1,
                 ),
             },
             bvs_policy,
-            "Rust Probe test modes must compile with fail-open before unwrapped execution",
+            "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
             "debug stats must run on failures",
@@ -9469,7 +9521,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must print sccache stats after compile",
         ),
         (
-            "flaky smoke execution must not retry test execution",
+            "flaky smoke execution must not retry test execution in workflow shell",
             {
                 **workflows,
                 ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
@@ -9479,7 +9531,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 ),
             },
             bvs_policy,
-            "test execution must not be wrapped in sccache fail-open",
+            "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
             "flaky smoke execution must not force sccache off",
@@ -9630,120 +9682,6 @@ def assert_cache_docs_cover_debug_schedule_consumers() -> None:
     missing = [fragment for fragment in required_fragments if fragment not in text]
     if missing:
         raise AssertionError(f"cache docs must name debug read-only consumers, missing: {missing}")
-
-
-def assert_sccache_fail_open_helper_contract() -> None:
-    helper = REPO_ROOT / ".github" / "scripts" / "sccache-fail-open.sh"
-    if not helper.exists():
-        raise AssertionError(".github/scripts/sccache-fail-open.sh is required")
-    with tempfile.TemporaryDirectory() as tmp:
-        root = pathlib.Path(tmp)
-        counter = root / "count"
-        fake_command = root / "fake-command"
-        fake_command.write_text(
-            textwrap.dedent(
-                """\
-                #!/usr/bin/env bash
-                set -euo pipefail
-                count=0
-                if [[ -f "$COUNT_FILE" ]]; then
-                  count="$(cat "$COUNT_FILE")"
-                fi
-                count=$((count + 1))
-                echo "$count" > "$COUNT_FILE"
-                case "$FAKE_MODE" in
-                  sccache-transient)
-                    if [[ "$count" -eq 1 ]]; then
-                      echo "compiler exited before printing a cache-specific marker" >&2
-                      exit 86
-                    fi
-                    if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
-                      echo "retry did not disable sccache" >&2
-                      exit 87
-                    fi
-                    exit 0
-                    ;;
-                  retry-fails)
-                    if [[ "$count" -eq 1 ]]; then
-                      echo "compiler exited before printing a cache-specific marker" >&2
-                      exit 86
-                    fi
-                    if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
-                      echo "retry did not disable sccache" >&2
-                      exit 87
-                    fi
-                    exit 88
-                    ;;
-                  sccache-infra)
-                    if [[ "$count" -eq 1 ]]; then
-                      echo "sccache: server connection failed" >&2
-                      exit 86
-                    fi
-                    if [[ "${BOLT_RUST_VERIFICATION_SCCACHE:-}" != "0" ]]; then
-                      echo "retry did not disable sccache" >&2
-                      exit 87
-                    fi
-                    exit 0
-                    ;;
-                  real-test-failure)
-                    echo "test failed without cache marker" >&2
-                    exit 42
-                    ;;
-                  real-test-failure-mentions-sccache)
-                    echo "test failed while asserting the word sccache is rendered" >&2
-                    exit 44
-                    ;;
-                  no-cache)
-                    echo "sccache: server connection failed" >&2
-                    exit 43
-                    ;;
-                  *)
-                    echo "unknown FAKE_MODE=$FAKE_MODE" >&2
-                    exit 99
-                    ;;
-                esac
-                """
-            ),
-            encoding="utf-8",
-        )
-        fake_command.chmod(0o755)
-
-        def run_case(*, mode: str, sccache: str, retry_on: str = "any") -> tuple[int, int]:
-            counter.unlink(missing_ok=True)
-            log = root / f"{mode}-{sccache}-{retry_on}.log"
-            env = {
-                **os.environ,
-                "COUNT_FILE": str(counter),
-                "FAKE_MODE": mode,
-                "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
-            }
-            result = subprocess.run(
-                ["bash", str(helper), "--on", retry_on, str(log), str(fake_command)],
-                cwd=root,
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
-            return result.returncode, count
-
-        if run_case(mode="sccache-transient", sccache="1") != (0, 2):
-            raise AssertionError("sccache infrastructure failure must retry once without sccache")
-        if run_case(mode="retry-fails", sccache="1") != (88, 2):
-            raise AssertionError("failed retry must return the retry exit code")
-        if run_case(mode="real-test-failure", sccache="1") != (42, 2):
-            raise AssertionError("helper any-mode must own compile-only retry semantics")
-        if run_case(mode="real-test-failure-mentions-sccache", sccache="1") != (44, 2):
-            raise AssertionError("helper any-mode must not inspect broad log markers")
-        if run_case(mode="real-test-failure", sccache="1", retry_on="cache-error") != (42, 1):
-            raise AssertionError("helper cache-error mode must not retry ordinary compile failures")
-        if run_case(mode="real-test-failure-mentions-sccache", sccache="1", retry_on="cache-error") != (44, 1):
-            raise AssertionError("helper cache-error mode must not retry broad sccache mentions")
-        if run_case(mode="sccache-infra", sccache="1", retry_on="cache-error") != (0, 2):
-            raise AssertionError("helper cache-error mode must retry explicit sccache infrastructure failures")
-        if run_case(mode="no-cache", sccache="0") != (43, 1):
-            raise AssertionError("disabled sccache must not retry")
 
 
 def assert_bootstrap_uses_onepassword_key_generation() -> None:
@@ -19705,7 +19643,6 @@ def main() -> int:
     assert_debug_test_workflow_contract()
     assert_debug_lane_compile_cache_parity_contract()
     assert_cache_docs_cover_debug_schedule_consumers()
-    assert_sccache_fail_open_helper_contract()
     assert_bootstrap_uses_onepassword_key_generation()
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()
@@ -19742,7 +19679,7 @@ def main() -> int:
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_workflow_dispatch_config_errors_are_reported()
     assert_test_archive_sccache_fail_open_contract()
-    assert_test_archive_sccache_retry_preserves_compile_failures()
+    assert_test_archive_build_script_delegates_sccache_retry_to_owner()
     assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_capture_artifact_metadata_is_config_derived()
     assert_ci_base_ref_archives_use_scripts_directory()

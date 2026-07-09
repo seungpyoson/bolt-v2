@@ -68,9 +68,16 @@ fn main_runs_bolt_v3_runner_inside_local_set() {
     let build_runtime = run_fn
         .find("let runtime = tokio::runtime::Builder::new_multi_thread()")
         .expect("production entrypoint must build the Tokio runtime in run_built_node");
+    let logging_guard = run_fn
+        .find("assert_bolt_v3_logging_ready_for_run()?")
+        .expect("production entrypoint must abort before run when NT logging is dead");
     let run_bolt_v3 = run_fn
         .find("run_bolt_v3_live_node(&mut node, &loaded).await?")
         .expect("production entrypoint must enter the bolt-v3 runner wrapper");
+    assert!(
+        logging_guard < build_runtime,
+        "production entrypoint must verify logging before creating the runner future"
+    );
     assert!(
         build_runtime < run_bolt_v3,
         "production entrypoint must build the Tokio runtime before entering the runner future"
@@ -130,17 +137,41 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
     );
 
     let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    let stage_impl_fn = top_level_function_body(source, "fn run_ops_launch_stage_with_runners");
     assert!(
-        stage_fn.contains("OpsLaunchStage::Start"),
+        stage_impl_fn.contains("OpsLaunchStage::Start"),
         "ops launch chain must model start as the final stage"
     );
     assert!(
-        stage_fn.contains("start_loaded_node_with_resolved(loaded, &resolved)"),
+        stage_fn.contains("start_loaded_node_with_resolved(loaded, resolved)")
+            && stage_impl_fn.contains("(runners.start_loaded_node)(loaded, &resolved)"),
         "ops launch start stage must use the already-resolved secrets"
     );
     assert!(
-        !stage_fn.contains("run_live_node"),
+        !stage_fn.contains("run_live_node") && !stage_impl_fn.contains("run_live_node"),
         "ops launch stage execution must not call plain run"
+    );
+}
+
+#[test]
+fn ops_launch_reference_health_stage_is_subprocess_isolated() {
+    let source = include_str!("../src/main.rs");
+    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    let stage_impl_fn = top_level_function_body(source, "fn run_ops_launch_stage_with_runners");
+
+    assert!(
+        stage_fn.contains("run_reference_current_price_health_subprocess"),
+        "ops launch reference-current-price-health must run through the subprocess boundary"
+    );
+    assert!(
+        !source.contains("fn run_loaded_reference_current_price_health_with_resolved")
+            && !stage_fn.contains(
+                "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)"
+            )
+            && !stage_impl_fn.contains(
+                "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)"
+            ),
+        "ops launch must not build/run the reference-current-price health LiveNode in-process"
     );
 }
 
@@ -148,13 +179,15 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
 fn ops_launch_verify_config_reuses_loaded_config_from_verification() {
     let source = include_str!("../src/main.rs");
     let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    let stage_impl_fn = top_level_function_body(source, "fn run_ops_launch_stage_with_runners");
 
     assert!(
-        stage_fn.contains("context.loaded = Some(verification.loaded)"),
+        stage_impl_fn.contains("context.loaded = Some(verification.loaded)"),
         "verify-config must store the config already loaded by verify_live_config"
     );
     assert!(
-        !stage_fn.contains("load_bolt_v3_config(&context.live_config)"),
+        !stage_fn.contains("load_bolt_v3_config(&context.live_config)")
+            && !stage_impl_fn.contains("load_bolt_v3_config(&context.live_config)"),
         "verify-config must not load the deployed config a second time"
     );
 }

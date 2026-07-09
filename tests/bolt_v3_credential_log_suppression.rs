@@ -8,17 +8,16 @@
 //! `LoggerConfig.module_level` filter must drop them at the NT logger
 //! thread.
 //!
-//! This test deliberately lives in its own dedicated test binary
-//! (`cargo test --test bolt_v3_credential_log_suppression`). NT's
-//! global logger only honors the *first* `LoggerConfig` an in-process
-//! caller hands it: once any other code initializes the NT logger
-//! without bolt-v3 module filters (for example, a legacy bolt-v2
-//! `LoggerConfig::default()` path in another test binary), later
-//! bolt-v3 configs cannot retroactively install module filters. By
-//! living in its own test binary, this test guarantees the bolt-v3
-//! `LoggerConfig` is the first and only thing initializing NT's
-//! logger in this process, so the assertion proves real behavior
-//! rather than relying on test ordering.
+//! These tests use child-filtered subprocesses when they need NT global
+//! logger isolation. NT's global logger only honors the *first*
+//! `LoggerConfig` an in-process caller hands it: once any other code
+//! initializes the NT logger without bolt-v3 module filters (for
+//! example, a legacy bolt-v2 `LoggerConfig::default()` path in another
+//! test module), later bolt-v3 configs cannot retroactively install
+//! module filters. The child process guarantees the bolt-v3
+//! `LoggerConfig` is the first and only thing initializing NT's logger
+//! for assertions that prove real behavior rather than relying on test
+//! ordering.
 //!
 //! The configuration-level companion check
 //! (`live_node_config_suppresses_nt_credential_module_logs_to_warn`)
@@ -33,8 +32,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config,
-    bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_live_node::{
+        assert_bolt_v3_logging_ready_for_run, build_bolt_v3_live_node_with_summary,
+        build_bolt_v3_strategy_free_live_node_with_summary,
+    },
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
@@ -50,8 +52,132 @@ const FORBIDDEN_CREDENTIAL_MARKERS: &[&str] = &[
     "Auto-detected Ed25519 API key",
     "Using HMAC SHA256 API key",
 ];
+const LOGGER_SURVIVAL_CHILD_ENV: &str = "BOLT_V3_LOGGER_SURVIVAL_CHILD_MODE";
+const LOGGER_SURVIVAL_SENTINEL: &str = "bolt-v3-logger-survival-after-reference-health";
 
 fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+fn load_logger_probe_config(label: &str) -> (support::TempCaseDir, LoadedBoltV3Config) {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new(label);
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    (temp, loaded)
+}
+
+fn build_stop_drop_strategy_free_logger_probe(label: &str) {
+    let (_temp, loaded) = load_logger_probe_config(label);
+    let (runtime, _summary) = build_bolt_v3_strategy_free_live_node_with_summary(
+        &loaded,
+        |_| false,
+        support::fake_bolt_v3_resolver,
+    )
+    .expect("strategy-free logger probe LiveNode should build");
+    runtime.handle().stop();
+    drop(runtime);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+}
+
+fn emit_logger_survival_record_from_later_kernel() {
+    let (_temp, loaded) = load_logger_probe_config("bolt-v3-logger-survival-later-kernel");
+    let (runtime, _summary) = build_bolt_v3_strategy_free_live_node_with_summary(
+        &loaded,
+        |_| false,
+        support::fake_bolt_v3_resolver,
+    )
+    .expect("later strategy-free LiveNode should build after the health probe");
+
+    assert_ne!(
+        log::max_level(),
+        log::LevelFilter::Off,
+        "the later kernel must leave the process logger enabled"
+    );
+    assert!(
+        log::log_enabled!(log::Level::Error),
+        "the later kernel must enable error records"
+    );
+    log::error!("{LOGGER_SURVIVAL_SENTINEL}");
+    log::logger().flush();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+
+    runtime.handle().stop();
+    drop(runtime);
+}
+
+fn run_logger_survival_child(test_filter: &str, mode: &str) {
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current test binary should be available"),
+    )
+    .arg(test_filter)
+    .arg("--nocapture")
+    .arg("--test-threads=1")
+    .env(LOGGER_SURVIVAL_CHILD_ENV, mode)
+    .output()
+    .expect("logger-survival child test should launch");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "logger-survival child mode `{mode}` failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("running 1 test"),
+        "logger-survival child filter `{test_filter}` must run exactly one test\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+fn capture_standard_streams(action: impl FnOnce()) -> (String, String) {
+    let mut stdout_capture = tempfile().expect("tempfile for stdout capture");
+    let mut stderr_capture = tempfile().expect("tempfile for stderr capture");
+
+    // SAFETY: this test is Unix-only and swaps valid process file descriptors
+    // while a single child-filtered test owns the process.
+    let real_stdout = unsafe { libc::dup(1) };
+    let real_stderr = unsafe { libc::dup(2) };
+    assert!(real_stdout >= 0, "dup(1) failed");
+    assert!(real_stderr >= 0, "dup(2) failed");
+
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
+    unsafe {
+        libc::dup2(stdout_capture.as_raw_fd(), 1);
+        libc::dup2(stderr_capture.as_raw_fd(), 2);
+    }
+
+    action();
+
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
+    unsafe {
+        libc::dup2(real_stdout, 1);
+        libc::dup2(real_stderr, 2);
+        libc::close(real_stdout);
+        libc::close(real_stderr);
+    }
+
+    stdout_capture
+        .seek(SeekFrom::Start(0))
+        .expect("stdout seek");
+    let mut stdout_text = String::new();
+    stdout_capture
+        .read_to_string(&mut stdout_text)
+        .expect("stdout read");
+
+    stderr_capture
+        .seek(SeekFrom::Start(0))
+        .expect("stderr seek");
+    let mut stderr_text = String::new();
+    stderr_capture
+        .read_to_string(&mut stderr_text)
+        .expect("stderr read");
+
+    (stdout_text, stderr_text)
+}
 
 #[test]
 fn resolved_provider_secret_debug_redacts_and_zeroizes_on_drop() {
@@ -89,6 +215,65 @@ fn resolved_provider_secret_debug_redacts_and_zeroizes_on_drop() {
             !binance_debug.contains(secret),
             "Binance resolved-secret Debug leaked `{secret}`: {binance_debug}"
         );
+    }
+}
+
+#[test]
+fn subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel() {
+    match std::env::var(LOGGER_SURVIVAL_CHILD_ENV).ok().as_deref() {
+        None => {
+            run_logger_survival_child(
+                "subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel",
+                "parent",
+            );
+            run_logger_survival_child(
+                "subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel",
+                "poisoned-parent",
+            );
+        }
+        Some("health-probe") => {
+            build_stop_drop_strategy_free_logger_probe("bolt-v3-logger-survival-health-probe");
+        }
+        Some("poisoned-parent") => {
+            let abort_error = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+            let captured_error = abort_error.clone();
+            let (_stdout, _stderr) = capture_standard_streams(|| {
+                build_stop_drop_strategy_free_logger_probe("bolt-v3-logger-survival-health-probe");
+                let error = assert_bolt_v3_logging_ready_for_run()
+                    .expect_err("dead NT logging must abort before the real node runs");
+                captured_error.borrow_mut().replace(error.to_string());
+            });
+            let abort_error = abort_error
+                .borrow()
+                .clone()
+                .expect("old in-process probe shape must produce a logging abort");
+            assert!(
+                abort_error.contains("bolt-v3 logging is not initialized before node run")
+                    && abort_error.contains("max_level=Off"),
+                "logging abort must name the dead logger state, got: {abort_error}"
+            );
+        }
+        Some("parent") => {
+            let (_stdout, stderr) = capture_standard_streams(|| {
+                // Differential mutation for the old launch-health pattern:
+                // replace this subprocess call with `build_stop_drop_strategy_free_logger_probe(...)`
+                // in this parent process. Dropping that strategy-free kernel drops NT's last
+                // `LogGuard`, closes `LOGGER_TX`/`LOGGER_HANDLE`, and sets `log::max_level(Off)`;
+                // the later kernel then cannot emit this sentinel.
+                run_logger_survival_child(
+                    "subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel",
+                    "health-probe",
+                );
+                emit_logger_survival_record_from_later_kernel();
+            });
+
+            assert!(
+                stderr.contains(LOGGER_SURVIVAL_SENTINEL),
+                "later kernel error record must reach the NT stderr sink after subprocess health; \
+                 captured stderr=`{stderr}`"
+            );
+        }
+        Some(mode) => panic!("unexpected logger survival child mode `{mode}`"),
     }
 }
 

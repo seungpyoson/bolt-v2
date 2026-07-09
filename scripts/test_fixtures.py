@@ -52,7 +52,7 @@ def rust_verification_policy_text(*, target_namespace: str = "bolt-v2") -> str:
         [commands]
 
         [commands.test]
-        recipe = "managed-test"
+        cargo_args = ["nextest", "run", "--locked"]
 
         [commands.clippy]
         recipe = "managed-clippy"

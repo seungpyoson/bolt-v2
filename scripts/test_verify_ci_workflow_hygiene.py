@@ -8238,6 +8238,62 @@ jobs:
             "partitioned BVS step allowlist must stay scoped to the sharded backtester full/smoke jobs"
         )
 
+    echo_exit_full_workflow = good_full_workflow.replace(
+        '          exit "$rc"',
+        '          echo \'exit "$rc"\'',
+        1,
+    )
+    echo_exit_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: echo_exit_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root full job missing 'exit \"$rc\"'" in error for error in echo_exit_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject echo-spoofed exit propagation, "
+            f"got: {echo_exit_errors}"
+        )
+
+    stage_if_spoof_full_workflow = good_full_workflow.replace(
+        """      - name: Stage JUnit report
+        if: success() || failure()
+""",
+        """      - name: Stage JUnit report
+        env:
+          SPOOF: "if: success() || failure()"
+""",
+        1,
+    )
+    stage_if_spoof_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: stage_if_spoof_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root full job missing 'if: success() || failure()'" in error for error in stage_if_spoof_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject non-step-level stage if spoofing, "
+            f"got: {stage_if_spoof_errors}"
+        )
+
+    stage_junit_echo_full_workflow = good_full_workflow.replace(
+        '          python3 - > "$staged" <<\'PY\'',
+        '          echo missing-nextest-junit > "$staged"',
+        1,
+    )
+    stage_junit_echo_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: stage_junit_echo_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root full job JUnit staging must synthesize a missing-report failure" in error for error in stage_junit_echo_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject synthetic-JUnit echo spoofing, "
+            f"got: {stage_junit_echo_errors}"
+        )
+
     def flaky_detection_errors(
         full_workflow: str = good_full_workflow,
         smoke_workflow: str = good_smoke_workflow,
@@ -9495,6 +9551,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "test execution must not force sccache off",
         ),
         (
+            "debug test execution must not be an echo spoof",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"',
+                    'echo \'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"\'',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "run step must execute debug-test through one managed just invocation",
+        ),
+        (
             "rust-probe must not use workflow-level retry helpers",
             {
                 **workflows,
@@ -9521,6 +9590,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must print sccache stats after compile",
         ),
         (
+            "debug stats must require step-level always",
+            {
+                **workflows,
+                ".github/workflows/debug-test.yml": workflows[".github/workflows/debug-test.yml"].replace(
+                    "      - name: Print sccache stats\n        if: always()\n",
+                    "      - name: Print sccache stats\n        env:\n          SPOOF: \"if: always()\"\n",
+                    1,
+                ),
+            },
+            bvs_policy,
+            "must print sccache stats after compile",
+        ),
+        (
             "flaky smoke execution must not retry test execution in workflow shell",
             {
                 **workflows,
@@ -9534,6 +9616,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "retry and compile/test split must be owned by rust_verification.py",
         ),
         (
+            "flaky smoke execution must not chain another test command",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"',
+                    'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"; just test --config-file "$RUNNER_TEMP/nextest-junit.toml"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "run step must execute tests through one managed just invocation",
+        ),
+        (
             "flaky smoke execution must not force sccache off",
             {
                 **workflows,
@@ -9545,6 +9640,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             },
             bvs_policy,
             "test execution must not force sccache off",
+        ),
+        (
+            "flaky smoke JUnit staging must not be an echo spoof",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    'python3 - > "$staged" <<\'PY\'',
+                    'echo missing-nextest-junit > "$staged"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "JUnit staging must synthesize a missing-report failure",
         ),
         (
             "BVS policy must activate the remote compile cache",
@@ -9605,9 +9713,9 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         ),
         (
             "shared action must use repo-pinned Python",
-            action_text.replace("python3.12 - <<'PY'", "python3 - <<'PY'", 1),
+            action_text.replace("python3.12 scripts/sccache_eligibility.py", "python3 scripts/sccache_eligibility.py", 1),
             config_text,
-            "Resolve sccache eligibility must run under python3.12",
+            "must include 'python3.12 scripts/sccache_eligibility.py'",
         ),
         (
             "shared action must keep enablement fail-open",
@@ -9623,15 +9731,13 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         ),
         (
             "shared action must own trusted write policy",
-            action_text.replace('event_name == "push" and github_ref == "refs/heads/main"', 'event_name == "push"', 1),
+            action_text.replace(
+                "python3.12 scripts/sccache_eligibility.py",
+                "echo 'event_name == \"push\" and github_ref == \"refs/heads/main\"'\n        echo 'read_allowed = '",
+                1,
+            ),
             config_text,
-            "must gate write access to main push/workflow_dispatch inside the action",
-        ),
-        (
-            "shared action must set sccache ignore I/O",
-            action_text.replace("SCCACHE_IGNORE_SERVER_IO_ERROR=1", "SCCACHE_IGNORE_SERVER_IO_ERROR=0", 1),
-            config_text,
-            "must include 'SCCACHE_IGNORE_SERVER_IO_ERROR=1'",
+            "must include 'python3.12 scripts/sccache_eligibility.py'",
         ),
         (
             "sccache location config owns the prefix",
@@ -9642,6 +9748,23 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     )
     for label, mutated_action, mutated_config, expected in action_cases:
         errors = verifier.sccache_setup_action_contract_errors(mutated_action, mutated_config)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
+    eligibility_script_text = repo_source_text("scripts/sccache_eligibility.py")
+    script_cases = (
+        (
+            "eligibility script must keep trusted write policy",
+            eligibility_script_text.replace('event_name == "push" and github_ref == "refs/heads/main"', 'event_name == "push"', 1),
+            'event_name == "push" and github_ref == "refs/heads/main"',
+        ),
+        (
+            "eligibility script must set sccache ignore I/O",
+            eligibility_script_text.replace("SCCACHE_IGNORE_SERVER_IO_ERROR=1", "SCCACHE_IGNORE_SERVER_IO_ERROR=0", 1),
+            "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+        ),
+    )
+    for label, mutated_script, expected in script_cases:
+        errors = verifier.sccache_eligibility_script_contract_errors(mutated_script)
         if not any(expected in error for error in errors):
             raise AssertionError(f"{label}: expected {expected!r}, got: {errors}")
     stats_cases = (
@@ -13393,6 +13516,8 @@ def run_verifier_main_with_no_mistakes(
         sccache_stats_action_path = tmp_path / ".github" / "actions" / "sccache-stats" / "action.yml"
         sccache_stats_action_path.parent.mkdir(parents=True)
         sccache_stats_action_path.write_text(repo_source_text(".github/actions/sccache-stats/action.yml"))
+        sccache_eligibility_path = tmp_path / "scripts" / "sccache_eligibility.py"
+        sccache_eligibility_path.write_text(repo_source_text("scripts/sccache_eligibility.py"))
         sccache_config_path = tmp_path / "ci" / "sccache-location.toml"
         sccache_config_path.parent.mkdir(parents=True, exist_ok=True)
         sccache_config_path.write_text(repo_source_text("ci/sccache-location.toml"))

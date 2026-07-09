@@ -1409,6 +1409,15 @@ def assert_managed_test_splits_nextest_run_inside_owner() -> None:
         raise AssertionError(run_calls)
 
 
+def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
+    owner = load_owner_module()
+    compile_args = owner.nextest_run_compile_preflight_args(
+        ["nextest", "run", "--locked", "--config-file", "nextest.toml", "--no-fail-fast"]
+    )
+    if compile_args != ["nextest", "run", "--locked", "--config-file", "nextest.toml", "--no-run"]:
+        raise AssertionError(compile_args)
+
+
 def assert_nextest_compile_failure_retries_without_retrying_tests() -> None:
     owner = load_owner_module()
     calls: list[tuple[list[str], str | None]] = []
@@ -1435,9 +1444,11 @@ def assert_nextest_compile_failure_retries_without_retrying_tests() -> None:
     run_calls = [call for call in calls if call[0][0] == "cargo"]
     if len(run_calls) != 3:
         raise AssertionError(run_calls)
-    if run_calls[0][1] != "/opt/sccache/sccache" or run_calls[1][1] is not None or run_calls[2][1] != "/opt/sccache/sccache":
+    if run_calls[0][1] != "/opt/sccache/sccache" or run_calls[1][1] is not None or run_calls[2][1] is not None:
         raise AssertionError(run_calls)
     if run_calls[2][0] != ["cargo", "nextest", "run", "--locked", "--no-fail-fast"]:
+        raise AssertionError(run_calls)
+    if "--no-fail-fast" in run_calls[0][0]:
         raise AssertionError(run_calls)
 
 
@@ -1900,6 +1911,7 @@ def main() -> int:
     assert_managed_remote_compile_cache_env_fails_open()
     assert_managed_env_scrubs_then_reinjects_wrapper()
     assert_managed_test_splits_nextest_run_inside_owner()
+    assert_nextest_compile_preflight_omits_run_only_flags()
     assert_nextest_compile_failure_retries_without_retrying_tests()
     assert_direct_nextest_run_splits_inside_owner()
     assert_validate_remote_fast_linker_policy_contract()

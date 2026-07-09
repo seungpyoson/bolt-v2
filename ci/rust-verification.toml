@@ -5,7 +5,7 @@ target_namespace = "bolt-v2"
 [commands]
 
 [commands.test]
-recipe = "managed-test"
+cargo_args = ["nextest", "run", "--locked"]
 
 [commands.clippy]
 recipe = "managed-clippy"

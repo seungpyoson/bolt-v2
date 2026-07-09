@@ -16,7 +16,6 @@ test_target="${RUST_PROBE_TEST_TARGET:-}"
 test_name="${RUST_PROBE_TEST_NAME:-}"
 expected_sha="${RUST_PROBE_EXPECTED_SHA:-}"
 probe_id="${RUST_PROBE_ID:-}"
-compile_only="${RUST_PROBE_COMPILE_ONLY:-0}"
 
 # Rust Probe contract:
 # - RUST_PROBE_TEST_TARGET is a Cargo [[test]] harness target name.
@@ -101,20 +100,12 @@ case "$mode" in
   nextest-test-target)
     require_target
     forbid_name
-    if [ "$compile_only" = "1" ]; then
-      probe_args=(nextest run --locked --no-run --test "$test_target")
-    else
-      probe_args=(nextest run --locked --test "$test_target")
-    fi
+    probe_args=(nextest run --locked --test "$test_target")
     ;;
   nextest-test-target-name)
     require_target
     require_name
-    if [ "$compile_only" = "1" ]; then
-      probe_args=(nextest run --locked --no-run --test "$test_target" "$test_name")
-    else
-      probe_args=(nextest run --locked --test "$test_target" "$test_name")
-    fi
+    probe_args=(nextest run --locked --test "$test_target" "$test_name")
     ;;
   *)
     reject "unsupported mode: $mode"
@@ -132,7 +123,7 @@ fi
 echo "Rust Probe id: $probe_id"
 echo "Rust Probe checkout SHA: $actual_sha_lower"
 echo "Rust Probe mode: $mode"
-echo "Rust Probe compile_only: $compile_only"
+echo "Rust Probe compile_only: <unused>"
 echo "Rust Probe test_target: ${test_target:-<empty>}"
 echo "Rust Probe test_name: ${test_name:-<empty>}"
 

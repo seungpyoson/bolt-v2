@@ -301,7 +301,24 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     commands = data.get("commands")
     if not isinstance(commands, dict):
         raise PolicyError("commands table is required")
-    for name in ("test", "clippy", "build"):
+    test_command = commands.get("test")
+    if not isinstance(test_command, dict):
+        raise PolicyError("commands.test table is required")
+    if "recipe" in test_command:
+        raise PolicyError("commands.test.recipe must not be set; commands.test.cargo_args owns the managed test command")
+    test_cargo_args = test_command.get("cargo_args")
+    if not isinstance(test_cargo_args, list) or not all(
+        isinstance(token, str) and token and "\x00" not in token and "\n" not in token
+        for token in test_cargo_args
+    ):
+        raise PolicyError("commands.test.cargo_args must be a non-empty string array")
+    test_subcommand = cargo_subcommand_with_index(test_cargo_args)
+    if test_subcommand is None or test_subcommand[1] != "nextest":
+        raise PolicyError("commands.test.cargo_args must run cargo nextest")
+    nextest_subcommand = nextest_subcommand_with_index(test_cargo_args[test_subcommand[0] + 1 :])
+    if nextest_subcommand is None or nextest_subcommand[1] != "run":
+        raise PolicyError("commands.test.cargo_args must run cargo nextest run")
+    for name in ("clippy", "build"):
         command = commands.get(name)
         if not isinstance(command, dict):
             raise PolicyError(f"commands.{name} table is required")
@@ -3208,7 +3225,8 @@ def nextest_run_compile_preflight_args(cargo_args: list[str]) -> list[str] | Non
         return None
     if any(token == "--archive-file" or token.startswith("--archive-file=") for token in option_tail):
         return None
-    return cargo_args[: nextest_index + 1] + option_tail + ["--no-run"] + tail[separator_index:]
+    compile_option_tail = [token for token in option_tail if token not in {"--no-fail-fast"}]
+    return cargo_args[: nextest_index + 1] + compile_option_tail + ["--no-run"] + tail[separator_index:]
 
 
 def cargo_args_are_compile_only(cargo_args: list[str]) -> bool:
@@ -3240,15 +3258,15 @@ def run_compile_with_remote_cache_fail_open(
     repo: pathlib.Path,
     env: dict[str, str],
     retry_env: dict[str, str],
-) -> int:
+) -> tuple[int, dict[str, str]]:
     rc = run_process(argv, repo=repo, env=env)
     if rc == 0 or "RUSTC_WRAPPER" not in env:
-        return rc
+        return rc, env
     print(
         "::warning::compile command failed with sccache active; retrying once without sccache",
         file=sys.stderr,
     )
-    return run_process(argv, repo=repo, env=retry_env)
+    return run_process(argv, repo=repo, env=retry_env), retry_env
 
 
 def run_cargo_with_remote_cache_fail_open(
@@ -3260,7 +3278,7 @@ def run_cargo_with_remote_cache_fail_open(
     retry_env = managed_env_without_remote_compile_cache(repo, policy)
     compile_args = nextest_run_compile_preflight_args(cargo_args)
     if compile_args is not None and "RUSTC_WRAPPER" in env:
-        compile_rc = run_compile_with_remote_cache_fail_open(
+        compile_rc, test_env = run_compile_with_remote_cache_fail_open(
             ["cargo", *compile_args],
             repo=repo,
             env=env,
@@ -3268,14 +3286,15 @@ def run_cargo_with_remote_cache_fail_open(
         )
         if compile_rc != 0:
             return compile_rc
-        return run_process(["cargo", *cargo_args], repo=repo, env=env)
+        return run_process(["cargo", *cargo_args], repo=repo, env=test_env)
     if cargo_args_are_compile_only(cargo_args) and "RUSTC_WRAPPER" in env:
-        return run_compile_with_remote_cache_fail_open(
+        compile_rc, _compile_env = run_compile_with_remote_cache_fail_open(
             ["cargo", *cargo_args],
             repo=repo,
             env=env,
             retry_env=retry_env,
         )
+        return compile_rc
     return run_process(["cargo", *cargo_args], repo=repo, env=env)
 
 
@@ -4882,9 +4901,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     test_separator = args.command == "test" and bool(getattr(args, "args_separator", False))
     command_tail = ["--", *args.args] if test_separator else args.args
-    justfile = repo / "justfile"
-    argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *command_tail]
-    override_args = [args.command, *command_tail] if args.command == "test" else args.args
+    if args.command == "test":
+        command_cargo_args = list(command["cargo_args"]) + command_tail
+    else:
+        command_cargo_args = []
+    override_args = command_cargo_args if args.command == "test" else args.args
     override = cargo_target_routing_override(override_args)
     if override is not None:
         return print_refusal(target_routing_refusal_payload(repo, policy, override))
@@ -4895,11 +4916,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:
             return print_refusal(refusal)
-    if args.command == "test" and managed_remote_compile_cache_env(policy):
-        cargo_args = ["nextest", "run", "--locked", *command_tail]
+    if args.command == "test":
         try:
-            with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
-                return run_cargo_with_remote_cache_fail_open(repo, policy, cargo_args)
+            with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(command_cargo_args)):
+                return run_cargo_with_remote_cache_fail_open(repo, policy, command_cargo_args)
         except CacheLockTimeoutError as exc:
             return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
     run_exclusive = run_args_need_exclusive_cache_lock(
@@ -4909,6 +4929,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     try:
         with cache_lock(policy, exclusive=run_exclusive):
+            justfile = repo / "justfile"
+            argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *command_tail]
             env = managed_env(repo, policy)
             env["BOLT_MANAGED_JUST"] = "1"
             return run_process(argv, repo=repo, env=env)

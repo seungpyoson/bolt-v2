@@ -250,11 +250,6 @@ managed-clippy: check-workspace
     cargo clippy --locked -- -D warnings
 
 [private]
-managed-test *args: check-workspace
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-test must run through scripts/rust_verification.py run"; exit 2; fi
-    cargo nextest run --locked {{args}}
-
-[private]
 managed-build: check-workspace
     if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
     cargo zigbuild --release --target {{target}} --locked

@@ -1077,6 +1077,7 @@ TEST_ARCHIVE_SCCACHE_OPT_IN = (
 )
 SCCACHE_SETUP_ACTION_PATH = "./.github/actions/sccache-setup"
 SCCACHE_SETUP_ACTION_FILE = ".github/actions/sccache-setup/action.yml"
+SCCACHE_ELIGIBILITY_SCRIPT_FILE = "scripts/sccache_eligibility.py"
 SCCACHE_STATS_ACTION_PATH = "./.github/actions/sccache-stats"
 SCCACHE_STATS_ACTION_FILE = ".github/actions/sccache-stats/action.yml"
 SCCACHE_LOCATION_CONFIG_PATH = "ci/sccache-location.toml"
@@ -6102,7 +6103,6 @@ def is_allowed_managed_just_recipe_command(recipe: str, stripped_line: str) -> b
     allowed_commands = {
         "managed-build": "cargo zigbuild --release --target {{target}} --locked",
         "managed-clippy": "cargo clippy --locked -- -D warnings",
-        "managed-test": "cargo nextest run --locked {{args}}",
     }
     return stripped_line == allowed_commands.get(recipe)
 
@@ -6127,7 +6127,7 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
                 continue
         if (
             is_justfile
-            and current_just_recipe in {"managed-build", "managed-clippy", "managed-test"}
+            and current_just_recipe in {"managed-build", "managed-clippy"}
             and is_managed_just_recipe_guard(current_just_recipe, stripped)
         ):
             managed_just_recipe = True
@@ -11958,8 +11958,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
                     errors.append(f"test-archive sccache setup must include {fragment!r}")
             # Value, not mere presence: the flag must be "1" so a future edit cannot
             # silently flip it to "0" and make S3/server I/O errors fatal.
-            sccache_action_text = repo_text_or_empty(SCCACHE_SETUP_ACTION_FILE)
-            if TEST_ARCHIVE_SCCACHE_IGNORE_IO not in sccache_action_text:
+            sccache_eligibility_text = repo_text_or_empty("scripts/sccache_eligibility.py")
+            if TEST_ARCHIVE_SCCACHE_IGNORE_IO not in sccache_eligibility_text:
                 errors.append('test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR: "1" (degrade S3 errors to local compile)')
             # Even a mid-build sccache server crash (which SCCACHE_IGNORE_SERVER_IO_ERROR
             # does not cover) must not fail the build: rust_verification.py owns the
@@ -11976,7 +11976,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             stats_text = uncommented_text(stats_block) if stats_block is not None else ""
             if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
                 errors.append("test-archive sccache must print stats after the compile step")
-            elif "if: always()" not in stats_text or not step_occurs_after(archive_lines, "Print sccache stats", "Build nextest archive"):
+            elif not step_block_has_field(stats_block, "if", "always()") or not step_occurs_after(archive_lines, "Print sccache stats", "Build nextest archive"):
                 errors.append("test-archive sccache must print stats after the compile step")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
@@ -12914,10 +12914,57 @@ def simple_shell_lines(run_text: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in run_text.splitlines() if line.strip())
 
 
+def step_block_has_field(block: list[str] | None, key: str, value: str) -> bool:
+    if block is None:
+        return False
+    step_indent: int | None = None
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        stripped = clean.lstrip()
+        if stripped.startswith("- "):
+            step_indent = len(clean) - len(stripped)
+            first_field = stripped.removeprefix("- ").strip()
+            if first_field == f"{key}: {value}":
+                return True
+            continue
+        if step_indent is None:
+            continue
+        if len(clean) - len(stripped) == step_indent + 2 and stripped == f"{key}: {value}":
+            return True
+    return False
+
+
+def just_invocation_count(run_lines: tuple[str, ...], recipe: str) -> int:
+    return sum(len(re.findall(rf"\bjust\s+{re.escape(recipe)}\b", line)) for line in run_lines)
+
+
 def bte_test_invocation_count(run_block: str) -> int:
     return sum(
         len(re.findall(r"\bjust\s+bte-test\b", line))
         for line in simple_shell_lines(run_block)
+    )
+
+
+def missing_nextest_junit_stage_lines(report_path: str) -> tuple[str, ...]:
+    return (
+        f'report="{report_path}"',
+        'staged="junit-unit-${{ matrix.run_number }}.xml"',
+        'if [[ -f "$report" ]]; then',
+        'cp "$report" "$staged"',
+        "else",
+        'python3 - > "$staged" <<\'PY\'',
+        "import os",
+        "import xml.sax.saxutils as sax",
+        'rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))',
+        'print(\'<?xml version="1.0" encoding="UTF-8"?>\')',
+        'print(\'<testsuite name="nextest-preflight" tests="1" failures="1">\')',
+        'print(\'<testcase classname="ci" name="missing-nextest-junit">\')',
+        'print(f\'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>\')',
+        "print('</testcase></testsuite>')",
+        "PY",
+        "fi",
     )
 
 
@@ -12937,23 +12984,8 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
         "'store-failure-output = true' \\",
         '> "$RUNNER_TEMP/nextest-junit.toml"',
     ),
-    "Stage JUnit report": (
-        'report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
-        'staged="junit-unit-${{ matrix.run_number }}.xml"',
-        'if [[ -f "$report" ]]; then',
-        'cp "$report" "$staged"',
-        "else",
-        'python3 - > "$staged" <<\'PY\'',
-        "import os",
-        "import xml.sax.saxutils as sax",
-        'rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))',
-        'print(\'<?xml version="1.0" encoding="UTF-8"?>\')',
-        'print(\'<testsuite name="nextest-preflight" tests="1" failures="1">\')',
-        'print(\'<testcase classname="ci" name="missing-nextest-junit">\')',
-        'print(f\'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>\')',
-        "print('</testcase></testsuite>')",
-        "PY",
-        "fi",
+    "Stage JUnit report": missing_nextest_junit_stage_lines(
+        "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
     ),
 }
 BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
@@ -13197,12 +13229,22 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
         job_text = job_texts[job_id]
         run_block = named_step_run_block(job_text, "Run tests")
         run_lines = simple_shell_lines(run_block or "")
-        if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' in run_lines and 'exit "$rc"' not in run_lines:
+        if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' not in run_lines:
+            errors.append(f"flaky-test-detection {label} missing MERGIFY_TEST_EXIT_CODE export")
+        if not run_lines or run_lines[-1] != 'exit "$rc"':
             errors.append(f"flaky-test-detection {label} missing 'exit \"$rc\"'")
         stage_block = named_step_block(jobs[job_id], "Stage JUnit report")
         stage_text = uncommented_text(stage_block) if stage_block is not None else ""
-        if "if: success() || failure()" not in stage_text:
+        if not step_block_has_field(stage_block, "if", "success() || failure()"):
             errors.append(f"flaky-test-detection {label} missing 'if: success() || failure()'")
+        stage_lines = simple_shell_lines(named_step_run_block(job_text, "Stage JUnit report") or "")
+        report_path = (
+            "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+            if label in {"root full job", "root smoke job"}
+            else "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+        )
+        if stage_lines != missing_nextest_junit_stage_lines(report_path):
+            errors.append(f"flaky-test-detection {label} JUnit staging must synthesize a missing-report failure")
         errors.extend(
             f"flaky-test-detection {label} missing {fragment!r}"
             for fragment in fragments
@@ -13307,32 +13349,30 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     ):
         if block is None:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include step {step_name!r}")
-        elif "continue-on-error: true" not in text:
+        elif not step_block_has_field(block, "continue-on-error", "true"):
             errors.append(f"{step_name} must be continue-on-error")
 
     action_clean = uncommented_text(action_lines)
     if SCCACHE_LOCATION_CONFIG_DEFAULT not in action_clean:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must default to {SCCACHE_LOCATION_CONFIG_PATH}")
     for fragment in (
-        "tomllib.loads",
+        "SCCACHE_ACTIVE: ${{ inputs.active }}",
+        "READ_ROLE_ARN: ${{ inputs.role-arn }}",
+        "WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}",
         "CONFIG_PATH: ${{ inputs.config-path }}",
-        "SCCACHE_BUCKET=",
-        "SCCACHE_REGION=",
-        "SCCACHE_S3_KEY_PREFIX=",
-        "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
-        "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+        "python3.12 scripts/sccache_eligibility.py",
     ):
         if fragment not in eligibility_text:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
-    if "python3.12 - <<'PY'" not in eligibility_text:
-        errors.append("Resolve sccache eligibility must run under python3.12")
     for fragment in (
-        'event_name == "push" and github_ref == "refs/heads/main"',
-        'event_name == "workflow_dispatch" and github_ref == "refs/heads/main"',
-        'read_allowed = event_name in {"pull_request", "merge_group", "workflow_dispatch", "schedule"}',
+        'event_name == "push"',
+        'event_name == "workflow_dispatch"',
+        "read_allowed =",
+        "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
     ):
         if fragment not in eligibility_text:
-            errors.append("sccache setup action must gate write access to main push/workflow_dispatch inside the action")
+            continue
+        errors.append("sccache setup action must delegate trust and env resolution to scripts/sccache_eligibility.py")
     if "role-to-assume: ${{ steps.eligibility.outputs.role_arn }}" not in aws_text:
         errors.append("Configure AWS credentials for sccache must assume the action-selected role")
     if "aws-region: ${{ steps.eligibility.outputs.region }}" not in aws_text:
@@ -13346,10 +13386,10 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
         if fragment not in enable_text:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
-    if "if: always()" not in enable_text:
+    if not step_block_has_field(enable_block, "if", "always()"):
         errors.append("Resolve sccache enablement must run under always()")
     if (
-        "if: always()" not in summary_text
+        not step_block_has_field(summary_block, "if", "always()")
         or "sccache cache:" not in summary_text
         or "$GITHUB_STEP_SUMMARY" not in summary_text
         or "SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}" not in summary_text
@@ -13376,6 +13416,29 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     key_prefix = location.get("key_prefix")
     if not isinstance(key_prefix, str) or not key_prefix or not key_prefix.endswith("/"):
         errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must set location.key_prefix must be a non-empty string ending in '/'")
+    return errors
+
+
+def sccache_eligibility_script_contract_errors(script_text: str) -> list[str]:
+    errors: list[str] = []
+    if not script_text:
+        return [f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must own sccache trust and env resolution"]
+    for fragment in (
+        "def resolve_sccache_eligibility(",
+        'event_name == "push" and github_ref == "refs/heads/main"',
+        'event_name == "workflow_dispatch" and github_ref == "refs/heads/main"',
+        'read_allowed = event_name in {"pull_request", "merge_group", "workflow_dispatch", "schedule"}',
+        'cache_mode = "read_write"',
+        'cache_mode = "read_only"',
+        'cache_mode = "none"',
+        'SCCACHE_BUCKET={eligibility.bucket}',
+        'SCCACHE_REGION={eligibility.region}',
+        'SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}',
+        "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
+        "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+    ):
+        if fragment not in script_text:
+            errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must include {fragment!r}")
     return errors
 
 
@@ -13451,27 +13514,44 @@ def debug_lane_sccache_job_errors(
     if "sccache-fail-open.sh" in compile_text or "RUST_PROBE_COMPILE_ONLY" in compile_text:
         errors.append(f"{label} retry and compile/test split must be owned by rust_verification.py")
     if workflow_name.endswith("flaky-test-smoke.yml"):
-        test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just test ", "just bte-test "))
+        expected_run_line = {
+            "flaky-smoke-rust-root": 'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"',
+            "flaky-smoke-rust-backtester": 'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
+            "flaky-smoke-rust-backtester-issue-789": 'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
+        }.get(job_name)
+        if expected_run_line is None:
+            errors.append(f"{label} has no governed flaky smoke command contract")
+            test_execution_lines = []
+        else:
+            test_execution_lines = [line for line in compile_lines if line == expected_run_line]
+            recipe = "test" if job_name == "flaky-smoke-rust-root" else "bte-test"
+            if compile_lines.count(expected_run_line) != 1 or just_invocation_count(compile_lines, recipe) != 1:
+                errors.append(f"{label} run step must execute tests through one managed just invocation")
         if not test_execution_lines:
             errors.append(f"{label} run step must execute tests through one managed just invocation")
-        if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
+        if any(
+            line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ")
+            and ("just test " in line or "just bte-test " in line)
+            for line in compile_lines
+        ):
             errors.append(f"{label} test execution must not force sccache off")
-        if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' in compile_lines and 'exit "$rc"' not in compile_lines:
+        if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' not in compile_lines or not compile_lines or compile_lines[-1] != 'exit "$rc"':
             errors.append(f"{label} flaky smoke run step must exit with captured rc")
         stage_block = named_step_block(job_lines, "Stage JUnit report")
-        stage_text = uncommented_text(stage_block) if stage_block is not None else ""
-        stage_lines = simple_shell_lines(stage_text)
-        if (
-            not stage_lines
-            or not any(line.startswith('if [[ -f "$report" ]]') for line in stage_lines)
-            or "missing-nextest-junit" not in stage_text
-        ):
+        stage_lines = simple_shell_lines(named_step_run_block(uncommented_text(job_lines), "Stage JUnit report") or "")
+        report_path = (
+            "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+            if job_name == "flaky-smoke-rust-root"
+            else "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+        )
+        if stage_lines != missing_nextest_junit_stage_lines(report_path):
             errors.append(f"{label} JUnit staging must synthesize a missing-report failure")
     if workflow_name.endswith("debug-test.yml"):
-        test_execution_lines = debug_lane_test_execution_lines(compile_lines, ("just debug-test",))
-        if not test_execution_lines:
+        expected_run_line = 'just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"'
+        test_execution_lines = [line for line in compile_lines if line == expected_run_line]
+        if compile_lines.count(expected_run_line) != 1 or just_invocation_count(compile_lines, "debug-test") != 1:
             errors.append(f"{label} run step must execute debug-test through one managed just invocation")
-        if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") for line in test_execution_lines):
+        if any(line.startswith("BOLT_RUST_VERIFICATION_SCCACHE=0 ") and "just debug-test" in line for line in compile_lines):
             errors.append(f"{label} test execution must not force sccache off")
     if workflow_name.endswith("rust-probe.yml"):
         if compile_lines.count("bash .github/scripts/run-rust-probe.sh") != 1:
@@ -13480,7 +13560,7 @@ def debug_lane_sccache_job_errors(
     stats_text = uncommented_text(stats_block) if stats_block is not None else ""
     if stats_block is None or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text:
         errors.append(f"{label} must print sccache stats after compile")
-    elif "if: always()" not in stats_text or not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
+    elif not step_block_has_field(stats_block, "if", "always()") or not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
         errors.append(f"{label} must print sccache stats after compile")
     if "RUSTC_WRAPPER:" in job_text:
         errors.append(f"{label} must not bypass managed_env with a direct RUSTC_WRAPPER env")
@@ -13561,6 +13641,7 @@ def verify_debug_lane_compile_cache_parity(
             repo_text_or_empty(SCCACHE_LOCATION_CONFIG_PATH),
         )
     )
+    errors.extend(sccache_eligibility_script_contract_errors(repo_text_or_empty(SCCACHE_ELIGIBILITY_SCRIPT_FILE)))
     errors.extend(sccache_stats_action_contract_errors(repo_text_or_empty(SCCACHE_STATS_ACTION_FILE)))
     for workflow_name, job_specs in workflow_specs:
         workflow_text = workflows.get(workflow_name)

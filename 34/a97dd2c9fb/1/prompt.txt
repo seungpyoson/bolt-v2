@@ -1,0 +1,152 @@
+• Resolved the actionable Claude findings and pushed.
+
+  Head is now 7af97254a0ea94178031eadfdc5cbe22bac19761.
+
+  What changed:
+
+  - Moved --config into compile-value options so compile-affecting config is preserved in preflight.
+  - Corrected --unit-graph and --future-incompat-report to boolean run-only flags.
+  - Hardened arity handling so run-only value options do not swallow following compile selectors, and
+    compile-value options refuse loudly if their value is missing or looks like another option.
+
+  - Made cargo_args_are_compile_only() reuse the tri-state preflight plan, so validated --no-run --retries
+    2 style invocations still get fail-open retry instead of running once with the wrapper live.
+
+  - Added regression tests for both defects.
+
+  Verification passed locally:
+
+  - test_rust_verification.py
+  - cache-retention, no-config, workflow hygiene, rust-probe, verify-remote tests
+  - git diff --check
+  - just source-fence-static
+  - just ci-lint-workflow with localhost escalation
+
+  Remote at latest head: no failures. Most checks passed or draft-skipped; source-fence-static and
+  backtester-gate-iteration were still pending/queued at last poll.
+
+---
+
+Adversarial review PR #1302 — Warm debug lane compile cache
+
+  Review exact PR head:
+  - PR: #1302
+  - Base: ca0d9d2440caa7ecf77fb27f38eff88a7bb62e23
+  - Head: 06c553845ba4343d8564661501e5ec56b98ba172
+  - Status: draft
+  - Non-skipped PR checks are green at this head; full Rust merge-proof lanes are draft-skipped by policy.
+
+  Anchor on a clean git archive of the exact head. Do not trust a dirty local worktree. This is review-
+  only: do not patch files.
+
+  Context:
+  This PR warms debug/probe/flaky Rust lanes through read-only sccache while preserving fail-open behavior
+  and preventing retry-masking of test failures. The implementation moved retry/split ownership into
+  scripts/rust_verification.py, uses ci/sccache-location.toml for sccache location, centralizes trust in
+  sccache setup, and uses explicit nextest compile-preflight classification.
+
+  Latest delta:
+  A test-only guard was added so:
+  - `cargo nextest run --archive-file ...` is NOT classified as compile-only.
+  - `cargo nextest archive ...` remains compile-only.
+  This guards the invariant that archive test runs must not be retried like compile-only commands.
+
+  Important review discipline:
+  We have had finding churn because prior reviews kept discovering adjacent, unstated invariants after
+  each implementation shape changed. For this review, evaluate against the explicit invariants below. Do
+  not expand scope into unrelated repo debt unless this PR creates or worsens it. Separate “runtime
+  evidence gap” from “code defect.” Do not require live `cargo nextest run --help` parsing as a mandatory
+  design; the static classifier/oracle is accepted if internally safe and governed.
+
+  Review invariants:
+  1. sccache setup/config/AWS/install/server failures fail open and cannot fail a lane whose underlying
+  compile/tests would pass.
+  2. Test execution is never retried by fail-open logic; only compile/preflight work may be retried.
+  3. Any retryable command is structurally compile-only.
+  4. Nextest preflight planning has three explicit states: SPLIT, NO_SPLIT, UNSUPPORTED.
+  5. `--archive-file` nextest run is known no-split and must not be compile-only/retryable.
+  6. Existing `--no-run` paths classify the rest of the tail before no-split; unsupported tails refuse
+  loudly when cache is active.
+  7. Unsupported nextest tails refuse loudly when remote cache is active, on both managed cmd_run and
+  direct cmd_cargo paths.
+  8. Cache-off managed runs are not blocked by preflight classification.
+  9. Configured `commands.test.compile_args` are compile-only and cannot introduce routing overrides such
+  as `--target-dir`.
+  10. The static option list is safe: wrong arity must not silently swallow compile selectors; unknown/
+  unsafe compile-affecting options must refuse rather than silently degrade.
+  11. `cargo_args_are_compile_only()` and the preflight planner agree on nextest run/archive
+  classification.
+  12. Stats remain emitted after compile/run with `if: always()`, and flaky JUnit/Mergify staging
+  preserves failure without secondary missing-file errors.
+
+  Specific files to inspect:
+  - scripts/rust_verification.py
+  - scripts/test_rust_verification.py
+  - scripts/test_rust_verification_cache_retention.py
+  - scripts/sccache_eligibility.py
+  - scripts/test_sccache_eligibility.py
+  - scripts/verify_ci_workflow_hygiene.py
+  - scripts/test_verify_ci_workflow_hygiene.py
+  - ci/rust-verification.toml
+  - crates/backtesting-vertical-slice/ci/rust-verification.toml
+  - ci/sccache-location.toml
+  - .github/actions/sccache-setup/action.yml
+  - .github/actions/sccache-stats/action.yml
+  - .github/workflows/ci.yml
+  - .github/workflows/debug-test.yml
+  - .github/workflows/rust-probe.yml
+  - .github/workflows/flaky-test-smoke.yml
+  - .github/workflows/flaky-test-detection.yml
+
+  Please answer with:
+  1. Findings first, ordered by severity.
+  2. For each finding: severity, file/line, concrete failure mode, why it matters, smallest systematic
+  fix.
+  3. Distinguish blocking vs non-blocking findings.
+  4. Separate runtime evidence gaps from code defects.
+  5. If no actionable code defects remain, say that explicitly.
+  6. Include checks you actually ran and any checks you did not run.
+
+---
+
+• Fixed both review findings and pushed PR head 34a8ac31b00ef8668f89b938fedd35a1cfa49b5d.
+
+  What changed:
+
+  - Added disable_annotations: "true" to the pinned mozilla-actions/sccache-action use so its vendor post-
+    step stats cannot fail an otherwise passing lane.
+
+  - Added a workflow hygiene assertion and mutation test so that setting is load-bearing.
+  - Tightened RATCHET_BASELINE_COUNT from 2588 to the measured current 2575.
+
+  Verification passed:
+
+  - python3 scripts/verify_no_config_retype.py
+  - python3 scripts/test_verify_no_config_retype.py
+  - python3 scripts/verify_ci_workflow_hygiene.py
+  - python3 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 scripts/test_sccache_eligibility.py
+  - python3 scripts/test_run_ci_lint_suites.py
+  - python3 scripts/test_rust_verification.py
+  - git diff --check
+  - just source-fence-static
+  - just ci-lint-workflow passed with escalation after sandbox TCP blocked test_ci_provenance.py.
+
+  Remote PR checks: all non-skipped checks are green at 34a8ac31b. PR remains draft, so full Rust merge-
+  proof lanes are still draft-skipped by policy. Worktree is clean.
+
+---
+
+so what's next
+
+---
+
+yes
+
+---
+
+we also need to resolve conflicts
+
+---
+
+ok write ia brief

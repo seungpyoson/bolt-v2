@@ -3,7 +3,7 @@
   "checkpoint_id": "34a97dd2c9fb",
   "strategy": "manual-commit",
   "branch": "chore/704-phase3-batch-plan-eviction",
-  "checkpoints_count": 4,
+  "checkpoints_count": 10,
   "files_touched": [
     "crates/backtesting-vertical-slice/src/backfill_conversion_completion.rs",
     "crates/backtesting-vertical-slice/src/backfill_object_staging.rs",
@@ -24,13 +24,20 @@
       "compact_transcript": "/34/a97dd2c9fb/0/transcript.jsonl",
       "content_hash": "/34/a97dd2c9fb/0/content_hash.txt",
       "prompt": "/34/a97dd2c9fb/0/prompt.txt"
+    },
+    {
+      "metadata": "/34/a97dd2c9fb/1/metadata.json",
+      "transcript": "/34/a97dd2c9fb/1/full.jsonl",
+      "compact_transcript": "/34/a97dd2c9fb/1/transcript.jsonl",
+      "content_hash": "/34/a97dd2c9fb/1/content_hash.txt",
+      "prompt": "/34/a97dd2c9fb/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 18555,
-    "cache_creation_tokens": 436095,
-    "cache_read_tokens": 4166845,
-    "output_tokens": 87517,
-    "api_call_count": 31
+    "input_tokens": 22898,
+    "cache_creation_tokens": 1992025,
+    "cache_read_tokens": 49201429,
+    "output_tokens": 188872,
+    "api_call_count": 91
   }
 }

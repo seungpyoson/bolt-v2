@@ -410,6 +410,7 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_readiness",
     "bolt_v3_strategy_registration",
     "bolt_v3_submit_admission",
+    "chainlink_startup_boot",
     "config_parsing",
     "lake_batch",
     "nt_runtime_capture",

@@ -23,6 +23,12 @@ class PatternCheck:
     description: str
 
 
+@dataclass(frozen=True)
+class MacroDefaultArm:
+    argument_count: int
+    target_indexes: tuple[int, ...]
+
+
 FINANCIAL_VALUE_OWNER_MODULE = "src/bolt_v3_numeric.rs"
 REGISTERED_FINANCIAL_VALUE_DEFAULT_CHECK_RE = re.compile(
     r"<\s*(?P<type>(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
@@ -512,23 +518,75 @@ def macro_matcher_variables(body: str) -> list[str]:
     return variables
 
 
-def default_generating_macro_target_indexes(source: str) -> dict[str, tuple[int, ...]]:
-    macros: dict[str, tuple[int, ...]] = {}
+def macro_rule_arms(body: str) -> list[tuple[str, str]]:
+    inner = body[1:-1] if body.startswith("{") and body.endswith("}") else body
+    close_by_open = {"(": ")", "[": "]", "{": "}"}
+    arms: list[tuple[str, str]] = []
+    index = 0
+    while index < len(inner):
+        while index < len(inner) and (inner[index].isspace() or inner[index] == ";"):
+            index += 1
+        if index >= len(inner):
+            break
+        open_char = inner[index]
+        close_char = close_by_open.get(open_char)
+        if close_char is None:
+            index += 1
+            continue
+        matcher_span = balanced_span(inner, index, open_char, close_char)
+        if matcher_span is None:
+            break
+        matcher_text = inner[matcher_span[0] + 1:matcher_span[1] - 1]
+        index = matcher_span[1]
+        while index < len(inner) and inner[index].isspace():
+            index += 1
+        if not inner.startswith("=>", index):
+            continue
+        index += 2
+        while index < len(inner) and inner[index].isspace():
+            index += 1
+        if index >= len(inner):
+            break
+        open_char = inner[index]
+        close_char = close_by_open.get(open_char)
+        if close_char is None:
+            index += 1
+            continue
+        expansion_span = balanced_span(inner, index, open_char, close_char)
+        if expansion_span is None:
+            break
+        expansion_text = inner[expansion_span[0] + 1:expansion_span[1] - 1]
+        arms.append((matcher_text, expansion_text))
+        index = expansion_span[1]
+    return arms
+
+
+def default_generating_macro_arms(source: str) -> dict[str, tuple[MacroDefaultArm, ...]]:
+    macros: dict[str, tuple[MacroDefaultArm, ...]] = {}
     for match in MACRO_RULES_START_RE.finditer(source):
         span = balanced_span(source, match.end() - 1, "{", "}")
         if span is None:
             continue
         body = source[span[0]:span[1]]
-        matcher_variables = macro_matcher_variables(body)
-        target_indexes = sorted(
-            {
-                matcher_variables.index(target.group("name"))
-                for target in DEFAULT_IMPL_TARGET_VAR_RE.finditer(body)
-                if target.group("name") in matcher_variables
-            }
-        )
-        if target_indexes:
-            macros[match.group("name")] = tuple(target_indexes)
+        default_arms: list[MacroDefaultArm] = []
+        for matcher_text, expansion_text in macro_rule_arms(body):
+            matcher_variables = macro_matcher_variables(matcher_text)
+            target_indexes = sorted(
+                {
+                    matcher_variables.index(target.group("name"))
+                    for target in DEFAULT_IMPL_TARGET_VAR_RE.finditer(expansion_text)
+                    if target.group("name") in matcher_variables
+                }
+            )
+            if target_indexes:
+                default_arms.append(
+                    MacroDefaultArm(
+                        argument_count=len(matcher_variables),
+                        target_indexes=tuple(target_indexes),
+                    )
+                )
+        if default_arms:
+            macros[match.group("name")] = tuple(default_arms)
     return macros
 
 
@@ -594,10 +652,10 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
         return [f"{FINANCIAL_VALUE_OWNER_MODULE}: no registered FinancialValue types; Default fence cannot run"]
     registered_aliases = registered_financial_value_aliases(root, registered_types)
     source_items = tuple(rust_sources(root))
-    default_macro_targets: dict[str, set[int]] = {}
+    default_macro_arms: dict[str, list[MacroDefaultArm]] = {}
     for _, source in source_items:
-        for macro_name, target_indexes in default_generating_macro_target_indexes(source).items():
-            default_macro_targets.setdefault(macro_name, set()).update(target_indexes)
+        for macro_name, arms in default_generating_macro_arms(source).items():
+            default_macro_arms.setdefault(macro_name, []).extend(arms)
     for relative_path, source in source_items:
         for match in REGISTERED_FINANCIAL_VALUE_DEFAULT_IMPL_RE.finditer(source):
             registered_type = registered_type_for_token(match.group("type"), registered_types, registered_aliases)
@@ -614,23 +672,24 @@ def verify_registered_financial_value_default_surface(root: Path) -> list[str]:
                         f"{relative_path}: registered FinancialValue Default impl/derive "
                         f"for {type_name} is forbidden"
                     )
-        for macro_name, target_indexes in default_macro_targets.items():
+        for macro_name, arms in default_macro_arms.items():
             for arguments in macro_invocation_arguments(source, macro_name):
                 argument_chunks = split_macro_arguments(arguments)
-                for target_index in sorted(target_indexes):
-                    if target_index >= len(argument_chunks):
+                for arm in arms:
+                    if len(argument_chunks) != arm.argument_count:
                         continue
-                    for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(argument_chunks[target_index]):
-                        registered_type = registered_type_for_token(
-                            token_match.group(0),
-                            registered_types,
-                            registered_aliases,
-                        )
-                        if registered_type is not None:
-                            findings.append(
-                                f"{relative_path}: registered FinancialValue Default impl/derive "
-                                f"for {registered_type} is forbidden"
+                    for target_index in arm.target_indexes:
+                        for token_match in RUST_TYPE_PATH_TOKEN_RE.finditer(argument_chunks[target_index]):
+                            registered_type = registered_type_for_token(
+                                token_match.group(0),
+                                registered_types,
+                                registered_aliases,
                             )
+                            if registered_type is not None:
+                                findings.append(
+                                    f"{relative_path}: registered FinancialValue Default impl/derive "
+                                    f"for {registered_type} is forbidden"
+                                )
     return sorted(set(findings))
 
 

@@ -233,7 +233,9 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn reference_price_subscription_requests(&self) -> Vec<ReferencePriceSubscriptionRequest> {
+    pub(super) fn reference_price_subscription_requests(
+        &self,
+    ) -> Vec<ReferencePriceSubscriptionRequest> {
         let Some(reference_price) = &self.config.reference_current_price else {
             return Vec::new();
         };

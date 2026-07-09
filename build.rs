@@ -1,6 +1,8 @@
 use std::{
-    env, fs,
-    path::{Path, PathBuf},
+    env,
+    ffi::OsStr,
+    fs,
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
@@ -169,22 +171,9 @@ fn render_gated_source_roots(entries: &[(String, Vec<String>)]) -> String {
 }
 
 fn emit_git_head_rerun_paths(manifest_dir: &Path) {
-    for path in emitted_git_head_rerun_paths(manifest_dir) {
+    for path in git_head_rerun_paths(manifest_dir) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
-}
-
-/// Cargo treats a `rerun-if-changed` path that does not exist as permanently
-/// dirty, so emitting an absent candidate recompiles this crate on every
-/// invocation. A checkout stores each ref either loosely or packed, never both,
-/// so at least one candidate is always absent. Emit only what is present: when
-/// refs move between the two storages the surviving path changes, which re-runs
-/// this script and re-emits the set that now exists.
-pub fn emitted_git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
-    git_head_rerun_paths(manifest_dir)
-        .into_iter()
-        .filter(|path| path.exists())
-        .collect()
 }
 
 pub fn build_script_rerun_env_vars() -> &'static [&'static str] {
@@ -197,6 +186,11 @@ pub fn build_script_manifest_dir() -> PathBuf {
     )
 }
 
+/// Paths whose change means `HEAD` now points at a different commit.
+///
+/// Every path returned must exist. Cargo treats a `rerun-if-changed` path that
+/// does not exist as permanently dirty, which re-runs this script and
+/// recompiles the crate on every single invocation.
 pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
     let Some(git_dir) = git_dir_from_manifest(manifest_dir) else {
         return Vec::new();
@@ -212,11 +206,72 @@ pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
         return paths;
     };
 
+    // A linked worktree resolves `refs/heads/*` against the common dir but keeps
+    // its per-worktree refs (`refs/bisect/*`, `refs/worktree/*`,
+    // `refs/rewritten/*`) in its own git dir, so both bases can hold the ref.
+    // The two are the same directory outside a linked worktree.
     let common_dir = git_common_dir(&git_dir);
-    push_unique(&mut paths, common_dir.join(head_ref));
-    push_unique(&mut paths, git_dir.join(head_ref));
-    push_unique(&mut paths, common_dir.join("packed-refs"));
+    for base in [&common_dir, &git_dir] {
+        if let Some(path) = ref_watch_path(base, head_ref) {
+            push_unique(&mut paths, path);
+        }
+    }
+    let packed_refs = common_dir.join("packed-refs");
+    if packed_refs.is_file() {
+        push_unique(&mut paths, packed_refs);
+    }
     paths
+}
+
+/// Watch `<base>/<head_ref>` when the ref is stored loosely, otherwise watch the
+/// deepest existing directory above it.
+///
+/// A branch ref may be stored loosely, packed, or both at once: `git pack-refs`
+/// deletes the loose file but leaves its packed entry behind, which a later
+/// commit shadows by writing the loose file again. Either storage can therefore
+/// be absent, and an absent path may not be named. Naming the enclosing
+/// directory instead covers the transitions in both directions, because Cargo
+/// reports a directory as changed when an entry anywhere beneath it is added,
+/// modified, or removed: packing the ref deletes the loose file, and committing
+/// on a packed branch creates one.
+///
+/// `<base>` itself is never watched. It holds the index and the logs, which are
+/// rewritten by ordinary git commands that never move `HEAD`.
+fn ref_watch_path(base: &Path, head_ref: &str) -> Option<PathBuf> {
+    let head_ref = refs_relative_path(head_ref)?;
+    let refs_root = base.join("refs");
+    let loose_ref = base.join(head_ref);
+    if loose_ref.is_file() {
+        return Some(loose_ref);
+    }
+
+    let mut current = loose_ref.parent()?;
+    while current.starts_with(&refs_root) {
+        if current.is_dir() {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+    None
+}
+
+/// `head_ref` as a relative path under `refs/`, or `None` when it is anything
+/// else.
+///
+/// `Path::starts_with` matches components literally rather than resolving them,
+/// so the walk above stays inside `<base>/refs` only while `head_ref` holds no
+/// `..`. A `HEAD` reading `ref: refs/../..` would otherwise resolve the deepest
+/// existing directory to the working tree root, and watching that re-runs this
+/// build script on every source edit.
+fn refs_relative_path(head_ref: &str) -> Option<&Path> {
+    let head_ref = Path::new(head_ref);
+    let mut components = head_ref.components();
+    if components.next() != Some(Component::Normal(OsStr::new("refs"))) {
+        return None;
+    }
+    components
+        .all(|component| matches!(component, Component::Normal(_)))
+        .then_some(head_ref)
 }
 
 fn git_dir_from_manifest(manifest_dir: &Path) -> Option<PathBuf> {

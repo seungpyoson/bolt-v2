@@ -1102,7 +1102,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {
-    BinaryOracleEdgeTaker::new(
+    let mut strategy = BinaryOracleEdgeTaker::new(
         BinaryOracleEdgeTakerConfig {
             strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
             order_id_tag: "001".to_string(),
@@ -1218,7 +1218,9 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
         )
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency())),
-    )
+    );
+    register_test_strategy(&mut strategy);
+    strategy
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
@@ -1362,7 +1364,6 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     let mut strategy = test_strategy();
     configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
-    register_test_strategy(&mut strategy);
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
     strategy.active.interval_open = Some(3_100.0);
@@ -1433,7 +1434,6 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
     configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
-    register_test_strategy(&mut strategy);
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
     strategy.active.interval_open = Some(3_100.0);

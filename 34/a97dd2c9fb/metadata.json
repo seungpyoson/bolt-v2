@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "34a97dd2c9fb",
+  "strategy": "manual-commit",
+  "branch": "chore/704-phase3-batch-plan-eviction",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/src/backfill_conversion_completion.rs",
+    "crates/backtesting-vertical-slice/src/backfill_object_staging.rs",
+    "crates/backtesting-vertical-slice/src/bin/polymarket_metadata_gate.rs",
+    "crates/backtesting-vertical-slice/src/path_resolution.rs",
+    "crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs",
+    "crates/backtesting-vertical-slice/src/reference_artifact.rs",
+    "crates/backtesting-vertical-slice/src/source_proof_evidence_staging.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_test_support.rs",
+    "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json",
+    "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/34/a97dd2c9fb/0/metadata.json",
+      "transcript": "/34/a97dd2c9fb/0/full.jsonl",
+      "compact_transcript": "/34/a97dd2c9fb/0/transcript.jsonl",
+      "content_hash": "/34/a97dd2c9fb/0/content_hash.txt",
+      "prompt": "/34/a97dd2c9fb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18555,
+    "cache_creation_tokens": 436095,
+    "cache_read_tokens": 4166845,
+    "output_tokens": 87517,
+    "api_call_count": 31
+  }
+}

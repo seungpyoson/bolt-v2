@@ -1,0 +1,13 @@
+/checkup
+
+---
+
+all
+
+---
+
+Two things I flagged but deliberately left for you: the beads-hook vs GitHub-Issues-first contradiction (both are your own policies — say which wins and I'll align the other), and the stale pre-migration $HOME/.claude.json, which I left untouched since it may hold old credentials. - tell me the situation here
+
+---
+
+explain the situation in plain english - make this concise

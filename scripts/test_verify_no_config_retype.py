@@ -236,6 +236,19 @@ def test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline() -> None:
             raise AssertionError(f"expected ratchet finding, got {findings!r}")
 
 
+def test_ratchet_baseline_matches_current_non_strict_count() -> None:
+    violations = VERIFIER.collect_violations(VERIFIER.REPO_ROOT)
+    ratchet_violations = tuple(
+        item for item in violations if item[0].path not in VERIFIER.STRICT_RETYPE_PATHS
+    )
+    actual = len(ratchet_violations)
+    if VERIFIER.RATCHET_BASELINE_COUNT != actual:
+        raise AssertionError(
+            "RATCHET_BASELINE_COUNT must match the current non-strict count: "
+            f"{VERIFIER.RATCHET_BASELINE_COUNT} != {actual}"
+        )
+
+
 def test_registered_payload_literals_do_not_self_violate() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -258,6 +271,35 @@ def test_registered_payload_literals_do_not_self_violate() -> None:
             raise AssertionError(f"registered payload literals should be control-plane data, got {findings!r}")
 
 
+def test_registered_bootstrap_payloads_are_present() -> None:
+    present = {(hit.path, hit.value) for hit in VERIFIER.script_literals(VERIFIER.REPO_ROOT)}
+    stale = sorted(
+        (registration.path, registration.value)
+        for registration in VERIFIER.REGISTERED_RETYPE_PAYLOADS
+        if (registration.path, registration.value) not in present
+    )
+    if stale:
+        raise AssertionError(f"registered no-config bootstrap payloads must be present: {stale}")
+
+
+def test_relocated_hygiene_modules_are_strict_paths() -> None:
+    expected = {
+        "scripts/cargo_command_analysis.py",
+        "scripts/ci_workflow_hygiene_test_helpers.py",
+        "scripts/merge_queue_preflight.py",
+        "scripts/shell_dataflow_analysis.py",
+        "scripts/governance_diff_analysis.py",
+        "scripts/workflow_expression_analysis.py",
+        "scripts/test_cargo_command_analysis.py",
+        "scripts/test_shell_dataflow_analysis.py",
+        "scripts/test_governance_diff_analysis.py",
+        "scripts/test_workflow_expression_analysis.py",
+    }
+    missing = sorted(expected - VERIFIER.STRICT_RETYPE_PATHS)
+    if missing:
+        raise AssertionError(f"relocated hygiene modules must stay in strict no-config-retype coverage: {missing}")
+
+
 def main() -> int:
     tests = (
         test_missing_governed_artifact_is_loud_error,
@@ -271,7 +313,10 @@ def main() -> int:
         test_extensionless_strict_script_syntax_error_is_loud,
         test_registered_payload_assignment_skip_is_limited_to_verifier_file,
         test_ratchet_mode_fails_when_unregistered_count_exceeds_baseline,
+        test_ratchet_baseline_matches_current_non_strict_count,
         test_registered_payload_literals_do_not_self_violate,
+        test_registered_bootstrap_payloads_are_present,
+        test_relocated_hygiene_modules_are_strict_paths,
     )
     for test in tests:
         test()

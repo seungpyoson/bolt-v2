@@ -106,6 +106,36 @@ use sha2::{Digest, Sha256};
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3LoggingNotReadyForRun {
+    max_level: LevelFilter,
+    error_enabled: bool,
+}
+
+impl std::fmt::Display for BoltV3LoggingNotReadyForRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "bolt-v3 logging is not initialized before node run: max_level={:?}, error_enabled={}",
+            self.max_level, self.error_enabled
+        )
+    }
+}
+
+impl std::error::Error for BoltV3LoggingNotReadyForRun {}
+
+pub fn assert_bolt_v3_logging_ready_for_run() -> Result<(), BoltV3LoggingNotReadyForRun> {
+    let max_level = log::max_level();
+    let error_enabled = log::log_enabled!(log::Level::Error);
+    if max_level == LevelFilter::Off || !error_enabled {
+        return Err(BoltV3LoggingNotReadyForRun {
+            max_level,
+            error_enabled,
+        });
+    }
+    Ok(())
+}
+
 use crate::{
     bolt_v3_adapters::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,

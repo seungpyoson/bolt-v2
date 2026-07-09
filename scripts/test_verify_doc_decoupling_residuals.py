@@ -69,6 +69,7 @@ def write_fixture(
     extra_rust_test: str = "",
     naming_script_suffix: str = "",
     schema_script: str = 'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
+    governance_analysis_script: str = "",
 ) -> None:
     (root / "ci").mkdir(parents=True)
     (root / "ci" / "doc-decoupling-residuals.toml").write_text(
@@ -126,6 +127,11 @@ def write_fixture(
     )
     if extra_script:
         (scripts / "verify_new_doc_reader.py").write_text(extra_script, encoding="utf-8")
+    if governance_analysis_script:
+        (scripts / "governance_diff_analysis.py").write_text(
+            governance_analysis_script,
+            encoding="utf-8",
+        )
     if extra_rust_test:
         tests = root / "tests"
         tests.mkdir()
@@ -139,6 +145,7 @@ def collect(
     extra_rust_test: str = "",
     naming_script_suffix: str = "",
     schema_script: str = 'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
+    governance_analysis_script: str = "",
 ) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -149,6 +156,7 @@ def collect(
             extra_rust_test=extra_rust_test,
             naming_script_suffix=naming_script_suffix,
             schema_script=schema_script,
+            governance_analysis_script=governance_analysis_script,
         )
         return VERIFIER.collect_findings(root)
 
@@ -228,6 +236,56 @@ def test_stale_ledger_snippet_fails() -> None:
     assert_finding(findings, "stale residual ledger snippet")
 
 
+def test_relocated_governance_guard_residual_path_is_allowed() -> None:
+    expected = {
+        "scripts/cargo_command_analysis.py",
+        "scripts/shell_dataflow_analysis.py",
+        "scripts/governance_diff_analysis.py",
+        "scripts/workflow_expression_analysis.py",
+    }
+    missing = sorted(path for path in expected if not VERIFIER.allowed_residual_path(path))
+    if missing:
+        raise AssertionError(f"relocated analyzer residuals must remain ledgerable: {missing}")
+
+
+def test_relocated_governance_guard_residuals_are_scanned() -> None:
+    ledger_entry_marker = next(
+        line for line in LEDGER_TEXT.splitlines() if line.startswith("[[")
+    )
+    legacy_entry = next(
+        entry
+        for entry in LEDGER_TEXT.split(ledger_entry_marker)
+        if "verify_ci_workflow_hygiene.py" in entry
+    )
+    governance_path = "scripts/" + "governance_diff_analysis.py"
+    governance_entry = legacy_entry.replace(
+        "scripts/verify_ci_workflow_hygiene.py",
+        governance_path,
+    )
+    governance_entry = "\n".join(
+        line for line in governance_entry.splitlines() if "\\\\" not in line
+    )
+    ledger_text = (
+        LEDGER_TEXT
+        + f"\n{ledger_entry_marker}"
+        + governance_entry
+    )
+    agents_doc = "AGENTS" + ".md"
+    constitution_doc = ".specify/memory/" + "constitution" + ".md"
+    findings = collect(
+        ledger_text=ledger_text,
+        governance_analysis_script=(
+            "SELF_AUTHORIZING_GOVERNANCE_PATHS = (\n"
+            f'    "{agents_doc}",\n'
+            f'    "{constitution_doc}",\n'
+            ")\n"
+            'NEW_DOC = "docs/untracked.md"\n'
+        ),
+    )
+    assert_finding(findings, "scripts/governance_diff_analysis.py")
+    assert_finding(findings, "unclassified prose reference")
+
+
 def test_empty_scanned_source_set_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -303,6 +361,8 @@ def main() -> int:
         test_split_suffix_helper_markdown_reference_fails,
         test_exact_line_matching_does_not_allow_other_md_suffix_line,
         test_stale_ledger_snippet_fails,
+        test_relocated_governance_guard_residual_path_is_allowed,
+        test_relocated_governance_guard_residuals_are_scanned,
         test_empty_scanned_source_set_fails_closed,
         test_empty_scanned_source_set_suppresses_invalid_ledger_noise,
         test_doc_sync_exception_requires_owner_issue,

@@ -1,0 +1,60 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "0f3da2cde7fa",
+  "session_id": "a2712926-fa94-405b-b44f-792003993c06",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-09T08:14:57.74376Z",
+  "branch": "chore/704-phase3-batch-plan-eviction",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/src/backfill_accepted_tranche.rs",
+    "crates/backtesting-vertical-slice/src/backfill_binding_coverage.rs",
+    "crates/backtesting-vertical-slice/src/backfill_conversion_batch.rs",
+    "crates/backtesting-vertical-slice/src/backfill_conversion_completion.rs",
+    "crates/backtesting-vertical-slice/src/backfill_coverage.rs",
+    "crates/backtesting-vertical-slice/src/backfill_execution_plan.rs",
+    "crates/backtesting-vertical-slice/src/backfill_preflight.rs",
+    "crates/backtesting-vertical-slice/src/backfill_source_proof_scope.rs",
+    "crates/backtesting-vertical-slice/src/reference_artifact.rs",
+    "crates/backtesting-vertical-slice/src/reference_fixture_index.rs",
+    "crates/backtesting-vertical-slice/src/source_proof_admissibility.rs",
+    "crates/backtesting-vertical-slice/src/source_proof_migration_preflight.rs",
+    "crates/backtesting-vertical-slice/src/source_selection_readiness.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "95d9a3d022d3",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 26431,
+    "cache_creation_tokens": 1797063,
+    "cache_read_tokens": 78832210,
+    "output_tokens": 413873,
+    "api_call_count": 206
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-09T08:14:57.610586Z",
+    "agent_lines": 209,
+    "agent_removed": 111,
+    "human_added": 285,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 494,
+    "total_lines_changed": 786,
+    "agent_percentage": 40.71246819338422,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

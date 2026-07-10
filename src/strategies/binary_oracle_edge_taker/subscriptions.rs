@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use anyhow::Result;
-#[cfg(not(test))]
 use nautilus_common::actor::DataActor;
 use nautilus_core::Params;
 #[cfg(not(test))]
@@ -204,10 +203,7 @@ impl BinaryOracleEdgeTaker {
     pub(super) fn subscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
             let client_id = self.signal_client_id();
-            #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
     }
 
@@ -238,38 +234,25 @@ impl BinaryOracleEdgeTaker {
         }
 
         for (instrument_id, client_id) in quote_requests {
-            #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
         for (instrument_id, client_id) in trade_requests {
-            #[cfg(not(test))]
             self.subscribe_trades(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
         for (instrument_id, client_id) in index_requests {
-            #[cfg(not(test))]
             self.subscribe_index_prices(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
     }
 
     pub(super) fn unsubscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
             let client_id = self.signal_client_id();
-            #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
     }
 
     pub(super) fn subscribe_reference_prices(&mut self) -> Result<()> {
         for subscription in self.reference_price_subscription_requests()? {
-            #[cfg(not(test))]
             self.subscribe_data(
                 subscription.data_type.clone(),
                 Some(subscription.client_id),
@@ -284,7 +267,6 @@ impl BinaryOracleEdgeTaker {
 
     pub(super) fn unsubscribe_reference_prices(&mut self) -> Result<()> {
         for subscription in self.reference_price_subscription_requests()? {
-            #[cfg(not(test))]
             self.unsubscribe_data(
                 subscription.data_type.clone(),
                 Some(subscription.client_id),
@@ -317,28 +299,19 @@ impl BinaryOracleEdgeTaker {
             .context
             .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
         {
-            #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
         for (instrument_id, client_id) in self
             .context
             .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
         {
-            #[cfg(not(test))]
             self.unsubscribe_trades(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
         for (instrument_id, client_id) in self
             .context
             .realized_volatility_index_subscription_requests_for_surface(&surface_id)
         {
-            #[cfg(not(test))]
             self.unsubscribe_index_prices(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
         }
     }
 
@@ -420,34 +393,25 @@ impl BinaryOracleEdgeTaker {
             let previous_custom_subscription = previous_subscription
                 .as_ref()
                 .and_then(|subscription| subscription.custom_subscription.clone());
-            #[cfg(not(test))]
             if let Some(data_type) = previous_custom_subscription {
                 self.unsubscribe_data(data_type, Some(resolution_client_id), None);
             }
-            #[cfg(test)]
-            let _ = previous_custom_subscription;
 
             let previous_index_subscription = previous_subscription.and_then(|subscription| {
                 subscription
                     .durable_index_subscription
                     .then_some(subscription.instrument_id)
             });
-            #[cfg(not(test))]
             if let Some(instrument_id) = previous_index_subscription {
                 self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
             }
-            #[cfg(test)]
-            let _ = previous_index_subscription;
 
             if use_durable_index_subscription {
-                #[cfg(not(test))]
                 self.subscribe_index_prices(
                     resolution_instrument_id,
                     Some(resolution_client_id),
                     Some(params.clone()),
                 );
-                #[cfg(test)]
-                let _ = (resolution_client_id, params);
                 self.record_resolution_strike_subscribe_event(
                     ResolutionStrikeSubscribeEvent::durable_index(
                         report_boundary,
@@ -457,8 +421,6 @@ impl BinaryOracleEdgeTaker {
                 );
                 return ResolutionReportSubscriptionOutcome::Dispatched;
             }
-            #[cfg(test)]
-            let _ = params;
         }
 
         let mut params = Params::new();
@@ -481,15 +443,10 @@ impl BinaryOracleEdgeTaker {
             .resolution_report_boundary_subscriptions
             .get_mut(&report_boundary)
             .and_then(|subscription| subscription.custom_subscription.replace(data_type.clone()));
-        #[cfg(not(test))]
-        {
-            if let Some(previous_data_type) = previous_custom_subscription {
-                self.unsubscribe_data(previous_data_type, Some(resolution_client_id), None);
-            }
-            self.subscribe_data(data_type.clone(), Some(resolution_client_id), Some(params));
+        if let Some(previous_data_type) = previous_custom_subscription {
+            self.unsubscribe_data(previous_data_type, Some(resolution_client_id), None);
         }
-        #[cfg(test)]
-        let _ = (resolution_client_id, previous_custom_subscription, params);
+        self.subscribe_data(data_type.clone(), Some(resolution_client_id), Some(params));
         self.record_resolution_strike_subscribe_event(
             ResolutionStrikeSubscribeEvent::custom_fetch(
                 report_boundary,
@@ -507,25 +464,17 @@ impl BinaryOracleEdgeTaker {
             self.resolution_report_boundary_subscriptions.clear();
             return;
         };
-        #[cfg(test)]
-        let _ = resolution_client_id;
         let subscriptions = std::mem::take(&mut self.resolution_report_boundary_subscriptions);
         for subscription in subscriptions.into_values() {
             if let Some(data_type) = subscription.custom_subscription {
-                #[cfg(not(test))]
                 self.unsubscribe_data(data_type, Some(resolution_client_id), None);
-                #[cfg(test)]
-                let _ = data_type;
             }
             if subscription.durable_index_subscription {
-                #[cfg(not(test))]
                 self.unsubscribe_index_prices(
                     subscription.instrument_id,
                     Some(resolution_client_id),
                     None,
                 );
-                #[cfg(test)]
-                let _ = subscription.instrument_id;
             }
         }
     }

@@ -27,6 +27,7 @@ use crate::{
         ReferenceQuoteProvenance,
     },
 };
+use nautilus_common::messages::data::{DataCommand, SubscribeCommand, UnsubscribeCommand};
 
 const CHAINLINK_REFERENCE_PROVIDER: &str = "chainlink_ws";
 const CHAINLINK_REFERENCE_INSTRUMENT: &str = "BTC-USD.CHAINLINK_REFERENCE";
@@ -593,9 +594,47 @@ fn selection_retry_reissues_missing_live_input_subscriptions() {
     let mut strategy = test_strategy();
     strategy.config.reference_current_price = Some(reference_price_config());
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    register_test_strategy(&mut strategy);
 
     strategy.retry_missing_live_input_subscriptions_at(1_500);
 
+    let commands = recorded_data_commands();
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Unsubscribe(UnsubscribeCommand::Data(command))
+                if command.client_id == Some(ClientId::from("chainlink_reference"))
+                    && command.data_type.type_name() == "BoltV3ReferencePriceUpdate"
+        )),
+        "retry must enqueue reference-current-price unsubscribe through NT DataActor; commands={commands:#?}",
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Data(command))
+                if command.client_id == Some(ClientId::from("chainlink_reference"))
+                    && command.data_type.type_name() == "BoltV3ReferencePriceUpdate"
+        )),
+        "retry must enqueue reference-current-price subscribe through NT DataActor; commands={commands:#?}",
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Unsubscribe(UnsubscribeCommand::Quotes(command))
+                if command.instrument_id == InstrumentId::from("SIGNAL.SOURCE")
+                    && command.client_id == Some(ClientId::from("signal_data_client"))
+        )),
+        "retry must enqueue signal quote unsubscribe through NT DataActor; commands={commands:#?}",
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Quotes(command))
+                if command.instrument_id == InstrumentId::from("SIGNAL.SOURCE")
+                    && command.client_id == Some(ClientId::from("signal_data_client"))
+        )),
+        "retry must enqueue signal quote subscribe through NT DataActor; commands={commands:#?}",
+    );
     assert_eq!(
         strategy.live_input_subscription_retry_events,
         vec![LiveInputSubscriptionRetryEvent {
@@ -629,6 +668,7 @@ fn selection_retry_reissues_missing_live_input_subscriptions() {
 fn selection_retry_does_not_reissue_reference_subscriptions_without_active_interval() {
     let mut strategy = test_strategy();
     strategy.config.reference_current_price = Some(reference_price_config());
+    register_test_strategy(&mut strategy);
 
     let retry_event_count = strategy.live_input_subscription_retry_events.len();
     let subscribe_event_count = strategy.reference_price_subscribe_events.len();

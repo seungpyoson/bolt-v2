@@ -3,7 +3,7 @@
   "checkpoint_id": "a5155369a40c",
   "strategy": "manual-commit",
   "branch": "fix/1355-private-fetch-maintenance",
-  "checkpoints_count": 3,
+  "checkpoints_count": 4,
   "files_touched": [
     "scripts/ci_workflow_hygiene_test_helpers.py",
     "scripts/git_maintenance.py",
@@ -32,13 +32,20 @@
       "compact_transcript": "/a5/155369a40c/2/transcript.jsonl",
       "content_hash": "/a5/155369a40c/2/content_hash.txt",
       "prompt": "/a5/155369a40c/2/prompt.txt"
+    },
+    {
+      "metadata": "/a5/155369a40c/3/metadata.json",
+      "transcript": "/a5/155369a40c/3/full.jsonl",
+      "compact_transcript": "/a5/155369a40c/3/transcript.jsonl",
+      "content_hash": "/a5/155369a40c/3/content_hash.txt",
+      "prompt": "/a5/155369a40c/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1013507,
+    "input_tokens": 1389758,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 71175680,
-    "output_tokens": 107450,
-    "api_call_count": 422
+    "cache_read_tokens": 84173056,
+    "output_tokens": 142582,
+    "api_call_count": 596
   }
 }

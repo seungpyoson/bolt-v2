@@ -1,0 +1,76 @@
+Continue PR #1347 only. Fast-forward the clean fix-1339-smoke-full-shards worktree from local 95a19169 to remote head 028201ee. Do not touch the dirty fix-
+  1339-stable-smoke-shard worktree.
+
+  Adversarial review found two fail-open coverage bypasses:
+  1. matrix.exclude can remove shard 4.
+  2. A step-level `if` can prevent the BVS Run tests step from executing for shard 4.
+
+  Update the workflow hygiene verifier to reject include/exclude manipulation of the governed matrix and reject any `if` on the governed Run tests step. Add
+  mutation tests proving both previously pass and now fail. Preserve all-four-shard execution and leave issue-789 behavior unchanged.
+
+  Run permitted non-compile checks, commit, and push while keeping the PR draft. Report the exact head and evidence. Do not request external review or run
+  final full CI yet.
+
+  #1288 (https://github.com/seungpyoson/bolt-v2/pull/1288) is closed: its design could permit a direct green-head merge without full CI; the safe static slice
+  already landed in #1292, while #1256 (https://github.com/seungpyoson/bolt-v2/issues/1256) remains open for an enforceable queue-only design.
+
+---
+
+seems like we are having a lot of conditional fallbacks -
+
+---
+
+Pause before committing. Keep the RED mutation tests, but remove `matrix_expansion_keys` and the individual include/exclude/if denylist checks.
+
+  Implement one positive, fail-closed contract:
+
+  1. The matrix’s direct keys must be exactly `run_number` and `shard`; retain the existing exact-value, contiguous-shard, and denominator checks. Any extra
+  key must fail automatically.
+  2. The governed `Run tests` step must have exactly the canonical envelope: `name`, `env`, and `run`. Reuse `named_step_block` and
+  `block_has_canonical_step_envelope`.
+
+  Add mutations for quoted `"if"`, `include`, `exclude`, and an unknown extra control key. All must fail through the same structural-contract error.
+
+  Do not add another bespoke YAML scanner or one condition per discovered bypass. If the existing structural helpers cannot express this cleanly, stop and
+  report the abstraction gap rather than adding more regex.
+
+  The principle should be: define the single allowed path, not maintain an expanding list of forbidden alternatives.
+
+---
+
+### PR #1347 — retain the small fix
+
+  Complete PR #1347 with one canonical workflow contract and no denylist.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1339-smoke-full-shards
+
+  Expected state:
+  - HEAD and GitHub head: 028201ee96f411183b112d390d3c08048961ea66
+  - One expected uncommitted file:
+    scripts/test_verify_ci_workflow_hygiene.py
+  Preserve and inspect that WIP; do not reset it blindly.
+
+  Invariant:
+  The smoke lane collectively executes every partition [1,2,3,4]. Issue-789 behavior remains byte-for-byte unchanged.
+
+  Implementation:
+  - Do not add `matrix_expansion_keys`, forbidden-key lists, or another YAML scanner.
+  - Define the one valid matrix structure: direct keys exactly `run_number` and `shard`, with existing exact values, contiguous sequence, and denominator
+  parity.
+  - Define the governed `Run tests` step through the existing positive structural-envelope helpers. Its permitted top-level structure must be exact; extra
+  execution-control fields fail automatically.
+  - Reuse or generalize an existing mapping helper only if doing so removes duplication. Do not create a second parser.
+  - Keep regression mutations under the existing flaky-workflow contract test owner. Avoid a second independent test owner for the same invariant.
+  - Cover `exclude`, quoted `"if"`, and an unknown extra control field through the same structural rejection.
+
+  If this cannot remain a small contract change, stop and report the abstraction problem.
+
+  Run permitted non-compile checks, including the focused Python verifier tests, actionlint, `just ci-lint-workflow`, and `git diff --check`. Commit and
+  publish with `just sandbox-safe-push`; keep the PR draft.
+
+  Report the exact remote head and net diff. Do not request external review, queue, or merge.
+
+---
+
+conduct an internal adverserial review

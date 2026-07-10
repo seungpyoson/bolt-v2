@@ -1,0 +1,731 @@
+You are the reviewer/coordinator for bolt-v2 (seungpyoson/bolt-v2, local /Users/spson/Projects/Claude/bolt-v2). Codex sessions implement; you verify at exact pinned heads, post owner reviews as PR comments, maintain the #1179 ledger, and write execution briefs inline in chat. The owner is not technical — reply in plain English, concise, recommendation-first, no AskUserQuestion UI. Read the memory directory before acting; project_v017_stability_session_one.md and project_incident_campaign_chronicle.md carry the live state.
+
+    Goal complete; elapsed about 17 minutes.
+                                                                                                                                                       Understood — that was another session's output leaking into my ropping it entirely; it stays with that session. Here's the maintain the #1179 ledger, and write execution briefs inline in chat. The owner is not technical — reply in plain English, concise, recommendation-first, no AskUserQuestion UI. Read the memory directory before acting; project_v017_stability_session_one.md and project_incident_campaign_chronicle.md carry the live state.
+
+Where things stand. PR #1298 (Chainlink startup-connect boot hang) merged at b1e7ed34c, tagged v0.1.9, built and deployed to the live box today (2026-07-09). The #1298 hang did not recur — the node reached Running. But the boot exposed a two-part regression, the session was aborted with zero orders (Polymatape-verified), and the box is stopped. Nothing to roll back; va now-valid config. The #1179 ledger comment 4873354436 has thefull record plus a blind-forensics addendum (always re-fetch that comment live before PATCHing it).
+                                                                                                                                                     Regression 1 — logging dies at startup. ops launch runs its reftage in-process. That stage builds a full strategy-free LiveNodewith real data clients (build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients), connects them, runs, and stops — kernel Stopped, engine clients disconnected. Its kernel claims NT's once-per-process logger (log::set_boxed_logger; see NT crates/common/src/logging/logger.rs, the re-init comment). After the stage, the real node runs mute. Proof: evernstance>.log — including all three v0.1.7 session-one boots —04:45:06→04:45:21; 07-09: 03:33:32→03:33:38 "Event loop stopped"). Under v0.1.7 the stdout→journald sink survived (session one's 05:45 ERROR lines exist); under v0.1.9 both sinks die — zero journald lines across 19 minutes of live process after the launch-identity write at 03:33:38.
+
+Regression 2 — the strategy plane never produced anything. Node Running, venue clients refreshing instruments every minute, but zero subscriptions/quotes/decision-evidence/reports across four market boundaries (03:35–03:50Z). Session one wrote continuously from arm.                        
+What the end-to-end investigation already eliminated (don't redo):                                                                                            - Config: box root.toml, profiles/prod-btc-5m.overlay.toml, strl are byte-identical to repo-blessed at b1e7ed34c. Three staleon-box values were fixed to repo-blessed during deploy (chainlink_reference.data.reconnect_max_attempts 0→"unlimited"; chainlink_strike.data.http_timeout_secs and gate_providers.resolution_oracle_primary.chainlink_data_streams.http_timeout_secs 10→4 — a coherence rule ties    the last two). RV surface btc_usdt_midpoint_rv has three enablespot quotes); reference_current_price has one enabled chainlink source. signal_instrument_id/signal_venue are absent from the Bhether that's by design before treating it as a finding.
+- NT pin: identical across v0.1.7↔v0.1.9 (6be5a5094716790a8ca2875445fde4fa2586107e).
+- on_start ran: the process outlived the watchdog's startup deadline + grace, which is only possible via the NodeState::Running break arm ⇒ trader started ⇒  on_start ran. Nothing panicked.
+- #1283 eliminated (backtesting-only). #1285's subscriptions.rs diff is resolution/settlement-close machinery only; its bolt_v3_live_node.rs diff is input-health bookkeeping — no registration/routing changes. Per-minute Polymarket instrument feathers are client-native (update_instruments_interval_mins = 1) — a neutral signal, not evidence of strategy life.
+
+The leading unified hypothesis (unproven — this is where the last session stopped). Four independent data sources (Chainlink reference + three spot venues)   went silent together. That is one shared cause, not four bugs. e one thing in range that builds and tears down a full nodebefore the real node in the same process. Logger death is a proven instance of that teardown poisoning process-global state. The open question: does the same teardown kill something the real node's data plane needs? Concretely: run_reference_current_price_health (src/main.rs ~line 817) builds its own tokio::runtime::Builder::new_multi_thread() + LocalSet, block_ons the probe, and drops that runtime; run_built_node then builds a second runtime for the real node. Both block_on on the main thread. NT's msgbus/cache/actorcrates/common/src/msgbus/mod.rs:94,197;crates/common/src/actor/registry.rs), and bolt's chainlink provider spawns its liveness supervisor onto NT's global runtime via get_runtime().spawn(...). The last session was mid-verification of exactly this: which NT singleton (thread-local msgbus/cache/actor registry, or the global runtime) does the probe's kernel Stop leave dead or stale for the second node? Find that and both regressions likely share one root cause — and the fix is one change: stop running a   full LiveNode in-process before the real one (run the health stndalone ops reference-current-price-health subcommand already exists — or have the launcher own one process-lifetime initiali
+Class finding to carry into any brief. Every production subscribe_* call in strategies/binary_oracle_edge_taker/subscriptions.rs is #[cfg(test)]-compiled-out, and record_reference_price_subscribe_event stores only under cfg(test) (production: let _ = event). The production subscription    path is structurally unexercisable by the current test suite — our review rounds caught none of this. Any fix must add
+
+Your immediate task. Finish the singleton investigation (read NT's msgbus/mod.rs thread-locals, actor/registry.rs, runner.rs, and the LiveNode/kernel stop-and-dispose paths at the pinned NT rev; the checkout is ~/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/6be5a50). Decide whether regressions 1 and 2 are one root cause or two. Then write the execution brief inline in chat for Codex — logging-ownership fix first (it's the diagnostic instrument, not a detour), with the production-subscription-coverage requirement folded in. Do not relay the brief until the owner has seen your verdict. Do not open a GitHub  issue — the owner has waived issue-filing for this work; the #1
+                                                                                                                                                              Operating constraints (non-negotiable). - CI-dispatch protocol: zero manual full-CI dispatches. Debug led→green proofs at exact heads (a red proof runs at a temp headcontaining the test but not the fix). The merge queue is the real gate.
+- Reviews: full-PR re-review on every revision, never delta-scoped. Verify derivation, not presence. Post-approval pushes supersede prior PASS. Every finding ends FIXED or DISPROVEN (DISPROVEN needs a reproduction test, never prose).                                                                                   - Never declare merge-ready and never initiate /done or sessiones. Flag exactly when the owner must act (sp-reviewer approval + @mergifyio queue). - No gates as fixes. The owner's standing rule: "safety equipmeences, caps, or validation layers as a fix. Fix the behavior. Fix the class, not the instance.
+- Anchor every claim on a re-read file or a re-run command; subagent reports are drafts. Never fabricate metrics.
+- Ignore output from parallel sessions that appears mid-turn unless the owner explicitly asks you to act on it.
+ns delete "orphaned-looking" trees (this killed two v0.1.8 builds). A warm v0.1.9 worktree is at ~/.cache/bolt-builds/deploy-v019.
+- Box i-0d544aeb04c3824e4 (eu-west-2, c7g.large), currently stopped. Service unit bolt-v2.service, binary /opt/bolt-v2/bolt-v2, config /opt/bolt-v2/config, data /srv/bolt-v2. NT log file is WorkingDirectory/BOLT-001_<date>_<instance>.log.
+- SSM shell is dash — no heredocs, no bashisms; ship scripts via S3 and python3 them. The box's IAM role can s3:PutObject only under the archives/ prefix, not artifacts/. generate-live-config must run as root.
+- Bot log::error reaches journald at INFO priority (stdout forwlly blind; text-grep ERROR|panicked|fail-closed. journalctl--since "-10 min" silently returns empty — use explicit UTC timestamps. Box timezone is UTC.
+- The auto-mode classifier blocks deletions and base64-pipe patterns; ask the owner for explicit verbatim authorization before deleting anything on the box. Leftover evidence files on the box still await such authorizati
+
+After the regression is fixed: redeploy, then stability session two — goals are the first-ever local settlement booking, no re-park after market end, a planned kill/restart with an open position, and a mechanical bot-cash == on-chain-cash reconciliation. Only after that: close #1272/#1179, then #1279 Phase 1 (hoisting the generic machinery — order lifecycle, settlement booking, reject classification — out of the taker strategy file, where it was built during the incident campaign).
+
+---
+
+• Implemented and proved the #1179 launch-health logging fix.
+
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1310
+  Head: 4ccf4c0b7e28c550db3cdc12a6976aad78e73009
+  Branch/worktree: fix/1179-launch-health-subprocess
+
+  Evidence:
+
+  - Runtime red proof: Rust Probe 29000487956 at temp head d7e6f900867eec6ff8df0d4438ca4e18eb23583c failed
+    the old in-process pattern with later kernel log::LevelFilter::Off.
+
+  - Earlier diagnostic red run: 28999782181 at 56554f5e2699beb4e40e8a589bd1d671de709050.
+  - Green proof: Debug Test 28998714218 passed at PR head 4ccf4c0b7e28c550db3cdc12a6976aad78e73009.
+
+  Fresh local gates passed on the PR worktree:
+  cargo fmt --check, both pure-Rust runtime verifiers, both runtime-literal verifiers, git diff --check,
+  and just source-fence-static.
+
+  I updated the PR body with the runtime red proof and the accepted second SSM pass note. No EC2/service
+  start, no subscription/strategy code changes, and no manual full-CI dispatches. Current PR checks have
+  automatic edited-PR jobs still pending (gate, source-fence-static, bvs-test archive); I am not claiming
+  full CI green.
+
+I asked it to do internal adverserial review, and it came back with the following - 
+• Findings
+
+  HIGH .worktrees/fix-1179-launch-health-subprocess/src/main.rs:2450
+  ops_launch_reference_health_subprocess_nonzero_aborts_before_start does not exercise the subprocess
+  boundary. It stubs run_ops_launch_chain_with to return
+  ReferenceCurrentPriceHealthSubprocessError::ChildExitedNonZero, so the test would still pass if
+  run_reference_current_price_health_subprocess stopped checking output.status.success().
+
+  Fix: add a test that drives the actual subprocess runner through the launch stage, using an injectable
+  exe/command helper or a controlled child binary/test harness that exits non-zero.
+
+  MEDIUM .worktrees/fix-1179-launch-health-subprocess/tests/bolt_v3_production_entrypoint.rs:150
+  The structural invariant is weaker than the brief requires. It only checks for the new subprocess call
+  and absence of the old helper name. A future in-process LiveNode/kernel helper with a different name
+  could be added before OpsLaunchStage::Start and this test would still pass.
+
+  Fix: make the source guard scan the pre-Start launch path for forbidden kernel/LiveNode construction
+  symbols such as build_bolt_v3_strategy_free_*live_node, prepare_reference_current_price_health_run, and
+  direct NT kernel/LiveNode builder calls outside the subprocess command path.
+
+  MEDIUM .worktrees/fix-1179-launch-health-subprocess/src/main.rs:733
+  parse_reference_current_price_health_subprocess_report finds the first { in stdout and accepts any JSON
+  object containing four keys. That can false-fail if earlier child stdout contains JSON-ish logging
+  before the report, or false-pass on a non-report object with those keys.
+
+  Fix: parse the actual operator report shape, ideally by deserializing a typed owned report or by
+  scanning stdout JSON values and requiring the final/unique value matching the expected report schema.
+
+  Recommendation: request changes before owner review. The production direction is right, but two proof
+  requirements are currently weaker than the PR claims.
+
+I'm not comfortable with adding more tests - that tend to add more debts
+
+---
+
+so what should we do?
+
+---
+
+so what should we do now
+
+---
+
+I approve -
+
+---
+
+so we don't need to make any changes for the first pr?
+
+---
+
+tell me the blurb for the first pr then
+
+---
+
+• PR #1310 revision is at head 4101ec4fa41a280b3588250ac46e158596f572ca.
+
+  Implemented the requested changes: removed the stdout report parser/error variants/tests, extracted the
+  pure ExitStatus decision with a unit test, and added the boot-time logging-ready abort before node run.
+  The existing survival differential now asserts the poisoned old shape aborts. PR body is updated with
+  the pinned head and evidence. Worktree is clean.
+
+  Verification:
+
+  - Debug lane green: https://github.com/seungpyoson/bolt-v2/actions/runs/29004190458
+  - Exact-head CI gate green: https://github.com/seungpyoson/bolt-v2/actions/runs/29004182932
+  - Exact-head Backtester gate green: https://github.com/seungpyoson/bolt-v2/actions/runs/29004182857
+  - Coverage green: https://github.com/seungpyoson/bolt-v2/actions/runs/29004182983
+  - Later automatic PR-body-triggered cycle also completed green/skipped only: CI
+    https://github.com/seungpyoson/bolt-v2/actions/runs/29005429561, Backtester
+    https://github.com/seungpyoson/bolt-v2/actions/runs/29005429512, Coverage
+    https://github.com/seungpyoson/bolt-v2/actions/runs/29005429534
+
+  No manual full-CI dispatches were run. I stopped here and did not start the subscription-regression
+  changes.
+
+---
+
+what's the second brief for? I thought you needed the logger to identify the root cause
+
+---
+
+so should we do task 2, 3 together?
+
+---
+
+generate the brief 2+3
+
+---
+
+──────────────────────────────────────────────────
+
+• Goal complete.
+
+  Current state:
+
+  - Draft PR: https://github.com/seungpyoson/bolt-v2/pull/1316
+  - Pinned head: 4c359a5a770bf1e72989d8aef17f66cfc9205549
+  - Required reviewer requested: sp-reviewer
+  - Task A deployed-rev proof: success, run 29013637479
+  - Task B red proof: expected failures, run 29014325014
+  - Task B green proof: success, run 29015590293
+  - Local checks passed: git diff --check, just fmt-check, just source-fence-static
+
+  PR-triggered checks had no failures at the final audit; one static check was still pending, and per repo
+  policy I did not wait on full CI. Goal usage: 676,576 tokens, about 1h 34m elapsed.
+
+---
+
+should we get reviews from external reviewers?
+
+---
+
+• Findings
+
+  No blocking findings found in the internal adversarial review.
+
+  Reviewed the PR #1316 diff against origin/main, covering 4 files:
+
+  - src/strategies/binary_oracle_edge_taker/mod.rs
+  - src/strategies/binary_oracle_edge_taker/subscriptions.rs
+  - src/strategies/binary_oracle_edge_taker/tests/reference_price.rs
+  - docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml
+
+  The startup guard matches the brief: reference derivation errors now propagate, declared-but-empty reference/signal/RV derivations fail on_start, and
+  dispatch #[cfg] gates plus on_time_event dispatch remain untouched.
+
+  Residual risk: PR-triggered checks were still pending at review time (source-fence-static, bvs-clippy, bvs-test archive, ci-policy), though no failures were
+  present. The sidecar reviewer did not return before timeout and was closed, so this review is based on direct inspection.
+
+---
+
+CI are failing
+
+---
+
+run them yourself
+
+---
+
+<task-notification>
+<task-id>b9pl2iigs</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/b9pl2iigs.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch both reruns until completion and report conclusions" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+merged
+
+---
+
+so what is this? why are we doing this?
+
+---
+
+pr 1321 is ready - review it
+
+---
+
+<task-notification>
+<task-id>bvyix0ko5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/bvyix0ko5.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full strategy test module at PR head locally" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+• Implemented the review fixes and pushed them to PR #1321.
+
+  Changes:
+
+  - Removed Closes #1179 from the PR body and verified it is gone.
+  - Fixed the shared fixture ordering in .worktrees/fix-production-subscription-dispatch-tests/src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs:
+    base test strategies now register before selection setup, and later register_test_strategy* calls reuse the existing cache/TestClock instead of double-
+    registering.
+
+  Current PR head: 1f0550aba77d64ec8874c7539428d1b119ffa1a6
+
+  Verification:
+
+  - cargo fmt
+  - just fmt-check
+  - just source-fence-static
+  - Full module Rust Probe passed at exact head: just rust-probe nextest-lib-name strategies::binary_oracle_edge_taker::tests::, run 29032421884
+
+  PR is still draft; some draft CI checks are pending/skipped, but the requested full strategy-module proof is green.
+
+---
+
+should we get any reviews from external models?
+
+---
+
+1321 is merged
+
+---
+
+go
+
+---
+
+<task-notification>
+<task-id>bucoyse2e</task-id>
+<tool-use-id>toolu_011UJSYN1XDsrnTeYNwQvTpP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/bucoyse2e.output</output-file>
+<status>completed</status>
+<summary>Background command "Cross-compile v0.1.10 release binary for ARM" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+yes - give me the prompt for that
+
+---
+
+• Both PR bodies: live data plane → full external model review before merge.
+
+───
+
+STOP
+
+Phase 1 complete. No Phase 2 work started.
+
+Owner decision needed: approve (a) for PR-A (and separately confirm PR-B proceeds as specified), or override to (b).
+
+---
+
+Done — both PRs opened (draft)
+
+Approved path executed: (a) + PR-B as specified.
+
+PR-A — SBE schema 3:5 (data plane)
+https://github.com/seungpyoson/bolt-v2/pull/1331
+Head: 98b5e93fe11d454706572e44b690eb5dbad54a28
+
+┌─────────────┬──────────────────────────────────────────────────────────────────────────────────────┐
+│ Piece       │ Detail                                                                               │
+├─────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ NT pin-fork │ seungpyoson/nautilus_trader @ e932d028239c785f1c63991f9c56837e2a673fdb               │
+├─────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ Branch      │ pin/6be5a50-sbe-schema-3-5                                                           │
+├─────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ Base        │ upstream pin 6be5a50 + port of 9a2e7a5155 (changelog dropped)                        │
+├─────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ Shape       │ keep request 3:4; accept any version in schema id 3; CancelOnly→Halt                 │
+├─────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+│ Red/green   │ real captured exchangeInfo v5 wire → tests/binance_sbe_schema_v5_decode.rs + fixture │
+└─────────────┴──────────────────────────────────────────────────────────────────────────────────────┘
+
+PR-B — trader-not-started launch invariant
+https://github.com/seungpyoson/bolt-v2/pull/1332
+Head: 248ea5e95f7bc2a5bdc464eddd97d864332bf228
+
+┌─────────────┬─────────────────────────────────────────────────────────────┐
+│ Piece       │ Detail                                                      │
+├─────────────┼─────────────────────────────────────────────────────────────┤
+│ Invariant   │ NodeState::Running ∧ trader not running → abort             │
+├─────────────┼─────────────────────────────────────────────────────────────┤
+│ Named error │ BoltV3LiveNodeError::LiveNodeTraderNotStarted               │
+├─────────────┼─────────────────────────────────────────────────────────────┤
+│ Red         │ pure invariant + watchdog unit test against fail-open shape │
+├─────────────┼─────────────────────────────────────────────────────────────┤
+│ Green       │ returns TraderNotStarted instead of idling                  │
+├─────────────┼─────────────────────────────────────────────────────────────┤
+│ No          │ thresholds / retries-with-fallback                          │
+└─────────────┴─────────────────────────────────────────────────────────────┘
+
+Process notes
+• Both draft; review requested from sp-reviewer
+• Bodies say Part of #1179, no close-keywords
+• Both note full external model review (live data plane)
+• Local non-compile verifiers for pin changes passed; exact-head remote CI not confirmed here (no manual full-CI dispatch; use debug lane / merge queue as usual)
+
+After both land
+Rebuild → redeploy → boot should either produce quotes (SBE fixed + trader started) or exit non-zero with a named error — never a silent trader-less Running node. Then session two.
+
+---
+
+isn't 1321 merged already?
+
+---
+
+is this ours? fatal: 'main' is already used by worktree at '/Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1314-nt-connect-budget'
+
+---
+
+Bolt probes:
+• check-lib → 29072417016 (https://github.com/seungpyoson/bolt-v2/actions/runs/29072417016)
+• nextest-test-target binance_sbe_schema_v5_decode → 29073114943 (https://github.com/seungpyoson/bolt-v2/actions/runs/29073114943)
+
+PR body updated with fork content description + evidence (refresh rule stated).
+
+───
+
+PR-B #1332 (https://github.com/seungpyoson/bolt-v2/pull/1332) — head 40188d3a9
+
+┌─────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Finding                 │ Fix                                                                                                     │
+├─────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ F1 headline test failed │ Stop-responsive runner → expects TraderNotStarted                                                       │
+├─────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ F2 grace mislabel       │ New trigger TraderNotStartedInvariant; shared stop mapper; public path maps to LiveNodeTraderNotStarted │
+├─────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Hung runner             │ New unit test asserts grace timeout still names trader-not-started                                      │
+└─────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Probe: check-lib → 29072145842 (https://github.com/seungpyoson/bolt-v2/actions/runs/29072145842)
+
+PR body already updated with lifetime-of-run note + evidence.
+
+───
+
+Both still draft; sp-reviewer re-requested. Ready for owner re-review at the pinned heads above.
+
+---
+
+<task-notification>
+<task-id>bodiz175x</task-id>
+<tool-use-id>toolu_01PPrriR7ba7BUKPGNVbQopU</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/bodiz175x.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full live node test module at PR-B revision head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b0tuoms1u</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/b0tuoms1u.output</output-file>
+<status>completed</status>
+<summary>Background command "Run decode test against old upstream pin for red proof" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bsfz0l80o</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/bsfz0l80o.output</output-file>
+<status>completed</status>
+<summary>Background command "Swap pins only and rerun red proof" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bziz6bb5r</task-id>
+<tool-use-id>toolu_01JZ3hYcYDuo8Bh54sbe7Lc1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/bziz6bb5r.output</output-file>
+<status>completed</status>
+<summary>Background command "Swap lock entries surgically and rerun red proof" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+give me a blurb to send to external models
+
+---
+
+Kimi: Reviewed both full PRs at the pinned heads, the fork via compare API, and the relevant NT source at 6be5a50. Findings only.
+
+   PR-A — SBE schema 3:5 (head 1cd8349)
+
+   A1 — Real but latent: depth/trades REST decoders can now mis-decode a future bumped fixed block instead of erroring. (Non-blocking for Bolt's current
+   surface.)
+
+   The port deletes the exact-version gate in MessageHeader::validate (fork:crates/adapters/binance/src/spot/http/parse.rs, validate() now checks only
+   schema_id != SBE_SCHEMA_ID; the version != SBE_SCHEMA_VERSION → VersionMismatch branch is gone). For decode_exchange_info that is fine — groups are
+   self-delimiting and the symbol item length is pinned (parse.rs:964 symbols_block_len != SYMBOL_BLOCK_LENGTH → loud InvalidBlockLength), and that is the
+   only REST path Bolt exercises. But decode_depth (parse.rs:149-184) and decode_trades (parse.rs:194-224) read their fixed block at fixed offsets
+   (last_update_id/price_exponent/qty_exponent) and then call read_group_header() immediately, never consulting the runtime header.block_length. The PR's own
+   README (spot/sbe/README.md, "Version compatibility") concedes exactly this.
+
+   Concrete scenario: Binance ships schema 3:6 that appends one field to the depth or trades message fixed block (the part before the repeating group). The
+   runtime block_length grows, but header.validate() no longer rejects it, so the body decoder reads the appended fixed-field bytes as the group header
+   (block_len, count). Outcome is a garbage count → either a silently corrupt order book/trade list fed downstream, or read_group walking off the buffer.
+   Pre-port this was a hard VersionMismatch { expected: 5, actual: 6 }; post-port it enters the body. decode_klines shares the same fixed-offset pattern and
+   is worth the same scrutiny.
+
+   Not disproven by tests: the added tests cover exchange_info (captured v5) and decode_server_time accept-any-version; none exercise depth/trades/klines with
+   a bumped fixed block.
+
+   Calibration: I found no Binance REST depth/trades caller in src/ (NT's Spot data client streams market data over WebSocket; REST exchangeInfo is the
+   instrument-load path that actually fired). So this is not on Bolt's hot path today — flagging because the "schema id 3 ⇒ safe" invariant is now
+   load-bearing for the whole adapter, and any future REST depth/trades consumer (or reuse of this pin) would silently misread a bumped fixed block. Recommend
+   either a fixed-offset→runtime-block_length advance in depth/trades/klines, or a documented "REST depth/trades not used by this deployment" assertion so the
+   latent defect can't quietly become live.
+
+   A2 — Dual fixture copies are identical now but unguarded against future drift. (Informational.)
+   tests/fixtures/binance_sbe/exchange_info_btc_usdt_schema_3_5.bin (bolt) and crates/adapters/binance/test_data/spot/sbe/... (fork) are byte-identical at the
+   heads (sha256 fee86fbd…e6, 3100 B, both). No cross-repo equality check keeps them that way; on the next schema bump a single refreshed copy would leave the
+   two tests exercising different payloads. Cross-repo single source is impractical, so treat as informational, not blocking.
+
+   A3 — Fork contents / port completeness: clean.
+   • Compare 6be5a50…9e71b2b: ahead_by 2, behind_by 0, total_commits 2, every changed file under crates/adapters/binance/. Nothing beyond the stated port +
+     captured fixture + tests. The two commits' file set matches upstream 9a2e7a5155 (which touched the same files plus RELEASES.md, correctly omitted), with
+     the fixture added in-repo.
+   • No upstream follow-up is missing: commits?path=…/parse.rs&since=2026-07-09 on nautechsystems/nautilus_trader returns nothing. The A1 residual is
+     inherited from upstream, not from an incomplete port.
+   • Minor (not blocking): the first fork commit e932d02 alone is red — wrong include_bytes!("../../../../test_data/…") (4-up) and a dropped #[rstest] on
+     test_decode_exchange_info_wrong_template; the second commit 9e71b2b fixes both. The pinned HEAD is green, but bisecting to e932d02 would not build its
+     tests.
+   • Confirmed template-id is still exact-match (only version was relaxed): wrong_template still returns UnknownTemplateId. Request/codec version split is
+     consistent — X-MBX-SBE is built solely from SBE_SCHEMA_HEADER = "3:4" (client.rs:468, asserted :2174); schema_version() == 5 is test/logging only, never
+     sent on the wire, so no request asks an old server for 3:5.
+   • verify_runtime_capture_yaml::_is_nautilus_trader_git_source whitelists exactly the two owners (upstream + seungpyoson); attacker/nautilus_trader.git /
+     seungpyoson.evil/… are rejected, and the single-shared-rev rule still holds.
+
+   PR-B — trader-not-started launch abort (head 40188d3)
+
+   No blocking finding. Verified the linchpins against NT source rather than the module tests (the 153 unit tests inject || false/|| true and do not exercise
+   the real node.kernel().trader() handle against a real node.run()):
+
+   • Healthy-path ordering holds with no race: LiveNode::run (crates/live/src/node.rs:854) keeps state Starting (set :874) through connect_* and
+     perform_startup_reconciliation().await (:963), calls kernel.start_trader() at :964, and only then set_state(Running) at :982. So Running is never
+     observable before trader.is_running() is true on the connected path. The fail-open (:978-980) sets Running without start_trader → detected as intended.
+   • Shutdown ordering cannot false-abort: stop() sets ShuttingDown (:581) before stop_trader (:588); abort_after_trader_start_failure sets ShuttingDown
+     (:1440) before stop_trader (:1441). initiate_shutdown does call stop_trader (:1456) before set_state(ShuttingDown) (:1461), but the whole method is
+     synchronous (no .await between them), so the window is invisible to the cooperative watchdog — by the next poll tick state is already ShuttingDown, and
+     !Running || trader_running holds.
+   • The trader handle is not stale: Kernel::trader() returns &Rc<RefCell<Trader>> (kernel.rs:498); initialize()/start() mutate that same Rc in place (never
+     reassigned), so the trader cloned before node.run() observes the real flag. The closure || trader.borrow().is_running() is an immutable borrow that drops
+     before any run_future.as_mut() poll, so no BorrowMutError across an await.
+   • No resource stranding / evidence-store skip: stop_iv_engine_lifecycle, capture_guards.shutdown().await, and drain_decision_evidence_shutdown(...).await
+     all run unconditionally around/after the run_outcome match; the new TraderNotStarted arm and the modified StartupShutdownGraceTimeout arm are
+     tail-of-match Result values (no early return), so the decision-evidence drain still executes.
+   • The shared trader_not_started_stop_outcome mapper is correct for all three arms (poll / deadline / capture-failure): Some(_) (runner returned, Ok or Err)
+     → TraderNotStarted (run-Err is logged, launch cause preserved); None (grace elapsed) → StartupShutdownGraceTimeout { trigger: TraderNotStartedInvariant
+     }, which the post-match remaps to public LiveNodeTraderNotStarted. The genuinely-different arms (StartupTimeout, Finished) correctly do not route through
+     it.
+
+   One informational caveat (non-blocking given current config): the event-store-replay branch (node.rs:878-884 → Running without trader) is the only other
+   legitimate Running ∧ !trader path; it is config-gated and I found no event_store/replay config in config/ or the live node, consistent with "unreachable in
+   this deployment." If a profile ever enables event-store replay with load_state, this watchdog would false-abort a legitimate replay start — worth a
+   one-line config assertion if you want it fail-closed against that future flip.
+ 
+GLM:  I've completed a full-PR adversarial review of both PRs at their pinned heads. Here are my findings.
+Verdict: No blocking findings on either PR.
+I reviewed the full diffs at the pinned heads, the NT fork at 9e71b2b (local cargo checkout), upstream commit 9a2e7a5155, and the bolt workspace source. Below I address each stated attack vector and report what I found (including negatives).
+PR-A (#1331) — SBE fix via NT pin-fork
+A1. Version-tolerance safety (the core attack) — NOT a defect; safe.
+decode_exchange_info explicitly validates block layout: crates/adapters/binance/src/spot/http/parse.rs:964 rejects symbols_block_len != SYMBOL_BLOCK_LENGTH with InvalidBlockLength. So a future v6+ within schema id 3 that extends the symbol block fails loudly rather than mis-decoding. The other REST decoders (decode_depth/decode_trades/decode_klines) read group-level block_len from each group header and pass it to cursor.read_group(block_len, count, …), so additive trailing fields within a group element are skipped. A breaking field reorder within a block is a schema-id change, still rejected by MessageHeader::validate (parse.rs:100-108, schema-id-only gate). Critically, the strict version check that was removed was the defect — the pre-existing README's "Forward compatibility note" already documented that the parsers use block_length to skip unknown trailing fields; the version gate was a redundant hard-fail that broke on a valid additive bump. This is upstream's design (9a2e7a5155), faithfully ported.
+A2. Missed upstream follow-up commit — NONE found.
+9a2e7a5155ff is the latest upstream commit touching every affected file (parse.rs, client.rs, status.rs, generated/mod.rs, generated/symbol_status.rs). Its parent ea58e9a1 is 329 commits ahead of pin 6be5a50, but the port's functional delta matches upstream's file-by-file exactly (I diffed parse.rs byte-for-byte; the only fork additions are the in-crate captured-fixture test block and the .bin fixture). No dependency on the intervening 329 commits — all changes are self-contained within crates/adapters/binance/.
+A3. Fork content beyond stated — NONE.
+6be5a50...9e71b2b is exactly 2 commits (e932d02 + 9e71b2b), 9 files, all under crates/adapters/binance/ + one test_data fixture. Zero out-of-scope files.
+A4. Dual fixture drift — current state clean; no automated guard (observation, not blocking).
+Both copies are byte-identical: sha256 fee86fbd6b40646bd83e2b42f2bb278ff3905c3e95ae73942c8492f51a8005e6, 3100 bytes each. There is no verifier asserting the two stay identical — a future unilateral edit to one copy would drift silently. Low risk for a captured regression blob, but worth a one-line equality assertion if you want it sealed.
+A5. Boundary verifier fork allowance — single-rev invariant preserved.
+scripts/verify_runtime_capture_yaml.py:234-244 (_is_nautilus_trader_git_source) is a closed 2-org allowlist (nautechsystems | seungpyoson). The single-rev check at line 283 (len(revs) != 1) is unchanged and still requires all nautilus-* crates to share exactly one rev. verify_bolt_v3_boundary_evidence.py:386 checks EXPECTED_NT_REV appears in Cargo.toml (updated to 9e71b2b…). No gap.
+PR-B (#1332) — trader-not-started launch invariant
+B1. Transient Running ∧ !trader.is_running() false-positive — NONE found.
+Verified against NT source at the fork rev. Bolt calls node.run() (prb_live_node.rs:2627), so the relevant path is LiveNode::run() (node.rs:854), not start():
+- Healthy path: self.kernel.start_trader() (node.rs:964) is synchronous (kernel.rs:599-606: trader.borrow_mut().start() → ComponentState::Running via component.rs:117-128, no .await), then set_state(NodeState::Running) at node.rs:982. No yield point between 964 and 982, so the watchdog cannot observe Running before the trader is running.
+- Fail-open path (the target): node.rs:978-980 logs "Not starting trader: engine client(s) not connected", then node.rs:982 sets Running regardless. Trader is never started → invariant correctly fires.
+- All stop_trader call sites (node.rs:588, 1441, 1456) either follow or are immediately followed by set_state(ShuttingDown) synchronously with no intervening .await. initiate_shutdown (node.rs:1451-1462) calls stop_trader() (1456) then set_state(ShuttingDown) (1461) — both sync, so the watchdog (which only observes state at yield points) never sees Running + stopped-trader during shutdown.
+- Event-store replay (node.rs:878-883): the only other trader-less Running path. Confirmed unreachable: is_event_store_replay() requires a configured event-store factory (kernel.rs:514,538), and the bolt node builder configures none (no event_store/replay references in src/bolt_v3_live_node.rs). This is the acknowledged config-gated assumption and it holds.
+- The trader's ComponentState::Running is only changed by explicit start()/stop() from the kernel — it does not auto-fault mid-session. Strategies faulting changes the strategy's state, not the trader's. So lifetime-of-run polling does not false-positive.
+B2. Abort path resource stranding / evidence-store skip — NONE.
+capture_guards.shutdown().await (prb_live_node.rs:2650) and drain_decision_evidence_shutdown (prb_live_node.rs:2718-2720) run unconditionally after the watchdog returns, before the outcome match and after it respectively — for every outcome variant including TraderNotStarted and the TraderNotStartedInvariant grace-timeout. No arm skips cleanup. The iv_start_task is aborted (2647) and stop_iv_engine_lifecycle runs (2649) for all outcomes.
+B3. Shared trader_not_started_stop_outcome mapper — correct for all three arms.
+The function (prb_live_node.rs:2356-2377) maps Some(_) → TraderNotStarted and None → StartupShutdownGraceTimeout with trigger TraderNotStartedInvariant. All three call sites (poll-tick 2431, startup-deadline 2457, capture-failure 2547) use it identically. The public outcome mapping (2684-2699) converts the TraderNotStartedInvariant grace-timeout trigger to LiveNodeTraderNotStarted (not the generic LiveNodeStartupShutdownGraceTimeout), so operators never chase a generic startup timeout. The capture-failure arm's inner invariant check (2530) only triggers for Running (for ShuttingDown/Stopped, the invariant returns true and falls through to the pre-existing Finished(run_future.await)), so no misattribution.
+B4. trader.borrow().is_running() RefCell safety — safe.
+kernel.trader is Rc<RefCell<Trader>> (kernel.rs:86). Bolt clones the Rc before node.run() takes &mut self (prb_live_node.rs:2626-2627). The borrow() runs inside the watchdog's select! branch evaluation, never concurrently with run_future polling (single task; select polls the future and the tick alternately, not simultaneously). All borrow_mut calls (start_trader/stop_trader) happen inside run_future's synchronous execution. No panic risk.
+Non-blocking observations (not merge-gating)
+1. PR-B config reuse (semantic coupling): trader_invariant_poll sources from loaded.root.persistence.runtime_capture_start_poll_interval_ms (prb_live_node.rs:2638-2640), overloading a field named for runtime-capture cadence. Both are detection-cadence (default 50ms), and startup_timeout is a separate backstop, so a large value only delays detection — not dangerous. But tuning one now silently tunes the other. Consider a dedicated field if these lifecycles diverge.
+2. PR-A fixture drift (see A4): no automated byte-equality guard between tests/fixtures/binance_sbe/… and crates/adapters/binance/test_data/spot/sbe/….
+Both PRs are mergeable independently as claimed. The launch invariant (PR-B) is a correct, parameter-free detection of the exact NT fail-open signature, and the SBE port (PR-A) is a faithful reproduction of upstream's proven fix with the incident's decode path (exchangeInfo) explicitly block-length-guarded.
+Grok: External review — findings only
+
+Reviewed at pinned heads:
+• PR-A 1cd8349debb7239b9cfe7995bd5f7bd73f08a60b + fork 9e71b2b1305a66945ba07f0aba2d1eb63208263d
+• PR-B 40188d3a95e0e39d03db21348a00b79da253c8f8
+
+───
+
+PR-A (#1331) — SBE pin-fork
+
+Finding A1 — Residual class risk: unbounded version accept + fixed-offset market-data decoders can silent-wrong on a future layout bump
+Severity: residual / non-blocking for the 3:5 incident (layouts 3:4≡3:5 for the shipped change)
+Anchors:
+• nautilus-binance spot/http/parse.rs — MessageHeader::validate (schema id only; version discarded)
+• spot/http/parse.rs — decode_depth, decode_trades (read fixed fields then groups; do not advance via header.block_length)
+• Live use: spot/data.rs OrderBook snapshot path → http.inner().depth(...) (REST SBE depth is on the live sync path)
+
+Concrete failure scenario:
+1. Binance ships schema 3:6 under the same schema id, appending a fixed field to the depth (or trades) fixed block and increasing block_length.
+2. Server answers a still-requested X-MBX-SBE: 3:4 with wire header version=6 (highest compatible).
+3. validate() accepts it.
+4. decode_depth mis-aligns into group headers → Ok with wrong last_update_id / levels (or plausible garbage), not VersionMismatch / InvalidBlockLength.
+5. Book recovery installs a wrong snapshot; strategy mid/book state is wrong while the process looks healthy.
+
+What does not disprove this:
+• test_decode_server_time_accepts_any_version (incl. version 99) only proves the version field is ignored on a correct layout.
+• test_decode_real_captured_exchange_info_schema_v5 / bolt captured_exchange_info_schema_v5_decodes_on_pinned_adapter only prove exchangeInfo on the real 3:5 capture.
+• decode_exchange_info does hard-fail on symbol group SYMBOL_BLOCK_LENGTH mismatch — that protects the incident path, not depth/trades.
+
+Not a port defect relative to upstream: same design as 9a2e7a5155; README documents it. Still the real answer to the “any version within schema id 3?” attack for these paths.
+
+Attack answers (PR-A) — no additional findings
+
+┌──────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Attack           │ Result                                                                                                                │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Port missing a   │ No. Upstream develop after 9a2e7a5155 has Binance fixes, none that further change SBE schema 3 version policy or the  │
+│ follow-up?       │ ported files.                                                                                                         │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Dual fixtures    │ Not at this head. bolt fixture and fork fixture are byte-identical (sha256 fee86fbd6b40646b…). No automated cross-    │
+│ drift?           │ repo identity gate (process residual only; not a functional defect at these SHAs).                                    │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Fork content     │ No. 6be5a50..9e71b2b is exactly: port of 9a2e7a5155 (8 adapter files) + captured fixture + in-crate test + path/#[    │
+│ beyond stated?   │ rstest] repair. Non-test bodies of the ported modules match upstream’s SBE delta; full-file client.rs differs from    │
+│                  │ tip-upstream only because 9a2e7a5 is not based on pin 6be5a50 (unrelated later client APIs).                          │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Pin consistency  │ Single rev 9e71b2b… across Cargo.toml / lock / EXPECTED_NT_REV / audit yaml; zero remaining nautechsystems pins.      │
+└──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+PR-A blocking findings: none for merging the 3:5 class fix as shipped.
+
+───
+
+PR-B (#1332) — trader-not-started launch invariant
+
+Attack answers — no findings
+
+┌────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Attack             │ Result                                                                                                              │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Legitimate         │ None found for this deployment. Healthy path: start_trader() then set_state(Running) (node.rs run path ~964→982;    │
+│ transient Running  │ start path ~557→563). Shutdown via stop() sets ShuttingDown before stop_trader. initiate_shutdown stops trader      │
+│ ∧ !trader.is_      │ before state flip but is fully synchronous (no await between) and runs inside the same task as the watchdog         │
+│ running()?         │ select!, so the poll arm cannot observe the mid-function window. Event-store replay trader-less Running is          │
+│                    │ unreachable without an event-store factory (bolt does not install one).                                             │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Abort strands      │ No. After watchdog return, run_bolt_v3_live_node always runs capture_guards.shutdown(), IV stop, then drain_        │
+│ resources / skips  │ decision_evidence_shutdown before classifying. Grace-timeout still drops a hung run_future (same pre-existing stop- │
+│ evidence shutdown? │ with-grace pattern as startup deadline). Process then exits non-zero via LiveNodeTraderNotStarted.                  │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Shared trader_not_ │ No. All three abort sites (poll tick, startup deadline, capture-failure on trader-less Running) call the same       │
+│ started_stop_      │ mapper: Some(_) → TraderNotStarted, None → StartupShutdownGraceTimeout { trigger: TraderNotStartedInvariant }.      │
+│ outcome wrong for  │ Public mapping remaps that trigger to LiveNodeTraderNotStarted. Covered by startup_watchdog_aborts_when_node_       │
+│ an arm?            │ running_without_trader and startup_watchdog_grace_timeout_still_names_trader_not_started.                           │
+└────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Additional checks (no findings):
+• Poll interval reuses persistence.runtime_capture_start_poll_interval_ms, already fail-closed at 0 (bolt_v3_validate/persistence.rs).
+• Lifetime polling making mid-session trader death abort is consistent with the stated invariant (and with NT start_trader error-swallowed → Running with trader not running).
+
+PR-B blocking findings: none.
+
+───
+
+Verdict
+
+Nothing blocking on either PR at the pinned heads.
+Only open class residual is A1 (future within-schema-id layout change vs fixed-offset REST market-data decoders under unbounded version accept). It does not undermine the 3:5 / exchangeInfo incident fix; it is the remaining fail-open surface for the next additive schema bump on depth/trades.
+
+---
+
+so we are good to merge?
+
+---
+
+explain the situation in plain english - why can we merge although reviewers had some findings
+
+---
+
+1332 need to resolve source fence conflict
+
+---
+
+source fench still fails
+
+---
+
+Fixed — #1332 runtime-literal audit
+
+New head: 5a77860869d92e49f9669834be6c2b35306cfd61
+PR: https://github.com/seungpyoson/bolt-v2/pull/1332
+
+Change
+Audit-only (no production code):
+
+docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml
+
+┌───────────────────────────────────────────────────────────┬────────────────────────────────────────────────────┐
+│ Entry                                                     │ Classification                                     │
+├───────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ LiveNodeTraderNotStarted Display                          │ startup_watchdog_trader_not_started_diagnostic     │
+├───────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ Trader-not-started + grace-elapsed Display                │ startup_watchdog_trader_not_started_diagnostic     │
+├───────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ Grace-elapsed Display (retargeted indentation after nest) │ startup_watchdog_shutdown_grace_timeout_diagnostic │
+├───────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ "trader-not-started launch invariant" stop label          │ startup_watchdog_shutdown_reason_label             │
+├───────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ "trader-not-started after capture failure" stop label     │ startup_watchdog_shutdown_reason_label             │
+└───────────────────────────────────────────────────────────┴────────────────────────────────────────────────────┘
+
+Same shape as other fail-loud diagnostics: reports observed launch state; does not configure trading.
+
+Verification
+
+just source-fence-static  → OK (includes "Bolt-v3 runtime literal audit passed")
+
+---
+
+should we get more review or not
+
+---
+
+we need to resolve Ci failures
+
+---
+
+Both mechanical CI fixes are pushed.
+
+#1331 — 8a101a6a69b63684dc05d4def5c9a4aa93dfaeff
+1. BVS lock: retargeted only the NT packages in crates/backtesting-vertical-slice/Cargo.lock to seungpyoson/nautilus_trader@9e71b2b1… (no broad crates.io bumps). bte-fmt-check + cargo metadata --locked OK; no stale nautechsystems pin remains.
+2. Schema pin: nt_binance_spot_sbe_schema_matches_live_exchange_info_version now derives expected version from tests/fixtures/binance_sbe/exchange_info_btc_usdt_schema_3_5.bin wire header (bytes 6–7 LE) and compares to SBE_SCHEMA_VERSION. Fixture wire = schema 3 / version 5; fork const = 5.
+
+#1332 — 046326b5cc75ad4fa1e3d9e387b0b5107641c342
+3. Doc reword: launch-invariant docs no longer contain start_trader (before the trader is started / the trader is started before…). Local token scan clean; just source-fence-static passed (including runtime-literal audit). Fence left untouched.
+
+Heads to wait on for full green before re-review:
+┌───────┬──────────────────────────────────────────┐
+│ PR    │ Head                                     │
+├───────┼──────────────────────────────────────────┤
+│ #1331 │ 8a101a6a69b63684dc05d4def5c9a4aa93dfaeff │
+├───────┼──────────────────────────────────────────┤
+│ #1332 │ 046326b5cc75ad4fa1e3d9e387b0b5107641c342 │
+└───────┴──────────────────────────────────────────┘
+
+Full lanes must be green at those heads before re-review. Compile-heavy BVS clippy/test not run locally (remote-first policy); lock resolve verified with --locked metadata.
+
+---
+
+<task-notification>
+<task-id>bw09t1pex</task-id>
+<tool-use-id>toolu_01R82b1t224ukVyvT8R2YtQk</tool-use-id>
+<status>stopped</status>
+<summary>No completion record was found for this background shell command from the previous session. It may have been stopped (via the UI, Monitor timeout, or agent teardown — these leave no transcript marker), or it may have been running when the previous Claude Code process exited. Check the output file for partial results before assuming it completed.</summary>
+</task-notification>
+
+---
+
+didn't completely finish but still failing
+
+---
+
+both are merged
+
+---
+
+ok let's proceed
+
+---
+
+<task-notification>
+<task-id>bgcak89nm</task-id>
+<tool-use-id>toolu_01M1d2Ld7WxEBTcphAWyhS21</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/52da973d-631e-451b-872f-acc19b54490a/tasks/bgcak89nm.output</output-file>
+<status>failed</status>
+<summary>Background command "Cross-compile bolt-v2 for aarch64 Linux (v0.1.11)" failed with exit code 1</summary>
+</task-notification>
+
+---
+
+I authorize deploying v0.1.11

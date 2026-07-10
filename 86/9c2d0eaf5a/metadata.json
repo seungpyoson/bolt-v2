@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "869c2d0eaf5a",
+  "strategy": "manual-commit",
+  "branch": "fix/1338-stale-boundary-deferral",
+  "checkpoints_count": 13,
+  "files_touched": [
+    "ci/bolt-v3-boundary-exemptions.toml",
+    "scripts/test_verify_bolt_v3_boundary_evidence.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/86/9c2d0eaf5a/0/metadata.json",
+      "transcript": "/86/9c2d0eaf5a/0/full.jsonl",
+      "compact_transcript": "/86/9c2d0eaf5a/0/transcript.jsonl",
+      "content_hash": "/86/9c2d0eaf5a/0/content_hash.txt",
+      "prompt": "/86/9c2d0eaf5a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 72230,
+    "cache_creation_tokens": 3896469,
+    "cache_read_tokens": 161041600,
+    "output_tokens": 426302,
+    "api_call_count": 485
+  }
+}

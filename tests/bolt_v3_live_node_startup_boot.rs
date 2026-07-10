@@ -33,7 +33,7 @@ fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
     loaded.root.nautilus.delay_post_stop_secs = 0;
     loaded.root.nautilus.timeout_shutdown_secs = 1;
     let reconnect_timeout = chainlink_startup_bound(&loaded)
-        .checked_add(Duration::from_millis(1))
+        .checked_add(Duration::from_secs(1))
         .expect("Chainlink startup reconnect timeout should fit");
     let reconnect_timeout_ms = i64::try_from(reconnect_timeout.as_millis())
         .expect("Chainlink startup reconnect timeout should fit TOML integer");

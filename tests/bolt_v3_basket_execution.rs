@@ -863,10 +863,21 @@ fn basket_state_v1_old_bytes_remain_readable() {
     .expect("old-byte basket fixture should write");
     let store = BoltV3BasketStore::new(path, 65_536);
 
-    let recovered = store
+    let state = match store
         .load_recovery_state()
-        .expect("old-byte basket state should parse");
-    assert!(matches!(recovered, BoltV3BasketRecoveryState::Recovered(_)));
+        .expect("old-byte basket state should parse")
+    {
+        BoltV3BasketRecoveryState::Recovered(state) => state,
+        other => panic!("expected Recovered, got {other:?}"),
+    };
+    let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "fixtures/bolt_v3/compatibility/basket_state_v1.json"
+    ))
+    .expect("basket fixture parses");
+    assert_eq!(
+        serde_json::to_value(&state).expect("state serializes"),
+        fixture["state"]
+    );
 }
 
 #[test]

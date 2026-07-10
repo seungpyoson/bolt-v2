@@ -146,6 +146,37 @@ def assert_init_fixture_repo_persists_suppression() -> None:
                 raise AssertionError(f"fixture remote {key}={actual!r}, want {value!r}")
 
 
+def assert_self_authorizing_fixture_repo_persists_suppression() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = hygiene_helpers.init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            actual = hygiene_helpers.read_persisted_repo_config(repo, key)
+            if actual != value:
+                raise AssertionError(
+                    f"self-authorizing fixture repo {key}={actual!r}, want {value!r}"
+                )
+
+
+def assert_clone_fixture_repo_persists_suppression() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        source = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
+        clone = hygiene_helpers.clone_fixture_repo(source, root / "clone")
+        plain_clone = hygiene_helpers.clone_fixture_repo_without_suppression(
+            source, root / "plain-clone"
+        )
+
+        for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            actual = hygiene_helpers.read_persisted_repo_config(clone, key)
+            if actual != value:
+                raise AssertionError(f"fixture clone {key}={actual!r}, want {value!r}")
+            plain_actual = hygiene_helpers.read_persisted_repo_config(plain_clone, key)
+            if plain_actual is not None:
+                raise AssertionError(
+                    f"plain git clone unexpectedly persisted {key}={plain_actual!r}"
+                )
+
+
 def assert_push_to_fixture_remote_spawns_no_background_maintenance() -> None:
     """Push into a helper-built remote and prove `receive-pack` detaches nothing."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1203,6 +1234,8 @@ def main() -> int:
     assert_run_repo_git_suppresses_background_maintenance()
     assert_suppression_args_match_suppression_config()
     assert_init_fixture_repo_persists_suppression()
+    assert_self_authorizing_fixture_repo_persists_suppression()
+    assert_clone_fixture_repo_persists_suppression()
     assert_push_to_fixture_remote_spawns_no_background_maintenance()
     assert_routed_fixture_module_spawns_no_background_maintenance()
     assert_temp_git_fixture_cleanup_stress_blocks_background_writer()

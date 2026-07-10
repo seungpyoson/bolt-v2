@@ -19,13 +19,13 @@ import time
 import ci_provenance
 import git_remote_utils
 from ci_workflow_hygiene_test_helpers import (
+    clone_fixture_repo,
     init_fixture_repo,
     load_provenance,
     load_verifier,
     replace_once,
     replace_once_after,
     run_repo_git,
-    suppress_repo_auto_maintenance,
     run_verifier_main_with_no_mistakes,
     yaml_scalar_literal,
 )
@@ -153,8 +153,7 @@ class GitFixture:
         self.remote = root / "origin.git"
         self.repo = root / "repo"
         init_fixture_repo(self.remote, "--bare")
-        git(root, "clone", str(self.remote), str(self.repo))
-        suppress_repo_auto_maintenance(self.repo)
+        clone_fixture_repo(self.remote, self.repo)
         git(self.repo, "config", "user.email", "preflight@example.invalid")
         git(self.repo, "config", "user.name", "Merge Queue Preflight Test")
         write(self.repo / "shared.txt", "base\n")

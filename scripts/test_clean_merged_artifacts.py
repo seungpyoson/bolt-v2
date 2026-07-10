@@ -68,9 +68,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import clean_merged_artifacts as cm  # type: ignore  # noqa: E402
 from ci_workflow_hygiene_test_helpers import (  # noqa: E402
+    clone_fixture_repo,
     init_fixture_repo,
     repo_git_command,
-    suppress_repo_auto_maintenance,
 )  # noqa: E402
 
 GIT_ENV = {
@@ -1394,9 +1394,7 @@ class SyncMainTests(unittest.TestCase):
 
     def _advance_remote_main(self, message: str = "remote-advance") -> str:
         other = self.tmp / f"other-{time.time_ns()}"
-        _run(repo_git_command("clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)),
-             cwd=self.tmp)
-        suppress_repo_auto_maintenance(other)
+        clone_fixture_repo(self.tmp / "remote.git", other, "-q", "-b", "main")
         _run(repo_git_command("commit", "--allow-empty", "-m", message), cwd=other)
         _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
         return _run(repo_git_command("rev-parse", "HEAD"), cwd=other).stdout.strip()
@@ -1433,9 +1431,7 @@ class SyncMainTests(unittest.TestCase):
         before_refs = git(self.work, "for-each-ref", "--format=%(refname) %(objectname)")
 
         other = self.tmp / "other-preview-merge"
-        _run(repo_git_command("clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)),
-             cwd=self.tmp)
-        suppress_repo_auto_maintenance(other)
+        clone_fixture_repo(self.tmp / "remote.git", other, "-q", "-b", "main")
         _run(repo_git_command("fetch", "-q", "origin", "feat/preview-w:feat/preview-w"), cwd=other)
         _run(repo_git_command("merge", "--ff-only", "feat/preview-w"), cwd=other)
         _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
@@ -1615,9 +1611,7 @@ class SyncMainTests(unittest.TestCase):
         _run(repo_git_command("checkout", "main"), cwd=self.work)
 
         other = self.tmp / "other-merge"
-        _run(repo_git_command("clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)),
-             cwd=self.tmp)
-        suppress_repo_auto_maintenance(other)
+        clone_fixture_repo(self.tmp / "remote.git", other, "-q", "-b", "main")
         _run(repo_git_command("fetch", "-q", "origin", "feat/gone-merged:feat/gone-merged"),
              cwd=other)
         _run(repo_git_command("merge", "--ff-only", "feat/gone-merged"), cwd=other)
@@ -4284,8 +4278,7 @@ class HookEndToEndTests(unittest.TestCase):
 
     def _advance_remote(self) -> None:
         other = self.tmp / "other"
-        _run(repo_git_command("clone", "-q", "-b", "main", str(self.remote), str(other)), cwd=self.tmp)
-        suppress_repo_auto_maintenance(other)
+        clone_fixture_repo(self.remote, other, "-q", "-b", "main")
         _run(repo_git_command("commit", "--allow-empty", "-m", "remote-advance"), cwd=other)
         _run(repo_git_command("push", "-q", "origin", "main"), cwd=other)
 

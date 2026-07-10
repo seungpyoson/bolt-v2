@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from ci_workflow_hygiene_test_helpers import repo_git_command
+from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +33,7 @@ def run_git(repo: Path, *args: str) -> str:
 
 def fixture_repo(root: Path) -> Path:
     repo = root / "repo"
-    repo.mkdir()
-    run_git(repo, "init")
+    init_fixture_repo(repo)
     run_git(repo, "config", "user.email", "ci-input-sets@example.invalid")
     run_git(repo, "config", "user.name", "CI Input Sets Test")
     write(

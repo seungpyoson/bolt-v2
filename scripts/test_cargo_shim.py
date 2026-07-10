@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import rust_verification
 from test_fixtures import rust_verification_policy_text, write_executable, write_policy
-from ci_workflow_hygiene_test_helpers import repo_git_command
+from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "scripts" / "cargo-shim"
@@ -56,7 +56,7 @@ def _minimal_toml_block(source: str) -> str:
 
 def _init_repo(path: Path, policy: str = POLICY) -> None:
     write_policy(path, policy_text=policy, write_justfile=False)
-    subprocess.run(repo_git_command("init", "-q"), cwd=path, check=True)
+    init_fixture_repo(path, "-q")
 
 
 def _fake_real_cargo(tmp_path: Path) -> Path:
@@ -690,8 +690,7 @@ refused_cargo_subcommands = ["check"]
 
 def test_no_policy_repo_is_transparent(tmp_path):
     repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(repo_git_command("init", "-q"), cwd=repo, check=True)
+    init_fixture_repo(repo, "-q")
     real = _fake_real_cargo(tmp_path)
 
     result = _run_cargo(repo, real, "build")
@@ -887,7 +886,7 @@ def test_daily_maintenance_launch_agent_values_load_from_clean_merged_toml(tmp_p
     root = tmp_path / "repo"
     config_dir = root / "config"
     config_dir.mkdir(parents=True)
-    subprocess.run(repo_git_command("init", "-q"), cwd=root, check=True)
+    init_fixture_repo(root, "-q")
     (config_dir / "clean-merged.toml").write_text(
         """\
 schema_version = 1
@@ -994,7 +993,7 @@ prune_after_days = 30
             encoding="utf-8",
         )
 
-    subprocess.run(repo_git_command("init", "-q", "-b", "main"), cwd=root, check=True)
+    init_fixture_repo(root, "-q", "-b", "main")
     write_daily_config(root, "com.example.main-daily-maintenance")
     subprocess.run(repo_git_command("add", "config/clean-merged.toml"), cwd=root, check=True)
     subprocess.run(

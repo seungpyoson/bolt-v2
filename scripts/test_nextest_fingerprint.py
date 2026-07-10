@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
-from ci_workflow_hygiene_test_helpers import repo_git_command
+from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -156,8 +156,7 @@ def commit_all(repo: pathlib.Path, message: str) -> None:
 
 def init_repo(tmp_path: pathlib.Path, *, cargo_toml: str | None = None) -> pathlib.Path:
     repo = tmp_path / "repo"
-    repo.mkdir()
-    git(repo, "init")
+    init_fixture_repo(repo)
     git(repo, "config", "user.email", "ci@example.invalid")
     git(repo, "config", "user.name", "CI Test")
     git(repo, "config", "core.filemode", "true")

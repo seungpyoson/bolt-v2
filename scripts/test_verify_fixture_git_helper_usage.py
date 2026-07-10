@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-import io
 import contextlib
+import io
 import pathlib
-import sys
 import tempfile
 import unittest
 
@@ -27,39 +26,130 @@ def run_against(source: str) -> tuple[int, str]:
         return rc, stderr.getvalue()
 
 
-class PlantedViolationTests(unittest.TestCase):
-    def test_direct_subprocess_git_argv_fails(self) -> None:
-        rc, err = run_against(
-            "import subprocess\n"
-            "subprocess.run(['git', 'commit', '-m', 'x'], cwd='/tmp', check=True)\n"
-        )
+class ExecutionEdgeTests(unittest.TestCase):
+    def assert_violation(self, source: str, lineno: int) -> None:
+        rc, err = run_against(source)
         self.assertEqual(rc, 1)
-        self.assertIn("scripts/test_planted.py:2", err)
+        self.assertIn(f"scripts/test_planted.py:{lineno}:", err)
 
-    def test_git_argv_handed_to_a_local_wrapper_fails(self) -> None:
-        """The worst offender built the argv and passed it to its own `_run`."""
-        rc, err = run_against(
-            "def _run(args, cwd=None):\n    return args\n"
-            "_run(['git', 'init', '--bare', '/tmp/x'])\n"
+    def test_tuple_argv_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\nsubprocess.run(('git', 'commit'), check=True)\n", 2
         )
+
+    def test_os_system_string_fails(self) -> None:
+        self.assert_violation("import os\nos.system('git commit -m x')\n", 2)
+
+    def test_shell_true_string_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run('git commit -m x', shell=True, check=True)\n",
+            2,
+        )
+
+    def test_shell_c_argv_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(['sh', '-c', 'git commit -m x'], check=True)\n",
+            2,
+        )
+
+    def test_name_bound_to_git_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\ng = 'git'\nsubprocess.run([g, 'commit'], check=True)\n",
+            3,
+        )
+
+    def test_shutil_which_git_fails(self) -> None:
+        self.assert_violation(
+            "import shutil\nimport subprocess\n"
+            "subprocess.run([shutil.which('git'), 'commit'], check=True)\n",
+            3,
+        )
+
+    def test_f_string_command_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\nbranch = 'main'\n"
+            "subprocess.run(f'git checkout {branch}', shell=True, check=True)\n",
+            3,
+        )
+
+    def test_bare_imported_subprocess_name_fails(self) -> None:
+        self.assert_violation(
+            "from subprocess import run\nrun(['git', 'status'], check=True)\n", 2
+        )
+
+    def test_env_wrapper_argv_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\nsubprocess.run(['env', 'git', 'commit'], check=True)\n",
+            2,
+        )
+
+    def test_local_execution_wrapper_with_tuple_argv_fails(self) -> None:
+        self.assert_violation(
+            "def _run(args, *, cwd=None):\n"
+            "    import subprocess\n"
+            "    return subprocess.run(args, cwd=cwd)\n"
+            "_run(('git', 'commit'))\n",
+            4,
+        )
+
+    def test_local_execution_wrapper_with_list_argv_fails(self) -> None:
+        self.assert_violation(
+            "def _run(args, *, cwd=None):\n"
+            "    import subprocess\n"
+            "    return subprocess.run(args, cwd=cwd)\n"
+            "_run(['git', 'commit'])\n",
+            4,
+        )
+
+    def test_wrapper_resolution_reaches_fixed_point_and_records_index(self) -> None:
+        self.assert_violation(
+            "def outer(cwd, command):\n"
+            "    return inner(command)\n"
+            "def inner(command):\n"
+            "    import subprocess\n"
+            "    return subprocess.run(command)\n"
+            "outer(None, ('git', 'commit'))\n",
+            6,
+        )
+
+    def test_starred_forwarded_parameter_marks_wrapper(self) -> None:
+        self.assert_violation(
+            "def _run(args):\n"
+            "    import subprocess\n"
+            "    return subprocess.run(*args)\n"
+            "_run(('git', 'commit'))\n",
+            4,
+        )
+
+
+class ArgvSpellingTests(unittest.TestCase):
+    def test_list_literal_fails(self) -> None:
+        rc, err = run_against("def command():\n    return ['git', 'status']\n")
         self.assertEqual(rc, 1)
-        self.assertIn("scripts/test_planted.py:3", err)
+        self.assertIn("scripts/test_planted.py:2:", err)
 
     def test_starred_git_argv_fails(self) -> None:
-        rc, _ = run_against("def g(*a):\n    return ['git', *a]\n")
+        rc, err = run_against("def g(*a):\n    return ['git', *a]\n")
         self.assertEqual(rc, 1)
+        self.assertIn("scripts/test_planted.py:2:", err)
 
-    def test_routed_through_the_helper_passes(self) -> None:
-        rc, _ = run_against(
-            "from ci_workflow_hygiene_test_helpers import repo_git_command\n"
-            "import subprocess\n"
-            "subprocess.run(repo_git_command('commit', '-m', 'x'), check=True)\n"
+    def test_absolute_git_path_fails(self) -> None:
+        rc, err = run_against("command = ['/usr/bin/git', 'status']\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("scripts/test_planted.py:1:", err)
+
+    def test_list_handed_to_non_execution_wrapper_fails(self) -> None:
+        rc, err = run_against(
+            "def _run(args):\n    return args\n_run(['git', 'init'])\n"
         )
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 1)
+        self.assertIn("scripts/test_planted.py:3:", err)
 
 
 class ExpectedValueTests(unittest.TestCase):
-    """`["git", ...]` as data, not as a command line, stays legal."""
+    """Git argv used only as expected data stays legal."""
 
     def test_comparison_operand_passes(self) -> None:
         rc, _ = run_against("calls = []\nassert calls == ['git', 'fetch']\n")
@@ -72,17 +162,87 @@ class ExpectedValueTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
 
+    def test_called_process_error_argument_passes(self) -> None:
+        rc, _ = run_against(
+            "import subprocess\n"
+            "subprocess.CalledProcessError(1, ['git', 'status'])\n"
+        )
+        self.assertEqual(rc, 0)
+
     def test_element_of_an_enclosing_literal_passes(self) -> None:
         rc, _ = run_against("EXPECTED = [['git', 'fetch'], ['git', 'merge']]\n")
+        self.assertEqual(rc, 0)
+
+    def test_tuple_assignment_passes(self) -> None:
+        rc, _ = run_against("expected = ('git', 'status')\n")
+        self.assertEqual(rc, 0)
+
+    def test_tuple_argument_to_bare_assert_helper_passes(self) -> None:
+        rc, _ = run_against(
+            "assert_equal(calls[0]['args'], ('git', 'status'), 'label')\n"
+        )
+        self.assertEqual(rc, 0)
+
+    def test_tuple_argument_to_data_holder_passes(self) -> None:
+        rc, _ = run_against("CommandResult(('git', 'status'), 0)\n")
+        self.assertEqual(rc, 0)
+
+    def test_wrapper_using_repo_git_command_passes(self) -> None:
+        rc, _ = run_against(
+            "def git(repo, *args):\n"
+            "    return run(repo_git_command(*args), cwd=repo)\n"
+            "git(repo, 'commit')\n"
+        )
+        self.assertEqual(rc, 0)
+
+    def test_non_execution_function_returning_process_data_passes(self) -> None:
+        rc, _ = run_against(
+            "def fake_run(command, **kwargs):\n"
+            "    return subprocess.CompletedProcess(command, 0, 'ok', '')\n"
+            "fake_run(('git', 'status'))\n"
+        )
+        self.assertEqual(rc, 0)
+
+    def test_routed_through_helper_passes(self) -> None:
+        rc, _ = run_against(
+            "import subprocess\n"
+            "subprocess.run(repo_git_command('commit'), check=True)\n"
+        )
+        self.assertEqual(rc, 0)
+
+
+class FixtureConstructorTests(unittest.TestCase):
+    def assert_violation(self, source: str, lineno: int = 1) -> None:
+        rc, err = run_against(source)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"scripts/test_planted.py:{lineno}:", err)
+        self.assertIn("init_fixture_repo", err)
+        self.assertIn("clone_fixture_repo", err)
+
+    def test_repo_git_command_init_fails(self) -> None:
+        self.assert_violation("repo_git_command('init', '-q')\n")
+
+    def test_run_git_init_fails(self) -> None:
+        self.assert_violation("run_git(repo, 'init')\n")
+
+    def test_git_clone_fails(self) -> None:
+        self.assert_violation("git(root, 'clone', a, b)\n")
+
+    def test_commit_message_init_passes(self) -> None:
+        rc, _ = run_against("repo_git_command('commit', '-m', 'init')\n")
+        self.assertEqual(rc, 0)
+
+    def test_fixture_helper_passes(self) -> None:
+        rc, _ = run_against("init_fixture_repo(r, '--bare')\n")
         self.assertEqual(rc, 0)
 
 
 class RepositoryTests(unittest.TestCase):
     def test_repository_is_clean(self) -> None:
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
             rc = verifier.main(["--repo-root", str(REPO_ROOT)])
-        self.assertEqual(rc, 0, "scripts/test_*.py must route git through the helper")
+        self.assertEqual(rc, 0, stderr.getvalue())
 
 
 if __name__ == "__main__":

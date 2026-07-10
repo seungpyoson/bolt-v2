@@ -127,6 +127,10 @@ pub fn generated_evicted_conversion_batch_plan(
     serde_json::from_slice(&bytes).expect("conversion batch plan parses")
 }
 
+/// Regenerates one evicted completion-ledger family and returns its artifact path.
+///
+/// The caller owns `temp_dir`, which must be dedicated to one family because the
+/// temporary spec and output names are fixed within that directory.
 pub fn generate_evicted_completion_ledger(
     reference_root: &Path,
     scope: &str,
@@ -168,6 +172,7 @@ pub fn generate_evicted_completion_ledger(
     artifact.path
 }
 
+/// Regenerates and parses one evicted completion ledger in an owned temporary directory.
 pub fn generated_evicted_completion_ledger(
     reference_root: &Path,
     scope: &str,

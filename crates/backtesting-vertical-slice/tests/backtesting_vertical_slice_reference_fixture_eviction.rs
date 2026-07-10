@@ -647,4 +647,24 @@ fn backfill_conversion_completion_ledger_gitignore_patterns_match_eviction_predi
         !git_check_ignore(&repo_root, sibling_spec),
         "hand-authored completion ledger TOML spec must not be ignored by .gitignore"
     );
+
+    let non_ledger_json = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/hypothetical-new-scope/ledger/metadata.json";
+    assert!(
+        !is_backfill_conversion_completion_ledger_path(non_ledger_json),
+        "non-ledger JSON must stay outside the eviction predicate"
+    );
+    assert!(
+        !git_check_ignore(&repo_root, non_ledger_json),
+        "non-ledger JSON must not be ignored by .gitignore"
+    );
+
+    let nested_scope = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/hypothetical-new-scope/nested/ledger/backfill-conversion-completion-ledger.json";
+    assert!(
+        !is_backfill_conversion_completion_ledger_path(nested_scope),
+        "nested scope must stay outside the eviction predicate"
+    );
+    assert!(
+        !git_check_ignore(&repo_root, nested_scope),
+        "nested scope must not be ignored by .gitignore"
+    );
 }

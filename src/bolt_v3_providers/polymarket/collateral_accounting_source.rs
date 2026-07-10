@@ -543,6 +543,60 @@ mod tests {
     }
 
     #[test]
+    fn eth_call_exact_wire_fixture_matches_request_and_response_contract() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bolt_v3/compatibility/polymarket_eth_call.json"
+        ))
+        .expect("wire fixture should parse");
+        let request = serde_json::json!({
+            "jsonrpc": ON_CHAIN_COLLATERAL_JSON_RPC_VERSION,
+            "id": ON_CHAIN_COLLATERAL_JSON_RPC_ID,
+            "method": ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD,
+            "params": [
+                {
+                    "to": "0x1111111111111111111111111111111111111111",
+                    "data": "0x70a082310000000000000000000000002222222222222222222222222222222222222222",
+                },
+                ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK,
+            ],
+        });
+        assert_eq!(request, fixture["request"]);
+        let production = include_str!("collateral_accounting_source.rs")
+            .split("\n#[cfg(test)]\n")
+            .next()
+            .expect("production source should precede tests");
+        for source_contract in [
+            "\"jsonrpc\": ON_CHAIN_COLLATERAL_JSON_RPC_VERSION",
+            "\"id\": ON_CHAIN_COLLATERAL_JSON_RPC_ID",
+            "\"method\": ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD",
+            "\"params\": [",
+            "\"to\": format!",
+            "\"data\": calldata",
+        ] {
+            assert!(
+                production.contains(source_contract),
+                "production JSON-RPC request drifted from exact fixture: {source_contract}"
+            );
+        }
+
+        let response: JsonRpcEthCallResponse = serde_json::from_value(fixture["response"].clone())
+            .expect("fixed response bytes should decode");
+        assert_eq!(
+            response.result.as_deref(),
+            Some("0x0000000000000000000000000000000000000000000000000000000000000001")
+        );
+        assert!(response.error.is_none());
+
+        let renamed: JsonRpcEthCallResponse =
+            serde_json::from_value(fixture["renamed_response"].clone())
+                .expect("unknown fields may decode before required-result validation");
+        assert!(
+            renamed.result.is_none(),
+            "a renamed result field must fail the production required-result check"
+        );
+    }
+
+    #[test]
     fn on_chain_calldata_encodes_erc20_balance_and_allowance_selectors() {
         let owner = normalized_evm_address("0xAa00000000000000000000000000000000000011")
             .expect("owner address should normalize");

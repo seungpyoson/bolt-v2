@@ -1,0 +1,37 @@
+{
+  "ops_launch_stage_log": {
+    "ops_launch_stage": "target-verify",
+    "status": "failed",
+    "last_completed_stage": "verify-config",
+    "last_failed_stage": "target-verify"
+  },
+  "ops_status_top_level_fields": ["ops_status"],
+  "ops_status_body_fields": [
+    "profile",
+    "installed_binary_sha",
+    "intended_sha",
+    "intended_sha_status",
+    "state_advisory",
+    "config",
+    "launch_identity",
+    "deploy_target",
+    "operator_health"
+  ],
+  "generate_live_config_fields": [
+    "generated_live_config",
+    "output",
+    "source_profile",
+    "profile_bundle_sha256",
+    "generator_format_version",
+    "invariants"
+  ],
+  "verify_live_config_fields": [
+    "verified_live_config",
+    "profile",
+    "deployed",
+    "profile_bundle_sha256",
+    "matches_profile",
+    "loads_against_binary",
+    "invariants"
+  ]
+}

@@ -655,6 +655,10 @@ fn canonical_bytes_are_separator_safe_and_stable() {
 
     assert_ne!(one_field, two_fields);
     assert_eq!(
+        stable, "0f93e69202e9ff0fac586688b7b4279741734c16f636cf7c742dac600770697f",
+        "canonical framing/domain changes require an explicit compatibility decision"
+    );
+    assert_eq!(
         stable,
         canonical_fingerprint(vec![
             CanonicalField::new(["path", "0"], "alpha"),

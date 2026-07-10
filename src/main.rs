@@ -3594,4 +3594,124 @@ mod tests {
             "\"unknown\""
         );
     }
+
+    #[test]
+    fn operator_cli_machine_readable_shapes_match_fixed_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/bolt_v3/compatibility/operator_cli_shapes.json"
+        ))
+        .expect("operator CLI compatibility fixture should parse");
+        let launch_log = OpsLaunchStageLog {
+            ops_launch_stage: OpsLaunchStage::TargetVerify,
+            status: OpsLaunchStageStatus::Failed,
+            last_completed_stage: Some(OpsLaunchStage::VerifyConfig),
+            last_failed_stage: Some(OpsLaunchStage::TargetVerify),
+        };
+        assert_eq!(
+            serde_json::to_value(launch_log).expect("launch log should serialize"),
+            fixture["ops_launch_stage_log"]
+        );
+
+        let report = OpsStatusReport {
+            ops_status: OpsStatusBody {
+                profile: "profile".to_string(),
+                installed_binary_sha: None,
+                intended_sha: None,
+                intended_sha_status: IntendedShaStatus::NotSpecified,
+                state_advisory: StateAdvisory::Unknown,
+                config: ConfigStatus::Error {
+                    error: "fixture".to_string(),
+                },
+                launch_identity: LaunchIdentityStatus::Absent,
+                deploy_target: DeployTargetStatus::NoTargetConfigured,
+                operator_health: BoltV3OperatorHealthSurface::not_configured(),
+            },
+        };
+        let report = serde_json::to_value(report).expect("ops status should serialize");
+        let top_level_fields = report
+            .as_object()
+            .expect("ops status should be object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_top_level = fixture["ops_status_top_level_fields"]
+            .as_array()
+            .expect("fixture top-level fields should be array")
+            .iter()
+            .map(|value| value.as_str().expect("field should be string").to_string())
+            .collect();
+        assert_eq!(top_level_fields, expected_top_level);
+        let body_fields = report["ops_status"]
+            .as_object()
+            .expect("ops status body should be object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_body = fixture["ops_status_body_fields"]
+            .as_array()
+            .expect("fixture body fields should be array")
+            .iter()
+            .map(|value| value.as_str().expect("field should be string").to_string())
+            .collect();
+        assert_eq!(body_fields, expected_body);
+
+        let invariants = ProductionInvariants {
+            strategy_files: vec!["strategy.toml".to_string()],
+            loss_governor_present: true,
+            loss_governor_enabled: true,
+            max_per_trade_loss: "1".to_string(),
+            max_daily_loss: "2".to_string(),
+            max_rolling_loss: "3".to_string(),
+            max_drawdown: "4".to_string(),
+            live_submit_governance_mode:
+                bolt_v2::bolt_v3_config::LiveSubmitGovernanceMode::SupervisedDepositCapped,
+            default_max_notional_per_order: "5".to_string(),
+        };
+        let generated = serde_json::to_value(GenerateLiveConfigReport {
+            generated_live_config: true,
+            output: "live.toml".to_string(),
+            source_profile: "profile".to_string(),
+            profile_bundle_sha256: "a".repeat(64),
+            generator_format_version: 1,
+            invariants: invariants.clone(),
+        })
+        .expect("generate report should serialize");
+        let generated_fields = generated
+            .as_object()
+            .expect("generate report should be object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_generated = fixture["generate_live_config_fields"]
+            .as_array()
+            .expect("generate fields should be array")
+            .iter()
+            .map(|value| value.as_str().expect("field should be string").to_string())
+            .collect();
+        assert_eq!(generated_fields, expected_generated);
+
+        let verified = serde_json::to_value(VerifyLiveConfigReport {
+            verified_live_config: true,
+            profile: "profile".to_string(),
+            deployed: "live.toml".to_string(),
+            profile_bundle_sha256: "a".repeat(64),
+            matches_profile: true,
+            loads_against_binary: true,
+            invariants,
+        })
+        .expect("verify report should serialize");
+        let verified_fields = verified
+            .as_object()
+            .expect("verify report should be object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_verified = fixture["verify_live_config_fields"]
+            .as_array()
+            .expect("verify fields should be array")
+            .iter()
+            .map(|value| value.as_str().expect("field should be string").to_string())
+            .collect();
+        assert_eq!(verified_fields, expected_verified);
+    }
 }

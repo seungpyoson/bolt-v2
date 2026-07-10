@@ -1,0 +1,123 @@
+# Sink-derived compatibility inventory. This file is intentionally independent
+# of the runtime-literal registry: Serde-derived names do not appear there.
+schema_version = 1
+
+[[sink]]
+id = "decision-evidence-jsonl-v15"
+category = "PERSISTED_SERDE"
+owner_path = "src/bolt_v3_decision_evidence.rs"
+owner_symbol = "DecisionEvidenceEnvelopeHeader"
+shape = ["schema_version", "recorded_at_utc_ns", "gate_id", "gate_version", "kind"]
+status = "PROTECTED"
+protection = "VERSIONED_OLD_BYTES"
+evidence_path = "tests/bolt_v3_capital_admission_recovery_equivalence.rs"
+evidence_symbol = "migrated_v13_evidence_recovers_capital_admission_reservations_equivalently"
+notes_code = "VERSIONED_DECISION_EVIDENCE_MODEL"
+
+[[sink]]
+id = "launch-identity-v1"
+category = "PERSISTED_SERDE"
+owner_path = "src/bolt_v3_operator_artifacts.rs"
+owner_symbol = "LaunchIdentity"
+shape = ["build_head_sha", "profile", "config_bundle_checksum", "launched_at_unix_secs", "pid", "target_host_facts"]
+status = "PROTECTED"
+protection = "OLD_BYTES"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/launch_identity_v1.json"
+evidence_symbol = "launch_identity_v1_old_bytes_remain_readable"
+notes_code = "LEGACY_BYTES_READABLE"
+
+[[sink]]
+id = "kill-switch-state-v2"
+category = "PERSISTED_SERDE"
+owner_path = "src/bolt_v3_kill_switch_store.rs"
+owner_symbol = "PersistedKillSwitchState"
+shape = ["schema_version", "state", "loss_protection"]
+status = "PROTECTED"
+protection = "OLD_BYTES"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/kill_switch_state_v2.json"
+evidence_symbol = "kill_switch_state_v2_old_bytes_remain_readable"
+notes_code = "LEGACY_BYTES_READABLE"
+
+[[sink]]
+id = "basket-state-v1"
+category = "PERSISTED_SERDE"
+owner_path = "src/bolt_v3_basket_store.rs"
+owner_symbol = "PersistedBasketState"
+shape = ["schema_version", "state"]
+status = "PROTECTED"
+protection = "OLD_BYTES"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/basket_state_v1.json"
+evidence_symbol = "basket_state_v1_old_bytes_remain_readable"
+notes_code = "LEGACY_BYTES_READABLE"
+
+[[sink]]
+id = "execution-state-jsonl-v1"
+category = "PERSISTED_SERDE"
+owner_path = "src/execution_state.rs"
+owner_symbol = "OrderEventRow"
+shape = ["event_type", "strategy_id", "instrument_id", "client_order_id", "venue_order_id", "account_id", "ts_event", "ts_init", "payload_json", "PositionEventRow", "position_id"]
+status = "PROTECTED"
+protection = "OLD_BYTES"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/execution_state_rows_v1.jsonl"
+evidence_symbol = "execution_state_v1_old_jsonl_rows_remain_readable"
+notes_code = "LEGACY_BYTES_READABLE"
+
+[[sink]]
+id = "reference-boundary-capture-v1"
+category = "PERSISTED_SERDE"
+owner_path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+owner_symbol = "ChainlinkReferenceFixtureCaptureRecord"
+shape = ["schema_version", "kind", "repository", "workflow_path", "workflow_digest", "provenance_config_digest", "head_sha", "tested_sha", "run_id", "run_attempt", "check_suite_id", "event", "head_branch", "pull_request", "required_jobs", "conditional_jobs", "nextest_fingerprint", "created_at", "capture"]
+status = "PROTECTED"
+protection = "EXACT_JSON_SHAPE"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/reference_boundary_capture_v1.json"
+evidence_symbol = "reference_boundary_capture_v1_exact_bytes_remain_stable"
+notes_code = "MACHINE_READABLE_OPERATOR_CONTRACT"
+
+[[sink]]
+id = "operator-cli-machine-readable-shapes"
+category = "OPERATOR_JSON"
+owner_path = "src/main.rs"
+owner_symbol = "OpsStatusReport"
+shape = ["OpsLaunchStageLog", "GenerateLiveConfigReport", "VerifyLiveConfigReport", "OpsStatusReport", "ops_launch_stage", "generated_live_config", "verified_live_config", "ops_status"]
+status = "PROTECTED"
+protection = "EXACT_JSON_SHAPE"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/operator_cli_shapes.json"
+evidence_symbol = "operator_cli_machine_readable_shapes_match_fixed_fixture"
+notes_code = "MACHINE_READABLE_OPERATOR_CONTRACT"
+
+[[sink]]
+id = "polymarket-eth-call-json-rpc"
+category = "JSON_RPC"
+owner_path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+owner_symbol = "eth_call_u256_word"
+shape = ["jsonrpc", "id", "method", "params", "to", "data", "latest", "result", "error"]
+status = "PROTECTED"
+protection = "EXACT_WIRE"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/polymarket_eth_call.json"
+evidence_symbol = "eth_call_exact_wire_fixture_matches_request_and_response_contract"
+notes_code = "EXTERNAL_WIRE_CONTRACT"
+
+[[sink]]
+id = "nt-parquet-type-name-metadata"
+category = "NT_CATALOG_METADATA"
+owner_path = "src/lake_batch.rs"
+owner_symbol = "type_name_for_data_class"
+shape = ["type_name", "QuoteTick", "TradeTick", "OrderBookDelta", "OrderBookDepth10", "IndexPriceUpdate", "MarkPriceUpdate", "InstrumentClose"]
+status = "PROTECTED"
+protection = "FIXED_METADATA"
+evidence_path = "tests/fixtures/bolt_v3/compatibility/nt_catalog_type_names.json"
+evidence_symbol = "nt_catalog_type_name_metadata_matches_fixed_compatibility_fixture"
+notes_code = "NAUTILUS_METADATA_CONTRACT"
+
+[[sink]]
+id = "outcome-group-canonical-fingerprint-v2"
+category = "CANONICAL_HASH"
+owner_path = "src/bolt_v3_outcome_groups.rs"
+owner_symbol = "canonical_fingerprint"
+shape = ["bolt-v3-outcome-group-canonical-v2", "path", "value", "to_be_bytes", "sort_by"]
+status = "PROTECTED"
+protection = "FIXED_DIGEST"
+evidence_path = "tests/bolt_v3_outcome_groups.rs"
+evidence_symbol = "canonical_bytes_are_separator_safe_and_stable"
+notes_code = "HASH_PREIMAGE_CONTRACT"

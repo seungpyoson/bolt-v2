@@ -292,6 +292,54 @@ mod tests {
         ResolvedBoltV3Secrets { clients }
     }
 
+    #[test]
+    fn reference_boundary_capture_v1_exact_bytes_remain_stable() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/bolt_v3/compatibility/reference_boundary_capture_v1.json"
+        ))
+        .expect("boundary-capture compatibility fixture should parse");
+        let workflow_digest = "a".repeat(64);
+        let provenance_config_digest = "b".repeat(64);
+        let head_sha = "c".repeat(40);
+        let fixture_sha256 = "d".repeat(64);
+        let record = ChainlinkReferenceFixtureCaptureRecord {
+            schema_version: CHAINLINK_REFERENCE_CAPTURE_SCHEMA_VERSION,
+            kind: "full-ci",
+            repository: "seungpyoson/bolt-v2",
+            workflow_path: ".github/workflows/ci.yml",
+            workflow_digest: &workflow_digest,
+            provenance_config_digest: &provenance_config_digest,
+            head_sha: &head_sha,
+            tested_sha: &head_sha,
+            run_id: 1,
+            run_attempt: 1,
+            check_suite_id: 1,
+            event: "workflow_dispatch",
+            head_branch: "test-branch",
+            pull_request: serde_json::json!({"number": null, "base_sha": null}),
+            required_jobs: serde_json::json!({"capture": "success"}),
+            conditional_jobs: serde_json::json!({}),
+            nextest_fingerprint: None,
+            created_at: "2026-06-27T00:00:00Z",
+            capture: ChainlinkReferenceFixtureCaptureFields {
+                record_kind: CHAINLINK_REFERENCE_CAPTURE_KIND,
+                adapter_id: chainlink_reference::KEY,
+                client_key: "chainlink_reference",
+                frame_kind: CHAINLINK_REFERENCE_CAPTURE_FRAME_KIND,
+                signature_verified: false,
+                fixture_filename: CHAINLINK_REFERENCE_CAPTURE_FRAME_FILENAME,
+                fixture_sha256: &fixture_sha256,
+                observed_binary_frames: 1,
+                observed_text_frames: 0,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(record).expect("capture record should serialize"),
+            expected
+        );
+    }
+
     #[tokio::test]
     async fn capture_rejects_non_chainlink_reference_client_key_before_builder() {
         let loaded = fixture_loaded_config();

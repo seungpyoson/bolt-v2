@@ -812,6 +812,24 @@ mod tests {
         assert!(report.classes["quotes"].reason.is_none());
     }
 
+    #[test]
+    fn nt_catalog_type_name_metadata_matches_fixed_compatibility_fixture() {
+        let expected: BTreeMap<String, String> = serde_json::from_str(include_str!(
+            "../tests/fixtures/bolt_v3/compatibility/nt_catalog_type_names.json"
+        ))
+        .expect("NT type-name fixture should parse");
+
+        for data_class in supported_stream_classes() {
+            assert_eq!(
+                type_name_for_data_class(data_class).expect("supported class should map"),
+                expected
+                    .get(*data_class)
+                    .unwrap_or_else(|| panic!("fixture missing {data_class}"))
+            );
+        }
+        assert_eq!(PARQUET_TYPE_NAME_METADATA_KEY, "type_name");
+    }
+
     #[cfg(unix)]
     #[test]
     fn write_failure_output_root_preserves_preexisting_empty_dir_on_write_error() {

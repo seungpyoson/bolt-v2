@@ -541,3 +541,27 @@ fn write_record_batch(batch: RecordBatch, path: &Path) -> Result<()> {
     writer.close()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn execution_state_v1_old_jsonl_rows_remain_readable() {
+        let lines =
+            include_str!("../tests/fixtures/bolt_v3/compatibility/execution_state_rows_v1.jsonl")
+                .lines()
+                .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+
+        let order: OrderEventRow =
+            serde_json::from_str(lines[0]).expect("old order-event bytes should decode");
+        assert_eq!(order.client_order_id, "O-1");
+        assert_eq!(order.ts_event, 11);
+
+        let position: PositionEventRow =
+            serde_json::from_str(lines[1]).expect("old position-event bytes should decode");
+        assert_eq!(position.position_id, "P-1");
+        assert_eq!(position.opening_order_id.as_deref(), Some("O-1"));
+    }
+}

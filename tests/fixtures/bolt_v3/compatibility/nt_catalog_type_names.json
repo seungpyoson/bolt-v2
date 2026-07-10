@@ -1,0 +1,9 @@
+{
+  "quotes": "QuoteTick",
+  "trades": "TradeTick",
+  "order_book_deltas": "OrderBookDelta",
+  "order_book_depths": "OrderBookDepth10",
+  "index_prices": "IndexPriceUpdate",
+  "mark_prices": "MarkPriceUpdate",
+  "instrument_closes": "InstrumentClose"
+}

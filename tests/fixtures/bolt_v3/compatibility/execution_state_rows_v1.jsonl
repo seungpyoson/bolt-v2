@@ -1,0 +1,2 @@
+{"event_type":"Submitted","strategy_id":"S-1","instrument_id":"YES.POLYMARKET","client_order_id":"O-1","venue_order_id":null,"account_id":"A-1","ts_event":11,"ts_init":12,"payload_json":"{}"}
+{"event_type":"PositionOpened","trader_id":"T-1","strategy_id":"S-1","instrument_id":"YES.POLYMARKET","position_id":"P-1","account_id":"A-1","event_id":null,"opening_order_id":"O-1","closing_order_id":null,"side":"LONG","quantity":"1","ts_opened":11,"ts_closed":null,"realized_pnl":null,"unrealized_pnl":"0","ts_event":11,"ts_init":12,"payload_json":"{}"}

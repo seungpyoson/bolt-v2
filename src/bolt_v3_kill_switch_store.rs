@@ -430,6 +430,7 @@ fn serialize_state_with_loss_snapshot(
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedKillSwitchState {
     schema_version: u32,
+    #[serde(rename = "state_v2")]
     state: KillSwitchState,
     #[serde(skip_serializing_if = "Option::is_none")]
     loss_protection: Option<PersistedKillSwitchLossProtectionSnapshot>,

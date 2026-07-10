@@ -111,6 +111,7 @@ pub struct LaunchIdentity {
     /// build did not embed it (see `current_build_head_sha`).
     pub build_head_sha: Option<String>,
     /// Profile name this launch was started with.
+    #[serde(rename = "profile_v2")]
     pub profile: String,
     /// Checksum of the exact config bundle that was loaded for this launch.
     pub config_bundle_checksum: String,

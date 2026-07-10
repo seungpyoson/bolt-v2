@@ -2725,16 +2725,16 @@ impl BinaryOracleEdgeTaker {
         // Mirror live terminal booking-error: recovered open positions whose
         // settlement key already has a booking-error record release exposure
         // rather than parking Managed forever.
-        if let Ok(settlement_key) = settlement_key_for_position(&open_position) {
-            if self.settlement_booking_error_keys.contains(&settlement_key) {
-                self.apply_settlement_booking_terminal_release(
-                    &open_position,
-                    settlement_key.clone(),
-                    format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
-                    None,
-                );
-                return;
-            }
+        if let Ok(settlement_key) = settlement_key_for_position(&open_position)
+            && self.settlement_booking_error_keys.contains(&settlement_key)
+        {
+            self.apply_settlement_booking_terminal_release(
+                &open_position,
+                settlement_key.clone(),
+                format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
+                None,
+            );
+            return;
         }
         let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
         self.exposure = exposure;

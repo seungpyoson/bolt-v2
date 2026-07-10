@@ -4082,18 +4082,36 @@ def assert_flaky_backtester_jobs_require_shared_minio_action() -> None:
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
 
 """
-    for workflow_path in (
-        ".github/workflows/flaky-test-detection.yml",
-        ".github/workflows/flaky-test-smoke.yml",
+    for workflow_path, job_anchor in (
+        (".github/workflows/flaky-test-detection.yml", "  flaky-detection-rust-backtester:\n"),
+        (".github/workflows/flaky-test-smoke.yml", "  flaky-smoke-rust-backtester:\n"),
     ):
         workflow = repo_workflow_text(workflow_path)
-        mutated = replace_once(workflow, action_step, "")
+        mutated = replace_once_after(workflow, job_anchor, action_step, "")
         errors = verifier.flaky_test_detection_workflow_errors(
             mutated,
             verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_path],
         )
         if not any("backtester" in error and "must keep BVS job steps unchanged" in error for error in errors):
             raise AssertionError(f"{workflow_path} may silently omit the shared MinIO action: {errors!r}")
+
+        reordered = replace_once_after(
+            mutated,
+            job_anchor,
+            "      - name: Stage JUnit report\n",
+            action_step + "      - name: Stage JUnit report\n",
+        )
+        reordered_errors = verifier.flaky_test_detection_workflow_errors(
+            reordered,
+            verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_path],
+        )
+        if not any(
+            "backtester" in error and "must keep BVS job steps unchanged" in error
+            for error in reordered_errors
+        ):
+            raise AssertionError(
+                f"{workflow_path} may set up MinIO after running BVS tests: {reordered_errors!r}"
+            )
 
 
 

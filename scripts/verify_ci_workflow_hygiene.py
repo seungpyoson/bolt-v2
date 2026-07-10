@@ -7403,8 +7403,12 @@ def bvs_backtester_job_steps_are_allowlisted(job_text: str) -> bool:
             if step.name is None or step.name in seen_run_step_names:
                 return False
             if step.name == "Run tests":
+                if ("Setup BVS MinIO S3 smoke", BVS_MINIO_SETUP_ACTION) not in seen_uses_steps:
+                    return False
                 seen_run_step_names.add(step.name)
                 continue
+            if step.name == "Stop BVS MinIO S3 smoke container" and "Run tests" not in seen_run_step_names:
+                return False
             expected_lines = BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS.get(step.name)
             if expected_lines is None or simple_shell_lines(step.run_text) != expected_lines:
                 return False

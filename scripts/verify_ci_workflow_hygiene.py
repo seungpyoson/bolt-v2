@@ -1256,7 +1256,8 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "e18b0205846df6f4a7def0f24959477697ed5d0e35d3db56ca97547de696dd6c"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "352d88a330e83f8d8374781a5f62f995398dae692df12d76194e291d57f9e178"
+BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -7437,6 +7438,9 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
     "Stage JUnit report": missing_nextest_junit_stage_lines(
         "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
     ),
+    "Stop BVS MinIO S3 smoke container": (
+        'docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true',
+    ),
 }
 BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
     (
@@ -7447,6 +7451,7 @@ BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
         (None, "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4"),
         ("Restore test target cache", "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"),
         ("Install cargo-nextest", "taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538"),
+        ("Setup BVS MinIO S3 smoke", BVS_MINIO_SETUP_ACTION),
         ("Upload test results to Mergify", "mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3"),
     )
 )
@@ -7463,8 +7468,12 @@ def bvs_backtester_job_steps_are_allowlisted(job_text: str) -> bool:
             if step.name is None or step.name in seen_run_step_names:
                 return False
             if step.name == "Run tests":
+                if ("Setup BVS MinIO S3 smoke", BVS_MINIO_SETUP_ACTION) not in seen_uses_steps:
+                    return False
                 seen_run_step_names.add(step.name)
                 continue
+            if step.name == "Stop BVS MinIO S3 smoke container" and "Run tests" not in seen_run_step_names:
+                return False
             expected_lines = BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS.get(step.name)
             if expected_lines is None or simple_shell_lines(step.run_text) != expected_lines:
                 return False
@@ -7479,7 +7488,11 @@ def bvs_backtester_job_steps_are_allowlisted(job_text: str) -> bool:
             continue
 
         return False
-    return {"Run tests", "Stage JUnit report"} <= seen_run_step_names
+    return (
+        {"Run tests", "Stage JUnit report", "Stop BVS MinIO S3 smoke container"}
+        <= seen_run_step_names
+        and ("Setup BVS MinIO S3 smoke", BVS_MINIO_SETUP_ACTION) in seen_uses_steps
+    )
 
 
 
@@ -8164,6 +8177,8 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     gate_text = uncommented_text(gate_job) if gate_job is not None else ""
     consumer_text = f"{job_text}\n{issue_text}"
     combined_text = f"{archive_text}\n{consumer_text}"
+    if archive_text.count(f"uses: {BVS_MINIO_SETUP_ACTION}") != 1:
+        errors.append("backtester bvs-test archive must set up MinIO through the shared action exactly once")
     if "just bte-test --partition" in combined_text:
         errors.append("backtester bvs-test must not run direct per-shard target builds")
     if "for shard in $(seq 1 \"$BVS_NEXTEST_SHARDS\")" not in archive_text:

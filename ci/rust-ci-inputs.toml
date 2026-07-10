@@ -26,6 +26,7 @@ include_sets = ["backtester_cache"]
 paths = [
   "scripts/ci_input_sets.py",
   "ci/rust-ci-inputs.toml",
+  ".github/actions/setup-bvs-minio-s3-smoke/**",
   ".github/actions/setup-environment/**",
   ".github/workflows/backtester-ci.yml",
   "scripts/ci_provenance.py",

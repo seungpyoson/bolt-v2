@@ -1682,7 +1682,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .expect("capital_admission_rejection must be present when rejected"),
+                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -1925,13 +1925,13 @@ impl BoltV3SubmitAdmissionState {
         let snapshot = inner.loss_snapshot.as_ref();
         let stale_reason = match snapshot {
             Some(snapshot) => loss_snapshot_stale_reason(loss_policy, snapshot, now_ns)
-                .expect("snapshot must be stale if halting"),
+                .unwrap_or(BoltV3StaleLossReason::MissingSnapshot),
             None => BoltV3StaleLossReason::MissingSnapshot,
         };
         let source_for_key = snapshot
             .map(|snapshot| snapshot.source.as_str())
             .filter(|source| !source.trim().is_empty())
-            .expect("source must be present in snapshot");
+            .unwrap_or("none");
         let stable_halt_key = format!("{}:{}", stale_loss_reason_key(stale_reason), source_for_key);
 
         let (retry_count, elapsed_since_first_halt_ns) =
@@ -2030,7 +2030,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .expect("capital_admission_rejection must be present when rejected"),
+                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -2062,7 +2062,7 @@ impl BoltV3SubmitAdmissionState {
         let mut rejected_intent = claims
             .first()
             .map(|claim| claim.intent_kind)
-            .expect("claims must not be empty if not rejected");
+            .unwrap_or(BoltV3SubmitIntentKind::Entry);
         let mut rejected_request: Option<BoltV3SubmitAdmissionRequest> = None;
         let mut rejected_evaluation: Option<BoltV3SubmitAdmissionEvaluation> = None;
         let mut rollbacks = Vec::new();

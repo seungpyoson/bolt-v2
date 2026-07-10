@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "869c2d0eaf5a",
+  "session_id": "a2712926-fa94-405b-b44f-792003993c06",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T12:08:41.143424Z",
+  "branch": "fix/1338-stale-boundary-deferral",
+  "checkpoints_count": 17,
+  "save_step_count": 2,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "194a77da5ca2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 61586,
+    "cache_creation_tokens": 6739466,
+    "cache_read_tokens": 383036163,
+    "output_tokens": 1083860,
+    "api_call_count": 767
+  },
+  "session_metrics": {
+    "turn_count": 26
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 3,
+      "agent_lines_removed": 3
+    }
+  ]
+}

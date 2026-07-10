@@ -5,10 +5,12 @@ runs:
   using: composite
   steps:
     - name: Load BVS MinIO S3 smoke config
+      id: config
       shell: bash
       run: |
-        python3.12 - <<'PY' >> "$GITHUB_ENV"
+        python3.12 - "$GITHUB_ENV" "$GITHUB_OUTPUT" <<'PY'
         import pathlib
+        import sys
         import tomllib
         from urllib.parse import urlparse
 
@@ -38,11 +40,20 @@ runs:
             "BVS_MINIO_READINESS_SLEEP_SECONDS": str(
                 cfg["ci_minio"]["readiness_sleep_seconds"]
             ),
-            "MINIO_ROOT_USER": cfg["store"]["access_key_id"],
-            "MINIO_ROOT_PASSWORD": cfg["store"]["secret_access_key"],
         }
-        for key, value in lines.items():
-            print(f"{key}={value}")
+        with pathlib.Path(sys.argv[1]).open("a", encoding="utf-8") as env_file:
+            for key, value in lines.items():
+                print(f"{key}={value}", file=env_file)
+
+        credentials = {
+            "minio_root_user": cfg["store"]["access_key_id"],
+            "minio_root_password": cfg["store"]["secret_access_key"],
+        }
+        for value in credentials.values():
+            print(f"::add-mask::{value}")
+        with pathlib.Path(sys.argv[2]).open("a", encoding="utf-8") as output_file:
+            for key, value in credentials.items():
+                print(f"{key}={value}", file=output_file)
         PY
 
     - name: Pull BVS MinIO S3 smoke image
@@ -51,6 +62,9 @@ runs:
 
     - name: Start BVS MinIO S3 smoke container
       shell: bash
+      env:
+        MINIO_ROOT_USER: ${{ steps.config.outputs.minio_root_user }}
+        MINIO_ROOT_PASSWORD: ${{ steps.config.outputs.minio_root_password }}
       run: |
         docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
         docker run \

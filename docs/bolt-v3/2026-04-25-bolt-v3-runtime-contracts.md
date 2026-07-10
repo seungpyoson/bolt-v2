@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `e932d028239c785f1c63991f9c56837e2a673fdb`
+  - current value: `9e71b2b1305a66945ba07f0aba2d1eb63208263d`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1472,7 +1472,7 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins NautilusTrader to
-`e932d028239c785f1c63991f9c56837e2a673fdb` on the bolt pin-fork
+`9e71b2b1305a66945ba07f0aba2d1eb63208263d` on the bolt pin-fork
 (`seungpyoson/nautilus_trader`, branch `pin/6be5a50-sbe-schema-3-5`), which is
 upstream pin `6be5a5094716790a8ca2875445fde4fa2586107e` plus the ported
 Binance Spot SBE schema 3:5 instrument-loading fix (upstream

@@ -3,7 +3,7 @@ use crate::support;
 use std::time::Duration;
 
 use bolt_v2::{
-    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config, nautilus_startup_bound_secs},
     bolt_v3_live_node::{
         BoltV3LiveNodeError, build_bolt_v3_all_configured_client_mapping_live_node_with_summary,
         run_bolt_v3_live_node,
@@ -60,14 +60,10 @@ fn chainlink_only_loaded_config(endpoint: String) -> LoadedBoltV3Config {
 }
 
 fn chainlink_startup_bound(loaded: &LoadedBoltV3Config) -> Duration {
-    loaded
-        .root
-        .nautilus
-        .timeout_connection_secs
-        .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
-        .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
-        .map(Duration::from_secs)
-        .expect("Chainlink startup bound should fit")
+    Duration::from_secs(
+        nautilus_startup_bound_secs(&loaded.root.nautilus)
+            .expect("Chainlink startup bound should fit"),
+    )
 }
 
 #[test]

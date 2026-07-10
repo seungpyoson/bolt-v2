@@ -723,6 +723,52 @@ fn config_load_rejects_reference_reconnect_timeout_at_startup_bound() {
 }
 
 #[test]
+fn config_load_accepts_reference_reconnect_timeout_one_millisecond_above_startup_bound() {
+    let mut failures = Vec::new();
+
+    for client_key in ["chainlink_reference", "polyresearch_reference"] {
+        if let Err(error) =
+            reference_reconnect_timeout_relative_to_startup_bound_load(client_key, 1)
+        {
+            failures.push(format!(
+                "clients.{client_key}.data.reconnect_timeout_ms at startup bound plus one failed to load: {error}"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "reference provider positive startup-bound validation failures: {failures:#?}"
+    );
+}
+
+#[test]
+fn config_load_rejects_nautilus_startup_bound_overflow_for_reference_clients() {
+    let rendered = reference_reconnect_startup_bound_overflow_load_error([i64::MAX; 3])
+        .expect("overflowing Nautilus startup bound should fail config load");
+
+    assert!(
+        rendered.contains("error_variant=NautilusStartupBoundOverflow")
+            && rendered.contains("nautilus.timeout_connection_secs")
+            && rendered.contains("nautilus.timeout_reconciliation_secs")
+            && rendered.contains("nautilus.timeout_portfolio_secs"),
+        "startup-bound overflow should expose a named validation error with every summed field: {rendered}"
+    );
+}
+
+#[test]
+fn config_load_rejects_nautilus_startup_bound_millisecond_overflow_for_reference_clients() {
+    let rendered = reference_reconnect_startup_bound_overflow_load_error([i64::MAX, 1, 1])
+        .expect("Nautilus startup bound exceeding milliseconds should fail config load");
+
+    assert!(
+        rendered.contains("error_variant=NautilusStartupBoundMillisecondsOverflow")
+            && rendered.contains("startup_bound_secs="),
+        "millisecond conversion overflow should expose a named validation error: {rendered}"
+    );
+}
+
+#[test]
 fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))
@@ -8184,6 +8230,18 @@ fn fixture_root_config() -> bolt_v2::bolt_v3_config::BoltV3RootConfig {
 fn reference_reconnect_timeout_at_startup_bound_load_error(
     client_key: &str,
 ) -> Result<String, String> {
+    match reference_reconnect_timeout_relative_to_startup_bound_load(client_key, 0) {
+        Ok(()) => Err(format!(
+            "clients.{client_key}.data.reconnect_timeout_ms at startup bound loaded successfully"
+        )),
+        Err(error) => Ok(error),
+    }
+}
+
+fn reference_reconnect_timeout_relative_to_startup_bound_load(
+    client_key: &str,
+    delta_ms: i64,
+) -> Result<(), String> {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 
     let temp = tempfile::tempdir().expect("config-load tempdir should create");
@@ -8205,39 +8263,75 @@ fn reference_reconnect_timeout_at_startup_bound_load_error(
     for reference_client in ["chainlink_reference", "polyresearch_reference"] {
         set_client_reconnect_timeout_ms(&mut root, reference_client, valid_reconnect_timeout_ms);
     }
-    set_client_reconnect_timeout_ms(&mut root, client_key, startup_bound_ms);
+    let target_reconnect_timeout_ms = startup_bound_ms
+        .checked_add(delta_ms)
+        .expect("startup bound plus test delta should fit test integer");
+    set_client_reconnect_timeout_ms(&mut root, client_key, target_reconnect_timeout_ms);
+
+    let root_path = temp.path().join("root.toml");
+    let root_text = toml::to_string(&root).expect("mutated root TOML should serialize");
+    fs::write(&root_path, root_text).expect("mutated root fixture should write");
+
+    load_bolt_v3_config(&root_path)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn reference_reconnect_startup_bound_overflow_load_error(
+    timeout_secs: [i64; 3],
+) -> Result<String, String> {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let temp = tempfile::tempdir().expect("config-load tempdir should create");
+    let strategies_dir = temp.path().join("strategies");
+    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
+    fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategies_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+
+    let mut root: toml::Value =
+        toml::from_str(&support::repo_text("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture TOML should parse as generic TOML");
+    let nautilus = root
+        .get_mut("nautilus")
+        .and_then(toml::Value::as_table_mut)
+        .expect("root fixture should configure [nautilus]");
+    for (field, timeout_secs) in [
+        "timeout_connection_secs",
+        "timeout_reconciliation_secs",
+        "timeout_portfolio_secs",
+    ]
+    .into_iter()
+    .zip(timeout_secs)
+    {
+        nautilus.insert(field.to_string(), toml::Value::Integer(timeout_secs));
+    }
 
     let root_path = temp.path().join("root.toml");
     let root_text = toml::to_string(&root).expect("mutated root TOML should serialize");
     fs::write(&root_path, root_text).expect("mutated root fixture should write");
 
     match load_bolt_v3_config(&root_path) {
-        Ok(_) => Err(format!(
-            "clients.{client_key}.data.reconnect_timeout_ms at startup bound loaded successfully"
-        )),
+        Ok(_) => Err("overflowing Nautilus startup bound loaded successfully".to_string()),
         Err(error) => Ok(error.to_string()),
     }
 }
 
 fn root_startup_bound_ms(root: &toml::Value) -> i64 {
-    [
-        "timeout_connection_secs",
-        "timeout_reconciliation_secs",
-        "timeout_portfolio_secs",
-    ]
-    .into_iter()
-    .map(|field| root_nautilus_integer(root, field))
-    .try_fold(0_i64, i64::checked_add)
-    .and_then(|seconds| seconds.checked_mul(1000))
-    .expect("fixture startup bound should fit test integer")
-}
+    use bolt_v2::bolt_v3_config::{BoltV3RootConfig, nautilus_startup_bound_secs};
 
-fn root_nautilus_integer(root: &toml::Value, field: &str) -> i64 {
-    root.get("nautilus")
-        .and_then(toml::Value::as_table)
-        .and_then(|nautilus| nautilus.get(field))
-        .and_then(toml::Value::as_integer)
-        .unwrap_or_else(|| panic!("root fixture should configure nautilus.{field}"))
+    let root: BoltV3RootConfig = root
+        .clone()
+        .try_into()
+        .expect("root fixture should deserialize for startup-bound calculation");
+    let startup_bound_ms = std::time::Duration::from_secs(
+        nautilus_startup_bound_secs(&root.nautilus)
+            .expect("fixture startup bound should fit seconds"),
+    )
+    .as_millis();
+    i64::try_from(startup_bound_ms).expect("fixture startup bound should fit test integer")
 }
 
 fn set_client_reconnect_timeout_ms(

@@ -42,6 +42,7 @@ const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
 const RV_DATA_CLIENT_VENUE: &str = "OKX";
 
 fn reference_price_client_from_toml(value: &str) -> ClientBlock {
+    // These inserted client fragments bypass root validation, so their inline 5000ms values do not satisfy the root startup-bound rule.
     toml::from_str(value).expect("reference price test client should parse")
 }
 

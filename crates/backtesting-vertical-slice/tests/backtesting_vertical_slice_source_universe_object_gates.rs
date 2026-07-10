@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
+
 use backtesting_vertical_slice::source_proof::{
     AcceptanceMode, AcceptanceScope, CONTRACT_VERSION, EvidenceState, FixtureType,
     L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
@@ -17,7 +19,7 @@ use serde_json::json;
 fn source_universe_object_gates_cover_every_bybit_queue_item() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("object-gates");
     let spec_path = temp_dir.path().join("source-universe-object-gates.toml");
 
@@ -129,7 +131,7 @@ category_manifest_path = "{inverse_manifest}"
 fn committed_binance_source_universe_object_gates_use_canonical_trade_table_family() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("object-gates");
     let spec_path = temp_dir.path().join("source-universe-object-gates.toml");
 
@@ -225,7 +227,7 @@ category_manifest_path = "{coin_m_delivery_manifest}"
 
 #[test]
 fn source_universe_object_gates_accept_non_sha_source_hashes_without_faking_payload_sha256() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let proof_path = temp_dir.path().join("source-proof.json");
     let category_manifest_path = temp_dir.path().join("category-manifest.json");
     let queue_path = temp_dir

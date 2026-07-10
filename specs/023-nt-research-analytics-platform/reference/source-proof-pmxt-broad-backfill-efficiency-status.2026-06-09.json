@@ -13,11 +13,11 @@
     },
     "durable_source_selection_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
-      "sha256": "32d1090ed5098bc76af8b2e5e3404a4be2f74e8dc3a08f0314c5d2374483128e"
+      "sha256": "033d6d262d1d40b8931f645cc199532cce389001de1a09bf8466fa05a0de77e2"
     },
     "dynamic_tick_size_replay_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json",
-      "sha256": "bf4658e0fea6b5678e1dad0f2d24c8751cb2920375f1f305cfdea3e557efe229"
+      "sha256": "f48e6275f632dbe25fcc508a8b68eb1db9107b58556d6c6d758a5fc78199fdc6"
     }
   },
   "guard_verification": {

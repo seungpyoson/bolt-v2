@@ -104,3 +104,9 @@ specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/*
 # Issue #704: generated backfill conversion completion ledgers are regenerated
 # from committed TOML specs in tests and fingerprinted in the eviction index.
 specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/*/ledger/backfill-conversion-completion-ledger.json
+
+# Issue #704 Phase 2: generated PMXT source-universe object manifests are
+# regenerated from the committed source-archive-index TOML spec in tests and
+# fingerprinted in the eviction index.
+specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-*/manifest/source-universe-object-manifest.json
+specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-*/category-manifests/*-object-manifest-*.json

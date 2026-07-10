@@ -8,6 +8,7 @@ runs:
       id: config
       shell: bash
       run: |
+        set -euo pipefail
         python3.12 - "$GITHUB_ENV" "$GITHUB_OUTPUT" <<'PY'
         import pathlib
         import sys
@@ -40,6 +41,12 @@ runs:
             "BVS_MINIO_READINESS_SLEEP_SECONDS": str(
                 cfg["ci_minio"]["readiness_sleep_seconds"]
             ),
+            "BVS_MINIO_READINESS_CONNECT_TIMEOUT_SECONDS": str(
+                cfg["ci_minio"]["readiness_connect_timeout_seconds"]
+            ),
+            "BVS_MINIO_READINESS_MAX_TIME_SECONDS": str(
+                cfg["ci_minio"]["readiness_max_time_seconds"]
+            ),
         }
         with pathlib.Path(sys.argv[1]).open("a", encoding="utf-8") as env_file:
             for key, value in lines.items():
@@ -58,7 +65,9 @@ runs:
 
     - name: Pull BVS MinIO S3 smoke image
       shell: bash
-      run: docker pull "$BVS_MINIO_IMAGE"
+      run: |
+        set -euo pipefail
+        docker pull "$BVS_MINIO_IMAGE"
 
     - name: Start BVS MinIO S3 smoke container
       shell: bash
@@ -66,6 +75,7 @@ runs:
         MINIO_ROOT_USER: ${{ steps.config.outputs.minio_root_user }}
         MINIO_ROOT_PASSWORD: ${{ steps.config.outputs.minio_root_password }}
       run: |
+        set -euo pipefail
         docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
         docker run \
           --rm \
@@ -82,8 +92,12 @@ runs:
     - name: Wait for BVS MinIO S3 smoke service
       shell: bash
       run: |
+        set -euo pipefail
         for attempt in $(seq 1 "$BVS_MINIO_READINESS_ATTEMPTS"); do
-          if curl -fsS "$BVS_MINIO_HEALTH_URL" >/dev/null; then
+          if curl -fsS \
+            --connect-timeout "$BVS_MINIO_READINESS_CONNECT_TIMEOUT_SECONDS" \
+            --max-time "$BVS_MINIO_READINESS_MAX_TIME_SECONDS" \
+            "$BVS_MINIO_HEALTH_URL" >/dev/null; then
             echo "BVS MinIO S3 smoke service ready"
             exit 0
           fi

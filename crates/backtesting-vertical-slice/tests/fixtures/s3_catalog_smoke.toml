@@ -15,6 +15,8 @@ console_port = 9001
 health_path = "/minio/health/ready"
 readiness_attempts = 60
 readiness_sleep_seconds = 2
+readiness_connect_timeout_seconds = 2
+readiness_max_time_seconds = 5
 
 [store]
 endpoint_url = "http://127.0.0.1:9000"

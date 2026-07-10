@@ -667,6 +667,69 @@ blocking_issues = [
     );
 }
 
+#[test]
+fn venue_scale_ledger_uses_stable_manifest_identity_across_materialization_roots() {
+    let stable_manifest_identity = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json";
+    let manifest = r#"{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+  "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
+  "object_count": 1351,
+  "accepted_bytes": 557815904970,
+  "category_summaries": []
+}"#;
+    let mut generated = Vec::new();
+
+    for root_name in ["first-root", "second-root-with-a-different-length"] {
+        let temp_dir = tempdir_in_repo_target();
+        let materialization_root = temp_dir.path().join(root_name);
+        let manifest_path = materialization_root.join("source-universe-object-manifest.json");
+        let output_dir = materialization_root.join("ledger");
+        let spec_path = materialization_root.join("venue-scale-ledger.toml");
+        fs::create_dir_all(&materialization_root).expect("create materialization root");
+        fs::write(&manifest_path, manifest).expect("write materialized manifest");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"
+ledger_id = "venue-scale-conversion-acceptance-ledger-pmxt-location-independent"
+output_dir = "{output_dir}"
+
+[[venue]]
+venue_id = "pmxt-current-reference"
+venue = "pmxt"
+
+[[venue.universe]]
+universe_id = "pmxt-polymarket-full-current-data"
+scope_label = "Polymarket full current local/archive data"
+status = "blocked"
+source_universe_manifest_path = "{manifest_path}"
+source_universe_manifest_artifact_path = "{stable_manifest_identity}"
+blocking_issues = ["missing_accepted_source_proof"]
+"#,
+                output_dir = output_dir.display(),
+                manifest_path = manifest_path.display(),
+            ),
+        )
+        .expect("write differential venue-scale spec");
+
+        let artifact = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
+            .expect("venue-scale generation succeeds");
+        let bytes = fs::read(&artifact.path).expect("read generated venue-scale ledger");
+        let ledger: VenueScaleConversionAcceptanceLedger =
+            serde_json::from_slice(&bytes).expect("venue-scale ledger parses");
+        let manifest_ref = ledger.venues[0].universes[0]
+            .artifact_refs
+            .iter()
+            .find(|artifact_ref| artifact_ref.role == "source_universe_manifest")
+            .expect("manifest artifact ref");
+        assert_eq!(manifest_ref.path, Path::new(stable_manifest_identity));
+        generated.push(bytes);
+    }
+
+    assert_eq!(generated[0], generated[1]);
+}
+
 /// Regression for the selected-conversion-manifest completion-proof gate: a
 /// manifest that parses but does not attest a *finalized* conversion (zero
 /// canonical rows, or a blank catalog hash) must be rejected. Without the gate,

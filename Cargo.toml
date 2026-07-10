@@ -47,6 +47,10 @@ name = "chainlink_startup_boot"
 path = "tests/chainlink_startup_boot.rs"
 
 [[test]]
+name = "binance_sbe_schema_v5_decode"
+path = "tests/binance_sbe_schema_v5_decode.rs"
+
+[[test]]
 name = "bolt_v3_risk_reservation_substrate"
 path = "tests/bolt_v3_risk_reservation_substrate.rs"
 
@@ -75,28 +79,28 @@ getrandom = "0.4.2"
 hex = "0.4"
 libc = "0.2"
 log = "0.4"
-nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-data = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-binance = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-bitmex = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-bybit = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-coinbase = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-deribit = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-hyperliquid = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-kraken = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-live = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-network = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e", features = ["transport-sockudo"] }
-nautilus-okx = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-persistence-macros = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-polymarket = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-portfolio = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-serialization = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-system = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
-nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
+nautilus-common = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-core = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-data = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-bitmex = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-bybit = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-coinbase = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-deribit = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-hyperliquid = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-kraken = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-live = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-model = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-network = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb", features = ["transport-sockudo"] }
+nautilus-okx = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-persistence = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-persistence-macros = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-polymarket = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-portfolio = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-serialization = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-execution = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-system = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
+nautilus-trading = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }
 parquet = "58.3.0"
 rust_decimal = "1.42.0"
 serde = { version = "1", features = ["derive"] }

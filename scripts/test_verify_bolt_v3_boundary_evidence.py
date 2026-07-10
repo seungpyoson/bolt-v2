@@ -49,7 +49,7 @@ def clean_files(root: Path) -> None:
     write(
         root,
         "Cargo.toml",
-        'nautilus-network = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }\n',
+        'nautilus-network = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e932d028239c785f1c63991f9c56837e2a673fdb" }\n',
     )
     write(
         root,

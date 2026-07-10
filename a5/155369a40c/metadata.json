@@ -3,7 +3,7 @@
   "checkpoint_id": "a5155369a40c",
   "strategy": "manual-commit",
   "branch": "fix/1355-private-fetch-maintenance",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": null,
   "sessions": [
     {
@@ -12,13 +12,20 @@
       "compact_transcript": "/a5/155369a40c/0/transcript.jsonl",
       "content_hash": "/a5/155369a40c/0/content_hash.txt",
       "prompt": "/a5/155369a40c/0/prompt.txt"
+    },
+    {
+      "metadata": "/a5/155369a40c/1/metadata.json",
+      "transcript": "/a5/155369a40c/1/full.jsonl",
+      "compact_transcript": "/a5/155369a40c/1/transcript.jsonl",
+      "content_hash": "/a5/155369a40c/1/content_hash.txt",
+      "prompt": "/a5/155369a40c/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 251183,
+    "input_tokens": 576347,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 21714688,
-    "output_tokens": 20347,
-    "api_call_count": 86
+    "cache_read_tokens": 53926912,
+    "output_tokens": 50394,
+    "api_call_count": 241
   }
 }

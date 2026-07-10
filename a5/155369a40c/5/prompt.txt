@@ -1,0 +1,45 @@
+### PR #1342 — close and redesign
+
+  Retire the current architecture of PR #1342. Do not append more rows, fixtures, conditions, or verifier branches.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/wave2-pr1-pin
+
+  Expected state:
+  - Clean worktree
+  - HEAD and PR head: fe7c1ccf34146c251c28ae386cc8440ec5e2487d
+
+  Read AGENTS.md. Treat the earlier “purely additive frozen design” as superseded by the owner’s no-debt/no-dual-path directive.
+
+  Verify and document these architectural failures:
+  - the checked-in 17,345-line crosswalk duplicates the registry
+  - every row is still planned
+  - generation resets progress
+  - `UNCERTAIN_KEEP` is a catch-all fallback
+  - planned evidence may point at nonexistent artifacts
+  - the inventory verifies only declared rows and therefore cannot prove completeness
+  - shape strings create parallel source/fixture/inventory maintenance
+  - #1215 is an incorrect parent link
+
+  Do not modify the implementation. Post the architectural rationale and close PR #1342 while preserving its branch.
+
+  Leave #1341 open only as the umbrella, but add an owner correction replacing its current design with two proposed slices:
+
+  1. Compatibility protection:
+     - only real old-byte/exact-wire/fixed-digest tests through production readers
+     - one compact manifest linking owner, production-reader test, and fixture
+     - no copied shape strings
+     - completeness must come from one deterministic sink census, not self-declared inventory rows
+
+  2. Registry retirement receipt:
+     - one canonical declarative ledger, preferably the existing registry
+     - mutually exclusive and exhaustive rule IDs plus explicit exceptions
+     - unresolved rows fail; no catch-all fallback
+     - the 2,604-row receipt is generated evidence, not a maintained checked-in mirror
+
+  Produce a salvage list of genuinely useful fixtures/tests from #1342, with evidence that each uses its production reader. Do not open replacement PRs yet.
+  Report the closure and proposed slice boundaries.
+
+---
+
+approve

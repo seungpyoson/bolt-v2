@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "a5155369a40c",
+  "session_id": "019f4c23-b342-7472-bdb4-d8923f27f415",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T16:28:19.099739Z",
+  "branch": "fix/1355-private-fetch-maintenance",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "3bf0840d524e",
+  "checkpoint_transcript_start": 337,
+  "transcript_lines_at_start": 337,
+  "compact_transcript_start": 73,
+  "token_usage": {
+    "input_tokens": 251183,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 21714688,
+    "output_tokens": 20347,
+    "api_call_count": 86
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

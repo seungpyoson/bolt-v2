@@ -1,0 +1,7 @@
+▎ PR #1351 final round — five items from the external adjudication (comment 4936092246). No design changes.
+▎ 1. CP-1 (blocker): config_parsing::bolt_v3_archetype_keeps_default_provider_market_exit_shape_permissive fails at head — give the fixture a matching non-enforcing capital pool, sweep every other fixture-built root config hosting a binary-oracle strategy for the same shape, and run the FULL suite at the new head (no scope filters).
+▎ 2. Invariant wording: replace the "fires only at/after interval end" claim (doc comment on apply_settlement_booking_terminal_release + PR body) with the two-leg invariant: market-expired ∨ position-unmanageable-by-construction (unknown interval ⇒ exit and settlement both permanently blocked).
+▎ 3. Boundary pin: add a test asserting every live-entered/pending-adopted position carries interval_end_ms (anchors: runtime_state.rs:235, pending-lifecycle inheritance) — so the unmanageable leg can never silently widen to live positions.
+▎ 4. Remove settlement_booking_terminal_latched: it's write-only in production (zero readers). Re-anchor the six test assertions on settlement_booking_terminal_evidence_keys being non-empty.
+▎ 5. Body notes: cross-restart duplicate terminal evidence is accepted-by-design (one per key per process lifetime, discriminated by raw_reason_text); deploy wording sharpened — the v0.1.12 binary against the old on-box root.toml refuses to boot by design, so config ships with the binary.
+▎ Gates: full suite green at the new head + fmt + literal audit. Report the head.

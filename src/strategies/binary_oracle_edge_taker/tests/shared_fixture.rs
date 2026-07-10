@@ -1,6 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_common::{
+    messages::data::DataCommand,
+    msgbus::TypedIntoHandler,
+    runner::{DataCommandSender, get_data_cmd_sender, replace_data_cmd_sender},
+};
 use nautilus_trading::Strategy;
 
 pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
@@ -904,6 +909,13 @@ pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc
 pub(super) fn register_test_strategy_with_clock(
     strategy: &mut BinaryOracleEdgeTaker,
 ) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
+    install_test_data_command_sender();
+    if strategy.is_registered() {
+        let cache = strategy.core.cache_rc();
+        let clock = registered_test_clock_for_cache(&cache);
+        return (cache, clock);
+    }
+
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
@@ -920,7 +932,76 @@ pub(super) fn register_test_strategy_with_clock(
         .core
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
+    record_registered_test_clock(&cache_handle, &clock_handle);
     (cache_handle, clock_handle)
+}
+
+#[derive(Debug)]
+struct RecordingDataCommandSender;
+
+impl DataCommandSender for RecordingDataCommandSender {
+    fn execute(&self, command: DataCommand) {
+        TEST_DATA_COMMANDS.with(|commands| {
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .push(command);
+        });
+    }
+}
+
+thread_local! {
+    static TEST_DATA_COMMANDS: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    static REGISTERED_TEST_CLOCKS: RefCell<std::collections::HashMap<usize, Rc<RefCell<TestClock>>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn test_cache_key(cache: &Rc<RefCell<Cache>>) -> usize {
+    Rc::as_ptr(cache) as usize
+}
+
+fn record_registered_test_clock(cache: &Rc<RefCell<Cache>>, clock: &Rc<RefCell<TestClock>>) {
+    REGISTERED_TEST_CLOCKS.with(|clocks| {
+        clocks
+            .borrow_mut()
+            .insert(test_cache_key(cache), Rc::clone(clock));
+    });
+}
+
+fn registered_test_clock_for_cache(cache: &Rc<RefCell<Cache>>) -> Rc<RefCell<TestClock>> {
+    REGISTERED_TEST_CLOCKS.with(|clocks| {
+        clocks
+            .borrow()
+            .get(&test_cache_key(cache))
+            .cloned()
+            .expect("registered test strategy should retain its TestClock")
+    })
+}
+
+fn install_test_data_command_sender() {
+    msgbus::register_data_command_endpoint(
+        MessagingSwitchboard::data_engine_queue_execute(),
+        TypedIntoHandler::from(|command: DataCommand| {
+            get_data_cmd_sender().execute(command);
+        }),
+    );
+    replace_data_cmd_sender(std::sync::Arc::new(RecordingDataCommandSender));
+    TEST_DATA_COMMANDS.with(|commands| {
+        commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned")
+            .clear();
+    });
+}
+
+pub(super) fn recorded_data_commands() -> Vec<DataCommand> {
+    TEST_DATA_COMMANDS.with(|commands| {
+        commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned")
+            .clone()
+    })
 }
 
 pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {
@@ -1021,7 +1102,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {
-    BinaryOracleEdgeTaker::new(
+    let mut strategy = BinaryOracleEdgeTaker::new(
         BinaryOracleEdgeTakerConfig {
             strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
             order_id_tag: "001".to_string(),
@@ -1137,7 +1218,9 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
         )
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency())),
-    )
+    );
+    register_test_strategy(&mut strategy);
+    strategy
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {

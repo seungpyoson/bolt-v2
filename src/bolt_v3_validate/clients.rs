@@ -31,8 +31,9 @@ pub(super) fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
     errors
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum ReferenceReconnectStartupBudgetValidationError {
+    BudgetResolution(crate::bolt_v3_providers::NtReconnectBudgetResolutionError),
     NautilusStartupBoundOverflow(crate::bolt_v3_config::NautilusStartupBoundOverflow),
     NautilusStartupBoundMillisecondsOverflow {
         startup_bound_secs: u64,
@@ -48,6 +49,7 @@ enum ReferenceReconnectStartupBudgetValidationError {
 impl std::fmt::Display for ReferenceReconnectStartupBudgetValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::BudgetResolution(error) => write!(f, "{error}"),
             Self::NautilusStartupBoundOverflow(error) => {
                 write!(f, "error_variant=NautilusStartupBoundOverflow {error}")
             }
@@ -73,16 +75,20 @@ fn validate_reference_reconnect_timeout_exceeds_startup_bound(
     key: &str,
     client: &ClientBlock,
 ) -> Vec<String> {
-    let Some(data) = &client.data else {
-        return Vec::new();
-    };
-    let Some((provider_key, reconnect_timeout_ms)) =
-        crate::bolt_v3_providers::reference_provider_reconnect_timeout_ms_for_nt_connect_budget(
-            client.venue.as_str(),
-            data,
-        )
-    else {
-        return Vec::new();
+    let (provider_key, reconnect_timeout_ms) = match crate::bolt_v3_providers::nt_reconnect_budget(
+        client.venue.as_str(),
+        client.data.as_ref(),
+    ) {
+        Ok(crate::bolt_v3_providers::NtReconnectBudget::NotApplicable) => return Vec::new(),
+        Ok(crate::bolt_v3_providers::NtReconnectBudget::Required {
+            provider_key,
+            reconnect_timeout_ms,
+        }) => (provider_key, reconnect_timeout_ms),
+        Err(error) => {
+            return vec![
+                ReferenceReconnectStartupBudgetValidationError::BudgetResolution(error).to_string(),
+            ];
+        }
     };
     let startup_bound_secs =
         match crate::bolt_v3_config::nautilus_startup_bound_secs(&root.nautilus) {

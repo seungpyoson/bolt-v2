@@ -99,10 +99,11 @@ pub struct PolyResearchReferencePriceDataConfig {
     pub idle_timeout_ms: u64,
 }
 
-pub(crate) fn reconnect_timeout_ms_for_nt_connect_budget(data: &toml::Value) -> Option<u64> {
+pub(crate) fn reconnect_timeout_ms_for_nt_connect_budget(
+    data: &toml::Value,
+) -> Result<u64, toml::de::Error> {
     data.clone()
         .try_into::<PolyResearchReferencePriceDataConfig>()
-        .ok()
         .map(|data| data.reconnect_timeout_ms)
 }
 
@@ -1299,9 +1300,7 @@ pub(crate) fn polyresearch_websocket_client_config(
         headers: vec![],
         heartbeat: config.heartbeat_secs,
         heartbeat_msg: config.heartbeat_message.clone(),
-        reconnect_timeout_ms: bolt_v3_wire_boundary::nt_connect_and_reconnect_timeout_ms(
-            config.reconnect_timeout_ms,
-        ),
+        reconnect_timeout_ms: Some(config.reconnect_timeout_ms),
         reconnect_delay_initial_ms: Some(config.reconnect_delay_initial_ms),
         reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
         reconnect_backoff_factor: Some(config.reconnect_backoff_factor),

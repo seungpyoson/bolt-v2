@@ -1551,6 +1551,20 @@ configured_source_param = "configured-value"
             .expect("loopback reconnect timeout should fit TOML integer")
     }
 
+    #[test]
+    fn chainlink_loopback_reconnect_budget_derives_from_startup_bound() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        loaded.root.nautilus.timeout_connection_secs = 2;
+        loaded.root.nautilus.timeout_reconciliation_secs = 3;
+        loaded.root.nautilus.timeout_portfolio_secs = 5;
+
+        assert_eq!(chainlink_loopback_reconnect_timeout_ms(&loaded), 10_001);
+
+        loaded.root.nautilus.timeout_portfolio_secs = 7;
+        assert_eq!(chainlink_loopback_reconnect_timeout_ms(&loaded), 12_001);
+    }
+
     fn chainlink_health_report_frame(loaded: &LoadedBoltV3Config) -> Vec<u8> {
         let binding = loaded
             .root

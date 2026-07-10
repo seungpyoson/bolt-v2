@@ -16,14 +16,11 @@ import tempfile
 import textwrap
 
 from ci_test_manifest import CiTestManifest
+from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG = (
-    ("gc.auto", "0"),
-    ("maintenance.auto", "false"),
-)
 GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = tuple(
     arg
     for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import subprocess
@@ -12,6 +11,7 @@ import tempfile
 import time
 
 import ci_workflow_hygiene_test_helpers as hygiene_helpers
+from git_maintenance import count_trace2_maintenance_children
 from ci_workflow_hygiene_test_helpers import (
     BASE_WORKFLOW,
     DEBUG_TEST_WORKFLOW_PATH,
@@ -103,24 +103,6 @@ def assert_suppression_args_match_suppression_config() -> None:
         )
 
 
-def _maintenance_children(trace_path: pathlib.Path) -> int:
-    """`git maintenance`/`git gc` processes recorded in a GIT_TRACE2 event log."""
-    if not trace_path.exists():
-        return 0
-    total = 0
-    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if event.get("event") != "child_start":
-            continue
-        argv = " ".join(event.get("argv", []))
-        if "maintenance" in argv or argv.startswith("git gc"):
-            total += 1
-    return total
-
-
 def assert_init_fixture_repo_persists_suppression() -> None:
     """A fixture remote must carry the suppression in its own config.
 
@@ -203,7 +185,7 @@ def assert_push_to_fixture_remote_spawns_no_background_maintenance() -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            maintenance_children[remote] = _maintenance_children(trace)
+            maintenance_children[remote] = count_trace2_maintenance_children(trace)
 
         if maintenance_children["unsuppressed"] == 0:
             raise AssertionError(
@@ -237,7 +219,7 @@ def assert_routed_fixture_module_spawns_no_background_maintenance() -> None:
         )
         if completed.returncode != 0:
             raise AssertionError(f"{module} failed: {completed.stderr[-2000:]}")
-        spawned = _maintenance_children(trace)
+        spawned = count_trace2_maintenance_children(trace)
         if spawned:
             raise AssertionError(f"{module} spawned {spawned} background maintenance children")
 

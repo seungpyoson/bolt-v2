@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
 use crate::backtesting_vertical_slice_test_support::{
-    PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_PATH, PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_REGEN_PATH,
-    materialize_evicted_pmxt_object_manifests, tempdir_in_repo_target,
+    PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_PATH, materialize_evicted_pmxt_object_manifests,
+    tempdir_in_repo_target,
 };
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH, TIER1_PMXT_CONVERSION_QUEUE_PATH,
@@ -683,7 +683,7 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
         &mut evaluated,
         "backfill-source-universe-pmxt-polymarket-v2-current",
         "source_universe_manifest",
-        PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_REGEN_PATH,
+        PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_PATH,
         &pmxt_manifest_sha256,
     );
     normalize_artifact_ref_path(

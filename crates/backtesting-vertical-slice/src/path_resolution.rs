@@ -126,6 +126,28 @@ pub fn portable_artifact_path_for_spec(path: &Path, spec_path: &Path) -> Result<
     Ok(portable)
 }
 
+/// Choose the stable identity serialized for a materialized input artifact.
+///
+/// Specs that read from transient scratch storage may provide the artifact's
+/// canonical committed or evicted repo path separately. Without an override,
+/// preserve the existing portable-path behavior for ordinary inputs.
+pub fn stable_artifact_identity_path_for_spec(
+    resolved_path: &Path,
+    materialization_path: &Path,
+    artifact_identity_path: Option<&Path>,
+) -> Result<PathBuf> {
+    let Some(identity) = artifact_identity_path else {
+        return portable_artifact_path_for_spec(resolved_path, materialization_path);
+    };
+    if !is_canonical_repo_relative(identity) {
+        bail!(
+            "artifact identity path {} must be a canonical repo-relative committed path",
+            identity.display()
+        );
+    }
+    Ok(identity.to_path_buf())
+}
+
 fn candidate_portable_artifact_path(path: &Path) -> Option<PathBuf> {
     if !path.is_absolute() {
         return Some(path.to_path_buf());

@@ -54,7 +54,7 @@
     },
     "conversion_queue_spec": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/source-universe-conversion-queue.toml",
-      "sha256": "b70298a53c40431709cdb10ad9d5c951f7d1ce15a52fca3ddb09a4cbb8bf85f9"
+      "sha256": "f5215dd5990879a088b8835e97e5f0cd913065bbe0b91898bff905ea9bf37284"
     },
     "venue_acceptance_ledger_spec": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml",

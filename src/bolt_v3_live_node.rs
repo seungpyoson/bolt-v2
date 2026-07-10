@@ -719,6 +719,17 @@ fn configured_reference_current_price_source_count(
     sources_by_client.values().map(Vec::len).sum()
 }
 
+fn settlement_health_from_loaded(loaded: &LoadedBoltV3Config) -> BoltV3SettlementHealth {
+    if loaded.strategies.iter().any(|strategy| {
+        strategy.config.strategy_archetype.as_str()
+            == crate::strategies::binary_oracle_edge_taker::KEY
+    }) {
+        BoltV3SettlementHealth::nominal()
+    } else {
+        BoltV3SettlementHealth::not_configured()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct BoltV3InputHealthSourceKey {
     strategy_instance_id: String,
@@ -810,6 +821,26 @@ impl BoltV3LiveInputHealthAccumulator {
         }
         BoltV3InputHealth::from_live_missing_sources(self.configured_source_count, missing_sources)
     }
+}
+
+fn build_settlement_health_transition_emitter(
+    settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
+    input_health_accumulator: Arc<Mutex<BoltV3LiveInputHealthAccumulator>>,
+    emit_operator_health_surface: Arc<
+        dyn Fn(&'static str, Option<BoltV3InputHealth>) + Send + Sync + 'static,
+    >,
+) -> BoltV3SettlementHealthTransitionEmitter {
+    Arc::new(move |transition: BoltV3SettlementHealthTransition| {
+        settlement_health
+            .lock()
+            .expect("settlement health lock poisoned")
+            .apply_transition(transition);
+        let input_health = input_health_accumulator
+            .lock()
+            .ok()
+            .map(|accumulator| accumulator.snapshot());
+        emit_operator_health_surface(stringify!(settlement_booking_terminal), input_health);
+    })
 }
 
 fn reference_current_price_live_input_sources_by_client(
@@ -3081,7 +3112,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         )))
     });
     let operator_health_transition_logger = BoltV3OperatorHealthTransitionLogger::new();
-    let settlement_health = Arc::new(Mutex::new(BoltV3SettlementHealth::nominal()));
+    let settlement_health = Arc::new(Mutex::new(settlement_health_from_loaded(loaded)));
     let input_health_sources_by_client =
         reference_current_price_live_input_sources_by_client(loaded);
     let input_health_configured_source_count =
@@ -3135,22 +3166,11 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             emit_operator_health_surface(reason, Some(input_health));
         })
     };
-    let settlement_health_transition_emitter: BoltV3SettlementHealthTransitionEmitter = {
-        let emit_operator_health_surface = emit_operator_health_surface.clone();
-        let input_health_accumulator = input_health_accumulator.clone();
-        let settlement_health = settlement_health.clone();
-        Arc::new(move |transition: BoltV3SettlementHealthTransition| {
-            settlement_health
-                .lock()
-                .expect("settlement health lock poisoned")
-                .apply_transition(transition);
-            let input_health = input_health_accumulator
-                .lock()
-                .ok()
-                .map(|accumulator| accumulator.snapshot());
-            emit_operator_health_surface(stringify!(settlement_booking_terminal), input_health);
-        })
-    };
+    let settlement_health_transition_emitter = build_settlement_health_transition_emitter(
+        settlement_health.clone(),
+        input_health_accumulator.clone(),
+        emit_operator_health_surface.clone(),
+    );
     let order_reject_observer_feed_subscription = order_reject_observer_feed.as_ref().map(|feed| {
         subscribe_order_reject_observer_feed_with_health_emitter(
             feed.clone(),

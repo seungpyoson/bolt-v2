@@ -263,6 +263,73 @@ fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface
 }
 
 #[test]
+fn settlement_health_configuration_tracks_registered_settlement_capability() {
+    let mut loaded = fixture_loaded_config();
+    assert_eq!(
+        settlement_health_from_loaded(&loaded).status,
+        BoltV3OperatorHealthStatus::Nominal
+    );
+
+    loaded.strategies.clear();
+    let unconfigured = settlement_health_from_loaded(&loaded);
+    assert_eq!(
+        unconfigured.status,
+        BoltV3OperatorHealthStatus::NotConfigured
+    );
+    assert!(!unconfigured.configured);
+}
+
+#[test]
+fn production_settlement_health_emitter_updates_state_before_reporting_surface() {
+    let settlement_health = Arc::new(Mutex::new(BoltV3SettlementHealth::nominal()));
+    let input_health_accumulator = Arc::new(Mutex::new(BoltV3LiveInputHealthAccumulator::new(
+        0,
+        &BTreeMap::new(),
+    )));
+    let reported = Arc::new(Mutex::new(
+        Vec::<(&'static str, BoltV3SettlementHealth)>::new(),
+    ));
+    let recorded = reported.clone();
+    let reported_health = settlement_health.clone();
+    let emit_surface: Arc<dyn Fn(&'static str, Option<BoltV3InputHealth>) + Send + Sync + 'static> =
+        Arc::new(move |reason, _| {
+            let health = reported_health
+                .lock()
+                .expect("settlement health mutex poisoned")
+                .clone();
+            recorded
+                .lock()
+                .expect("settlement health report mutex poisoned")
+                .push((reason, health));
+        });
+    let emitter = build_settlement_health_transition_emitter(
+        settlement_health.clone(),
+        input_health_accumulator,
+        emit_surface,
+    );
+
+    emitter(BoltV3SettlementHealthTransition {
+        settlement_key: "settlement-key-1".to_string(),
+        position_id: "position-1".to_string(),
+        reason: "settlement_booking_terminal".to_string(),
+    });
+
+    let health = settlement_health
+        .lock()
+        .expect("settlement health mutex poisoned")
+        .clone();
+    assert_eq!(health.status, BoltV3OperatorHealthStatus::Degraded);
+    assert_eq!(health.terminal_transition_count, 1);
+    let reports = reported
+        .lock()
+        .expect("settlement health report mutex poisoned");
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].0, stringify!(settlement_booking_terminal));
+    assert_eq!(reports[0].1.status, BoltV3OperatorHealthStatus::Degraded);
+    assert_eq!(reports[0].1.terminal_transition_count, 1);
+}
+
+#[test]
 fn operator_health_transition_logger_survives_poisoned_cache_lock() {
     let logger = BoltV3OperatorHealthTransitionLogger::new();
     let poison_logger = logger.clone();

@@ -76,6 +76,7 @@ impl BoltV3SettlementHealth {
 
     pub fn apply_transition(&mut self, transition: BoltV3SettlementHealthTransition) {
         self.status = BoltV3OperatorHealthStatus::Degraded;
+        self.configured = true;
         self.terminal_transition_count = self.terminal_transition_count.saturating_add(1);
         self.latest_settlement_key = Some(transition.settlement_key);
         self.latest_position_id = Some(transition.position_id);

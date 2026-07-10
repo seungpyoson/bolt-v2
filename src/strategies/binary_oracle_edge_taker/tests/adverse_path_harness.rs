@@ -1911,6 +1911,95 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
 }
 
 #[test]
+fn terminal_settlement_does_not_depend_on_a_second_lifecycle_append() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(
+        RecordingSequencedDecisionEvidenceWriter::with_failing_standalone_order_lifecycle(),
+    );
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-ATOMIC-TERMINAL-SETTLEMENT"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let settlement_key = settlement_key_for_position(&position)
+        .expect("fixture position should derive settlement key");
+    let terminal_ns = position
+        .lifecycle
+        .interval_end_ms()
+        .expect("live fixture position must retain an interval end")
+        .saturating_mul(NANOS_PER_MILLI_U64);
+
+    strategy
+        .record_settlement_booking_error(
+            &position,
+            settlement_key,
+            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            "terminal evidence must use one durable append".to_string(),
+            terminal_ns,
+        )
+        .expect("standalone lifecycle failure must be irrelevant to terminal settlement");
+
+    let events = evidence.events();
+    assert_eq!(settlement_booking_error_count(&events), 1);
+    assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
+    assert_eq!(
+        health_transitions
+            .lock()
+            .expect("recording settlement health transition mutex poisoned")
+            .len(),
+        1
+    );
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn lifecycle_write_failure_preserves_transition_and_source_context() {
+    let evidence = Arc::new(
+        RecordingSequencedDecisionEvidenceWriter::with_failing_standalone_order_lifecycle(),
+    );
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission,
+    );
+
+    let error = strategy
+        .persist_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
+            outcome: BoltV3OrderLifecycleOutcome::Flat,
+            source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
+            market_id: Some("MKT-LIFECYCLE-FAILURE".to_string()),
+            instrument_id: None,
+            position_id: None,
+            client_order_id: None,
+            prior_client_order_id: None,
+            raw_reason_text: None,
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: None,
+        })
+        .expect_err("fixture lifecycle writer should fail");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("SettlementBookingTerminal"));
+    assert!(rendered.contains(ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL));
+}
+
+#[test]
 fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transition() {
     assert_reality_fixtures();
 
@@ -2047,6 +2136,7 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
             reason: BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
             detail: "durable terminal booking error".to_string(),
             observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
+            terminal_lifecycle: None,
         },
     );
 

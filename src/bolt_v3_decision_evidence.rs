@@ -1222,6 +1222,11 @@ pub struct BoltV3SettlementBookingErrorEvidence {
     pub reason: BoltV3SettlementBookingErrorReason,
     pub detail: String,
     pub observed_at_ns: u64,
+    /// Present only for the canonical terminal-settlement transition. Keeping
+    /// lifecycle evidence inside this record makes booking failure and terminal
+    /// release one durable append rather than two independently committed lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_lifecycle: Option<BoltV3OrderLifecycleEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

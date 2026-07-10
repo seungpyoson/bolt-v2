@@ -585,9 +585,17 @@ pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
 #[derive(Debug, Default)]
 pub(super) struct RecordingSequencedDecisionEvidenceWriter {
     events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
+    fail_standalone_order_lifecycle: bool,
 }
 
 impl RecordingSequencedDecisionEvidenceWriter {
+    pub(super) fn with_failing_standalone_order_lifecycle() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            fail_standalone_order_lifecycle: true,
+        }
+    }
+
     pub(super) fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
         self.events
             .lock()
@@ -600,18 +608,6 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .lock()
             .expect("recording evidence writer mutex poisoned")
             .push(RecordedDecisionEvidenceEvent::Settlement(settlement));
-    }
-
-    pub(super) fn push_settlement_booking_error(
-        &self,
-        reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
-    ) {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
-                RecordedSettlementBookingErrorEvidenceEvent { reason },
-            ));
     }
 }
 
@@ -740,6 +736,9 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence,
     ) -> Result<()> {
+        if self.fail_standalone_order_lifecycle {
+            anyhow::bail!("standalone order lifecycle write failed");
+        }
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")
@@ -782,7 +781,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
-        self.push_settlement_booking_error(evidence.reason);
+        let mut events = self
+            .events
+            .lock()
+            .expect("recording evidence writer mutex poisoned");
+        events.push(RecordedDecisionEvidenceEvent::SettlementBookingError(
+            RecordedSettlementBookingErrorEvidenceEvent {
+                reason: evidence.reason,
+            },
+        ));
+        if let Some(lifecycle) = evidence.terminal_lifecycle.as_ref() {
+            events.push(RecordedDecisionEvidenceEvent::OrderLifecycle(
+                lifecycle.clone(),
+            ));
+        }
         Ok(())
     }
 

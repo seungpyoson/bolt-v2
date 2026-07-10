@@ -25,7 +25,8 @@ use bolt_v2::{
         BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
         BoltV3ExitTriggerSource, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
         BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+        BoltV3OrderIntentOrderFields, BoltV3OrderLifecycleEvidence, BoltV3OrderLifecycleOutcome,
+        BoltV3OrderLifecycleTransition, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
         BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3SettlementBookingErrorEvidence,
@@ -1537,6 +1538,26 @@ fn sample_settlement_booking_error(settlement_key: &str) -> BoltV3SettlementBook
         reason: BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
         detail: "resolution feed missing at market end; settlement not booked".to_string(),
         observed_at_ns: 1_300_000_000,
+        terminal_lifecycle: None,
+    }
+}
+
+fn sample_terminal_settlement_lifecycle() -> BoltV3OrderLifecycleEvidence {
+    BoltV3OrderLifecycleEvidence {
+        strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
+        transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
+        outcome: BoltV3OrderLifecycleOutcome::Flat,
+        source: "settlement_booking_terminal".to_string(),
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: Some("condition-MKT-1-UP.POLYMARKET".to_string()),
+        position_id: Some("P-1".to_string()),
+        client_order_id: None,
+        prior_client_order_id: None,
+        raw_reason_text: Some("settlement booking terminal".to_string()),
+        order_side: Some("Buy".to_string()),
+        filled_quantity: None,
+        residual_quantity: Some("10.00".to_string()),
+        ts_event_ns: Some(1_300_000_000),
     }
 }
 
@@ -1705,6 +1726,34 @@ fn settlement_and_booking_error_evidence_round_trip_from_jsonl_writer() {
         .expect("settlement booking-error evidence should read back");
     assert_eq!(settlements, vec![settlement]);
     assert_eq!(errors, vec![booking_error]);
+}
+
+#[test]
+fn terminal_settlement_booking_and_lifecycle_persist_as_one_jsonl_record() {
+    let (_temp, evidence_path, writer) =
+        temp_decision_evidence_writer("terminal-settlement-evidence");
+    let mut booking_error = sample_settlement_booking_error("MKT-1:P-TERMINAL");
+    booking_error.terminal_lifecycle = Some(sample_terminal_settlement_lifecycle());
+
+    writer
+        .record_settlement_booking_error(&booking_error)
+        .expect("terminal settlement evidence should write atomically");
+
+    let lines = read_decision_evidence_json_lines(&evidence_path);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0]["kind"],
+        BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND
+    );
+    assert_eq!(
+        lines[0]["booking_error"]["terminal_lifecycle"]["transition"],
+        "settlement_booking_terminal"
+    );
+    assert_eq!(
+        read_settlement_booking_error_evidence(&evidence_path, 100_000)
+            .expect("combined terminal evidence should read back"),
+        vec![booking_error]
+    );
 }
 
 #[test]

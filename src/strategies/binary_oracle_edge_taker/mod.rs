@@ -1345,17 +1345,17 @@ impl BinaryOracleEdgeTaker {
     fn apply_terminal_settlement_transition(
         &mut self,
         eligibility: TerminalSettlementEligibility,
-        booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
+        mut booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
         reason_detail: String,
     ) -> Result<()> {
         let position = eligibility.position();
         let settlement_key = eligibility.settlement_key().to_string();
-        if let Some(evidence) = booking_error.as_ref() {
-            self.context
-                .decision_evidence()
-                .record_settlement_booking_error(evidence)?;
-        }
-        self.persist_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+        let health_emitter = self
+            .context
+            .settlement_health_transition_emitter()
+            .context("terminal settlement health emitter is not configured")?
+            .clone();
+        let lifecycle = self.order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
             outcome: BoltV3OrderLifecycleOutcome::Flat,
             source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
@@ -1372,11 +1372,16 @@ impl BinaryOracleEdgeTaker {
             filled_quantity: None,
             residual_quantity: Some(position.quantity),
             ts_event_ns: Some(eligibility.observed_at_ns()),
-        })?;
-        let health_emitter = self
-            .context
-            .settlement_health_transition_emitter()
-            .context("terminal settlement health emitter is not configured")?;
+        });
+        if let Some(evidence) = booking_error.as_mut() {
+            evidence.terminal_lifecycle = Some(lifecycle);
+            self.context
+                .decision_evidence()
+                .record_settlement_booking_error(evidence)
+                .context("failed to persist atomic terminal settlement evidence")?;
+        } else {
+            self.persist_order_lifecycle_record(&lifecycle)?;
+        }
         health_emitter(BoltV3SettlementHealthTransition {
             settlement_key: settlement_key.clone(),
             position_id: position.position_id.to_string(),
@@ -1472,6 +1477,7 @@ impl BinaryOracleEdgeTaker {
             reason,
             detail,
             observed_at_ns,
+            terminal_lifecycle: None,
         }
     }
 
@@ -3240,7 +3246,15 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn persist_order_lifecycle_evidence(&self, input: OrderLifecycleEvidenceInput) -> Result<()> {
-        let evidence = BoltV3OrderLifecycleEvidence {
+        let evidence = self.order_lifecycle_evidence(input);
+        self.persist_order_lifecycle_record(&evidence)
+    }
+
+    fn order_lifecycle_evidence(
+        &self,
+        input: OrderLifecycleEvidenceInput,
+    ) -> BoltV3OrderLifecycleEvidence {
+        BoltV3OrderLifecycleEvidence {
             strategy_id: self.config.strategy_id.clone(),
             transition: input.transition,
             outcome: input.outcome,
@@ -3261,10 +3275,22 @@ impl BinaryOracleEdgeTaker {
             filled_quantity: input.filled_quantity.map(|quantity| quantity.to_string()),
             residual_quantity: input.residual_quantity.map(|quantity| quantity.to_string()),
             ts_event_ns: input.ts_event_ns,
-        };
+        }
+    }
+
+    fn persist_order_lifecycle_record(
+        &self,
+        evidence: &BoltV3OrderLifecycleEvidence,
+    ) -> Result<()> {
         self.context
             .decision_evidence()
-            .record_order_lifecycle(&evidence)
+            .record_order_lifecycle(evidence)
+            .with_context(|| {
+                format!(
+                    "order lifecycle evidence write failed: transition={:?} source={}",
+                    evidence.transition, evidence.source
+                )
+            })
     }
 
     fn clear_pending_entry_state(&mut self) {

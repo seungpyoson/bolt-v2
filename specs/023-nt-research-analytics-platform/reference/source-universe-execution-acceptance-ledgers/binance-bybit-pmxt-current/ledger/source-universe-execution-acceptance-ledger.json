@@ -138,13 +138,13 @@
       "artifact_refs": [
         {
           "role": "source_universe_manifest",
-          "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+          "path": "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
           "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
         },
         {
           "role": "source_universe_conversion_queue",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json",
-          "sha256": "5444284811d4b9cd8c9f2f5b97562082a1f1058e379d6e744732b3b551ac190a"
+          "sha256": "5f5ea4ae6d2fbfc538e965b4b9ff386fa44e0776aa503a07fe859d137b737e39"
         }
       ],
       "blocking_reasons": [

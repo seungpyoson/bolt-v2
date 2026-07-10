@@ -1,5 +1,5 @@
 ledger_id = "venue-scale-conversion-acceptance-ledger-binance-bybit-pmxt-current"
-output_dir = "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/ledger"
+output_dir = "target/reference-regen/pmxt-polymarket-v2-current/venue-scale-acceptance-ledger"
 
 [[venue]]
 venue_id = "binance-current-reference"
@@ -67,7 +67,7 @@ scope_label = "Polymarket full current local/archive data"
 status = "blocked"
 source_archive_discovery_seed_path = "specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/pmxt-polymarket-v2-current/seed/source-archive-discovery-seed.json"
 source_archive_index_manifest_path = "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json"
-source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+source_universe_manifest_path = "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
 source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
 source_universe_source_proof_set_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json"
 selected_source_report_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"

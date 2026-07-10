@@ -1,5 +1,9 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::{
+    assert_generated_fixture_matches_index, generate_evicted_pmxt_object_manifests,
+    materialize_evicted_pmxt_object_manifests, tempdir_in_repo_target,
+};
 use backtesting_vertical_slice::{
     source_proof::{
         CheckOutcome, EvidenceState, SourceProofFidelityClass, SourceProofReport, SourceProofStatus,
@@ -272,12 +276,11 @@ category_manifest_path = "{manifest_path}"
 fn source_universe_source_proofs_materialize_pmxt_pending_manifest_scoped_l2_proof() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("source-proofs");
     let spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
-    let manifest_path = reference_root.join(
-        "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
-    );
+    let (_, manifest_path) =
+        generate_evicted_pmxt_object_manifests(&reference_root, temp_dir.path());
 
     fs::write(
         &spec_path,
@@ -428,5 +431,30 @@ category_manifest_path = "{manifest_path}"
             .expect_err("pending PMXT proof must remain non-accepted")
             .to_string()
             .contains("evidence_state")
+    );
+}
+
+#[test]
+fn committed_pmxt_source_proof_spec_regenerates_evicted_indexed_outputs() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    materialize_evicted_pmxt_object_manifests(&reference_root);
+    let spec_path = reference_root.join(
+        "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+    );
+    let artifact = write_source_universe_source_proof_set_from_spec_file(&spec_path)
+        .expect("committed PMXT source-proof spec regenerates into scratch");
+    let proof_path = artifact
+        .path
+        .parent()
+        .expect("proof-set output parent")
+        .join("source-proof-pmxt-polymarket-v2-current-orderbook.json");
+    assert_generated_fixture_matches_index(
+        "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json",
+        &artifact.path,
+    );
+    assert_generated_fixture_matches_index(
+        "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-proof-pmxt-polymarket-v2-current-orderbook.json",
+        &proof_path,
     );
 }

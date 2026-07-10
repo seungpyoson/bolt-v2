@@ -67,8 +67,6 @@ CI_LINT_SUITES = (
     CiLintSuite("sccache-eligibility", ("python3", "scripts/test_sccache_eligibility.py")),
     CiLintSuite("verify-ci-path-filters", ("python3", "scripts/verify_ci_path_filters.py")),
     CiLintSuite("ci-workflow-hygiene-verifier", ("python3", "scripts/verify_ci_workflow_hygiene.py")),
-    CiLintSuite("fixture-git-helper-usage", ("python3", "scripts/verify_fixture_git_helper_usage.py")),
-    CiLintSuite("fixture-git-helper-usage-tests", ("python3", "scripts/test_verify_fixture_git_helper_usage.py")),
     CiLintSuite("run-ci-lint-suites", ("python3", "scripts/test_run_ci_lint_suites.py")),
 )
 

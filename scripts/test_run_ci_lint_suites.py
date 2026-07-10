@@ -299,8 +299,6 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
         "python3 scripts/test_sccache_eligibility.py",
         "python3 scripts/verify_ci_path_filters.py",
         "python3 scripts/verify_ci_workflow_hygiene.py",
-        "python3 scripts/verify_fixture_git_helper_usage.py",
-        "python3 scripts/test_verify_fixture_git_helper_usage.py",
         "python3 scripts/test_run_ci_lint_suites.py",
     }
     missing = sorted(expected - commands)

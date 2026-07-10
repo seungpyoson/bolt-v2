@@ -80,6 +80,10 @@ verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
 
+verify-bolt-v3-no-venue-name-branch: check-workspace
+    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
+    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
+
 verify-bolt-v3-strategy-policy-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py

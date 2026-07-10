@@ -15,6 +15,7 @@ import tempfile
 import tomllib
 import zipfile
 from pathlib import Path
+from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -202,7 +203,7 @@ reason = "test"
 adapter_id = "POLYMARKET"
 class = "HttpResponseBody"
 feeder = "PolymarketVenueTruthRuntime"
-issue = 1179
+issue = 874
 expires_on = "2026-08-31"
 reason = "test"
 """,
@@ -362,17 +363,17 @@ ignore_emit_failure = false
 
 
 def commit_workflow(root: Path) -> str:
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "Boundary Test"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "boundary-test@example.invalid"], cwd=root, check=True)
-    subprocess.run(["git", "add", ".github/workflows/ci.yml"], cwd=root, check=True)
+    init_fixture_repo(root, "-q")
+    subprocess.run(repo_git_command("config", "user.name", "Boundary Test"), cwd=root, check=True)
+    subprocess.run(repo_git_command("config", "user.email", "boundary-test@example.invalid"), cwd=root, check=True)
+    subprocess.run(repo_git_command("add", ".github/workflows/ci.yml"), cwd=root, check=True)
     subprocess.run(
-        ["git", "commit", "--no-verify", "-q", "-m", "seed workflow"],
+        repo_git_command("commit", "--no-verify", "-q", "-m", "seed workflow"),
         cwd=root,
         check=True,
     )
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        repo_git_command("rev-parse", "HEAD"),
         cwd=root,
         check=True,
         stdout=subprocess.PIPE,

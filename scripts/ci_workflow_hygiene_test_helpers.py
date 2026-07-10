@@ -20,6 +20,15 @@ from ci_test_manifest import CiTestManifest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
+GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG = (
+    ("gc.auto", "0"),
+    ("maintenance.auto", "false"),
+)
+GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = tuple(
+    arg
+    for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+    for arg in ("-c", f"{key}={value}")
+)
 
 DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
 GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
@@ -1778,9 +1787,12 @@ def write_repo_text(repo: pathlib.Path, relative: str, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
+def repo_git_command(*args: str) -> list[str]:
+    return ["git", *GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS, *args]
+
 def run_repo_git(repo: pathlib.Path, *args: str) -> str:
     completed = subprocess.run(
-        ["git", *args],
+        repo_git_command(*args),
         cwd=repo,
         check=True,
         text=True,
@@ -1788,6 +1800,102 @@ def run_repo_git(repo: pathlib.Path, *args: str) -> str:
         stderr=subprocess.PIPE,
     )
     return completed.stdout
+
+def suppress_repo_auto_maintenance(repo: pathlib.Path) -> None:
+    """Persist the suppression inside `repo`'s own config.
+
+    `repo_git_command` only reaches the git processes this suite launches. Git
+    drops the repo-scoped config environment when it runs a command against a
+    *different* repository, so `git push` never carries the suppression into
+    the remote's `receive-pack`, and git spawned by the code under test never
+    sees it either. `maintenance.auto=false` prevents the detached maintenance
+    writer; `gc.auto=0` does nothing for that failure mode. Both settings remain
+    persisted because git's documented behavior says the legacy `git gc --auto`
+    path consults `gc.auto`. A fixture repo that carries the settings in its own
+    config is covered whoever runs git against it, bare or not.
+    """
+    for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+        subprocess.run(
+            repo_git_command("-C", str(repo), "config", key, value),
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+
+def read_persisted_repo_config(repo: pathlib.Path, key: str) -> str | None:
+    """Read a setting honestly from `repo`'s own config file.
+
+    `--local` makes this read honest: reading through the suppression arguments
+    would report the injected value whether or not it was ever persisted. The
+    repository config file is what a git process launched by anyone else
+    actually reads.
+    """
+    completed = subprocess.run(
+        repo_git_command("-C", str(repo), "config", "--local", "--get", key),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode == 1:
+        return None
+    if completed.returncode == 0:
+        return completed.stdout.strip()
+    raise AssertionError(
+        f"failed to read persisted repo config {key!r} from {repo}: "
+        f"git exited {completed.returncode}: {completed.stderr.strip()}"
+    )
+
+
+def init_fixture_repo(repo: pathlib.Path, *init_args: str) -> pathlib.Path:
+    """`git init` a fixture repo that never spawns auto-maintenance."""
+    subprocess.run(
+        repo_git_command("init", *init_args, str(repo)),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    suppress_repo_auto_maintenance(repo)
+    return repo
+
+
+def clone_fixture_repo(
+    source: pathlib.Path, destination: pathlib.Path, *clone_args: str
+) -> pathlib.Path:
+    """Clone a fixture repo and persist auto-maintenance suppression.
+
+    `git clone` does not copy `gc.auto`/`maintenance.auto` from the source
+    repository — the clone starts with an empty local config — so the
+    suppression has to be re-persisted into the clone, or a git process launched
+    by anyone else will detach a maintenance writer into it.
+    """
+    subprocess.run(
+        repo_git_command("clone", *clone_args, str(source), str(destination)),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    suppress_repo_auto_maintenance(destination)
+    return destination
+
+
+def clone_fixture_repo_without_suppression(
+    source: pathlib.Path, destination: pathlib.Path
+) -> pathlib.Path:
+    """Negative-control clone used only by the suppression persistence test."""
+    subprocess.run(
+        repo_git_command("clone", str(source), str(destination)),
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return destination
+
 
 def commit_repo(repo: pathlib.Path, message: str) -> str:
     run_repo_git(repo, "add", ".")
@@ -1804,9 +1912,7 @@ def commit_repo(repo: pathlib.Path, message: str) -> str:
     return run_repo_git(repo, "rev-parse", "HEAD").strip()
 
 def init_self_authorizing_fixture_repo(tmp: pathlib.Path) -> pathlib.Path:
-    repo = tmp / "repo"
-    repo.mkdir()
-    run_repo_git(repo, "init", "--initial-branch", "main")
+    repo = init_fixture_repo(tmp / "repo", "--initial-branch", "main")
     for relative in (
         "AGENTS.md",
         ".specify/memory/constitution.md",

@@ -1543,15 +1543,16 @@ runs:
             exit 0
           fi
         done
-        sudo apt-get update
-        for rust_linker_program in "${rust_linker_programs[@]}"; do
-          if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
-            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-            exit 0
-          fi
-        done
-        echo "::error::failed to install any configured Rust linker"
-        exit 1
+        if sudo apt-get update; then
+          for rust_linker_program in "${rust_linker_programs[@]}"; do
+            if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
+              echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+        fi
+        echo "::warning::failed to install any configured Rust linker; continuing without fast linker"
+        echo "Rust linker: unavailable; continuing without BOLT_RUST_FAST_LINKER" >> "$GITHUB_STEP_SUMMARY"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -1710,6 +1711,20 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+
+[remote_compile_cache]
+enabled = true
+enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+ci_env = "GITHUB_ACTIONS"
+wrapper_env = "SCCACHE_PATH"
+wrapper_program = "sccache"
+
+[remote_fast_linker]
+enabled = true
+ci_env = "GITHUB_ACTIONS"
+linker_env = "BOLT_RUST_FAST_LINKER"
+programs = ["mold", "lld"]
+
 {LOCAL_LANE_POLICY_TOML}
 """
 
@@ -1899,7 +1914,7 @@ def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ..
     return tuple(
         int(denominator)
         for denominator in re.findall(
-            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            r"(?m)^\s*(?:BOLT_RUST_VERIFICATION_SCCACHE=0\s+)?just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
             "\n".join(job_lines),
         )
     )
@@ -1963,6 +1978,17 @@ def run_verifier_main_with_no_mistakes(
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
         action_path.write_text(BASE_ACTION)
+        sccache_action_path = tmp_path / ".github" / "actions" / "sccache-setup" / "action.yml"
+        sccache_action_path.parent.mkdir(parents=True)
+        sccache_action_path.write_text(repo_source_text(".github/actions/sccache-setup/action.yml"))
+        sccache_stats_action_path = tmp_path / ".github" / "actions" / "sccache-stats" / "action.yml"
+        sccache_stats_action_path.parent.mkdir(parents=True)
+        sccache_stats_action_path.write_text(repo_source_text(".github/actions/sccache-stats/action.yml"))
+        sccache_eligibility_path = tmp_path / "scripts" / "sccache_eligibility.py"
+        sccache_eligibility_path.write_text(repo_source_text("scripts/sccache_eligibility.py"))
+        sccache_config_path = tmp_path / "ci" / "sccache-location.toml"
+        sccache_config_path.parent.mkdir(parents=True, exist_ok=True)
+        sccache_config_path.write_text(repo_source_text("ci/sccache-location.toml"))
 
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)

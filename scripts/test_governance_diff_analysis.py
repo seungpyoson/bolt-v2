@@ -1053,7 +1053,7 @@ def assert_debug_test_workflow_contract() -> None:
         ),
         (
             "debug-test workflow must call managed just debug-test recipe",
-            workflow.replace('just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE"', 'cargo nextest run -E "$DEBUG_TEST_FILTER" --locked', 1),
+            workflow.replace("just debug-test", "true"),
         ),
         (
             "debug-test workflow must use the PR-readonly cache role only",
@@ -1068,29 +1068,11 @@ def assert_debug_test_workflow_contract() -> None:
             ),
         ),
         (
-            "Resolve sccache eligibility' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var",
-            replace_once_after(
-                workflow,
-                "      - name: Resolve sccache eligibility\n",
-                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
-                "          PR_READONLY_ROLE_ARN: ${{ vars.CI_SCCACHE_BUCKET }}\n",
-            ),
-        ),
-        (
             "Resolve debug archive cache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
             replace_once(
                 workflow,
                 '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
                 '          echo "role_arn=arn:aws:iam::123456789012:role/debug-archive-hijack" >> "$GITHUB_OUTPUT"\n',
-            ),
-        ),
-        (
-            "Resolve sccache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
-            replace_once_after(
-                workflow,
-                "      - name: Resolve sccache eligibility\n",
-                '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
-                '          echo "role_arn=arn:aws:iam::123456789012:role/sccache-hijack" >> "$GITHUB_OUTPUT"\n',
             ),
         ),
         (
@@ -1102,11 +1084,19 @@ def assert_debug_test_workflow_contract() -> None:
             ),
         ),
         (
-            "Configure AWS credentials for sccache' must assume the resolved sccache role",
+            "debug-test workflow must route sccache through the shared read-only setup action",
             replace_once(
                 workflow,
-                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
-                "          role-to-assume: arn:aws:iam::123456789012:role/sccache-hijack\n",
+                "uses: ./.github/actions/sccache-setup",
+                "uses: ./.github/actions/not-sccache-setup",
+            ),
+        ),
+        (
+            "debug-test workflow must route sccache through the shared read-only setup action",
+            replace_once(
+                workflow,
+                "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "",
             ),
         ),
         (
@@ -1128,7 +1118,7 @@ def assert_debug_test_workflow_contract() -> None:
         raise AssertionError(f"debug-test mergify reference must be rejected, got: {mergify_errors}")
 
     justfile_without_recipe = repo_source_text("justfile").replace(
-        'debug-test filter package="": check-workspace require-rust-verification-owner\n',
+        'debug-test filter package="" *extra_args: check-workspace require-rust-verification-owner\n',
         "",
         1,
     )

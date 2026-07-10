@@ -2137,10 +2137,10 @@ def assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces() 
         config = module.load_config(write_config(pathlib.Path(tmp)))
         workflow_text = raw_workflow_text_for_reuse_scope_digest()
         line_without_trailing_spaces = (
-            '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\\n'
+            "          python3 scripts/nextest_fingerprint.py \\\n"
         )
         line_with_trailing_spaces = (
-            '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\   \n'
+            "          python3 scripts/nextest_fingerprint.py \\   \n"
         )
         current_text = replace_once(
             workflow_text,

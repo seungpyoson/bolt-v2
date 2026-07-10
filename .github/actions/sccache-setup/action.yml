@@ -1,0 +1,101 @@
+name: Governed sccache setup
+description: Configure the governed CI sccache path and fail open to local compiles.
+
+inputs:
+  active:
+    description: Whether this job has a compile step that can use sccache.
+    required: false
+    default: "true"
+  role-arn:
+    description: Read-only AWS role ARN for untrusted sccache consumers.
+    required: false
+    default: ""
+  write-role-arn:
+    description: Read/write AWS role ARN for trusted sccache writers.
+    required: false
+    default: ""
+  config-path:
+    description: Repository TOML file that owns the expected sccache location.
+    required: false
+    default: ci/sccache-location.toml
+
+outputs:
+  enabled:
+    description: "true when sccache is installed and its server started."
+    value: ${{ steps.enable.outputs.enabled }}
+  eligible:
+    description: "true when inputs match the governed sccache location."
+    value: ${{ steps.eligibility.outputs.eligible }}
+  cache-mode:
+    description: Cache access mode selected by this action.
+    value: ${{ steps.eligibility.outputs.cache_mode }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve sccache eligibility
+      id: eligibility
+      continue-on-error: true
+      shell: bash
+      env:
+        SCCACHE_ACTIVE: ${{ inputs.active }}
+        READ_ROLE_ARN: ${{ inputs.role-arn }}
+        WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+      run: |
+        python3.12 scripts/sccache_eligibility.py
+
+    - name: Configure AWS credentials for sccache
+      id: aws
+      if: steps.eligibility.outputs.eligible == 'true'
+      continue-on-error: true
+      uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+      with:
+        role-to-assume: ${{ steps.eligibility.outputs.role_arn }}
+        aws-region: ${{ steps.eligibility.outputs.region }}
+
+    - name: Install sccache
+      id: install
+      if: steps.eligibility.outputs.eligible == 'true' && steps.aws.outcome == 'success'
+      continue-on-error: true
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
+      with:
+        version: "v0.10.0"
+        disable_annotations: "true"
+
+    - name: Resolve sccache enablement
+      id: enable
+      continue-on-error: true
+      if: always()
+      shell: bash
+      run: |
+        enabled=false
+        if [[ "${{ steps.eligibility.outputs.eligible }}" == "true" \
+              && "${{ steps.aws.outcome }}" == "success" \
+              && "${{ steps.install.outcome }}" == "success" \
+              && -n "${SCCACHE_PATH:-}" ]]; then
+          if "$SCCACHE_PATH" --start-server; then
+            "$SCCACHE_PATH" --zero-stats || true
+            enabled=true
+          else
+            echo "sccache server failed to start; building without cache"
+          fi
+        fi
+        echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+        echo "sccache enabled=$enabled"
+
+    - name: Summarize sccache state
+      if: always()
+      shell: bash
+      env:
+        SCCACHE_ACTIVE: ${{ inputs.active }}
+        SCCACHE_ELIGIBLE: ${{ steps.eligibility.outputs.eligible || 'false' }}
+        SCCACHE_ENABLED: ${{ steps.enable.outputs.enabled || 'false' }}
+        SCCACHE_AWS_OUTCOME: ${{ steps.aws.outcome || 'skipped' }}
+        SCCACHE_INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
+        SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}
+      run: |
+        echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+        if [[ "$SCCACHE_ENABLED" != "true" ]]; then
+          echo "::notice::sccache cache disabled; compiling without remote cache"
+        fi

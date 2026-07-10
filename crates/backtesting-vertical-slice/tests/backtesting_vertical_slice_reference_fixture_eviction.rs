@@ -16,12 +16,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::backtesting_vertical_slice_test_support::PHASE3_EVICTED_REFERENCE_PATHS;
+use crate::backtesting_vertical_slice_test_support::{
+    BACKFILL_CONVERSION_COMPLETION_LEDGER_EVICTED_REFERENCE_PATHS, PHASE3_EVICTED_REFERENCE_PATHS,
+};
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
-    TIER1_KEPT_REFERENCE_PATHS, is_evicted_execution_pack_record_path,
-    is_evicted_reference_fixture_path, is_phase3_conversion_batch_plan_path,
-    is_tier1_evicted_reference_fixture_path, repo_root_from_manifest_dir,
+    TIER1_KEPT_REFERENCE_PATHS, is_backfill_conversion_completion_ledger_path,
+    is_evicted_execution_pack_record_path, is_evicted_reference_fixture_path,
+    is_phase3_conversion_batch_plan_path, is_tier1_evicted_reference_fixture_path,
+    repo_root_from_manifest_dir,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPack;
 
@@ -558,5 +561,110 @@ fn phase3_gitignore_patterns_match_eviction_predicates() {
     assert!(
         git_check_ignore(&repo_root, hypothetical),
         "hypothetical Phase 3 scope path must be ignored by .gitignore"
+    );
+}
+
+#[test]
+fn backfill_conversion_completion_ledger_index_entries_match_declared_exact_scope() {
+    let repo_root = repo_root_from_manifest_dir();
+    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
+    let completion_ledger_entries: BTreeSet<String> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .filter(|path| is_backfill_conversion_completion_ledger_path(path))
+        .collect();
+    let declared: BTreeSet<String> = BACKFILL_CONVERSION_COMPLETION_LEDGER_EVICTED_REFERENCE_PATHS
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect();
+
+    assert_eq!(
+        completion_ledger_entries,
+        declared,
+        "Backfill conversion completion ledger index entries must exactly match the declared generated-reference eviction scope; \
+         indexed but undeclared: {:?}; declared but unindexed: {:?}",
+        completion_ledger_entries
+            .difference(&declared)
+            .collect::<Vec<_>>(),
+        declared
+            .difference(&completion_ledger_entries)
+            .collect::<Vec<_>>(),
+    );
+
+    for path in &declared {
+        assert!(
+            !repo_root.join(path).exists(),
+            "Backfill conversion completion ledger artifact {path:?} must be absent from the working tree"
+        );
+    }
+}
+
+#[test]
+fn backfill_conversion_completion_ledger_scope_has_no_regrown_working_tree_artifacts() {
+    let repo_root = repo_root_from_manifest_dir();
+    let ledger_root = repo_root.join(
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers",
+    );
+    for path in files_under(&ledger_root) {
+        let repo_relative = repo_relative_path(&repo_root, &path);
+        assert!(
+            !is_backfill_conversion_completion_ledger_path(&repo_relative),
+            "Backfill conversion completion ledger artifact {repo_relative:?} must remain evicted from the working tree"
+        );
+    }
+}
+
+#[test]
+fn backfill_conversion_completion_ledger_gitignore_patterns_match_eviction_predicates() {
+    let repo_root = repo_root_from_manifest_dir();
+    for &path in BACKFILL_CONVERSION_COMPLETION_LEDGER_EVICTED_REFERENCE_PATHS {
+        assert!(
+            is_backfill_conversion_completion_ledger_path(path),
+            "Backfill conversion completion ledger path {path:?} must be in the eviction predicate"
+        );
+        assert!(
+            git_check_ignore(&repo_root, path),
+            "Backfill conversion completion ledger path {path:?} must be ignored by .gitignore"
+        );
+    }
+    let hypothetical = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/hypothetical-new-scope/ledger/backfill-conversion-completion-ledger.json";
+    assert!(
+        is_backfill_conversion_completion_ledger_path(hypothetical),
+        "hypothetical completion ledger path must be in the eviction predicate"
+    );
+    assert!(
+        git_check_ignore(&repo_root, hypothetical),
+        "hypothetical completion ledger path must be ignored by .gitignore"
+    );
+
+    let sibling_spec = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/hypothetical-new-scope/backfill-conversion-completion-ledger.toml";
+    assert!(
+        !is_backfill_conversion_completion_ledger_path(sibling_spec),
+        "hand-authored completion ledger TOML spec must stay outside the eviction predicate"
+    );
+    assert!(
+        !git_check_ignore(&repo_root, sibling_spec),
+        "hand-authored completion ledger TOML spec must not be ignored by .gitignore"
+    );
+
+    let non_ledger_json = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/hypothetical-new-scope/ledger/metadata.json";
+    assert!(
+        !is_backfill_conversion_completion_ledger_path(non_ledger_json),
+        "non-ledger JSON must stay outside the eviction predicate"
+    );
+    assert!(
+        !git_check_ignore(&repo_root, non_ledger_json),
+        "non-ledger JSON must not be ignored by .gitignore"
+    );
+
+    let nested_scope = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/hypothetical-new-scope/nested/ledger/backfill-conversion-completion-ledger.json";
+    assert!(
+        !is_backfill_conversion_completion_ledger_path(nested_scope),
+        "nested scope must stay outside the eviction predicate"
+    );
+    assert!(
+        !git_check_ignore(&repo_root, nested_scope),
+        "nested scope must not be ignored by .gitignore"
     );
 }

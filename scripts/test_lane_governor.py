@@ -17,6 +17,15 @@ import tempfile
 import time
 from pathlib import Path
 
+from process_execution_edges import (
+    ASYNCIO_EXEC_CALLS as _ASYNCIO_EXEC_CALLS,
+    ASYNCIO_SHELL_CALLS as _ASYNCIO_SHELL_CALLS,
+    COMMAND_PREFIX_WRAPPERS as _SHELL_PYTHON_PREFIX_WRAPPERS,
+    OS_EXEC_FUNCTIONS as _OS_EXEC_FUNCTIONS,
+    OS_SPAWN_FUNCTIONS as _OS_SPAWN_FUNCTIONS,
+    SUBPROCESS_CALLS as _SUBPROCESS_CALLS,
+)
+
 
 def _load(name: str):
     path = Path(__file__).with_name(f"{name}.py")
@@ -100,18 +109,6 @@ _TEMPFILE_DIR_POSITION = {
     "mkstemp": 2,
 }
 _JUST_EXPRESSION_OPS = frozenset({"call", "concatenate", "evaluate", "if", "join", "variable"})
-_OS_EXEC_FUNCTIONS = frozenset(
-    {"execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe"}
-)
-_OS_SPAWN_FUNCTIONS = frozenset(
-    {"spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe"}
-)
-_SHELL_PYTHON_PREFIX_WRAPPERS = frozenset(
-    {"command", "nice", "nohup", "stdbuf", "timeout", "time", "xargs"}
-)
-_SUBPROCESS_CALLS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
-_ASYNCIO_EXEC_CALLS = frozenset({"create_subprocess_exec"})
-_ASYNCIO_SHELL_CALLS = frozenset({"create_subprocess_shell"})
 _LOADER_CALLS = frozenset(
     {
         "spec_from_file_location",

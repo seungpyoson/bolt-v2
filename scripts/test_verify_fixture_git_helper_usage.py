@@ -263,6 +263,139 @@ class ExecutionEdgeTests(unittest.TestCase):
             2,
         )
 
+    def test_asyncio_process_apis_fail(self) -> None:
+        cases = (
+            "import asyncio\nasyncio.create_subprocess_exec('git', 'status')\n",
+            "from asyncio import create_subprocess_exec as launch\n"
+            "program = 'git'\nlaunch(program, 'status')\n",
+            "import asyncio as aio\n"
+            "aio.create_subprocess_shell(cmd='git status')\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                self.assert_violation(source, source.count("\n"))
+
+    def test_process_callable_assignment_alias_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "launch = subprocess.run\n"
+            "command = ('git', 'status')\n"
+            "launch(args=command)\n",
+            4,
+        )
+
+    def test_process_module_assignment_alias_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "processes = subprocess\n"
+            "processes.run(('git', 'status'))\n",
+            3,
+        )
+
+    def test_local_wrapper_keyword_argument_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "def launch(*, command):\n"
+            "    return subprocess.run(args=command)\n"
+            "launch(command=('git', 'status'))\n",
+            4,
+        )
+
+    def test_pty_spawn_fails_through_alias_variable_and_local_wrapper(self) -> None:
+        self.assert_violation(
+            "from pty import spawn as launch\n"
+            "def wrapper(argv):\n"
+            "    return launch(argv)\n"
+            "command = ('git', 'status')\n"
+            "wrapper(command)\n",
+            5,
+        )
+
+    def test_extended_os_exec_and_spawn_apis_fail(self) -> None:
+        cases = (
+            "import os\nos.execlpe('git', 'git', 'status', {})\n",
+            "from os import spawnlpe as launch\nlaunch(0, 'git', 'git', 'status', {})\n",
+            "import os as operating_system\n"
+            "operating_system.spawnvpe(0, file='git', args=('git', 'status'), env={})\n",
+            "from os import posix_spawnp as launch\n"
+            "program = 'git'\nlaunch(program, ('git', 'status'), {})\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                self.assert_violation(source, source.count("\n"))
+
+    def test_command_prefix_wrappers_fail(self) -> None:
+        commands = (
+            ('xargs', 'git', 'status'),
+            ('nice', '-n', '5', 'git', 'status'),
+            ('nohup', 'git', 'status'),
+            ('stdbuf', '-oL', 'git', 'status'),
+            ('timeout', '5', 'git', 'status'),
+            ('time', '-p', 'git', 'status'),
+            ('command', 'git', 'status'),
+            ('env', 'MODE=test', 'git', 'status'),
+        )
+        for command in commands:
+            with self.subTest(wrapper=command[0]):
+                self.assert_violation(
+                    f"import subprocess\nsubprocess.run({command!r})\n",
+                    2,
+                )
+
+    def test_shell_wrappers_fail(self) -> None:
+        for shell in ('sh', 'bash', 'zsh', 'dash'):
+            with self.subTest(shell=shell):
+                self.assert_violation(
+                    "import subprocess\n"
+                    f"subprocess.run(({shell!r}, '-c', 'git status'))\n",
+                    2,
+                )
+
+    def test_shell_wrapper_fails_when_git_is_in_a_later_command(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(('sh', '-c', 'printf ok && env git status'))\n",
+            2,
+        )
+
+    def test_dynamic_exec_and_eval_fail_for_git_or_unresolved_payloads(self) -> None:
+        cases = (
+            "exec(\"import os; os.system('git status')\")\n",
+            "eval(\"__import__('os').system('git status')\")\n",
+            "exec(payload_factory())\n",
+            "from builtins import eval as evaluate\nevaluate(payload_factory())\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                self.assert_violation(source, source.count("\n"))
+
+    def test_supported_process_edges_accept_proven_non_git_commands(self) -> None:
+        sources = (
+            "import asyncio\nasyncio.create_subprocess_exec('python3', '--version')\n",
+            "import asyncio\nasyncio.create_subprocess_shell(cmd='printf ok')\n",
+            "import pty\npty.spawn(('python3', '--version'))\n",
+            "import os\nos.execlpe('python3', 'python3', '--version', {})\n",
+            "import os\nos.spawnlpe(0, 'python3', 'python3', '--version', {})\n",
+            "import os\nos.spawnvpe(0, 'python3', ('python3', '--version'), {})\n",
+            "import os\nos.posix_spawnp('python3', ('python3', '--version'), {})\n",
+            "import subprocess\nsubprocess.run(('xargs', 'printf', '%s'))\n",
+            "import subprocess\nsubprocess.run(('nice', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('nohup', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('stdbuf', '-oL', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('timeout', '5', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('time', '-p', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('command', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('env', 'MODE=test', 'python3', '--version'))\n",
+            "import subprocess\nsubprocess.run(('sh', '-c', 'printf ok'))\n",
+            "exec(\"print('init')\")\n",
+            "eval(\"'git'\")\n",
+            "eval(\"__import__('math').sqrt(4)\")\n",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                rc, err = run_against(source)
+                self.assertEqual(rc, 0, err)
+
     def test_proven_non_git_command_passes(self) -> None:
         rc, err = run_against(
             "import subprocess\nsubprocess.run(['python3', '--version'])\n"

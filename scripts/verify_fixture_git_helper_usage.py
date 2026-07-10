@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Fence direct fixture-repository git execution in ``scripts/test_*.py``.
+"""Fence direct fixture-repository Git execution in ``scripts/test_*.py``.
 
-Fixture git must be built by the helpers in
-``ci_workflow_hygiene_test_helpers``. They are the single home for the
-auto-maintenance suppression that keeps detached maintenance writers out of
-temporary repositories. This verifier rejects direct git argv spelling,
-execution edges that resolve to git, and fixture ``init``/``clone`` calls that
-bypass the dedicated constructors.
+Fixture Git commands must use ``repo_git_command``/``run_repo_git``; fixture
+repositories must use ``init_fixture_repo``/``clone_fixture_repo``. The AST
+scan recognizes the process APIs and command-prefix grammars declared in
+``process_execution_edges``, their import and assignment aliases, variables,
+and local wrappers that forward a command parameter. Static shell payloads are
+split into commands, and constant ``exec``/``eval`` payloads are scanned
+recursively. A recognized execution edge is rejected unless its process image
+and wrapped command can be proven non-Git or routed through the shared helper.
 
-Expected argv values remain legal in comparisons, exception/process results,
-and enclosing literals. Recognized process-execution edges fail closed: a
-command that cannot be proven to launch a non-git program is rejected.
+The scan also rejects direct Git argv list spelling outside inert expected
+values. Comparisons, enclosing literals, ``CompletedProcess`` and
+``CalledProcessError`` fixtures, ordinary strings, and provably non-Git
+commands remain legal. This is structured AST/command analysis; it does not
+search raw source text for words such as ``git``, ``init``, or ``clone``.
 """
 
 from __future__ import annotations
@@ -22,6 +26,14 @@ import pathlib
 import shlex
 import sys
 
+from process_execution_edges import (
+    COMMAND_PREFIX_SPECS,
+    COMMAND_PREFIX_WRAPPERS,
+    DYNAMIC_BUILTINS,
+    PROCESS_API_SPECS,
+    SHELL_INTERPRETERS,
+)
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEST_GLOB = "scripts/test_*.py"
 
@@ -29,36 +41,7 @@ Violation = collections.namedtuple("Violation", "lineno rule message")
 
 NON_EXECUTING_CALLS = frozenset({"CompletedProcess", "CalledProcessError"})
 ALLOWED_BUILDERS = frozenset({"repo_git_command"})
-SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh", "dash", "env"})
-EXECUTION_FUNCTIONS = {
-    "subprocess": {
-        "run": (0, "args"),
-        "call": (0, "args"),
-        "check_call": (0, "args"),
-        "check_output": (0, "args"),
-        "Popen": (0, "args"),
-        "getoutput": (0, "cmd"),
-        "getstatusoutput": (0, "cmd"),
-    },
-    "os": {
-        "system": (0, "command"),
-        "popen": (0, "cmd"),
-        "execl": (0, "path"),
-        "execle": (0, "path"),
-        "execlp": (0, "file"),
-        "execv": (0, "path"),
-        "execve": (0, "path"),
-        "execvp": (0, "file"),
-        "execvpe": (0, "file"),
-        "spawnl": (1, "path"),
-        "spawnle": (1, "path"),
-        "spawnlp": (1, "file"),
-        "spawnv": (1, "path"),
-        "spawnve": (1, "path"),
-        "spawnvp": (1, "file"),
-        "posix_spawn": (0, "path"),
-    },
-}
+EXECUTION_FUNCTIONS = PROCESS_API_SPECS
 
 ExecutionSpec = collections.namedtuple("ExecutionSpec", "index keyword")
 CommandResolution = collections.namedtuple("CommandResolution", "kind argv")
@@ -170,7 +153,7 @@ def _imported_execution_names(
     tree: ast.AST,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
     bare: dict[str, tuple[str, str]] = {}
-    modules = {"subprocess": "subprocess", "os": "os"}
+    modules = {module: module for module in EXECUTION_FUNCTIONS}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -181,6 +164,21 @@ def _imported_execution_names(
                 if alias.name in EXECUTION_FUNCTIONS[node.module]:
                     bare[alias.asname or alias.name] = (node.module, alias.name)
     return bare, modules
+
+
+def _imported_dynamic_names(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
+    names = {name: name for name in DYNAMIC_BUILTINS}
+    modules = {"builtins"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name in DYNAMIC_BUILTINS:
+                    names[alias.asname or alias.name] = alias.name
+    return names, modules
 
 
 def _direct_execution_spec(
@@ -195,10 +193,21 @@ def _direct_execution_spec(
             return None
         index, keyword = EXECUTION_FUNCTIONS[imported[0]][imported[1]]
         return ExecutionSpec(index, keyword)
-    if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+    if not isinstance(func, ast.Attribute):
         return None
-    module = modules.get(func.value.id)
-    if module is None:
+    if isinstance(func.value, ast.Name):
+        module = modules.get(func.value.id)
+    elif (
+        isinstance(func.value, ast.Call)
+        and _call_name(func.value) == "__import__"
+        and func.value.args
+        and isinstance(func.value.args[0], ast.Constant)
+        and isinstance(func.value.args[0].value, str)
+    ):
+        module = func.value.args[0].value
+    else:
+        module = None
+    if module not in EXECUTION_FUNCTIONS:
         return None
     raw = EXECUTION_FUNCTIONS[module].get(func.attr)
     return ExecutionSpec(*raw) if raw is not None else None
@@ -305,6 +314,71 @@ def _literal_value(node: ast.AST) -> object | None:
         return None
 
 
+def _shell_resolution(command: str) -> CommandResolution:
+    if any(marker in command for marker in ("$", "`")):
+        return CommandResolution(UNKNOWN, ())
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return CommandResolution(UNKNOWN, ())
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(character in ";&|()" for character in token):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(token)
+    resolutions = [_tokens_resolution(segment) for segment in segments if segment]
+    git_resolution = next(
+        (resolution for resolution in resolutions if resolution.kind == GIT), None
+    )
+    if git_resolution is not None:
+        return git_resolution
+    if any(resolution.kind == UNKNOWN for resolution in resolutions):
+        return CommandResolution(UNKNOWN, ())
+    return CommandResolution(NON_GIT, ())
+
+
+def _unwrap_command_prefix(tokens: list[str], program: str) -> list[str] | None:
+    spec = COMMAND_PREFIX_SPECS[program]
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-") or token == "-":
+            break
+        option = token.split("=", 1)[0]
+        if option in spec.value_options and "=" in token:
+            index += 1
+            continue
+        if option in spec.value_options:
+            index += 2
+            continue
+        if token in spec.flag_options:
+            index += 1
+            continue
+        if spec.numeric_options and token[1:].isdigit():
+            index += 1
+            continue
+        if any(
+            token.startswith(prefix) and token != prefix
+            for prefix in spec.attached_value_prefixes
+        ):
+            index += 1
+            continue
+        return None
+    index += spec.leading_operands
+    if index > len(tokens):
+        return None
+    if index == len(tokens):
+        return list(spec.default_command) if spec.default_command is not None else None
+    return tokens[index:]
+
+
 def _tokens_resolution(tokens: list[str]) -> CommandResolution:
     if not tokens:
         return CommandResolution(UNKNOWN, ())
@@ -350,14 +424,12 @@ def _tokens_resolution(tokens: list[str]) -> CommandResolution:
                 continue
             break
         return _tokens_resolution(tokens[index:])
-    if program == "command":
-        index = 1
-        while index < len(tokens) and tokens[index].startswith("-"):
-            index += 1
-        if index >= len(tokens):
+    if program in COMMAND_PREFIX_WRAPPERS:
+        command = _unwrap_command_prefix(tokens, program)
+        if command is None:
             return CommandResolution(UNKNOWN, ())
-        return _tokens_resolution(tokens[index:])
-    if program in SHELL_WRAPPERS:
+        return _tokens_resolution(command)
+    if program in SHELL_INTERPRETERS:
         command_index = next(
             (
                 index + 1
@@ -374,7 +446,7 @@ def _tokens_resolution(tokens: list[str]) -> CommandResolution:
         if command_index >= len(tokens):
             return CommandResolution(UNKNOWN, ())
         try:
-            return _tokens_resolution(shlex.split(tokens[command_index]))
+            return _shell_resolution(tokens[command_index])
         except ValueError:
             return CommandResolution(UNKNOWN, ())
     return CommandResolution(NON_GIT, ())
@@ -387,6 +459,7 @@ class GitFixtureVisitor(ast.NodeVisitor):
         self.bindings = BindingIndex(tree)
         self.bindings.visit(tree)
         self.bare_execution, self.module_aliases = _imported_execution_names(tree)
+        self.dynamic_names, self.dynamic_modules = _imported_dynamic_names(tree)
         self.local_execution = _local_execution_wrappers(
             tree, self.bare_execution, self.module_aliases
         )
@@ -563,12 +636,10 @@ class GitFixtureVisitor(ast.NodeVisitor):
                 )
             if first_kind == NON_GIT:
                 first = self._literal_string(elements[0], seen)
-                if first is not None and _basename(first) in SHELL_WRAPPERS:
-                    if _basename(first) == "env":
-                        return CommandResolution(UNKNOWN, ())
-                    literal_tail = [self._literal_string(element, seen) for element in elements[1:]]
-                    if "-c" in literal_tail:
-                        return CommandResolution(UNKNOWN, ())
+                if first is not None and _basename(first) in (
+                    COMMAND_PREFIX_WRAPPERS | SHELL_INTERPRETERS | {"env"}
+                ):
+                    return CommandResolution(UNKNOWN, ())
                 return CommandResolution(NON_GIT, ())
             return CommandResolution(UNKNOWN, ())
         if isinstance(node, ast.Call):
@@ -582,10 +653,89 @@ class GitFixtureVisitor(ast.NodeVisitor):
         return CommandResolution(UNKNOWN, ())
 
     def _execution_specs(self, node: ast.Call) -> set[ExecutionSpec]:
-        direct = _direct_execution_spec(node, self.bare_execution, self.module_aliases)
+        return self._callable_execution_specs(node.func)
+
+    def _callable_execution_specs(
+        self, func: ast.AST, seen: frozenset[str] = frozenset()
+    ) -> set[ExecutionSpec]:
+        probe = ast.Call(func=func, args=[], keywords=[])
+        direct = _direct_execution_spec(
+            probe, self.bare_execution, self.module_aliases
+        )
         if direct is not None:
             return {direct}
-        return set(self.local_execution.get(_call_name(node), ()))
+        if isinstance(func, ast.Name):
+            specs = set(self.local_execution.get(func.id, ()))
+            if func.id in seen:
+                return specs
+            for value in self._binding_values(func.id):
+                specs.update(
+                    self._callable_execution_specs(value, seen | {func.id})
+                )
+            return specs
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in seen:
+                return set(self.local_execution.get(func.attr, ()))
+            specs = set(self.local_execution.get(func.attr, ()))
+            for value in self._binding_values(func.value.id):
+                rebound = ast.Attribute(value=value, attr=func.attr, ctx=ast.Load())
+                specs.update(
+                    self._callable_execution_specs(
+                        rebound, seen | {func.value.id}
+                    )
+                )
+            return specs
+        if isinstance(func, ast.Attribute):
+            return set(self.local_execution.get(func.attr, ()))
+        return set()
+
+    def _dynamic_call_kind(
+        self, func: ast.AST, seen: frozenset[str] = frozenset()
+    ) -> str | None:
+        if isinstance(func, ast.Name):
+            if func.id in self.dynamic_names:
+                return self.dynamic_names[func.id]
+            if func.id in seen:
+                return None
+            kinds = {
+                self._dynamic_call_kind(value, seen | {func.id})
+                for value in self._binding_values(func.id)
+            }
+            kinds.discard(None)
+            return kinds.pop() if len(kinds) == 1 else None
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if (
+                func.value.id in self.dynamic_modules
+                and func.attr in DYNAMIC_BUILTINS
+            ):
+                return func.attr
+            if func.value.id in seen:
+                return None
+            kinds = {
+                self._dynamic_call_kind(
+                    ast.Attribute(value=value, attr=func.attr, ctx=ast.Load()),
+                    seen | {func.value.id},
+                )
+                for value in self._binding_values(func.value.id)
+            }
+            kinds.discard(None)
+            return kinds.pop() if len(kinds) == 1 else None
+        return None
+
+    def _dynamic_payload_is_safe(self, node: ast.Call, kind: str) -> bool:
+        payload_node = _command_operand(node, ExecutionSpec(0, "source"))
+        if payload_node is None:
+            return False
+        payload = self._literal_string(payload_node)
+        if payload is None:
+            return False
+        try:
+            payload_tree = ast.parse(payload, mode=kind)
+        except SyntaxError:
+            return False
+        visitor = GitFixtureVisitor(payload_tree)
+        visitor.visit(payload_tree)
+        return not visitor.violations
 
     def _is_forwarded_wrapper_operand(self, node: ast.AST) -> bool:
         if not isinstance(node, (ast.Name, ast.Starred)):
@@ -677,6 +827,12 @@ class GitFixtureVisitor(ast.NodeVisitor):
         self._visit_scope(node)
 
     def visit_Call(self, node: ast.Call) -> None:
+        dynamic_kind = self._dynamic_call_kind(node.func)
+        if dynamic_kind is not None and not self._dynamic_payload_is_safe(
+            node, dynamic_kind
+        ):
+            self._add(node.lineno, "execution-edge", EXECUTION_MESSAGE)
+
         constructor_argv = self._constructor_argv(node)
         if constructor_argv is not None and self._is_constructor_argv(constructor_argv):
             self._add(node.lineno, "fixture-constructor", CONSTRUCTOR_MESSAGE)
@@ -755,7 +911,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {failure}", file=sys.stderr)
         return 1
 
-    print("ok: no direct `git` argv in scripts/test_*.py")
+    print("ok: fixture Git execution in scripts/test_*.py uses shared helpers")
     return 0
 
 

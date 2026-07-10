@@ -35,7 +35,7 @@ from ci_workflow_hygiene_test_helpers import (
     LOCAL_LANE_POLICY_TOML,
     REPO_ROOT,
     TEST_HARNESS_MEMBER,
-    TEST_HARNESS_NAMES,
+    test_harness_names,
     VERIFIER_PATH,
     all_standalone_live_node_manifest,
     assert_error,
@@ -4020,6 +4020,44 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
             raise AssertionError(f"{workflow_path} must restore from production cache namespaces")
 
 
+def assert_flaky_backtester_jobs_require_shared_minio_action() -> None:
+    verifier = load_verifier()
+    action_step = """      - name: Setup BVS MinIO S3 smoke
+        uses: ./.github/actions/setup-bvs-minio-s3-smoke
+
+"""
+    for workflow_path, job_anchor in (
+        (".github/workflows/flaky-test-detection.yml", "  flaky-detection-rust-backtester:\n"),
+        (".github/workflows/flaky-test-smoke.yml", "  flaky-smoke-rust-backtester:\n"),
+    ):
+        workflow = repo_workflow_text(workflow_path)
+        mutated = replace_once_after(workflow, job_anchor, action_step, "")
+        errors = verifier.flaky_test_detection_workflow_errors(
+            mutated,
+            verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_path],
+        )
+        if not any("backtester" in error and "must keep BVS job steps unchanged" in error for error in errors):
+            raise AssertionError(f"{workflow_path} may silently omit the shared MinIO action: {errors!r}")
+
+        reordered = replace_once_after(
+            mutated,
+            job_anchor,
+            "      - name: Stage JUnit report\n",
+            action_step + "      - name: Stage JUnit report\n",
+        )
+        reordered_errors = verifier.flaky_test_detection_workflow_errors(
+            reordered,
+            verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_path],
+        )
+        if not any(
+            "backtester" in error and "must keep BVS job steps unchanged" in error
+            for error in reordered_errors
+        ):
+            raise AssertionError(
+                f"{workflow_path} may set up MinIO after running BVS tests: {reordered_errors!r}"
+            )
+
+
 
 
 
@@ -6427,7 +6465,7 @@ def test_harness_manifest_rejects_double_modded_members() -> None:
     assert_test_harness_manifest_clean()
     harness_to_members = {
         harness: ((harness, TEST_HARNESS_MEMBER) if harness in {"iv", "pricing"} else (harness,))
-        for harness in TEST_HARNESS_NAMES
+        for harness in test_harness_names()
     }
     assert_test_harness_manifest_error(
         f"tests/{TEST_HARNESS_MEMBER}.rs is registered by multiple harnesses: iv, pricing",
@@ -6471,7 +6509,7 @@ def test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs() -> None:
     source = (REPO_ROOT / "tests" / "bolt_v3_binary_oracle_edge_taker_a10_structure.rs").read_text(encoding="utf-8")
     harness_to_members = {
         harness: ((harness, "bolt_v3_binary_oracle_edge_taker_a10_structure") if harness == "maker_taker" else (harness,))
-        for harness in TEST_HARNESS_NAMES
+        for harness in test_harness_names()
     }
     assert_test_harness_manifest_clean(
         manifest=base_test_harness_manifest(harness_to_members),
@@ -8302,6 +8340,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: List scoped BVS archive tests
         run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
+      - name: Setup BVS MinIO S3 smoke
+        uses: ./.github/actions/setup-bvs-minio-s3-smoke
       - name: test
         shell: bash
         run: |
@@ -12849,6 +12889,7 @@ def main() -> int:
     assert_deleted_ai_review_model_freshness_workflow_is_unmapped()
     assert_runner_contract_accepts_flaky_detection_workflow_mapping()
     assert_flaky_detection_workflow_uses_supported_mergify_contract()
+    assert_flaky_backtester_jobs_require_shared_minio_action()
     assert_runner_config_floor_handles_missing_and_empty_inputs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()

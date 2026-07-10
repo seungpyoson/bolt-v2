@@ -22,7 +22,7 @@ from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_NT_REV = "6be5a5094716790a8ca2875445fde4fa2586107e"
+EXPECTED_NT_REV = "9e71b2b1305a66945ba07f0aba2d1eb63208263d"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
 EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")

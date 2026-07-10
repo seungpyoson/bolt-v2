@@ -69,6 +69,8 @@ struct CiMinioConfig {
     health_path: String,
     readiness_attempts: u16,
     readiness_sleep_seconds: u16,
+    readiness_connect_timeout_seconds: u16,
+    readiness_max_time_seconds: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,6 +307,16 @@ impl CiMinioConfig {
         }
         if self.readiness_attempts == 0 || self.readiness_sleep_seconds == 0 {
             bail!("CI MinIO readiness attempts and sleep seconds must be positive");
+        }
+        if self.readiness_connect_timeout_seconds == 0 || self.readiness_max_time_seconds == 0 {
+            bail!("CI MinIO readiness connect timeout and max time seconds must be positive");
+        }
+        if self.readiness_max_time_seconds < self.readiness_connect_timeout_seconds {
+            bail!(
+                "CI MinIO readiness_max_time_seconds {} must be >= readiness_connect_timeout_seconds {}",
+                self.readiness_max_time_seconds,
+                self.readiness_connect_timeout_seconds
+            );
         }
         Ok(())
     }

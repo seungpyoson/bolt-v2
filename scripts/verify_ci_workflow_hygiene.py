@@ -3382,10 +3382,16 @@ def block_top_level_items(block: list[str]) -> dict[str, str] | None:
     return items
 
 
-def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, str] | None:
-    property_indent = block_step_property_indent(block)
+def block_nested_mapping_items(
+    block: list[str],
+    parent_key: str,
+    parent_property_indent: int | None = None,
+) -> dict[str, str] | None:
+    property_indent = parent_property_indent
     if property_indent is None:
-        return None
+        property_indent = block_step_property_indent(block)
+        if property_indent is None:
+            return None
     parent_indent: int | None = None
     item_indent: int | None = None
     items: dict[str, str] = {}
@@ -7705,6 +7711,21 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             if len(denominators) == 1 and shards is not None and denominators[0] != len(shards):
                 errors.append("flaky-test-detection backtester full job partition denominator must match shard matrix length")
         if label == "backtester smoke job":
+            matrix_items = block_nested_mapping_items(
+                jobs[job_id], "matrix", parent_property_indent=6
+            )
+            run_step = named_step_block(jobs[job_id], "Run tests")
+            if matrix_items != {
+                "run_number": "[1]",
+                "shard": "[1, 2, 3, 4]",
+            } or run_step is None or not block_has_canonical_step_envelope(
+                run_step,
+                frozenset({"name", "env", "run"}),
+                {"name": "Run tests", "env": "", "run": "|"},
+            ):
+                errors.append(
+                    "flaky-test-detection backtester smoke job must match canonical matrix and Run tests structure"
+                )
             shards = inline_integer_matrix_values(job_text, "shard")
             if shards is None:
                 errors.append("flaky-test-detection backtester smoke job shard matrix must be an inline integer list")

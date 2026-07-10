@@ -7487,7 +7487,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
         ),
     },
     ".github/workflows/flaky-test-smoke.yml": {
-        "workflow_triggers": frozenset({"schedule"}),
+        "workflow_triggers": frozenset({"schedule", "workflow_dispatch"}),
         "required_workflow_fragments": (),
         "forbidden_workflow_fragments": (),
         "jobs": (

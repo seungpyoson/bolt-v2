@@ -877,8 +877,8 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "schedule:" in full_workflow:
         raise AssertionError("flaky-test-detection.yml must remain manual-only")
-    if "workflow_dispatch:" in smoke_workflow:
-        raise AssertionError("flaky-test-smoke.yml must remain schedule-only")
+    if "workflow_dispatch:" not in smoke_workflow:
+        raise AssertionError("flaky-test-smoke.yml must remain manually dispatchable")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
         (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
@@ -1050,6 +1050,7 @@ jobs:
     good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 */12 * * 1-5'
 
@@ -1700,9 +1701,9 @@ jobs:
             good_smoke_workflow,
         ),
         (
-            "workflow triggers must be ['schedule']",
+            "workflow triggers must be ['schedule', 'workflow_dispatch']",
             good_full_workflow,
-            good_smoke_workflow.replace("on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
+            good_smoke_workflow.replace("on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
         ),
         (
             "root smoke job missing 'if: success() || failure()'",

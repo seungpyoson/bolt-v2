@@ -209,7 +209,7 @@ jobs:
           log="$RUNNER_TEMP/flaky-smoke-backtester-${{ matrix.shard }}-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
           rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"

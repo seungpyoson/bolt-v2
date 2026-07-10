@@ -7673,7 +7673,11 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
             if not bvs_backtester_job_steps_are_allowlisted(job_text):
                 errors.append(f"flaky-test-detection {label} must keep BVS job steps unchanged")
-            denominators = simple_bte_run_block_partition_denominators(bte_run_block)
+            partitioner = "hash" if label == "backtester smoke job" else "count"
+            denominators = simple_bte_run_block_partition_denominators(
+                bte_run_block,
+                partitioner,
+            )
             if len(denominators) != 1:
                 errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")
                 errors.append(f"flaky-test-detection {label} must have one matrix.shard partition argument")
@@ -7962,7 +7966,7 @@ def debug_lane_sccache_job_errors(
     if workflow_name.endswith("flaky-test-smoke.yml"):
         expected_run_line = {
             "flaky-smoke-rust-root": 'just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"',
-            "flaky-smoke-rust-backtester": 'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
+            "flaky-smoke-rust-backtester": 'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
             "flaky-smoke-rust-backtester-issue-789": 'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"',
         }.get(job_name)
         if expected_run_line is None:

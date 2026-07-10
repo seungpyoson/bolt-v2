@@ -228,7 +228,10 @@ def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))
 def simple_shell_lines(run_text: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in run_text.splitlines() if line.strip())
-def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ...]:
+def simple_bte_run_block_partition_denominators(
+    run_block: str,
+    partitioner: str,
+) -> tuple[int, ...]:
     # Allowlist the whole BVS shell block instead of predicting shell wrapper syntax.
     lines = simple_shell_lines(run_block)
     if lines and lines[0].startswith('log="$RUNNER_TEMP/'):
@@ -240,7 +243,7 @@ def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ..
 
     run_prefix = (
         'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
-        '--partition "count:${{ matrix.shard }}/'
+        f'--partition "{partitioner}:${{{{ matrix.shard }}}}/'
     )
     run_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
     run_tee_suffix = f'{run_suffix} 2>&1 | tee -a "$log"'

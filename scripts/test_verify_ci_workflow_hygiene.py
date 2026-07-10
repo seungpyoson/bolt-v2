@@ -4390,6 +4390,19 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must route read-only sccache through the shared sccache action",
         ),
         (
+            "flaky smoke must use stable hash partitioning",
+            {
+                **workflows,
+                ".github/workflows/flaky-test-smoke.yml": workflows[".github/workflows/flaky-test-smoke.yml"].replace(
+                    '--partition "hash:${{ matrix.shard }}/4"',
+                    '--partition "count:${{ matrix.shard }}/4"',
+                    1,
+                ),
+            },
+            bvs_policy,
+            "run step must execute tests through one managed just invocation",
+        ),
+        (
             "flaky smoke must opt into the managed wrapper",
             {
                 **workflows,

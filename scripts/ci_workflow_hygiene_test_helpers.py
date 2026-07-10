@@ -1864,11 +1864,15 @@ def assert_error(
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
-def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ...]:
+def shard_partition_argument_denominators(
+    job_lines: list[str],
+    partitioner: str,
+) -> tuple[int, ...]:
     return tuple(
         int(denominator)
         for denominator in re.findall(
-            r"(?m)^\s*(?:BOLT_RUST_VERIFICATION_SCCACHE=0\s+)?just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            r"(?m)^\s*(?:BOLT_RUST_VERIFICATION_SCCACHE=0\s+)?just bte-test\b[^\n]*\s--partition\s+\"%s:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)"
+            % re.escape(partitioner),
             "\n".join(job_lines),
         )
     )

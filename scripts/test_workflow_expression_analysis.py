@@ -919,7 +919,7 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
         raise AssertionError("flaky-test-detection.yml backtester job must keep five repeat runs")
     if not one_indexed_sequence(full_backtester_shards):
         raise AssertionError("flaky-test-detection.yml backtester shard matrix must stay one-indexed and contiguous")
-    if shard_partition_argument_denominators(full_jobs["flaky-detection-rust-backtester"]) != (len(full_backtester_shards),):
+    if shard_partition_argument_denominators(full_jobs["flaky-detection-rust-backtester"], "count") != (len(full_backtester_shards),):
         raise AssertionError("flaky-test-detection.yml backtester shard partition denominator must match shard matrix length")
     if full_issue_runs != (1, 2, 3, 4, 5):
         raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
@@ -943,7 +943,10 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "shard")
     if smoke_root_runs != (1,) or smoke_backtester_runs != (1,) or smoke_backtester_shards != (1,) or smoke_issue_runs != (1,):
         raise AssertionError("flaky-test-smoke.yml must keep one execution per smoke job")
-    smoke_partition_denominators = shard_partition_argument_denominators(smoke_jobs["flaky-smoke-rust-backtester"])
+    smoke_partition_denominators = shard_partition_argument_denominators(
+        smoke_jobs["flaky-smoke-rust-backtester"],
+        "hash",
+    )
     if len(smoke_partition_denominators) != 1 or smoke_partition_denominators[0] <= len(smoke_backtester_shards):
         raise AssertionError("flaky-test-smoke.yml backtester job must run one partitioned shard subset")
     smoke_execution_count = (
@@ -1107,7 +1110,7 @@ jobs:
         run: |
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
           rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
@@ -1602,7 +1605,7 @@ jobs:
             )
 
     missing_smoke_partition_workflow = good_smoke_workflow.replace(
-        '--partition "count:${{ matrix.shard }}/4" ',
+        '--partition "hash:${{ matrix.shard }}/4" ',
         "",
         1,
     )
@@ -1617,9 +1620,27 @@ jobs:
             "flaky detection verifier must reject scheduled smoke without a partitioned BVS shard, "
             f"got: {missing_smoke_partition_errors}"
         )
+    count_partition_smoke_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: good_smoke_workflow.replace(
+                'partition "hash:${{ matrix.shard }}/4"',
+                'partition "count:${{ matrix.shard }}/4"',
+                1,
+            ),
+        }
+    )
+    if not any(
+        "backtester smoke job must have one matrix.shard partition argument" in error
+        for error in count_partition_smoke_errors
+    ):
+        raise AssertionError(
+            "flaky detection verifier must reject unstable count partitioning in scheduled smoke, "
+            f"got: {count_partition_smoke_errors}"
+        )
     chained_partition_smoke_workflow = good_smoke_workflow.replace(
-        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
-        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl; just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl',
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl; just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl',
         1,
     )
     chained_partition_smoke_errors = verifier.verify_flaky_test_detection_workflows(
@@ -1634,9 +1655,9 @@ jobs:
             f"got: {chained_partition_smoke_errors}"
         )
     command_substitution_smoke_workflow = good_smoke_workflow.replace(
-        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
         """          ignored="$(just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl)"
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl""",
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl""",
         1,
     )
     command_substitution_smoke_errors = flaky_detection_errors(smoke_workflow=command_substitution_smoke_workflow)
@@ -1646,9 +1667,9 @@ jobs:
             f"got: {command_substitution_smoke_errors}"
         )
     multiline_command_substitution_smoke_workflow = good_smoke_workflow.replace(
-        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
         """          ignored="$(
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
           )" """,
         1,
     )
@@ -1664,9 +1685,9 @@ jobs:
             f"got: {multiline_command_substitution_smoke_errors}"
         )
     dead_only_partition_smoke_workflow = good_smoke_workflow.replace(
-        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
         """          if false; then
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "hash:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
           fi""",
         1,
     )

@@ -20197,6 +20197,14 @@ reason = "Stable source label for lifecycle evidence emitted when settlement evi
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"settlement_booking_terminal"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL: &str = "settlement_booking_terminal";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when settlement booking fails terminally and exposure is released; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"reconcile_pass"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: &str = "reconcile_pass";'''
 classification = "order_lifecycle_evidence_source_label"
@@ -20896,3 +20904,12 @@ literal = '''"nautilus_model::orderbook::book"'''
 context = '''Ustr::from("nautilus_model::orderbook::book"),'''
 classification = "diagnostic_template"
 reason = "NT OrderBook rustc log-module path forced to Error so per-tick out-of-order sequence/ts WARN spam does not dominate operator logs; not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"settlement_booking_terminal {reason_detail} sticky_until_restart=true"'''
+context = '''"settlement_booking_terminal {reason_detail} sticky_until_restart=true"'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Lifecycle raw_reason_text template for terminal settlement booking release; sticky_until_restart documents no operator-ack clear path."
+

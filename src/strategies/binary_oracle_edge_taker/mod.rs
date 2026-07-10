@@ -224,6 +224,7 @@ const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";
 const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";
 const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";
 const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";
+const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL: &str = "settlement_booking_terminal";
 const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: &str = "reconcile_pass";
 const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
     "preserved fail-closed: fill observed, awaiting position truth";
@@ -713,9 +714,12 @@ pub struct BinaryOracleEdgeTaker {
     settled_position_keys: BTreeSet<String>,
     settlement_booking_error_keys: BTreeSet<String>,
     settlement_close_fetch_attempts: BTreeMap<String, SettlementCloseFetchAttemptState>,
-    /// Flood guard for entry-evaluation WARN volume: last gate+pricing block-reason
-    /// sets that produced a WARN. WARN only on set change; full field dump is debug.
+    /// Flood guard for entry-evaluation log volume: last gate+pricing block-reason
+    /// sets. WARN/INFO only on set change (blocked↔unblocked); full field dump is debug.
     last_entry_block_reason_sets: Option<(Vec<EntryBlockReason>, Vec<EntryPricingBlockReason>)>,
+    /// Sticky-until-restart latch for terminal settlement booking failure. There is
+    /// no operator-ack clear path; process restart is the only reset.
+    settlement_booking_terminal_latched: bool,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -835,6 +839,7 @@ impl BinaryOracleEdgeTaker {
             settled_position_keys: BTreeSet::new(),
             settlement_booking_error_keys: BTreeSet::new(),
             last_entry_block_reason_sets: None,
+            settlement_booking_terminal_latched: false,
             settlement_close_fetch_attempts: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
@@ -1234,7 +1239,53 @@ impl BinaryOracleEdgeTaker {
         self.settlement_booking_error_keys.insert(settlement_key);
         self.settlement_close_fetch_attempts
             .remove(&evidence.settlement_key);
+        // Terminal lifecycle: release single-exposure occupancy so the strategy
+        // is not parked forever. Health latch is sticky-until-restart (no ack).
+        self.apply_settlement_booking_terminal_release(
+            position,
+            format!("reason={reason:?} detail={}", evidence.detail),
+            Some(observed_at_ns),
+        );
         Ok(())
+    }
+
+    /// Fail-loud terminal handling for settlement booking errors: durable lifecycle
+    /// evidence, sticky-until-restart operator-visible latch, and exposure Flat.
+    fn apply_settlement_booking_terminal_release(
+        &mut self,
+        position: &OpenPositionState,
+        reason_detail: String,
+        observed_at_ns: Option<u64>,
+    ) {
+        if !self.settlement_booking_terminal_latched {
+            self.settlement_booking_terminal_latched = true;
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
+                outcome: BoltV3OrderLifecycleOutcome::Flat,
+                source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
+                market_id: position.lifecycle.market_id_owned(),
+                instrument_id: Some(position.instrument_id),
+                position_id: Some(position.position_id),
+                client_order_id: None,
+                prior_client_order_id: None,
+                raw_reason_text: Some(format!(
+                    "settlement_booking_terminal {reason_detail} sticky_until_restart=true"
+                )),
+                order_side: Some(position.entry_order_side),
+                filled_quantity: None,
+                residual_quantity: Some(position.quantity),
+                ts_event_ns: observed_at_ns,
+            });
+            log::error!(
+                "binary_oracle_edge_taker settlement booking terminal: strategy_id={} position_id={} instrument_id={} {reason_detail} sticky_until_restart=true (no operator-ack; process restart is the only reset)",
+                self.config.strategy_id,
+                position.position_id,
+                position.instrument_id,
+            );
+        }
+        self.exposure = ExposureState::Flat;
+        self.sync_exposure_context_from_active();
+        self.refresh_book_subscriptions_for_current_state();
     }
 
     fn record_missing_interval_end_settlement_booking_error(
@@ -2666,6 +2717,19 @@ impl BinaryOracleEdgeTaker {
             .into_iter()
             .next()
             .expect("checked non-empty recovery position set");
+        // Mirror live terminal booking-error: recovered open positions whose
+        // settlement key already has a booking-error record release exposure
+        // rather than parking Managed forever.
+        if let Ok(settlement_key) = settlement_key_for_position(&open_position) {
+            if self.settlement_booking_error_keys.contains(&settlement_key) {
+                self.apply_settlement_booking_terminal_release(
+                    &open_position,
+                    format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
+                    None,
+                );
+                return;
+            }
+        }
         let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
         self.exposure = exposure;
         self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
@@ -3812,8 +3876,14 @@ impl BinaryOracleEdgeTaker {
                 fields.submission_blocked_reason,
             );
         } else {
-            self.last_entry_block_reason_sets = None;
-            log::info!(
+            // One INFO line only on the transition from blocked → unblocked.
+            if self.last_entry_block_reason_sets.take().is_some() {
+                log::info!(
+                    "binary_oracle_edge_taker entry unblocked: strategy_id={}",
+                    self.config.strategy_id
+                );
+            }
+            log::debug!(
                 "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
@@ -3927,13 +3997,14 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    /// Returns `true` when a new skip was recorded (not evidence-deduped).
     fn record_entry_skip_once(
         &mut self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
         reason_category: BoltV3EntrySkipReasonCategory,
         unclassified_context: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
         let key = EntrySkipDedupeKey {
@@ -3955,7 +4026,7 @@ impl BinaryOracleEdgeTaker {
             fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
         };
         if self.last_recorded_entry_skip.as_ref() == Some(&key) {
-            return Ok(());
+            return Ok(false);
         }
         let evidence = BoltV3EntrySkipEvidence::from_entry_skip(
             self.config.strategy_id.clone(),
@@ -3981,7 +4052,7 @@ impl BinaryOracleEdgeTaker {
             );
         }
         self.last_recorded_entry_skip = Some(key);
-        Ok(())
+        Ok(true)
     }
 
     fn record_and_log_entry_skip(
@@ -3994,12 +4065,14 @@ impl BinaryOracleEdgeTaker {
             .unwrap_or(BoltV3EntrySkipReasonCategory::Unclassified);
         let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
             .then(|| reason.to_string());
-        self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)?;
-        log::warn!(
-            "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-            self.config.strategy_id,
-            reason
-        );
+        // WARN keyed on the same evidence dedupe as record_entry_skip_once.
+        if self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)? {
+            log::warn!(
+                "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
+                self.config.strategy_id,
+                reason
+            );
+        }
         Ok(())
     }
 
@@ -6730,24 +6803,30 @@ impl BinaryOracleEdgeTaker {
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
 
         if self.exposure_occupancy().is_some() {
-            self.record_entry_skip_once(
+            let newly_recorded = self.record_entry_skip_once(
                 now_ms,
                 &decision,
                 BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
                 None,
             )?;
-            if let Err(error) = self.enforce_one_position_invariant() {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={} error={error:#}",
-                    self.config.strategy_id,
-                    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
-                );
+            // Keep WARN on the same dedupe as evidence (not per-tick).
+            if newly_recorded {
+                if let Err(error) = self.enforce_one_position_invariant() {
+                    log::warn!(
+                        "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={} error={error:#}",
+                        self.config.strategy_id,
+                        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
+                    );
+                } else {
+                    log::warn!(
+                        "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
+                        self.config.strategy_id,
+                        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
+                    );
+                }
             } else {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                    self.config.strategy_id,
-                    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
-                );
+                // Still enforce the invariant; just don't re-WARN.
+                let _ = self.enforce_one_position_invariant();
             }
             return Ok(None);
         }

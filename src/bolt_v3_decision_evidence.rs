@@ -1819,6 +1819,8 @@ pub enum BoltV3OrderLifecycleTransition {
     RestartOpenOrderAdopted,
     RestartOpenOrderRecoveryBlocked,
     SettlementEvidenceRecoveryBlocked,
+    /// Live or recovery path: settlement booking failed terminally; exposure released.
+    SettlementBookingTerminal,
     OrderDenied,
     OrderRejected,
     OrderCanceled,

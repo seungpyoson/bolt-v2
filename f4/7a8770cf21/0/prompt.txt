@@ -1,0 +1,699 @@
+you own pr 1326 as well right
+
+---
+
+I thought we were going to send out the prompt myself - why do have codex session running in your session
+
+---
+
+you stand down and my session drives
+
+---
+
+• PR #1326 is finished and remains draft.
+
+  - Head: b01126ece65e680c0434a01c9ccc9a1cfce569b2
+  - Iteration count: 12; PR body reports 12/12 before and 0/12 after.
+  - Safe push confirmed the exact remote head.
+  - Working tree is clean; main was already an ancestor, so no merge was needed.
+  - The ten changes were already committed when I inspected the worktree. The commit has the required conventional subject, Refs #1323, and Claude Opus
+    trailer. No TOKEN- challenge occurred.
+
+  Bypass replants:
+
+  - Tuple argv: caught — scripts/test_planted.py
+  - os.system: caught — scripts/test_planted.py
+  - shell=True: caught — scripts/test_planted.py
+  - sh -c: caught — scripts/test_planted.py
+  - Name bound to "git": caught — scripts/test_planted.py
+  - shutil.which("git"): caught — scripts/test_planted.py
+  - Mock data ["git", ...]: allowed, no file flagged
+
+  Verification under Python 3.12:
+
+  - Lane governance verifier and tests passed.
+  - Fixture checker and all 33 tests passed.
+  - Governance diff analysis passed.
+  - just source-fence-static passed.
+  - Full CI-lint passed: 36/36 suites.
+  - Both real fixture constructors persist suppression; only the explicit negative-control clone intentionally omits it within the persistence test.
+
+---
+
+so what should we do?
+
+---
+
+generate a review prompt for 1326
+
+---
+
+you should own 1339, but implementation should be from codex (you give me prompt, I relay myself)
+
+---
+
+<task-notification>
+<task-id>b1asvifrd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/a2712926-fa94-405b-b44f-792003993c06/tasks/b1asvifrd.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll both runs, tracking the 789 job specifically" failed with exit code 1</summary>
+</task-notification>
+
+---
+
+GLM: Adversarial Review: PR #1326 — "suppress git auto-maintenance in test fixtures"
+Head reviewed: b01126ece65e680c0434a01c9ccc9a1cfce569b2 (confirmed, unchanged from PR metadata). All file content anchored on git show b01126:... via a clean worktree at that SHA.
+Findings (ordered by severity)
+F1 — BLOCKING (code defect): Keyword-argument bypass in execution-edge detection
+File/symbol: scripts/verify_fixture_git_helper_usage.py — GitFixtureVisitor.visit_Call / _execution_command_index
+Concrete failure path at this head: _execution_command_index always returns 0 (the first positional argument index) for every recognized execution function. visit_Call then does:
+command = (
+    node.args[command_index]
+    if command_index is not None and command_index < len(node.args)
+    else None
+)
+When the command is passed as a keyword argument (args=, command=, cmd=), node.args is empty, the guard 0 < 0 is False, command becomes None, and no violation is flagged. visit_List catches list literals in keyword positions by accident (it visits all ast.List nodes), but string and tuple commands passed as keywords are completely invisible — there is no visit_Constant, no visit_Tuple, and no visit_JoinedStr.
+Verified with violations_in() at head:
+Snippet
+subprocess.run(args="git commit", shell=True)
+subprocess.run(args=("git", "commit"))
+subprocess.run(args=f"git checkout {b}", shell=True)
+os.system(command="git commit")
+subprocess.getoutput(cmd="git status")
+subprocess.Popen(args=("git", "commit"))
+subprocess.check_output(args="git status", shell=True)
+subprocess.run(args=["git", "commit"])
+Controls (positional forms) all produce violations — confirmed.
+Why existing tests/fences miss it: test_verify_fixture_git_helper_usage.py tests 13 execution-edge patterns, all with positional arguments. No test passes the command as a keyword argument. The PR body documents one known limit ("an opaque callable in the command position is unresolvable") but does not mention keyword arguments.
+Smallest systematic fix: In visit_Call, after the positional-arg check, scan node.keywords for keyword arguments whose value resolves to git. Map each execution function to its command parameter name (args for all subprocess.* functions, command for os.system/os.popen, cmd for getoutput/getstatusoutput). For exec*/spawn* families the command is always positional, so they need no keyword check. The fix is ~15 lines in visit_Call plus a param-name table. This closes the class — not just the string form, but tuple, f-string, and variable-bound forms in keyword positions.
+F2 — Non-blocking (code defect): visit_List does not handle ast.Tuple
+File/symbol: scripts/verify_fixture_git_helper_usage.py — GitFixtureVisitor.visit_List
+Concrete failure path: The argv-spelling rule only fires for ast.List nodes. A tuple starting with "git" in a non-execution position (assignment, non-exec function call, keyword argument) produces zero violations:
+Snippet
+cmd = ("git", "commit")
+process(("git", "commit"))
+subprocess.run(args=("git", "commit"))
+Tuples in positional execution positions ARE caught by the execution-edge rule via _sequence_resolves_to_git, so the dangerous case is covered. The gap is tuples as expected data that could later be forwarded to execution — but those would be caught at the execution site if positional.
+Smallest fix: Add visit_Tuple mirroring visit_List, or generalize into a shared _check_sequence_literal called for both node types.
+F3 — Non-blocking (runtime evidence gap): Stress harness "before" number not reproducible from committed code
+Claim: PR body states "before-fix 12/12" measured by monkeypatching repo_git_command to drop suppression.
+Verification: I independently reproduced both arms:
+- Before (monkeypatched repo_git_command to return ["git", *args]): 12/12 cleanup failures, 9633 writer entries.
+- After (committed code, assert_temp_git_fixture_cleanup_stress_blocks_background_writer): 0/12, 0 writer entries. Confirmed by running python3.12 scripts/test_governance_diff_analysis.py — exit 0.
+Both numbers are accurate. The "before" number is a manual experiment, not anchored to committed code. The "after" number is the committed assertion.
+F4 — Non-blocking (runtime evidence gap): Push test non-vacuity not documented
+Claim: PR body lists three tests as "proven non-vacuous by planting their violation first": assert_init_fixture_repo_persists_suppression, assert_self_authorizing_fixture_repo_persists_suppression, assert_clone_fixture_repo_persists_suppression. assert_push_to_fixture_remote_spawns_no_background_maintenance is NOT listed.
+Verification: I measured an unsuppressed push (1 commit to a bare repo with no persisted config) via GIT_TRACE2_EVENT: 1 maintenance child spawned (git maintenance run --auto --quiet --detach). With suppression persisted: 0 children. The test IS non-vacuous — the omission is a documentation gap.
+F5 — Non-blocking (code defect): clone_fixture_repo clone→persist window
+File/symbol: scripts/ci_workflow_hygiene_test_helpers.py — clone_fixture_repo
+Concrete failure path: clone_fixture_repo runs repo_git_command("clone", ...) (which includes -c gc.auto=0 -c maintenance.auto=false) and then calls suppress_repo_auto_maintenance(destination). Between these two calls, the clone's local config has no suppression. The -c flags on the clone command affect the parent git process but are NOT inherited by spawned maintenance children — those read the repo's config file, which is empty at this point. If git clone spawned a detached maintenance writer during this window, it would not be suppressed.
+Why it doesn't matter in practice: git clone produces packed objects, not loose objects. Auto-maintenance thresholds (default gc.auto=6700 loose objects) are not met at fixture scale. The window is real but unreachable with current fixture sizes. init_fixture_repo has no such window because git init creates no objects and triggers no maintenance.
+Smallest fix: Persist suppression into the clone immediately after clone, before any other operation — which is what the code already does. The only stronger fix would be to use git -c maintenance.auto=false clone ... which already happens via repo_git_command, but that doesn't protect spawned children. No practical fix needed; document the window.
+F6 — Non-blocking (design gap): Submodule repos are uncovered
+Concrete failure path: If a fixture repo has submodules, git submodule update creates a submodule repo with its own .git/config. Neither init_fixture_repo nor suppress_repo_auto_maintenance touches the submodule's config. Git operations in the submodule would not see maintenance.auto=false.
+Why no existing test/fence catches it: No current test file uses submodules. The checker doesn't flag git submodule calls (they don't start with "init" or "clone" as the first string arg). This is theoretical.
+Smallest fix: If submodules are ever needed, add a suppress_submodule_maintenance helper or have clone_fixture_repo optionally recurse into submodules.
+F7 — Non-blocking (observation): merge_queue_preflight.py creates a temp repo without suppression
+File/symbol: scripts/merge_queue_preflight.py:1936 — PrivateFetchRefs.create
+["git", "init", "--bare", str(git_repo)] in a tempfile.TemporaryDirectory — the exact failure mode this PR fixes in test files. This is production code, not a test file, and the checker only scans scripts/test_*.py. Out of scope for this PR, but it's a latent instance of the same class of problem. The PR body correctly states production git is untouched.
+Coverage analysis: every way git reaches a fixture repo
+Path    Covered by
+Suite's own git calls (run_repo_git, repo_git_command)    repo_git_command (-c flags) + persisted config
+Push → receive-pack on fixture remote    Persisted config in remote (verified: unsuppressed push spawns 1 maintenance child)
+Git spawned by production code under test (e.g. clean_merged_artifacts.py)    Persisted config
+Hooks (post-receive, etc.)    Persisted config
+Submodules    NEITHER
+Git worktree    Persisted config in main repo (worktree reads main config for non-core.* settings)
+Alternates (.git/objects/info/alternates)    N/A — only object storage, not config
+GIT_DIR/GIT_CONFIG_* redirection    Persisted config (if GIT_DIR points to suppressed repo)
+clone_fixture_repo clone→persist window    -c flags on clone — but spawned maintenance reads clone config
+The one that neither covers: submodules (F6).
+Constructor migration verification
+Every fixture repo in scripts/test_*.py now originates from init_fixture_repo or clone_fixture_repo. Verified by:
+- Running the checker at head: exit 0.
+- Grepping all scripts/test_*.py for ["git", "init" and "git", "clone" — all remaining matches are mock data (CalledProcessError, CompletedProcess, expected-value comparisons) or commit messages (-m "init").
+- No repo.mkdir() + git init patterns remain.
+clone_fixture_repo_without_suppression is reachable only from assert_clone_fixture_repo_persists_suppression in test_governance_diff_analysis.py:165. It is not called from any other test file or production script. The negative control has not become a hole.
+read_persisted_repo_config honesty verification
+Tested with git config --local --get on git 2.50.1:
+Scenario
+--local --get with -c key=val on command line, no persisted value
+--local --get with -c key=val on command line, persisted value present
+--get (no --local) with -c key=val
+--local --get with GIT_CONFIG_COUNT env var
+--get (no --local) with GIT_CONFIG_COUNT env var
+--local correctly restricts reads to the repo's own config file. Neither -c flags nor GIT_CONFIG_* env vars leak through. The persistence test is not self-fulfilling. (include.path could theoretically inject values, but fresh fixture repos have no include.path.)
+Explicit answer: is there a runnable way to execute git that this checker does not flag?
+YES. The smallest change to a scripts/test_*.py that runs git against a fixture and is not flagged:
+import subprocess
+subprocess.run(args="git commit", shell=True)
+or equivalently:
+import subprocess
+subprocess.run(args=("git", "commit"))
+Both execute git, both return [] from violations_in(). The root cause: _execution_command_index returns 0 (positional index), but execution functions accept the command as a keyword argument (args= for subprocess, command= for os.system, cmd= for getoutput). When the command is a keyword, node.args is empty, command is None, and the execution-edge rule is skipped. visit_List catches the list form (args=["git", ...]) by accident, but string, tuple, and f-string keyword arguments are invisible.
+Checks run
+Check
+python3.12 scripts/verify_fixture_git_helper_usage.py (at head, clean worktree)
+python3.12 scripts/test_verify_fixture_git_helper_usage.py
+python3.12 scripts/test_governance_diff_analysis.py
+python3.12 scripts/test_verify_bolt_v3_boundary_evidence.py
+python3.12 scripts/test_run_ci_lint_suites.py
+violations_in() isolated tests: 10 bypass patterns
+read_persisted_repo_config honesty: 5 scenarios with --local
+Stress harness "before" arm reproduction (monkeypatched)
+Push non-vacuity test (unsuppressed, GIT_TRACE2_EVENT)
+Production script grep (clean_merged_artifacts, merge_queue_preflight, sandbox_safe_push, etc.)
+Constructor migration completeness (all scripts/test_*.py)
+clone_fixture_repo_without_suppression reachability
+Git version
+Checks NOT run
+Check
+python3.12 scripts/test_clean_merged_artifacts.py (full)
+pytest scripts/test_cargo_shim.py
+just source-fence-static / just ci-lint-workflow
+Remote CI (just verify-remote)
+git maintenance behavior measurement
+Summary
+The suppression design is sound: two layers (command-line -c flags for the suite's own calls, persisted config for everyone else including receive-pack), correctly measured, correctly tested for honesty. The constructor migration is complete. The stress harness faithfully models the race consequence (not the exact git mechanism, but the trace2 evidence covers that separately). Both 12/12 and 0/12 numbers are reproduced.
+The one blocking defect is the keyword-argument bypass (F1). The checker's stated purpose is to "fence the git execution edge" — and subprocess.run(args="git commit", shell=True) is an execution edge that is not fenced. The fix is small (~15 lines + a param-name table) and closes the class. The tuple gap (F2) is lesser but should be fixed in the same pass.
+Kimi:  
+ ● Review of PR #1326, seungpyoson/bolt-v2. Head has not moved — refs/pull/1326/head and the PR's headRefOid both equal
+   b01126ece65e680c0434a01c9ccc9a1cfce569b2; base 8d0af87…. Everything below was read from a clean git archive of the head (/tmp/pr1326-head.*) or git
+   show/diff against the two SHAs; the worktree was never used. No files were patched, nothing pushed, no CI dispatched.
+
+   The question this review exists to answer
+
+   Yes. There is a trivial, runnable way to execute git against a fixture that the checker does not flag. The smallest is a one-token concatenation:
+
+   ```python
+     import subprocess
+     subprocess.run(['g' + 'it', 'status'], cwd=repo)            # runs `git status`, NOT FLAGGED
+     subprocess.run(['g' + 'it', 'init', str(repo)])             # builds a fixture outside the constructors, NOT FLAGGED
+   ```
+
+   I confirmed this by importing violations_in from the head checker under python3.12 and running it: both return []. So do ['{}'.format('git'), …], '%s' %
+   'git', ''.join(['g','i','t']), b'git'.decode(), 'xgit'[1:], 'GIT'.lower(), f'{"git"} status' / f'{cmd} status', a helper that returns the argv,
+   getattr(subprocess,'run')(...), importlib.import_module('subprocess').run(...), and exec("…git…"). The literal ['git','status'] baseline is flagged, and
+   the 33 unit tests pass — so the fence is green only because every negative case is literal-shaped.
+
+   Findings — code defects
+
+   F1 — Blocking. The "execution-edge" resolver resolves only literal-shaped programs, so the fence fails open.
+   • scripts/verify_fixture_git_helper_usage.py:207-292 (_resolves_to_git, _literal_program, _sequence_resolves_to_git, _command_resolves_to_git) recognize
+     Constant-str, a Name bound to a string literal, a List/Tuple whose first element is one of those, an f-string whose leading segment is a literal
+     (:281-285), which('git'), and the two allowed builders. Anything else — BinOp, .format, %, .join, slicing, bytes.decode, .replace, a leading-value
+     f-string, a non-which Call — is treated as "not git."
+   • visit_List (:341-348, argv-spelling) and the execution-edge rule (:311-326) both bottom out in the same resolver, and the constructor rule (:336-337)
+     only inspects positional string args (first_string in {"init","clone"}), so 'g'+'it' hidden inside the argv list defeats all three rules at once —
+     including building a repo outside init_fixture_repo/clone_fixture_repo (the init one-liner above).
+   • Why it is missed: scripts/test_verify_fixture_git_helper_usage.py contains zero computed-string negatives (grep for
+     +/format/%/join/slice/leading-value-f-string in it returns nothing); the PR body's "six bypasses" table and its "also caught" list are 100%
+     literal-shaped.
+   • Smallest systematic fix: make the execution position and the list-head fail-closed — if an execution edge's command (or a list's first element) cannot be
+     proven not to be git, flag it — rather than the current fail-open "only flag what I can prove is git." Optionally constant-fold a bounded set of pure
+     string ops (literal +, literal .format, f-strings). Add negatives for every form above, and have the constructor rule look inside argv sequences. This is
+     also the right place to fold in F2.
+
+   F2 — Blocking (review integrity). The documented "known limit" understates the hole.
+   • Checker docstring verify_fixture_git_helper_usage.py:12-14 and the PR body ("Known limit … an opaque callable in the command position is unresolvable and
+     is not flagged") frame the gap as only an opaque callable. But 'g' + 'it' is not a callable and has fully static inputs; it still bypasses. This is
+     precisely what "convinces reviewers the class is closed."
+   • Fix: correct the docstring to enumerate the real unresolvable-but-runnable set, or close it per F1.
+
+   F3 — Non-blocking for this tree, but the residual regression path (becomes blocking if F1 is not fixed).
+   • The only general fence is the AST checker, wired as CI lane fixture-git-helper-usage (scripts/run_ci_lint_suites.py:70). The runtime fences are
+     module-scoped: assert_routed_fixture_module_spawns_no_background_maintenance runs only scripts/test_ci_input_sets.py under GIT_TRACE2_EVENT
+     (test_governance_diff_analysis.py:209-231), and the push-trace/stress tests cover their own setups. A future computed-string git execution in any other
+     scripts/test_*.py passes the AST lane (F1) and is never traced → reintroduces the ENOTEMPTY flake. The current tree is clean (checker rc=0), so this is
+     latent.
+   • Fix: fail-closed AST fence (F1); and/or generalize the trace test to run every fixture-using scripts/test_*.py under GIT_TRACE2_EVENT, so a real
+     maintenance spawn is caught at runtime regardless of argv spelling.
+
+   Findings — runtime / evidence gaps
+
+   F4 — Non-blocking. The "12/12 before" integer is host/timing-dependent; cite the mechanism, not the count.
+   • Reproduced with the PR's exact shim logic (iterations=12): after (suppressed) = 0/12, no writer — robust. On the unsuppressed arm the shim always spawns
+     the writer (writer_spawned=True every run), proving the shim correctly keys on the helper's -c slice; but on this fast Apple-Silicon host the inner
+     TemporaryDirectory rmtree wins the race (Python-shim writer starts slower than the tiny-repo rmtree), so the natural inner-cleanup count was 0/12 here,
+     with the race landing on later/outer cleanup (OSError [Errno 66]). Forcing the writer to interleave (≈250 ms post-commit settle) yields 12/12 inner
+     ENOTEMPTY, i.e. the mechanism is real whenever the writer overlaps cleanup.
+   • Net: the PR's before/after is sound (the author measured before by monkeypatching repo_git_command to drop suppression — equivalent to my unsuppressed
+     arm), and the earlier 20/20→12/12 correction matches the code (iterations = 12, test_governance_diff_analysis.py:288). But 12/12 is not a stable
+     invariant; the durable facts are suppression off ⇒ writer spawns, suppression on ⇒ no writer, writer interleaves ⇒ ENOTEMPTY. I reproduced all three; I
+     did not get a natural-timing 12/12 on this host.
+   • Fix: present the result as mechanism + 0/12-after, not as a deterministic 12/12; optionally make the shim writer native/fast enough (or slow the inner
+     rmtree) that the before-count is stable across hosts.
+
+   F5 — Non-blocking, theoretical. Writer-side env escapes from the persisted config.
+   • Persistence lives in the fixture's local config; a writer opening the repo normally reads it (covered). But a process writing into the fixture can be
+     made to ignore it via the legacy single-file GIT_CONFIG (replaces config discovery) or via GIT_CONFIG_COUNT/-c injecting maintenance.auto=true
+     (command/env scope outranks local). No test does this and it would be self-sabotage; noted for completeness. (GIT_CONFIG_GLOBAL/SYSTEM and
+     include.path/core.worktree do not suppress local — those are fine.)
+
+   Claims I verified (not defects)
+
+   • read_persisted_repo_config is honest — measured, not argued. On git 2.50.1: with no gc.auto in the file, git -c gc.auto=0 config --local --get gc.auto
+     returns rc=1 (unset) while plain --get returns 0; with file gc.auto=7, --local --get returns 7 under -c gc.auto=0 (plain --get returns 0); the write path
+     git -c gc.auto=99 config gc.auto 0 writes 0; and GIT_CONFIG_COUNT injection likewise does not leak into --local --get. So routing the read through
+     repo_git_command (:1811-1812), which prepends -c gc.auto=0 -c maintenance.auto=false, does not self-fulfill — the negative control (plain_clone → None,
+     :173-177) is meaningful. This also independently corroborates the PR's "stub the writer → persistence tests go red" non-vacuity proof: that only works if
+     the read is honest.
+   • clone_fixture_repo_without_suppression is reachable only from the persistence test (def helpers:1862; sole use test_governance_diff_analysis.py:165). The
+     negative control has not become a hole.
+   • init → persist window is not a real gap. init_fixture_repo runs git init with the -c suppression already on the command line (:1830-1836), git init does
+     not fork maintenance, and no other git touches the repo before suppress_repo_auto_maintenance writes config. (Theoretical only: an init template that
+     installs a hook, or a caller interleaving git between the two calls — neither happens here.)
+   • Production git is untouched, and suppressing it would be wrong. clean_merged_artifacts.py, governance_diff_analysis.py, merge_queue_preflight.py,
+     ci_storage_audit.py, merge_queue_operator.py, ci_input_sets.py are all unmodified (empty base..head diff); none imports ci_workflow_hygiene_test_helpers
+     (the only non-test hit is the checker's docstring mentioning the module name, not an import). clean_merged_artifacts.py:547-554 keeps its own _git →
+     subprocess.run with no suppression — correct, since it operates on the real repo, not a throwaway fixture, where disabling housekeeping is unwarranted
+     and there's no TemporaryDirectory to race. Scoping is right.
+   • maintenance.auto=false load-bearing / gc.auto=0 inert: I did not re-measure the fork table (per instructions) and I don't disagree; the gc.auto=0
+     retention rests on git's documented gc --auto path, which the body states honestly.
+   • The fence is gated in CI (run_ci_lint_suites.py:70-71), so F1's weakness is reachable, not theoretical.
+
+   Disagreements with "established" items
+
+   None on the mechanism. Only the framing in F2/F4: the fence does not do what the body says ("fences the git execution edge, not the argv spelling") — it
+   still does argv spelling and its edge resolver is literal-only — and 12/12 is not a portable constant.
+
+   Checks
+
+   Ran: fetched base/head + PR ref and confirmed head unmoved; clean archives of head and base; read the checker, its test, the helper region, the
+   persistence/stress tests, the relevant diffs, and the full PR body; ran the checker against the head tree (rc=0, "clean"); ran its 33 unit tests (pass);
+   ran a 16-case violations_in bypass battery under python3.12; measured git config --local honesty vs -c and GIT_CONFIG_COUNT on git 2.50.1 (Q1–Q4);
+   reproduced the race harness after=0/12 and the unsuppressed arm (writer spawned; 12/12 with forced interleave); grepped the helper-import graph and
+   production-module diffs.
+
+   Did not run: the GIT_TRACE2_EVENT maintenance-child table (told not to re-litigate; accepted); the full Python suites beyond the checker's own
+   (clean_merged 222, full governance_diff_analysis, etc.) — not needed for the verdict and review-only; any Rust/just/CI lane (remote-first policy,
+   review-only). No patch, push, or CI dispatch.
+Grok: Adversarial re-review: PR #1326
+
+Reviewed head: b01126ece65e680c0434a01c9ccc9a1cfce569b2 (matches stated head; base 8d0af87fb65f20eb0f9a6713b21070b19f966037)
+Scope: full PR (+1424/−338, 14 files). Anchor: git archive of that head under /tmp/pr1326-review — not the local worktree (currently on a different branch).
+Mode: review-only; no patches.
+
+───
+
+Direct answer (the question this review exists for)
+
+Yes. There are many runnable ways for a new scripts/test_*.py to execute git against a fixture without being flagged.
+
+Smallest natural change (not flagged):
+
+import subprocess
+
+cmd = ("git", "commit", "--allow-empty", "-m", "x")
+subprocess.run(cmd, cwd=repo, check=True)
+
+Also unflagged and one line shorter:
+
+subprocess.run(args=("git", "status"), cwd=repo, check=True)
+
+Also unflagged: ["env", "GIT_OPTIONAL_LOCKS=0", "git", ...], nested/lambda/method wrappers, g = shutil.which("git"); subprocess.run([g, ...]), repo_git_command("-C", path, "init"), etc.
+
+The rewrite moved from argv-spelling to “static resolution of what the command resolves to.” That is the right direction. It does not close the class. The module documents only “opaque callable in the command position” as a known limit; the holes below are ordinary, statically visible patterns.
+
+───
+
+Findings (severity order)
+
+1. Keyword args= is invisible to the execution-edge rule
+Severity: high · Blocking: yes (fence class claim)
+Where: scripts/verify_fixture_git_helper_usage.py — _execution_command_index / GitFixtureVisitor.visit_Call
+Failure path at this head:
+
+import subprocess
+subprocess.run(args=("git", "commit", "--allow-empty", "-m", "x"), cwd=repo, check=True)
+
+violations_in(...) → []. Runnable; spawns real git.
+Why missed: command index is taken only from positional node.args; args= / Popen(args=...) never inspected. List form of the same kw is sometimes saved by Rule A (visit_List); tuple/string kwargs are pure bypasses.
+Systematic fix: resolve the command operand from positional or keyword args (and popen/system equivalents) the same way CPython’s subprocess does.
+
+───
+
+2. Name-bound tuple argv is untracked; only list literals get Rule A
+Severity: high · Blocking: yes
+Where: visit_List (lists only); _command_resolves_to_git does not chase Name → sequence bindings
+Failure path:
+
+cmd = ("git", "commit", "--allow-empty", "-m", "x")
+subprocess.run(cmd, cwd=repo, check=True)
+
+Bypass. Same with a list assignment is often caught by Rule A on the list literal; the tuple form is the everyday style that walks through.
+Why missed: Rule A is list-only; execution edge treats Name via string bindings (g = "git"), not sequence bindings.
+Systematic fix: either visit tuples like lists for argv-spelling, or resolve Name to assigned List/Tuple constants (same binding table, richer values).
+
+───
+
+3. env wrapper only accepts env git, not env VAR=val git
+Severity: high · Blocking: yes
+Where: _tokens_resolve_to_git / _sequence_resolves_to_git (env branch)
+Failure path:
+
+subprocess.run(["env", "GIT_OPTIONAL_LOCKS=0", "git", "commit", ...], check=True)
+# also: ["env", "-u", "FOO", "git", ...]
+
+Bypass. ["env", "git", "commit"] is caught (test exists); production-style env prefixes are not.
+Why missed: env handling checks only tokens[1] / remaining[0], not “skip assignments/-u then look for git”.
+Systematic fix: scan after env for the first non-assignment, non-option token and resolve that (or recursively).
+
+───
+
+4. Local wrapper fixed-point only sees module-level FunctionDef
+Severity: high · Blocking: yes
+Where: _local_execution_wrappers — tree.body only
+Failure paths (all bypass):
+
+def outer():
+    def _run(args, *, cwd=None):
+        return subprocess.run(args, cwd=cwd, check=True)
+    _run(("git", "commit"), cwd=repo)
+
+_run = lambda args: subprocess.run(args)
+_run(("git", "commit"))
+
+class R:
+    def run(self, args, *, cwd=None):
+        return subprocess.run(args, cwd=cwd, check=True)
+R().run(("git", "commit"), cwd=repo)
+
+Why missed: nested functions, lambdas, and methods are not in the fixed-point set. Tests only cover top-level def _run.
+Systematic fix: walk all FunctionDef/AsyncFunctionDef/Lambda in the module (or attribute methods), not only tree.body.
+
+───
+
+5. shutil.which("git") bound to a name, then executed
+Severity: medium-high · Blocking: yes (claimed caught family is incomplete)
+Where: _which_git only matches a Call node in the argv position
+Failure path:
+
+g = shutil.which("git")
+subprocess.run([g, "commit", ...], check=True)
+
+Bypass. Inline subprocess.run([shutil.which("git"), ...]) is caught.
+Systematic fix: track bindings whose RHS is _which_git, not only in-place calls.
+
+───
+
+6. Rule C (constructor fence) is both bypassable and over-broad
+Severity: medium-high · Blocking: yes for bypass; false positives non-blocking but show the rule is not a real constructor analysis
+Where: visit_Call — “first string constant arg ∈ {init, clone}”
+Bypass (fixture repo with no persist):
+
+repo_git_command("-C", str(path), "init", "-q")
+# or run_git(repo, "-C", path, "init")
+# or x = "in"+"it"; run_git(repo, x)
+
+First string is "-C" / non-constant → no Rule C hit.
+False positives (also measured): config.get("init"), Path("clone"), print("init"), open("init") — all flagged.
+Why missed: not a git-constructor analysis; it is a string-token tripwire on any call.
+Systematic fix: flag only when the resolved program is git (or allowed builders) and a git subcommand token is init/clone/init-db (scan argv after -C/-c pairs), and require constructors for any path that becomes a fixture root.
+
+───
+
+7. Stress harness “12/12 before, 0/12 after” does not measure real detached maintenance under the stated before-arm
+Severity: high · Blocking: yes as evidence for the PR body’s causal claim; not a logic bug in production helpers
+Where: assert_temp_git_fixture_cleanup_stress_blocks_background_writer in scripts/test_governance_diff_analysis.py
+What I measured:
+
+┌─────────────────────────────────────────────────────┬───────────────────────────────────────────┐
+│ Arm                                                 │ Result                                    │
+├─────────────────────────────────────────────────────┼───────────────────────────────────────────┤
+│ after-fix (suppression on)                          │ 0/12 cleanup failures, 0 writer log lines │
+├─────────────────────────────────────────────────────┼───────────────────────────────────────────┤
+│ before-fix (repo_git_command → ["git", *args] only) │ 12/12 failures, many writer lines         │
+├─────────────────────────────────────────────────────┼───────────────────────────────────────────┤
+│ before-fix 20                                       │ 20/20                                     │
+└─────────────────────────────────────────────────────┴───────────────────────────────────────────┘
+
+So the numbers are reproducible against the shim. They are not a faithful model of real git for the PR’s before-arm recipe:
+
+• Fake git spawns a Python writer iff "commit" in args and the contiguous -c gc.auto=0 -c maintenance.auto=false slice is missing from argv.
+• Monkeypatching only repo_git_command still leaves suppress_repo_auto_maintenance persisting maintenance.auto=false into the repo (via the same monkeypatched builder, still running git config).
+• Measured on git 2.50.1: commit with only local persist (no -c) → 0 maintenance children; commit with neither → 1.
+• Therefore the before-arm’s ENOTEMPTY storm is from the shim’s argv detector, not from real git maintenance run --auto --detach while persistence remains on.
+
+The automated test also only encodes the after-arm. The 12/12 before claim is narrative, not an assert that stays red if the shim stops modeling the race.
+
+Systematic fix:
+• Before-arm: stub both argv injection and suppress_repo_auto_maintenance, or drive real git with TRACE2 and no fake writer.
+• After-arm: keep shim as a cleanup-race model if desired, but do not cite it as TRACE2-equivalent proof.
+• Prefer the existing real TRACE2 asserts (assert_push_to_fixture_remote_*, assert_routed_fixture_module_*) as load-bearing evidence.
+
+───
+
+8. Init → persist window: unsuppressed git against the new repo still spawns maintenance
+Severity: low · Blocking: no (single-threaded helper; no yield between init and suppress)
+Where: init_fixture_repo / clone_fixture_repo
+Measured: after git -c … init only, --local has no keys; a following git commit without -c and without persist → 1 maintenance child.
+Coverage: Layer 1 covers the init/clone process itself; Layer 2 is not present until the next lines run. Hooks/concurrent actors could hit the window; the suite does not.
+Fix if you want the class closed: pass template config / git -c … init then immediately git config in one critical section, or use a single git init that writes config via a template dir owned by the helper.
+
+───
+
+9. Residual production temp git (accepted by PR, still a flake class)
+Severity: medium · Blocking: no for this PR’s stated scope; yes if the claim is “the clippy ENOTEMPTY class is closed in CI”
+Where: scripts/merge_queue_preflight.py TemporaryDirectory(prefix="merge-queue-preflight-git-") — untouched, as claimed.
+Coverage: neither fixture layer applies. PR narrative: residual 171 maintenance children from production fetch.
+Suppressing production operator git globally would be wrong; suppressing auto-maintenance only for ephemeral analysis clones inside preflight is a separate, scope-explicit change (not done here).
+
+───
+
+10. Binding-set false positive (rebind)
+Severity: low · Blocking: no
+Where: _bound_values unions all assignments to a name
+Path: g = "git"; g = "echo"; subprocess.run([g, "status"]) still flagged.
+Noise, not a safety hole.
+
+───
+
+Suppression design coverage (enumeration)
+
+┌───────────────────────────────────────┬──────────────────────────┬─────────────────────────────────┬─────────────────────────────────────┐
+│ How git reaches a fixture             │ Layer 1 (-c via repo_    │ Layer 2 (persisted repo config) │ Gap?                                │
+│                                       │ git_command)             │                                 │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Suite helper run_repo_git / repo_git_ │ Yes                      │ Yes if built via constructors   │ No, for routed sites                │
+│ command                               │                          │                                 │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ git push → remote receive-pack        │ No (repo-scoped -c       │ Yes if remote from init_fixture │ No if constructors used             │
+│                                       │ dropped)                 │ _repo                           │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Production code under test spawning   │ No                       │ Yes if fixture persisted        │ No if constructors used             │
+│ git on fixture                        │                          │                                 │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Hooks in fixture                      │ No                       │ Yes (reads repo config)         │ No if persisted                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ git worktree                          │ N/A (shares common       │ Yes (measured: worktree sees    │ No                                  │
+│                                       │ config)                  │ local config)                   │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Submodule / nested separate git dir   │ No                       │ No unless that dir was          │ Yes if created outside constructors │
+│                                       │                          │ constructed                     │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Object alternates                     │ N/A                      │ N/A                             │ N/A for this failure mode           │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ GIT_DIR / -C into fixture             │ No unless caller uses    │ Yes if that repo’s config       │ Depends on construction             │
+│                                       │ helper                   │ persisted                       │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Suite call that bypasses fence (      │ Maybe not                │ Maybe not                       │ Yes — fence hole                    │
+│ findings 1–6)                         │                          │                                 │                                     │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ clone_fixture_repo_without_           │ Clone process only       │ No                              │ Only call site: persistence         │
+│ suppression                           │                          │                                 │ negative test — OK                  │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Production preflight temp repo        │ No                       │ No                              │ Yes (accepted residual)             │
+├───────────────────────────────────────┼──────────────────────────┼─────────────────────────────────┼─────────────────────────────────────┤
+│ Init→persist window                   │ Init process only        │ Not yet                         │ Small                               │
+└───────────────────────────────────────┴──────────────────────────┴─────────────────────────────────┴─────────────────────────────────────┘
+
+Constructors: fixture creation in the touched scripts/test_*.py files now goes through init_fixture_repo / clone_fixture_repo (inventory on the archive).
+clone_fixture_repo_without_suppression: only defined in helpers + used in assert_clone_fixture_repo_persists_suppression — not a live hole.
+
+───
+
+Claims verified (not accepted)
+
+┌───────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────┐
+│ Claim                                         │ Result                                                                                   │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Head b01126e…                                 │ Confirmed                                                                                │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ gc.auto=0 only inert; maintenance.auto=false  │ Confirmed: default 1, gc-only 1, maint-only 0, both 0                                    │
+│ load-bearing (git 2.50.1 TRACE2)              │                                                                                          │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Clone does not propagate either setting       │ Confirmed (--local --get exit 1 on clone)                                                │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ --local read not self-fulfilling via -c /     │ Confirmed: those appear in --get / command-line origin, not in --local --get             │
+│ GIT_CONFIG_COUNT                              │                                                                                          │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ include.path-only values                      │ Not returned by --local --get (so persistence test is not fooled by include-only either) │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Stress 0/12 after                             │ Reproduced (shim)                                                                        │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Stress 12/12 before with only repo_git_       │ Reproduced as shim behavior; not real-maintenance-faithful (see finding 7)               │
+│ command drop                                  │                                                                                          │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Historical 20/20                              │ Same shim, iterations=20 → 20/20; iteration count was the body/code mismatch, now        │
+│                                               │ aligned at 12                                                                            │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Six planted bypasses caught + mock data       │ Consistent with unit tests at this head; many additional bypasses exist                  │
+│ allowed                                       │                                                                                          │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Production scripts untouched                  │ Confirmed for clean_merged_artifacts.py, merge_queue_preflight.py, ci_storage_audit.py,  │
+│                                               │ merge_queue_operator.py, ci_input_sets.py, governance_diff_analysis.py                   │
+├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Suite verifier green on archived tests        │ violations_in / main(--repo-root) → 0 on PR-head scripts/test_*.py extract               │
+└───────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────┘
+
+I agree with the established TRACE2 config table; do not re-litigate it.
+
+───
+
+Code defects vs runtime evidence gaps
+
+Code defects (fence / design): findings 1–6, 10.
+Runtime / evidence gaps: findings 7–9 (7 is the serious one for PR claims).
+Design that works when used: dual-layer suppression + constructors + honest --local reads + real TRACE2 push/module asserts are the right skeleton. The fence is what overclaims closure.
+
+───
+
+Checks run
+
+• gh pr view metadata; head SHA confirmation
+• git archive of head (not worktree) for all 14 paths
+• Full read of verify_fixture_git_helper_usage.py + tests + helper surface + stress function
+• Planted ~70 static cases against violations_in (importable isolation)
+• Confirmed 10 “smallest realistic” plants still bypass
+• Verifier main over archived scripts/test_*.py → exit 0
+• git 2.50.1 measurements: TRACE2 maintenance children; --local vs -c vs GIT_CONFIG_COUNT; include.path; clone non-propagation; worktree config; push with bare persist only; init→persist window
+• Stress after 0/12; before 12/12 and 20/20 under the PR’s shim + repo_git_command drop
+• Production path scan for suppression / temp git
+• clone_fixture_repo_without_suppression call-site scan
+
+Checks not run
+
+• Full just source-fence-static / just ci-lint-workflow / remote CI at this head
+• Full python3.12 scripts/test_*.py suites beyond targeted plants
+• Linux errno-39 CI environment (local macOS ENOTEMPTY=66; code uses errno.ENOTEMPTY, portable)
+• Planting bypasses into a real PR CI run
+• Reading dismissed prior review bodies in full (only noted two dismissed sp-reviewer reviews, 0 inline comments)
+
+───
+
+Bottom line
+
+Merge recommendation if the bar is “does the existing suite stop detaching writers into fixture tmpdirs when it uses the helpers?” — directionally yes; helpers + routing look sound; TRACE2 config story is solid; production left alone correctly for operator paths.
+
+Merge recommendation if the bar is “the rewritten fence closes the class so the next test file cannot reintroduce the flake” — no. That is exactly what the 527-line rewrite is supposed to buy, and it does not. Smallest counterexample is a name-bound git tuple (or args=(...)) handed to subprocess.run. Until those execution-edge holes are closed (or the known-limits section is rewritten to list them honestly and the PR stops claiming class closure), this remains a blocking re-review result on the fence—not on the suppression mechanism itself.
+
+---
+
+ok what's next
+
+---
+
+make this concise - i didn't understand
+
+---
+
+give me the prompt for #2. you should own #3. give me the prompt for #3 as well. #4 is done Last login: Fri Jul 10 19:45:34 on ttys004
+bolt-v2  fix/1179-binance-sbe-schema-v5 is 📦 v0.1.0 git push origin --delete probe/789-before probe/789-after
+[entire] Pushing entire/checkpoints/v1 to checkpoint remote...... done
+[entire] Note: Checkpoints were pushed to a separate checkpoint remote, but .entire/settings.json does not contain checkpoint_remote in the latest commit. entire.io will not be able to discover these checkpoints until checkpoint_remote is committed and pushed in .entire/settings.json.
+To https://github.com/seungpyoson/bolt-v2.git
+ - [deleted]             probe/789-after
+ - [deleted]             probe/789-before
+bolt-v2  fix/1179-binance-sbe-schema-v5 is 📦 v0.1.0
+
+let's get the answer to the buy size questio
+
+---
+
+<task-notification>
+<task-id>bw5wbofhz</task-id>
+<tool-use-id>toolu_01DYd5JYHQBDcCrRyUkDUXCY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/a2712926-fa94-405b-b44f-792003993c06/tasks/bw5wbofhz.output</output-file>
+<status>completed</status>
+<summary>Background command "Fetch the after-run position events" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+yes. but again, I don't know how it can go produce different results - I don't understand. also - do we take into account of fees
+
+---
+
+ok so what are you saying overall
+
+---
+
+that's bad then - fees change the whole dynamics. so do we have consistent backtesting or not
+
+---
+
+so explain in plain english and make this concise - I didn't understnad
+
+---
+
+yes file it - but what do we do with 1326 and all the PRs that you opened - we can't just have them hanging
+
+---
+
+ok you are to overbose - I don't understand overall
+
+---
+
+ok let's do that for the split. you should own 1339.
+
+---
+
+I think we need to close all the open PRs we opened (merge I mean) - so seems like you own 1326 (being split), 1344, 1346. what should we do?
+
+---
+
+so I don't understand why these come about and why we are closing now? I'm truly confused
+
+---
+
+I cannot merge 1346 if we don't have unanimous approvals from external models
+
+---
+
+• Created three draft PRs; none were marked ready, merged, rebased, or manually dispatched to CI.
+
+  - PR A: #1326 — suppress fixture git auto-maintenance (https://github.com/seungpyoson/bolt-v2/pull/1326), head 8d9211f41
+      - Fence removed; suppression fix retained.
+      - Python 3.12 checks and ci-lint 34/34 passed.
+      - TRACE2 evidence: suppression off spawned one git maintenance run --auto --quiet --detach; suppression on spawned zero.
+      - Review requested from sp-reviewer.
+
+  - PR B: #1346 — fence direct fixture git usage (https://github.com/seungpyoson/bolt-v2/pull/1346), head 8ebdfe553
+      - Contains only the fence and its registrations.
+      - Before implementation: all ten prohibited cases failed detection; all three allowed cases passed.
+      - After implementation: 57 focused behavior tests passed.
+      - Full repository fence remains intentionally red with 336 violations until PR A lands. This dependency is documented in the PR, so review was not
+        requested prematurely.
+
+  - Issue #1339: #1347 — cover all flaky smoke shards (https://github.com/seungpyoson/bolt-v2/pull/1347), head 95a19169c
+      - Review requested from sp-reviewer.
+      - Before:
+          - Smoke: count:1/4
+          - Detection: count:1/4, count:2/4, count:3/4, count:4/4
+
+      - After:
+          - Both workflows cover count:1/4 through count:4/4.
+
+      - The updated hygiene assertion rejects the old workflow.
+      - Actionlint, Python 3.12 hygiene tests, and ci-lint 34/34 passed.
+      - Issue-789 gating is byte-identical to main; the only smoke-workflow change is shard: [1] → [1, 2, 3, 4].
+
+---
+
+why is this built to be failed?
+
+---
+
+we need to choose 1 between 1344 and 1347 right

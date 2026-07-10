@@ -1,0 +1,1277 @@
+we should have a review - generate a review prompt for the pr
+
+---
+
+Kimi: 
+ ● Review anchored on a clean git archive of the exact head.
+
+   Head reviewed: e468b9cbc6119268584f3073d0c2098b38ddf315 (matches the task; gh api confirms the PR head has not moved — head.sha still e468b9c, base
+   c66b684, open, mergeable, 2 files). All file reads and test/probe compiles used the archive / git show <HEAD>:…, never the local worktree (whose own HEAD
+   is the unrelated 96c5a9b).
+
+   Bottom line: No actionable code defect that violates invariants 1–7 in any realistic git state remains at this head. The four headline claims reproduce,
+   and the linchpin Cargo behavior was measured (not reasoned) on the pinned cargo 1.96.0. What remains are three non‑blocking observations (one robustness,
+   two coverage) and one closed evidence gap.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Findings (severity order)
+
+   F1 — Low · Non‑blocking · Code robustness · A .git with a missing HEAD reintroduces the very permadirty the PR removes
+
+   • File / symbol: build.rs, git_head_rerun_paths, line 200 (let mut paths = vec![head_path.clone()];).
+   • Concrete failure path at this head: head_path (= <git_dir>/HEAD) is pushed unconditionally, before fs::read_to_string(&head_path) is checked (line 202).
+     git_dir_from_manifest (lines 279–294) returns Some(git_dir) whenever .git exists as a dir or parses as a gitdir: file — it does not require HEAD to
+     exist. So a .git whose HEAD is absent (corrupt / mid‑recovery tree) emits cargo:rerun-if-changed=<…>/.git/HEAD for a path that does not exist → Cargo
+     treats it as permanently dirty → the build script (and the crate) recompile on every invocation. That is invariant‑1 ("every emitted path exists at emit
+     time") violated by the same mechanism the PR fixes for refs.
+       • Reproduced in my adversarial probe (HEAD build.rs): fixture .git with refs/heads present and no HEAD → returned […/.git/HEAD] with exists=false. (See
+         "checks ran," probe case 11.)
+   • Why nothing catches it: every fixture writes HEAD (plain_checkout_fixture line 24, linked_worktree_fixture line 72, detached_head_*). No test covers a
+     present‑.git/absent‑HEAD state, and the one "existence" sweep (every_watched_path_exists_in_every_ref_storage_state) always writes HEAD first.
+   • Reachability: low. git init always creates HEAD; commit/checkout rewrite it atomically (rename), so there is no normal transient absence. This only bites
+     on a corrupt tree, where there is no valid sha to embed anyway.
+   • Smallest fix: gate the push on existence, mirroring the ref handling, e.g. start with let mut paths = Vec::new(); and if head_path.is_file() {
+     paths.push(head_path.clone()); } before reading it (then the read_to_string Err arm naturally returns paths, which may be empty — acceptable, since a
+     HEAD‑less tree has nothing to embed and watching <base> is forbidden by invariant 3).
+   • Class: code robustness gap (degenerate state), not a defect in practice.
+
+   F2 — Low · Non‑blocking · Test coverage · The "every returned path exists" sweep does not include linked worktrees
+
+   • File / symbol: tests/build_script_git_head_rerun_paths.rs, every_watched_path_exists_in_every_ref_storage_state (lines 144–187) and
+     linked_worktree_head_ref_watches_common_ref_and_packed_refs (lines 78–103).
+   • What the claim implies vs. reality: the task asked to confirm worktree fixtures are in the four‑state existence sweep. They are not. The four‑state loop
+     (loose/packed × present/absent) iterates only plain_checkout_fixture (line 151). Of the two worktree tests, only
+     linked_worktree_per_worktree_head_ref_watches_the_worktree_ref asserts path.exists() (lines 132–134) and only in one storage state;
+     linked_worktree_head_ref_watches_common_ref_and_packed_refs asserts an exact path list (lines 89–100) but never asserts exists(). So invariant 1 is
+     unasserted for the common‑dir worktree configuration in every state, and for worktrees in the packed‑only / neither states.
+   • Why nothing catches it: the property is structural (the resolver gates on is_file()/is_dir()), and my own common‑dir probe confirmed all emitted paths
+     exist with no base emitted — so it holds, it just isn't pinned by the PR's tests.
+   • Smallest fix: parameterize the four‑state sweep over a linked_worktree_fixture too, and add assert!(path.exists()) to the common‑dir worktree test.
+   • Class: test‑coverage gap (hardening), not a code defect.
+
+   F3 — Very low · Non‑blocking · Test coverage · emit_git_head_rerun_paths (the directive printer) has no golden test
+
+   • File / symbol: build.rs, emit_git_head_rerun_paths (lines 173–177).
+   • Does it matter? Mostly no. It is a thin wrapper that prints cargo:rerun-if-changed={} for each computed path; the dangerous logic — which paths — is
+     git_head_rerun_paths and is exhaustively tested. The only untested behaviors are the literal directive format and that every computed path is emitted
+     exactly once in order. Both are trivial and stable (paths live under .git, so no newline/control‑char injection into the directive).
+   • Smallest fix (optional): one snapshot/golden test capturing the printed directives for a fixed fixture.
+   • Class: test‑coverage gap (hardening), not a code defect.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Attacks resolved (no defect)
+
+   • Cargo directory semantics — measured on cargo 1.96.0 (30a34c682), scratch crate, build‑script run counter:
+       • Unchanged existing dir → build script ran once across two builds ⇒ no spurious re‑run.
+       • Modify/add/delete a direct child, modify a grandchild while the watched dir's direct entries are unchanged, add a file three levels deep where the
+         intermediate dirs are new, and a same‑size (mtime‑only) edit → all re‑ran (ran=2). ⇒ the watch is recursive and content/mtime‑aware, not one‑level.
+         This validates the build.rs comment (lines 235–238) and is what makes "committing on a packed (nested) branch" re‑run: creating
+         refs/heads/fix/deep/topic is seen from refs/heads.
+       • Permadirty (the bug): watching a nonexistent path ran the build script on both invocations (ran=2); an existing path ran once (ran=1). This directly
+         reproduces the double‑compile the fix removes and closes the known evidence gap cheaply (below).
+
+   • Path::starts_with guard — probed at this head: ref: /etc/passwd, ref: refs, ref: refs/, ref: refs/heads/../heads/topic all resolve to [HEAD] only
+     (rejected by refs_relative_path's first‑component‑is‑"refs"‑and‑all‑Normal rule). Symlinked .git, symlinked .git/refs, and a commondir containing .. are
+     all canonicalized by git_dir_from_manifest/git_common_dir; the walk never returns <base> (the starts_with(refs_root) loop admits refs_root itself but
+     stops at its parent). One symlinked‑.git/refs case emits a path lexically inside <git_dir> that resolves outside it through the symlink — exists()=true,
+     not <base>, and it produces the desired sensitivity, so it is not an invariant‑2 violation of the emitted string.
+
+   • Case‑insensitive REFS — grounded with real git on this APFS: git symbolic-ref HEAD REFS/heads/weird → fatal: Refusing to point HEAD outside of refs/; and
+     a hand‑edited ref: REFS/heads/main makes git report not a git repository and refuse to commit. So no commit can move a ref through a case‑variant HEAD;
+     the exact "refs" match matches git's own case‑sensitive namespace. Not an under‑trigger.
+
+   • is_file() vs exists() — probed: a dangling‑symlink, fifo, or directory at the loose‑ref path are all excluded by loose_ref.is_file() (line 246) and
+     resolve to the deepest existing directory instead (is_dir(), line 252), so no nonexistent or wrong‑typed path is ever named; packed-refs uses is_file()
+     (line 222), correctly refusing a packed-refs directory/fifo; .git uses is_dir() to tell a repo from a gitdir: file. Every predicate is the right one for
+     its site, and the test's exists() assertion holds across all these states.
+
+   Claim verification
+
+   • "14 pass at head; 10 fail against the pre‑fix resolver" — reproduced exactly. HEAD tests vs HEAD build.rs: 14 passed; 0 failed. Same HEAD tests vs BASE
+     build.rs (c66b684, which unconditionally emits common_dir.join(head_ref), git_dir.join(head_ref), common_dir.join("packed-refs")): 4 passed; 10 failed —
+     failing: every_watched_path_exists_in_every_ref_storage_state, head_ref_escaping_the_refs_directory_watches_head_only, both linked‑worktree tests,
+     loose_ref_checkout_watches_the_ref_and_not_absent_packed_refs, missing_refs_directory_watches_head_only,
+     nested_branch_name_falls_back_past_absent_intermediate_directories, nested_branch_name_with_a_loose_ref_watches_the_ref_itself,
+     nested_branch_name_without_a_loose_ref_watches_the_deepest_existing_directory,
+     packed_ref_checkout_watches_the_refs_directory_so_a_new_loose_ref_is_noticed.
+   • "build.rs behavior unchanged since the comment‑only commit" — confirmed. The last commit f42ec462b changes build.rs by 6+/4‑ and the diff is only the
+     comment block above for base in [&common_dir, &git_dir]; executable behavior at e468b9c equals that at the fix commit bdfa48c92.
+   • "Worktree fixtures in the four‑state existence sweep" — false; see F2 (plain checkouts only; worktree existence is spot‑checked in one test/state).
+   • "Nothing tests emit_git_head_rerun_paths itself" — true; see F3 (low impact).
+
+   Evidence gap — closed cheaply
+
+   The known gap (no CI shows the double‑compile disappearing) is closed by the permadirty demonstration above on the pinned toolchain: a nonexistent
+   rerun-if-changed path forces the build script to re‑execute on every cargo build (ran=2 vs ran=2), while an existing path does not (ran=1 vs ran=1). That
+   is the exact mechanism, isolated from bolt‑v2, without needing PR #1302's split job. The remaining CI‑level assertion is therefore a runtime evidence item,
+   not a code defect; if you still want an in‑repo number, the cheapest decisive form is a throwaway CI step that runs cargo build twice on one checkout and
+   diffs "Compiling bolt-v2" counts — but it is not required to trust the fix.
+
+   Checks run
+
+   • gh api PR metadata (head/base SHA, state, mergeable, changed_files=2); confirmed head unchanged.
+   • Clean git archive e468b9c… to a temp dir; read build.rs and the test file from the archive.
+   • Confirmed rustc/cargo +1.96.0 present (1.96.0 ac68faa20 / 30a34c682).
+   • Standalone compile/run of the 14 tests vs HEAD build.rs (14 ok) and vs BASE build.rs (4 ok / 10 fail), rustc +1.96.0 --edition 2024, --test-threads=1.
+   • git diff base..head for build.rs (full) and per‑commit inspection proving f42ec462b is comment‑only; git diff --name-status confirms only the two files
+     changed.
+   • Scratch‑crate Cargo measurements (recursive dir watch; spurious‑rerun; add/modify/delete; deep modify; same‑size mtime; permadirty contrast).
+   • Adversarial resolver probe (absolute / refs / refs/ / trailing‑.. / REFS / dangling‑symlink / fifo / directory / symlinked .git/refs / commondir‑with‑..
+     / missing HEAD), printing each returned path with exists() / within‑base / equals‑base.
+   • Real‑git case‑namespace tests (git symbolic-ref HEAD REFS/…; hand‑edited case‑variant HEAD).
+
+   Checks not run
+
+   • No bolt‑v2 compile/CI (repo policy: local_compile_disabled; BOLT_ALLOW_LOCAL_RUST never set; no cargo against the bolt‑v2 tree, no push/CI trigger).
+     Review‑only — nothing patched.
+   • No in‑repo two‑cargo build count (superseded by the isolated permadirty demo).
+   • Probes ran on macOS APFS (case‑insensitive); Linux case‑sensitive FS not exercised — but the one FS‑sensitive question (REFS) was settled by git's own
+     rejection, which is platform‑independent. Windows Component::Prefix paths were not measured; they are rejected by the same component check that rejects
+     absolute POSIX paths.
+
+   No actionable code defects remain; F1/F2/F3 are non‑blocking (one corrupt‑state robustness note, two coverage hardenings).
+
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+GLM: I have all evidence. Here is the review.
+Adversarial review — PR #1320 "watch only git ref paths that exist"
+Head reviewed: e468b9cbc6119268584f3073d0c2098b38ddf315 (confirmed via gh pr view + git rev-parse; matches the claimed head). Anchored on git show <HEAD>:…, not the worktree (which is clean anyway).
+Verdict: no actionable code defects remain
+All seven invariants hold. The load‑bearing cargo claims are measured true on the pinned 1.96.0 toolchain, not reasoned. The one known runtime evidence gap (double‑compile) is closed below — more decisively than a CI run could.
+Findings (by severity)
+F1 — Non-blocking, low (test coverage) — tests/build_script_git_head_rerun_paths.rs
+The 4‑state "every path exists" sweep is plain-checkout-only.
+- The existence invariant is asserted across {loose, packed, both, neither} only via plain_checkout_fixture (every_watched_path_exists_in_every_ref_storage_state). The two worktree tests pin one storage state each by exact equality; only linked_worktree_per_worktree_head_ref_watches_the_worktree_ref adds an explicit path.exists() loop, and neither worktree test asserts !paths.contains(&base) (common_dir / git_dir).
+- Failure path at this head: none for realistic git — I traced worktree × {packed-only common ref, no loose} and every emitted path exists (common/refs/heads dir fallback + wt/refs fallback + packed-refs). The gap is that the invariant itself is not swept over the worktree×storage matrix; a future regression that broke worktree existence in, say, the packed-only-common case would not be caught.
+- Why no test catches it: no test combines linked_worktree_fixture with the storage-state loop.
+- Smallest systematic fix: drive the 4 storage states through the worktree fixture too (or parameterize the existence/no-base/no-dup assertions over both fixture builders).
+F2 — Non-blocking, low (test coverage) — build.rs:173 emit_git_head_rerun_paths
+The println!("cargo:rerun-if-changed=…") loop is untested; only the resolver (git_head_rerun_paths) is.
+- This does not materially matter: the function is a trivial for path in … { println!(…, path.display()) } with no branching, and every path it can print is exactly what the resolver returns (which is exhaustively tested). The format string is the canonical cargo directive. Flagging only for completeness — if you ever add formatting/logic there, add a capture test.
+F3 — Non-blocking, informational, pre-existing — build.rs:199-200 head_path
+HEAD is pushed unconditionally before it is read. If .git is a dir but .git/HEAD is absent (corrupt repo), read_to_string fails at build.rs:202 and the function returns [head_path] — a non-existent path → permanent dirty (the very bug class this PR fixes, just for the HEAD entry).
+- Not introduced by this PR (BASE is byte-identical here); a repo with no HEAD is already broken (git rev-parse fails, embed path skipped). Out of scope. Noting only because invariant 1 is stated absolutely.
+Runtime evidence gap — closed
+The double-compile cannot be shown by #1320's own CI (it changes build.rs, so bolt-v2 legitimately recompiles). I closed it without CI by measuring the mechanism, which is a cargo invariant rather than a repo property:
+- Scenario A (scratch crate, 1.96.0): rerun-if-changed=<existing dir> — recursive (depth‑2 add detected), catches add/modify/delete, and produces no spurious re-run on no-op rebuilds (run count stayed flat at A2/A4/A8).
+- Scenario B (scratch crate, 1.96.0): rerun-if-changed=<non-existent path> — build script re-ran on every no-op build (counter 1→2→3→4). Permanent dirty, reproduced.
+- Resolver output: BASE returns ≥1 non-existent path in real states (packed-refs when loose-only; the loose head_ref when packed-only; refs/../.. escapes) — proven by 10 failing tests. HEAD returns only existing paths — proven by 14 passing tests, every one asserting existence.
+Causal chain, fully proven: BASE emits non-existent path ⟹ cargo permanent-dirty ⟹ build script reruns every build ⟹ bolt-v2 recompiles every invocation. HEAD emits only existing ⟹ no permanent-dirty ⟹ no spurious recompile. A CI double-compile observation would only be correlational; this is the root rule measured directly. No cheaper decisive measurement is needed; if you still want belt-and-suspenders, a two-cargo-invocation smoke on #1302's split confirms end-to-end, but it adds no new information over Scenarios A/B.
+Claims verified (not accepted)
+Claim    Result
+14 tests pass at head    ✅ 14/14 (standalone rustc --test)
+10 fail against pre-fix resolver    ✅ exactly 10 (BASE build.rs + HEAD tests) — the 4 that pass: loose_ref_shadowing… (both storages exist), detached_head, and the two manifest-dir tests
+build.rs behavior unchanged since comment-only commit    ✅ f42ec462b is comment-only for build.rs (non-comment diff empty); functional change is bdfa48c92
+Tests assert every returned path exists across all 4 storage states    ✅ for plain checkouts; ⚠️ worktrees covered by exact-eq in 1 state each (F1)
+Nothing tests emit_git_head_rerun_paths directly    ✅ true; immaterial (F2)
+Attacks — all neutralized
+- Cargo dir semantics (1.96.0): recursive ✅; add/modify/delete ✅; existing dir never spuriously reruns ✅ (measured).
+- Path::starts_with escape: none possible. refs_relative_path requires first component Normal("refs"); Path::components() elides CurDir, and ParentDir is always yielded and always rejected. Measured 10 crafted HEADs (bare refs, refs/, refs/heads/, refs/heads/../../.., refs/heads/../main, /refs/…, refs/./heads/topic, REFS/…, refs\heads\topic, refs/..) — every accepted one stays lexically under base/refs, every ../absolute/uppercase/backslash variant rejected. Symlinked refs: emitted path is lexically inside the git dir (the symlink target being elsewhere is irrelevant to the directive). Symlinked .git and ..-laden commondir are canonicalized first and are by definition the git/common dir (invariant 2 scopes to those). Case-insensitive FS: OsStr compare is byte-level, so uppercase REFS is rejected (safe under-trigger; git never emits it).
+- is_file() vs exists(): choices are correct. loose_ref.is_file() (build.rs:246) and packed_refs.is_file() (build.rs:222) match exactly "regular file"; exists() would wrongly match dirs/fifos/symlinks. Directory fallback uses is_dir() (build.rs:252). <base> is never emitted — the while current.starts_with(&refs_root) walk (build.rs:251) cannot reach base (base cannot starts_with(base/refs)).
+Checks run
+- PR head SHA verification (gh pr view, git rev-parse).
+- Standalone rustc +1.96.0 --test: HEAD resolver+tests 14/14; BASE resolver+HEAD tests 4 pass / 10 fail (zsh ${rev} brace fix; CARGO_MANIFEST_DIR exported for the runtime env::var test).
+- Per-commit git diff of build.rs: f42ec462b comment-only; functional change is bdfa48c92.
+- Cargo scratch crate (1.96.0): dir-watch recursion + no-spurious (Scenario A); non-existent path permanent-dirty (Scenario B).
+- Escape-variant probe (10 crafted HEADs) + Path::components() semantics probe (CurDir elision, ParentDir rejection).
+- rg for single-home: only build.rs emits git rerun paths; test module wired via tests/platform_config.rs:9.
+Checks not run
+- Full repo cargo build/test/clippy — refused by repo policy (local_compile_disabled); unnecessary, the test file is std+build_script::* only and compiles/runs standalone.
+- Remote CI / exact-head PR gate — out of scope for review-only.
+- A live git worktree add — the worktree fixture is hand-built to mirror git's commondir/gitdir layout; verified against git's documented semantics rather than spawning git.
+- #1302 split-pipeline double-compile — acknowledged gap; closed via the cheaper mechanism measurement instead.
+This is review-only; no files were patched.
+GPT: 
+• Findings At e468b9cbc6119268584f3073d0c2098b38ddf315
+
+  Code Defects
+
+  1. MEDIUM, blocking: /tmp/bolt-pr1320-head.HUySCD/build.rs:246 and /tmp/bolt-pr1320-head.HUySCD/build.rs:222 follow symlinks before deciding a watched path
+     is inside Git metadata.
+
+  Concrete failure path: with .git/refs/heads -> /tmp/outside-refs and HEAD = ref: refs/heads/topic, the resolver emits .git/refs/heads when topic is absent,
+  and .git/refs/heads/topic when it exists. Both canonicalize outside <git_dir>. Cargo 1.96.0 also follows watched symlink dirs/files; outside target add/
+  modify/delete reran the build script in my scratch measurement. Same class applies to symlinked packed-refs.
+
+  Existing tests do not catch this because they have no symlinked ref fixtures, and path.exists() follows symlinks. Smallest systematic fix: use non-following
+  symlink_metadata for loose refs, fallback directories, and packed-refs, or canonicalize each candidate and reject anything whose real path is not under the
+  canonical <base>/refs or <common_dir>/packed-refs. Add symlink tests.
+
+  2. LOW, blocking against invariant 1 as written: /tmp/bolt-pr1320-head.HUySCD/build.rs:199 pushes .git/HEAD before proving it exists.
+
+  Concrete failure path: an existing .git/ directory with no readable HEAD returns .git/HEAD with exists=false, which is exactly the missing-path dirty
+  condition this PR is trying to eliminate. Existing tests always create HEAD, so they do not cover broken or partially-created Git dirs. Smallest fix: read/
+  validate HEAD before pushing it, and return Vec::new() when it cannot be read.
+
+  Runtime Evidence Gaps
+
+  - LOW, non-blocking: /tmp/bolt-pr1320-head.HUySCD/tests/build_script_git_head_rerun_paths.rs:144 is plain-checkout only. Linked worktree fixtures are tested,
+    but not across loose/packed/both/neither. By inspection the current non-symlink worktree cases look okay, but the claimed sweep does not include worktrees.
+    Add a linked-worktree storage-state matrix.
+
+  Verified Claims
+
+  - PR head has not moved: GitHub reports head e468b9cbc6119268584f3073d0c2098b38ddf315, base c66b68430d3acc38c1598c93bc1acfc21b02ae4a.
+  - Archived and reviewed the exact head under /tmp/bolt-pr1320-head.HUySCD.
+  - Head standalone tests: 14/14 pass when CARGO_MANIFEST_DIR is exported for both compile and test execution. The exact command form in the prompt sets it
+    only for rustc, so it fails 13/14 due the runtime env test.
+
+  - Base resolver with PR tests: reproduced 10 failing, 4 passing.
+  - Cargo 1.96.0 scratch measurements: existing directory watch is stable at steady state; top-level add and nested add/modify/delete all rerun; directory walk
+    is recursive; missing watched path reruns every build.
+
+  - build.rs behavior after the comment-only commit is unchanged: diff from f42ec462b232c20463ee20b88d31966db19eceac to head is empty for build.rs; the prior
+    build.rs diff is comment-only.
+
+  - rustfmt +1.96.0 --edition 2024 --check passed on the two archived files.
+  - git diff --check passed for the PR diff.
+
+  I did not run repo cargo build/test/clippy, per the local compile-heavy Rust policy, and I did not produce a CI-level double-compile disappearance
+  measurement.
+
+---
+
+generate a review prompt for the PR
+
+---
+
+GPT: 
+• Findings
+
+  Code defects: none found at actual head bf1a27eb6876e59ad5dfbbe7912bbabc5f06ef4d.
+
+  Runtime evidence gaps: none actionable found. I did not find a blocking or non-blocking defect to report.
+
+  Adjudication
+
+  - Symlink reasoning held up. At this head, symlinked .git/refs/heads emits the lexical in-git path and it exists; Cargo 1.96.0 reruns when the symlink target
+    changes. I also measured a watched parent directory containing a dangling symlink: when the target later appeared, Cargo reran.
+
+  - Missing/non-file HEAD is closed for the class I tested: no HEAD, HEAD directory, dangling HEAD symlink, FIFO HEAD, and deleted gitdir: all emitted no
+    nonexistent path.
+
+  - refs_relative_path rejected absolute refs, bare refs, refs/, interior/trailing .., backslashes, and uppercase REFS; refs/./heads/topic emitted an existing
+    lexical path under .git/refs.
+
+  - Ref transitions had a watched path changing: loose commit changes refs/heads/main; pack-refs deletes that watched loose ref; packed-branch commit changes
+    the watched refs/heads directory; checkout/detach changes HEAD; per-worktree ref commit changes worktrees/.../refs/worktree/scratch.
+
+  - emit_git_head_rerun_paths is just the print loop over git_head_rerun_paths at /tmp/bolt-pr1320-bf1a-head.1y4j7p/build.rs:173. I agree the lack of a
+    separate emitter test is immaterial here.
+
+  - The existence sweep now covers plain and linked worktrees across loose/packed/both/neither at /tmp/bolt-pr1320-bf1a-head.1y4j7p/tests/
+    build_script_git_head_rerun_paths.rs:173, and assert_watch_invariants checks existence, duplicates, and no <base> emission.
+
+  Checks Run
+
+  - Verified PR head via GitHub: bf1a27eb6876e59ad5dfbbe7912bbabc5f06ef4d.
+  - Archived exact head to /tmp/bolt-pr1320-bf1a-head.1y4j7p.
+  - Standalone head tests: 17 passed.
+  - Same PR tests against base build.rs: 13 failed, 4 passed.
+  - Cargo 1.96.0 scratch measurements: existing directory steady-state clean; recursive add/modify/delete reruns; nonexistent path reruns every build.
+  - Degenerate filesystem probes for missing/non-file HEAD, deleted gitdir:, commondir .., symlinked refs, loose ref directory, and ref path-shape attacks.
+  - Real-git lifecycle walk for loose, packed, pack-refs, checkout, detached, and per-worktree refs.
+  - Cost probe: packed current branch plus 500 loose branches under refs/heads; steady build and post-fetch build both stayed Fresh.
+  - rustfmt +1.96.0 --edition 2024 --check on the archived changed files.
+  - git diff --check on the PR diff.
+
+  Not Run
+
+  I did not run repo-level cargo build/test/clippy or CI, per the local compile-heavy Rust policy. I did not patch or post to the PR.
+Kimi: Review anchored on the actual current head; the head moved since the prior round.
+
+   Head reviewed: bf1a27eb6876e59ad5dfbbe7912bbabc5f06ef4d (verified via gh api; base remains c66b68430d3acc38c1598c93bc1acfc21b02ae4a). All reads, tests, and
+   probes used git show <HEAD>:… or a clean git archive of this exact commit; the local worktree was never trusted.
+
+   Bottom line: No actionable code defect remains at this head. The prior round's non-blocking observations are now closed by the new code, and the
+   adjudicated reasoning for the symlink and evidence-gap cases survives re-derivation. The only item worth surfacing is a non-blocking documentation/test
+   note about ./ components in head_ref.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Findings
+
+   F1 — Very low · Non-blocking · Documentation/test hardening · refs/./heads/x is not rejected by refs_relative_path and emits a path containing ./
+
+   • File / symbol: build.rs, refs_relative_path (lines 279–288) and ref_watch_path (lines 253–269).
+   • Concrete behavior at this head: For a HEAD reading ref: refs/./heads/x, the resolver returns [<git_dir>/HEAD, <git_dir>/refs/./heads]. The path exists
+     and is lexically inside <git_dir>, so no invariant is violated.
+   • Why it happens: Path::new("refs/./heads/x").components() normalizes the . away and yields Normal("refs"), Normal("heads"), Normal("x"). Therefore
+     refs_relative_path's .all(|c| matches!(c, Component::Normal(_))) passes, even though the function's doc comment says it keeps the walk inside <base>/refs
+      only while head_ref holds no ... It does not mention, test, or reject . components.
+   • Why existing tests don't catch it: The escape test set (head_ref_escaping_the_refs_directory_watches_head_only) covers .., absolute paths, and non-refs
+     prefixes, but not ./.
+   • Is it a defect? No. The emitted directory resolves to the same inode as refs/heads, so Cargo watches the correct directory; there is no under-trigger and
+     no nonexistent emission. Real git never writes ./ into HEAD, and my real-git probe in the prior round showed that hand-editing HEAD to a non-canonical
+     form makes git reject the repository anyway.
+   • Smallest fix: Either add a brief comment in refs_relative_path noting that Path::components normalizes ., or add one test case to
+     head_ref_escaping_the_refs_directory_watches_head_only documenting the actual behavior.
+   • Class: hardening / documentation note, not a code defect.
+
+   No other findings. The remaining sections verify that the adjudicated issues and all invariants hold.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Adjudicated issues — re-derived at this head
+
+   1. Symlinked refs/heads → outside dir
+
+   • Reproduction at bf1a27e: My adversarial probe created .git/refs/heads as a symlink to a directory outside .git, with HEAD = ref: refs/heads/topic. The
+     resolver emitted [<git_dir>/HEAD, <git_dir>/refs/heads]. Both paths exist, neither equals <git_dir>, and both are lexically inside <git_dir>.
+   • Under-trigger? No. Cargo follows the symlink when it stats .git/refs/heads, so changes in the target directory are detected. The PR's regression test
+     symlinked_refs_directory_emits_an_existing_path_inside_the_git_dir also pins this.
+   • Nonexistent emission? No. The emitted path is the lexical path inside .git; exists() is true.
+   • Conclusion: The prior adjudication is sound. The only effect is over-triggering when the symlink target changes, which invariant 6 permits.
+
+   2. HEAD existence fix
+
+   • Change at this head: git_head_rerun_paths now checks if !head_path.is_file() { return Vec::new(); } (lines 207–210) before pushing HEAD.
+   • Class-wide verification: My probe tested:
+       • .git dir with no HEAD file → empty,
+       • HEAD is a directory → empty,
+       • HEAD is a dangling symlink → empty,
+       • HEAD is a fifo → empty,
+       • .git file → deleted relative gitdir → empty,
+       • .git file → deleted absolute gitdir → empty.
+   • All returned empty. The is_file() predicate closes the class because it returns false for every non-regular-file HEAD (missing, directory, symlink, fifo,
+     etc.). The PR's test a_git_dir_without_a_head_file_watches_nothing covers the directory and deleted-gitdir cases; my probe confirms the predicate closes
+     the broader class.
+
+   3. Evidence-gap argument airtightness
+
+   • Re-derived: The scratch-crate measurement on cargo 1.96.0 shows that a nonexistent rerun-if-changed path causes the build script to run on every cargo
+     build (ran=2 across two builds), while an existing path does not (ran=1).
+   • Causal chain: The base resolver unconditionally emits nonexistent paths (13 failing tests prove it); the head resolver emits none (17 passing tests,
+     including the new assert_watch_invariants over plain and worktree storage states, prove it). Therefore the specific permadirty source is eliminated.
+   • What else could keep bolt-v2 permanently dirty? I reviewed every other rerun-if-changed / rerun-if-env-changed / output site in build.rs:
+       • build.rs itself (exists, regular file),
+       • CARGO_MANIFEST_DIR (stable within a checkout),
+       • gated_source_roots.manifest (exists in repo; build panics if missing),
+       • emit_git_head_rerun_paths (now existence-gated),
+       • $OUT_DIR/gated_source_roots.rs and cargo:rustc-env=BOLT_V3_BUILD_HEAD_SHA are outputs, not fingerprint inputs — they cannot trigger build-script
+         re-runs on their own.
+   • Conclusion: The argument is airtight for the git-path permadirty source. No other systematic source of permanent dirtiness is present in this diff.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Invariant walk
+
+   Ref-storage transitions (invariant 5)
+
+   For HEAD = ref: refs/heads/topic, the possible storage states and watched paths are:
+
+   ┌─────────────────┬────────────┬───────────────────┬───────────────────────────────────────────────────┐
+   │ State           │ Loose file │ packed-refs entry │ Watched paths at head                             │
+   ├─────────────────┼────────────┼───────────────────┼───────────────────────────────────────────────────┤
+   │ A — loose only  │ exists     │ absent            │ HEAD, <base>/refs/heads/topic                     │
+   ├─────────────────┼────────────┼───────────────────┼───────────────────────────────────────────────────┤
+   │ B — packed only │ absent     │ exists            │ HEAD, <base>/refs/heads, <base>/packed-refs       │
+   ├─────────────────┼────────────┼───────────────────┼───────────────────────────────────────────────────┤
+   │ C — both        │ exists     │ exists            │ HEAD, <base>/refs/heads/topic, <base>/packed-refs │
+   ├─────────────────┼────────────┼───────────────────┼───────────────────────────────────────────────────┤
+   │ D — neither     │ absent     │ absent            │ HEAD, <base>/refs/heads (dir fallback)            │
+   └─────────────────┴────────────┴───────────────────┴───────────────────────────────────────────────────┘
+
+   Walking every transition:
+
+   • A → B (git pack-refs): the watched loose file is deleted → Cargo detects deletion and re-runs; the next build computes state B.
+   • B → C (commit on packed branch): new loose file created under the watched <base>/refs/heads directory → re-runs.
+   • C → B (git pack-refs): loose file deleted (detected) and packed-refs rewritten → re-runs.
+   • B → A (packed entry removed while no loose file exists): packed-refs content/file change → re-runs; falls back to state D first if the file is removed
+     entirely.
+   • D → A (first commit on unborn branch): new loose file created under watched <base>/refs/heads → re-runs.
+   • Any state → HEAD moves (checkout, git symbolic-ref, detached commit): HEAD file changes → re-runs.
+
+   No transition leaves every watched path unchanged. Invariant 5 holds.
+
+   Path-guard walk (invariant 2)
+
+   Tested head_ref values: /etc/hosts, objects/info, refs, refs/, refs/../.., refs/heads/../topic, refs/./heads/x, refs/heads/./topic, REF/heads/topic,
+   refs\heads\topic. Only refs/./heads/x and refs/heads/./topic emitted a ref path; all others emitted HEAD only. In the ./ cases, the emitted directory is
+   lexically inside <base>/refs and exists. No .. or absolute path escaped.
+
+   Worktree both-bases loop (invariant 4)
+
+   • HEAD = refs/heads/topic in a linked worktree: the common dir holds the loose ref (common_dir/refs/heads/topic), so that base returns the precise file;
+     the worktree git dir falls back to git_dir/refs (over-trigger). No under-trigger.
+   • HEAD = refs/worktree/scratch: the worktree git dir holds the loose ref; the common dir falls back to common_dir/refs (over-trigger). No under-trigger.
+   • Outside a linked worktree, common_dir == git_dir, so push_unique deduplicates.
+
+   Cost of watching <common>/refs/heads
+
+   Measured on the scratch crate:
+   • Cargo recursively fingerprints the watched directory; it does not walk sibling directories. A git fetch that only updates refs/remotes/ will not trigger
+     a rebuild, because refs/remotes is not under the watched refs/heads.
+   • Creating 200 loose "branches" under the watched directory and building twice produced builds_ran=1 — many files do not cause spurious re-runs.
+   • The cost is O(entries under the watched directory) stat/hash calls per build, which is strictly cheaper than the pre-fix/pre-design alternative of
+     watching <base>.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Claims verified
+
+   • 17 tests pass at head; 13 fail against base: Reproduced exactly. Head → 17 passed; 0 failed. Base pre-fix resolver → 4 passed; 13 failed.
+   • Existence sweep now covers linked worktrees across all four storage states: Confirmed. every_watched_path_exists_in_every_ref_storage_state now iterates
+     both plain_checkout_fixture and linked_worktree_fixture for loose/packed/both/neither, and assert_watch_invariants checks existence, no duplicates, and
+     that no path equals either <git_dir> or <common_dir>.
+   • emit_git_head_rerun_paths untested: I agree with the prior adjudication that it is immaterial. The function is a zero-logic wrapper that prints
+     cargo:rerun-if-changed={} for each returned path; the substantive behavior (which paths) is fully tested.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Checks run
+
+   • gh api PR metadata confirmed head moved to bf1a27e, base c66b684, 2 files changed, open/mergeable.
+   • Clean git archive bf1a27e… to a temp dir; read build.rs and the test file from the archive.
+   • Verified rustc/cargo +1.96.0 availability.
+   • Standalone compile/run of the 17 tests vs HEAD build.rs (17 ok) and vs BASE build.rs (4 ok / 13 fail), with CARGO_MANIFEST_DIR exported,
+     --test-threads=1.
+   • git diff --name-status base..head confirms only build.rs and tests/build_script_git_head_rerun_paths.rs changed.
+   • Scratch-crate Cargo measurements on cargo 1.96.0: unchanged dir (no spurious rerun), add/modify/delete direct child, modify grandchild (recursive watch
+     confirmed), add deeply nested new dirs, same-size mtime-only change, nonexistent path permadirty (ran=2), existing file (ran=1), sibling directory
+     modification (no rerun), many files under watched dir (no spurious rerun).
+   • Adversarial resolver probe at bf1a27e: HEAD as directory / dangling symlink / fifo; .git file to deleted relative/absolute gitdir; .git dir with no HEAD;
+     loose ref as directory / fifo / dangling symlink; refs/heads as dangling symlink; refs/heads symlinked to outside dir; commondir with ..; dot-component
+     head_ref cases; escaping head_ref cases. All emitted paths existed and stayed lexically inside the relevant base.
+   • Real-git transition reasoning and worktree/cost analysis above.
+
+   Checks not run
+
+   • No bolt-v2 compile/CI (repo policy: local_compile_disabled; BOLT_ALLOW_LOCAL_RUST never set; no cargo on the bolt-v2 tree, no push/CI trigger).
+     Review-only — nothing patched.
+   • No in-repo double-cargo build count; the causal permadirty mechanism was demonstrated in isolation instead.
+   • Probes ran on macOS APFS (case-insensitive). Linux case-sensitive semantics for Path::components and symlink behavior were not separately measured, but
+     the only filesystem-sensitive item (REFS case) was grounded by git's own case-sensitive ref namespace, which is platform-independent.
+   • Windows Component::Prefix paths were not measured; they are rejected by the same first-component check that rejects absolute POSIX paths.
+GLM: All evidence gathered. The real checkout happens to be detached HEAD (emits only .git/HEAD, which exists) — clean. Here is the review.
+Adversarial review — PR #1320 (head bf1a27e)
+Head reviewed: bf1a27eb6876e59ad5dfbbe7912bbabc5f06ef4d — confirmed via gh pr view + git rev-parse; matches the claimed head. One new commit over the prior round: bf1a27eb6 fix(build): never emit a HEAD path that does not exist (scoped to the is_file() guard + comments; verified by diff). Anchored on git show <HEAD>:…, never the worktree.
+Verdict: no actionable code defects remain
+The prior round's two non-blocking code observations are closed at this head:
+- F1 (worktree existence sweep) — CLOSED. every_watched_path_exists_in_every_ref_storage_state now drives both plain_checkout_fixture and linked_worktree_fixture through all four storage states, via the factored assert_watch_invariants, which asserts: first path is HEAD, every path exists(), no duplicates, and neither git_dir nor common_dir is emitted (tests/build_script_git_head_rerun_paths.rs:222-247).
+- F3 (HEAD pushed before existence check) — CLOSED. build.rs:206-209 now guards if !head_path.is_file() { return Vec::new(); }. I verified this closes the class, not the one input: HEAD as fifo, dangling symlink, and symlink-to-regular-file all behave correctly (fifo/dangling → empty; symlink-to-file → proceeds). .git file naming a deleted gitdir → empty (canonicalize falls back to raw path, is_file() false).
+The one remaining non-blocking item is F2 below.
+Findings (by severity)
+F2 — Non-blocking, negligible — build.rs:173 emit_git_head_rerun_paths
+The println!("cargo:rerun-if-changed=…") loop is still untested; only the resolver is.
+- Failure path: none — the function is for path in git_head_rerun_paths(…) { println!("cargo:rerun-if-changed={}", path.display()) }, no branching, no filtering. Every path it can print is exactly the resolver's return value, which 17 tests pin by exact equality + existence.
+- Why no test catches a future regression: there is no test capturing emitted stdout. If someone added formatting/logic here, a malformed directive could ship uncaught.
+- Smallest systematic fix: a cargo: directive capture test (collect git_head_rerun_paths output, assert each line is exactly cargo:rerun-if-changed= + an existing path). Agree with prior round: immaterial as-is. Not worth blocking.
+No other code defects. All five invariants hold against measured cargo behavior and the escape/degenerate probes.
+Runtime evidence gap — re-derived at this head, argument is airtight
+The prior round closed the gap by measuring the causal rule (nonexistent path ⟹ permanent dirty; resolver emits none post-fix). The task asks the harder question: what else could keep bolt-v2 permanently dirty that this reasoning misses? I measured the candidates on a scratch crate (1.96.0):
+Candidate dirty source    Measured result
+nonexistent rerun-if-changed (the bug)    re-runs every build (B: 1→2→3)
+$OUT_DIR/gated_source_roots.rs rewrite every run    C2: no-op rebuild did NOT rerun the script and did NOT recompile (Finished only, run-count flat). Forcing a rerun (C3) rewrites gen.rs → recompiles, then C4 stable
+cargo:rustc-env=BOLT_V3_BUILD_HEAD_SHA    only emitted when script runs; stable when HEAD fixed
+REDACTED    stable value
+rerun-if-changed=build.rs / =gated_source_roots.manifest    both exist, stable (manifest missing ⟹ panic/fail, not dirty)
+build-script stdout instability    directive set is deterministic; 17 tests assert exact-equality (stable)
+Conclusion: gated_source_roots.rs, rustc-env, and the manifest watches are not independent dirty sources — they fire only when the build script runs, and the build script now runs only on real changes (its only spurious trigger, nonexistent git paths, is eliminated). The argument is airtight. The only thing stronger would be a two-invocation smoke on #1302's split pipeline, but that is correlational and adds nothing over the causal rule measured in B/C. As a final belt-and-suspenders I ran the resolver against the real bolt-v2 checkout: it emits only .git/HEAD (this worktree is detached), which exists.
+Claims verified (not accepted)
+Claim    Result
+17 tests pass at head    ✅ 17/0 (standalone rustc +1.96.0 --test, CARGO_MANIFEST_DIR exported)
+13 fail against base resolver    ✅ exactly 13 (BASE build.rs + HEAD tests). The 4 that pass: detached_head, loose_ref_shadowing_a_packed_entry, and the two manifest-dir tests
+emit_git_head_rerun_paths untested, immaterial    ✅ agree — trivial print loop; resolver exhaustively tested
+Existence sweep covers worktrees × 4 states, asserts no-<base> and no-dup    ✅ assert_watch_invariants applied to both fixtures, both git_dir and common_dir excluded
+Attacks — all neutralized (measured, not reasoned)
+- Cargo semantics (1.96.0): directory watch is recursive (depth-2 add detected, A3); catches add/modify/delete; an existing watched dir never spuriously reruns (A2/A4/A6 flat); a nonexistent watched path reruns every build (B). Measured on scratch crates.
+- Symlink adjudication — sound, now measured (D): a watched path that is a symlink to a dir — cargo recurses through the symlink (adding a file beneath the symlink target reran the script, D3); watching the symlink is not spurious (D2). So a symlinked refs/heads cannot under-trigger (changes beneath the target are seen) and cannot emit a nonexistent path (is_file/is_dir follow the symlink and verify existence). The two #[cfg(unix)] regression tests pin "emitted path exists + is lexically inside the git dir." The rejected symlink_metadata/canonicalize fix would gain nothing and would break dangling-symlink watchability. Agree.
+- Path::starts_with escape — none: measured 12 crafted HEADs (refs, refs/, refs/heads/, refs/heads/../../.., refs/heads/../main, /refs/…, refs/./heads/topic, REFS/…, refs\heads\topic, refs/., refs/..). Every accepted one stays lexically under base/refs; every ../absolute/uppercase/backslash is rejected. Path::components() elides CurDir, so . can never smuggle a ...
+- Ref-storage transitions (invariant 5) — no break: against measured cargo semantics, every transition has a watched path that changes — commit on loose branch (loose ref file), commit on packed branch (new loose file under watched refs/heads dir), pack-refs (loose file deleted + packed-refs modified), shadow-commit (new loose file under watched dir), checkout/detach (HEAD content), per-worktree ref move (worktree-base ref). No transition leaves nothing watched changing.
+- Worktrees: both-bases loop covers refs/worktree/*/refs/bisect/* (held in the worktree git dir) and refs/heads/* (common dir) across all four storage states. No under-trigger.
+- Cost: in the common case (HEAD's branch is loose) only that single ref file is watched — sibling branches and git fetch (which updates refs/remotes/*, unwatched) do not rebuild. The whole-refs/heads-dir watch occurs only when HEAD's branch is packed, where any local branch op over-triggers (invariant 6 permits it). Cost is bounded.
+Checks run
+- PR head SHA verification (gh pr view, git rev-parse); bf1a27e build.rs diff vs prior head (scoped to guard).
+- Standalone rustc +1.96.0 --test: HEAD resolver+tests 17/17; BASE resolver+HEAD tests 4 pass / 13 fail (named the 4).
+- Cargo scratch crate (1.96.0): A dir-watch recursion + no-spurious; B nonexistent = permanent dirty; C $OUT_DIR gen.rs rewrite + rustc-env are not independent dirty (C2 no-rerun/no-recompile; C3 forced-rerun recompiles; C4 stable); D cargo recurses through a symlinked watched dir.
+- Degenerate-HEAD probe: fifo / dangling-symlink / symlink-to-file + 12 escape variants — all in-bounds, all existing.
+- Real-repo resolver run: emits only existing paths (detached HEAD → .git/HEAD).
+- Single-home grep: only build.rs emits git rerun paths (self + manifest + git-head paths + CARGO_MANIFEST_DIR env + HEAD_SHA rustc-env).
+Checks not run
+- Full repo cargo build/test/clippy — refused by repo policy (local_compile_disabled); unnecessary (tests are std + build_script::*, compile/run standalone).
+- Remote CI / exact-head PR gate — out of scope for review-only.
+- A live git worktree add / git pack-refs — fixtures are hand-built to mirror git's commondir/gitdir layout; validated against git's documented semantics and measured cargo behavior rather than spawning git.
+- #1302 split-pipeline double-compile — closed via the cheaper causal measurement (B/C) instead.
+Review-only; no files patched.
+
+---
+
+it's approved
+
+---
+
+explain the situation in plain english - make this concise
+
+---
+
+ok do that for the rerun
+
+---
+
+should we file the issue or if the flaky test rerun works should we file it?
+
+---
+
+file it
+
+---
+
+so is 1320 running
+
+---
+
+coverage enforcer fails
+
+---
+
+<task-notification>
+<task-id>b4ne6o9g2</task-id>
+<tool-use-id>toolu_01RRwNmkePeGbHfuaDa5QJca</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/a2712926-fa94-405b-b44f-792003993c06/tasks/b4ne6o9g2.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll the rerun to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+yes
+
+---
+
+<task-notification>
+<task-id>bu589u2e2</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/a2712926-fa94-405b-b44f-792003993c06/tasks/bu589u2e2.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll coverage-enforcer to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+ok give me an execution prompt for 1323
+
+---
+
+1320 is merged
+
+---
+
+yes for 1319 if it's fully addressed. so can we merge 1302 now?
+
+---
+
+do you also own pr 1326?
+
+---
+
+• Merged origin/main into PR #1302 and pushed the merge commit.
+
+  Head SHA: a69f22a2e6641dc6a9c4f3b58bcb11faf1d946f8
+
+  Recomputed scripts/run_fences.py digest:
+  2f6236614e837ba96e9fda3a119acad8bd00fee8fee0d095677ad38a300e3fdf
+
+  It matched the expected 2f62366….
+
+  Verification passed:
+
+  - python3.12 scripts/test_lane_governor.py
+  - no verify_no_config_retype references
+  - no conflict markers
+  - disable_annotations: "true" assertion still present
+  - scripts/rust_verification.py PR diff still present
+  - full ci-lint under Python 3.12 passed: 34 ci-lint suite(s) passed
+
+  I did not mark the PR ready or merge it.
+
+---
+
+explain the situation in plain english - make this concise
+
+---
+
+yes run it
+
+---
+
+need to check CI failure with source fence static
+
+---
+
+make sure that you set the model to 5.6 Sol medium
+
+---
+
+aren't you using codex-rescue? I dont think you are using audit, jury, etc.
+
+---
+
+okay thats fine let's stop and use gpt 5.6 sol
+
+---
+
+check again
+
+---
+
+let's try again 1326
+
+---
+
+1302 is approved - give me the execution handoff prompt for minio gap
+
+---
+
+i updated branch
+
+---
+
+just generate a single prompt for me to copy and paste
+
+---
+
+<task-notification>
+<task-id>b7evlizfp</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/a2712926-fa94-405b-b44f-792003993c06/tasks/b7evlizfp.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch 1302 checks to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+1302 merged
+
+---
+
+• Yes—these are my changes, now retained in the dedicated worktree and branch with no uncommitted edits.
+
+  - Worktree: /Users/spson/Projects/Claude/bolt-v2/.worktrees/minio-smoke-lane
+  - Branch: fix/minio-smoke-lane
+  - Head: 0b21b81784cbe914f69829087df1308e0e3fae45
+  - Composite action: .github/actions/setup-bvs-minio-s3-smoke/action.yml
+  - Draft PR: #1333 (https://github.com/seungpyoson/bolt-v2/pull/1333)
+
+  The branch now includes current main via merge, never rebase. Internal adversarial findings were addressed with workflow-order enforcement and an exact-head
+  dispatch.
+
+  Smoke run 29074700891 (https://github.com/seungpyoson/bolt-v2/actions/runs/29074700891):
+
+  - Backtester flaky smoke: passed, 319 tests and 0 failures.
+  - MinIO S3 catalog smoke test: passed.
+  - Root Rust tests: passed.
+  - Overall workflow: red only because the unchanged, out-of-scope issue-789 P/L assertion failed.
+
+  Fixture-value audit:
+
+  image: 0 duplicated literal matches
+  container_name: 0 duplicated literal matches
+  api_port: 0 duplicated literal matches
+  console_port: 0 duplicated literal matches
+  health_path: 0 duplicated literal matches
+  readiness_attempts: 0 duplicated literal matches
+  readiness_sleep_seconds: 0 duplicated literal matches
+  endpoint_url: 0 duplicated literal matches
+  bucket: 0 duplicated literal matches
+  access_key_id: 0 duplicated literal matches (value redacted)
+  secret_access_key: 0 duplicated literal matches (value redacted)
+
+  actionlint, Python 3.12 workflow verifiers, mutation tests, and just source-fence-static all passed. The PR remains draft and unmerged.
+
+---
+
+explain the situation in plain english
+
+---
+
+I didn't understnad - so what do we need to do next
+
+---
+
+should we get review on 1333 and 1326?
+
+---
+
+generate a review prompt for both
+
+---
+
+Grok:Adversarial reviews
+
+Reviewed against clean git content (git archive / git show), not the local worktree.
+PR #1326 head: ed0ced6b4c2b47a4acf87c63d505458d8fbae241 (matches stated)
+PR #1333 head: 0b21b81784cbe914f69829087df1308e0e3fae45 (matches stated)
+Git under measure: 2.50.1 (Apple Git-155) · Python: 3.12.13
+
+───
+
+PR #1326 — suppress git auto-maintenance in test fixtures
+
+Findings (severity order)
+
+1. Dual-path suppression is incomplete for major fixture constructors
+Severity: High · Blocking: Yes (invariant hole; class-of-bug the PR claims to close)
+File/symbol: scripts/ci_workflow_hygiene_test_helpers.py · init_self_authorizing_fixture_repo
+Also: scripts/test_cargo_shim.py · _init_repo / other repo_git_command("init", …) sites; scripts/test_verify_bolt_v3_boundary_evidence.py init site
+
+Failure path at this head
+
+1. init_self_authorizing_fixture_repo does run_repo_git(repo, "init", …) only — never calls suppress_repo_auto_maintenance.
+2. Measured on head helpers: persisted gc.auto / maintenance.auto are both None after that constructor.
+3. Production-style git commit (no helper -c) against that fixture: 1 git maintenance run --auto … --detach child.
+4. Same pattern: repo_git_command("init") without a following persist leaves the repo uncovered for any later process that is not the suite’s helper (receive-pack, production code, hooks).
+
+Coverage matrix (measured / inspected)
+
+┌─────────────────────────────────┬────────────────────────────┬──────────────────────────────────────┬────────────────────────────────────┐
+│ Launch path                     │ CLI -c (repo_git_command)  │ Persisted config                     │ Covered?                           │
+├─────────────────────────────────┼────────────────────────────┼──────────────────────────────────────┼────────────────────────────────────┤
+│ Suite helper git                │ Yes                        │ N/A for that process                 │ Yes                                │
+├─────────────────────────────────┼────────────────────────────┼──────────────────────────────────────┼────────────────────────────────────┤
+│ Push → bare receive-pack        │ No (client flags do not    │ Yes only if init_fixture_repo /      │ Yes when persisted; measured fail  │
+│                                 │ transfer)                  │ explicit suppress                    │ without                            │
+├─────────────────────────────────┼────────────────────────────┼──────────────────────────────────────┼────────────────────────────────────┤
+│ Production git under test (     │ No                         │ Only if persisted                    │ No for init_self_authorizing* /    │
+│ fetch/commit)                   │                            │                                      │ raw init sites                     │
+├─────────────────────────────────┼────────────────────────────┼──────────────────────────────────────┼────────────────────────────────────┤
+│ git init itself                 │ Yes via helper             │ After init                           │ Init alone: 0 maintenance children │
+│                                 │                            │                                      │ (window OK)                        │
+├─────────────────────────────────┼────────────────────────────┼──────────────────────────────────────┼────────────────────────────────────┤
+│ Submodules / hooks / GIT_DIR /  │ Not systematically covered │ Only if that repo was persisted      │ Gap if someone builds those        │
+│ worktree add                    │                            │                                      │ without the helper                 │
+├─────────────────────────────────┼────────────────────────────┼──────────────────────────────────────┼────────────────────────────────────┤
+│ Alternates / second object DB   │ Not addressed              │ N/A                                  │ Residual theoretical               │
+└─────────────────────────────────┴────────────────────────────┴──────────────────────────────────────┴────────────────────────────────────┘
+
+Why tests miss it: assert_init_fixture_repo_persists_suppression only exercises init_fixture_repo, not init_self_authorizing_fixture_repo or ad-hoc inits. The stress harness builds via init_self_authorizing + commit_repo (CLI-suppressed commits), so it never requires persistence for the fake writer path.
+
+Smallest systematic fix: Every fixture constructor that ends in a usable repo must call suppress_repo_auto_maintenance (or go through init_fixture_repo). Add an assert that init_self_authorizing_fixture_repo persists config; fail verify_fixture_git_helper_usage (or a sibling fence) on repo_git_command("init"…) not followed by suppress / not via init_fixture_repo.
+
+───
+
+2. Fixture git checker is a narrow AST spell-check, not a launch fence
+Severity: High · Blocking: No for current tree cleanliness; Yes as a false guarantee if treated as complete
+
+File/symbol: scripts/verify_fixture_git_helper_usage.py · GitArgvVisitor / _starts_with_git
+
+Measured plant results (head verifier):
+
+┌────────────────────────────────────────────────┬────────────────────┐
+│ Pattern                                        │ Caught?            │
+├────────────────────────────────────────────────┼────────────────────┤
+│ subprocess.run(['git', …])                     │ Yes                │
+├────────────────────────────────────────────────┼────────────────────┤
+│ Popen(['git', …])                              │ Yes                │
+├────────────────────────────────────────────────┼────────────────────┤
+│ cmd = ['git', …]                               │ Yes                │
+├────────────────────────────────────────────────┼────────────────────┤
+│ ['git'] + ['status']                           │ Yes                │
+├────────────────────────────────────────────────┼────────────────────┤
+│ list.extend(['git', …])                        │ Yes                │
+├────────────────────────────────────────────────┼────────────────────┤
+│ Mock / compare / CompletedProcess(['git', …])  │ Correctly allowed  │
+├────────────────────────────────────────────────┼────────────────────┤
+│ ('git', 'status') tuple                        │ No                 │
+├────────────────────────────────────────────────┼────────────────────┤
+│ os.system('git commit …')                      │ No                 │
+├────────────────────────────────────────────────┼────────────────────┤
+│ subprocess.run('git …', shell=True) / f-string │ No                 │
+├────────────────────────────────────────────────┼────────────────────┤
+│ ['sh', '-c', 'git commit …']                   │ No                 │
+├────────────────────────────────────────────────┼────────────────────┤
+│ shutil.which('git')                            │ N/A (not a launch) │
+├────────────────────────────────────────────────┼────────────────────┤
+│ ['%s' % 'git', …] non-constant first elt       │ No                 │
+└────────────────────────────────────────────────┴────────────────────┘
+
+Why tests miss it: Planted tests only cover list-literal argv and a few expected-value exceptions.
+
+Smallest systematic fix: Fence on execution edges (calls to subprocess.*, os.system, os.popen whose command may resolve to git), not only ast.List with Constant "git". Or ban fixture git outside imported helpers by import-graph / allowlist of callables.
+
+───
+
+3. Stress harness does not model the real race; PR body overclaims
+Severity: Medium · Blocking: No (code path useful; claim wrong)
+
+File/symbol: scripts/test_governance_diff_analysis.py · assert_temp_git_fixture_cleanup_stress_blocks_background_writer
+PR body: “20/20 … 0/20”
+
+Concrete gaps
+
+• Code: iterations = 12, not 20. Claim “20/20” is false for this head.
+• Fake git shim spawns a Python writer only when CLI suppression args are missing on commit. Real git 2.50.1 detaches git maintenance run --auto --detach from commit and from bare receive-pack even when the client has -c … (measured: CLI-only push → maintenance child; persisted bare → none).
+• Harness therefore does not prove the receive-pack / production-git half of the design. The separate TRACE2 push assert does; the stress claim should not be sold as end-to-end fidelity.
+
+Smallest systematic fix: Align iterations/docs; make the fake writer also fire on receive-pack / missing persisted config; or drop the 20/20 language and point at TRACE2 asserts.
+
+───
+
+4. gc.auto=0 alone does not stop the detached writer on pinned git
+Severity: Low (informational / claim hygiene) · Blocking: No
+
+Measured on git 2.50.1 with GIT_TRACE2_EVENT:
+
+┌───────────────────────────────┬───────────────────────────────────────────────────────────┐
+│ Setting                       │ Detached git maintenance run --auto --detach after commit │
+├───────────────────────────────┼───────────────────────────────────────────────────────────┤
+│ Default                       │ Yes                                                       │
+├───────────────────────────────┼───────────────────────────────────────────────────────────┤
+│ gc.auto=0 only (config or -c) │ Still yes                                                 │
+├───────────────────────────────┼───────────────────────────────────────────────────────────┤
+│ maintenance.auto=false only   │ No                                                        │
+├───────────────────────────────┼───────────────────────────────────────────────────────────┤
+│ Both                          │ No                                                        │
+└───────────────────────────────┴───────────────────────────────────────────────────────────┘
+
+Implication: The setting that actually stops the writer is maintenance.auto=false. gc.auto=0 is belt-and-suspenders (legacy git gc --auto path), not the fix on this git. Keeping both is fine; claiming both are required for this failure mode is not supported by measurement.
+
+───
+
+5. read_persisted_repo_config honesty — not a defect
+Severity: n/a
+
+Measured:
+
+• git -c maintenance.auto=false config --local --get maintenance.auto → empty (rc 1) if not in repo config.
+• GIT_CONFIG_PARAMETERS same with --local.
+• Without --local, command-line / env config does self-fulfill — which is why the PR’s switch to --local is correct.
+• Monkeypatching suppress_repo_auto_maintenance to no-op makes assert_init_fixture_repo_persists_suppression fail (measured).
+
+───
+
+6. test_clean_merged_artifacts.py rewrite semantics — no defect found
+Severity: n/a
+
+• _run(..., check=True, capture_output=True) signature unchanged; only argv construction switched to repo_git_command(...).
+• ~270 ["git", …] → ~266 repo_git_command lines; remaining ["git", …] are mock equality / CalledProcessError data (legal).
+• make_repo uses init_fixture_repo (persist) — good, because production clean_merged_artifacts.py still runs bare ["git", …] including fetch (measured to spawn maintenance when unsuppressed).
+
+───
+
+7. init_fixture_repo init→suppress window — no defect
+Measured: bare git init starts 0 maintenance children. Window is safe for init alone.
+
+───
+
+8. Production git scripts untouched — confirmed
+Blob IDs identical base→head for:
+clean_merged_artifacts.py, governance_diff_analysis.py, ci_input_sets.py, merge_queue_preflight.py, ci_storage_audit.py, merge_queue_operator.py.
+Leaving production unsuppressed is correct (repo commit message residual 171 on real bare repos).
+
+───
+
+9. Suppression ARGS↔CONFIG agreement test — works
+Measured: incomplete ARGS fails; CONFIG-only extra fails; both directions + key order checked via parsing repo_git_command() output.
+At head, ARGS is derived from CONFIG (good single source). Test still fails if someone re-hardcodes ARGS out of sync.
+
+───
+
+10. lane_governor / __main__ / run_fences.call_module — no defect
+verify_fixture_git_helper_usage.py: lane_governor.acquire() + raise SystemExit(main()).
+test_verify_fixture_git_helper_usage.py: acquire + unittest.main().
+run_fences.call_module prefers main() if present; else loads unittest. Other test_verify_* already mix both shapes. Accept as cosmetic (per known).
+
+───
+
+PR #1326 — code defects vs evidence gaps
+
+┌─────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Kind                │ Item                                                                                                               │
+├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Code defects        │ Incomplete persist on init_self_authorizing_fixture_repo + raw inits; checker false-negative surface               │
+├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Evidence / claim    │ PR body 20/20 vs code 12; stress fake git ≠ real receive-pack; dual flags both “required” overstated               │
+│ gaps                │                                                                                                                    │
+├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Verified OK         │ Production untouched; --local honesty; ARGS/CONFIG assert; clean_merged _run semantics; init window; push TRACE2   │
+│                     │ path when persisted                                                                                                │
+└─────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Actionable code defects remain: (1) and (2). Do not merge on the claim “whoever runs git against a fixture is covered” until every fixture constructor persists suppression and the fence matches real launch shapes—or the claim is narrowed to “helper argv + init_fixture_repo only.”
+
+Checks run / not run (PR #1326)
+
+Ran: head archive extract; TRACE2 matrix (gc vs maintenance, CLI vs config, push receive-pack, init window); helper asserts under python3.12; stress assert; ARGS/CONFIG mutation; --local honesty; checker plant matrix; production blob identity; clean_merged _run diff inspection; run_fences.call_module read.
+Did not run: full run_ci_lint_suites.py; 20-iteration real-git ENOTEMPTY stress (would be long/flaky); remote CI; submodule/hook live launches.
+
+───
+
+PR #1333 — stand up MinIO in flaky-test lanes
+
+Findings (severity order)
+
+1. Flaky-smoke still only watches partition 1/4 — MinIO S3 coverage is partial and drifts
+Severity: High · Blocking: for any claim that “flaky smoke proves S3/MinIO”; Non-blocking for the narrower claim “stop CI panic when an S3 test is selected”
+
+File/symbol: .github/workflows/flaky-test-smoke.yml · matrix shard: [1] + --partition count:${{ matrix.shard }}/4
+
+Concrete path at this head (run 29074700891, SHA 0b21b817…)
+
+• Backtester flaky smoke: 319 tests run, 319 passed, 949 skipped (partition + skip).
+• Only S3 test executed: nt_catalog_round_trips_trade_ticks_over_minio_s3_uri PASS.
+• minio_put_mode_create_conformance_records_no_overwrite_proof — zero log hits (not in this partition).
+• Author’s “319 tests / MinIO passed” narrative is misleading in the sense they already flagged: membership reshuffles; the original panic test need not be in shard 1.
+
+flaky-test-detection.yml uses shard: [1,2,3,4] — full cover. Smoke does not.
+
+Why verifiers miss it: Hygiene checks step allowlists / MinIO action presence, not partition completeness vs total shards.
+
+Smallest systematic fix: Smoke matrix shard: [1,2,3,4] or drop partition in smoke or pin S3 tests by name filter for the MinIO job. Do not treat count partition + single shard as a flaky oracle.
+
+───
+
+2. Readiness curl -fsS has no connect/total timeout — hung health = hung job
+Severity: Medium · Blocking: No (does not create silent green skip)
+
+File/symbol: .github/actions/setup-bvs-minio-s3-smoke/action.yml · Wait step
+
+Bounded attempts (60 × 2s) only if each curl returns. A half-open TCP hang can block until runner timeout. Job fails eventually; not a quiet pass.
+
+Fix: curl -fsS --connect-timeout N --max-time M from fixture/config (no hardcodes).
+
+───
+
+3. Composite env: does not need to “propagate” — this action writes GITHUB_ENV correctly
+Severity: n/a (claim attack failed)
+
+Action writes BVS_MINIO_S3_SMOKE=1 (and friends) to $GITHUB_ENV. Measured in run logs: Run tests step env shows BVS_MINIO_S3_SMOKE: 1. Flaky lanes do not need the env VAR=… just … wrapper that backtester still uses (belt-and-suspenders).
+
+───
+
+4. Bring-up failure modes — do not produce silent skip in CI
+Severity: n/a for silent-skip; documented below
+
+┌───────────────────────┬───────────────────────────────────────────────────────────────────────┬───────────────────────────────┐
+│ Failure               │ With GHA default bash -e / measured analog                            │ Result                        │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ docker pull fails     │ step fails; no AFTER                                                  │ Job red                       │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ docker run fails      │ step fails                                                            │ Job red                       │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ Never healthy         │ readiness loop → exit 1 naming URL + attempt count (measured script)  │ Job red                       │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ Health 500            │ curl fails each attempt → same exit 1                                 │ Job red                       │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ Health hang           │ can hang past loop (finding 2)                                        │ Job stuck/red, not green skip │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ Setup omitted         │ verifier must keep BVS job steps unchanged (mutated workflow → error) │ Fence load-bearing            │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ Env missing + CI=true │ Rust panic (deliberate)                                               │ Loud fail                     │
+├───────────────────────┼───────────────────────────────────────────────────────────────────────┼───────────────────────────────┤
+│ Env missing + not CI  │ skip path in Rust                                                     │ Local only                    │
+└───────────────────────┴───────────────────────────────────────────────────────────────────────┴───────────────────────────────┘
+
+Silently-skipped S3 test reachable at this head in CI?
+No — not via missing MinIO/env: CI either fails setup, panics without opt-in, or runs tests with BVS_MINIO_S3_SMOKE=1.
+Yes in a weaker sense: partition exclusion means some S3 tests never execute on flaky-smoke while the job is green — that is non-execution, not the opt-in skip.
+
+───
+
+5. Hardcodes in action — clean
+No image/digest/port/credential/container literals in action.yml; values from s3_catalog_smoke.toml. Health URL = endpoint_url + health_path (reconstruction of URL only, not a second source of ports). Fixture path is the pointer to SoT.
+
+───
+
+6. backtester-ci behavior vs old inline
+Not a regression; small improvements
+
+┌─────────────────────────────────────┬──────────────────────────┬──────────────────────────────────────┐
+│ Aspect                              │ Base inline              │ Shared action                        │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ Config from fixture                 │ Yes                      │ Yes                                  │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ docker pull                         │ No                       │ Yes (stricter)                       │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ docker rm -f before run             │ Yes                      │ Yes                                  │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ Publish bind / data dir / root user │ Yes                      │ Yes (via env)                        │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ Creds on GITHUB_ENV plaintext       │ Yes                      │ Step outputs + ::add-mask:: (better) │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ Readiness message                   │ generic                  │ endpoint + attempts                  │
+├─────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────┤
+│ Test opt-in                         │ env "$VAR=$VALUE" just … │ Unchanged in backtester-ci           │
+└─────────────────────────────────────┴──────────────────────────┴──────────────────────────────────────┘
+
+───
+
+7. Container name collision
+Shared name bvs-minio-s3-smoke + docker rm -f first: correct for re-entry. Parallel jobs on one runner could still race rm/run — self-hosted multi-job risk, pre-existing pattern; non-blocking.
+
+───
+
+8. Credentials
+minioadmin/minioadmin in committed fixture for local MinIO only; action masks; no echo into summary observed in design. OK.
+
+───
+
+9. Verifier growth — load-bearing
+Mutating flaky-smoke to drop Setup MinIO →
+flaky-test-detection backtester smoke job must keep BVS job steps unchanged.
+Also enforces setup before “Run tests” and stop-container step. Not decoration.
+
+───
+
+10. ci/rust-ci-inputs.toml
+backtester_detect.paths adds .github/actions/setup-bvs-minio-s3-smoke/** — correct so path-filter / detect sets rebuild when the action changes. OK.
+
+───
+
+11. Issue 789 failure on smoke run — unrelated (accepted)
+Same run: Issue 789 job FAIL on issue_789_first_real_free_data_taker_pl P/L assert; no MinIO setup on that job; failure is production/replay assertion, not this diff.
+
+───
+
+12. actionlint
+Workflows backtester-ci.yml, flaky-test-smoke.yml, flaky-test-detection.yml: pass.
+Pointing actionlint at action.yml as a workflow fails syntax-check (tool treats it as workflow) — not a PR defect; do not require that invocation.
+
+───
+
+PR #1333 — code defects vs evidence gaps
+
+┌────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Kind               │ Item                                                                                                                │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Code / design      │ Smoke single-shard count:1/4 leaves most tests (incl. some S3) unwatched; curl without max-time                     │
+│ defects            │                                                                                                                     │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Evidence           │ Run 29074700891 confirms MinIO ready + env + one S3 PASS + 319/319 in partition; does not prove minio_put_* on      │
+│                    │ smoke                                                                                                               │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Verified OK        │ Silent CI skip via opt-in/env not reachable; fail-closed bring-up; SoT fixture; verifier mutation; masks; rust-ci-  │
+│                    │ inputs path; issue 789 separate                                                                                     │
+└────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Explicit answer (why this review exists)
+
+A silently skipped MinIO S3 test (opt-in / CI panic bypass) is not reachable at this head if the shared action step runs and the job is CI.
+What is reachable: green jobs that never ran a given S3 test because of partition membership on flaky-smoke — that is incomplete observation, not the Rust skip path.
+
+Checks run / not run (PR #1333)
+
+Ran: head archive; action/workflows/fixture read; hardcode grep; base vs head backtester MinIO region; verifier mutation; GITHUB_ENV propagation model + real run env lines; readiness exit-code script; docker pull fail under set -e; smoke run 29074700891 logs (MinIO ready, S3 test names, 319 summary, issue 789); actionlint on three workflows.
+Did not run: live docker MinIO bring-up; force unhealthy container on a real runner; actionlint-as-workflow on composite (invalid use); dispatch CI; full nextest partition membership recomputation offline.
+
+───
+
+Cross-PR recommendation
+
+┌───────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PR    │ Merge stance                                                                                                                     │
+├───────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ #1326 │ Hold for blocking fix of persist on all fixture constructors (at least init_self_authorizing_fixture_repo), and either widen the │
+│       │ checker or demote its guarantee in the PR text.                                                                                  │
+├───────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ #1333 │ OK to merge for the panic fix if reviewers accept pre-existing smoke partition incompleteness as out of scope; do not accept “   │
+│       │ flaky smoke validates MinIO S3 suite” without shard/partition redesign. Silent opt-in skip in CI is closed.                      │
+└───────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Kimi:  Both heads match GitHub exactly (neither moved): ed0ced6b… (#1326) and 0b21b817… (#1333). All review anchored on git show/git archive into the gitignored
+   .review/, never the worktree. python3.12=3.12.13, git=2.50.1 (Apple Git‑155), actionlint=1.7.12. Docker is not installed — a hard evidence gap for #1333's
+   container claims, flagged below.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   PR #1326 — suppress fixture git auto-maintenance
+
+   Verdict
+
+   No blocking defects. The two‑mechanism design is sound, the persistence read is honest, the load‑bearing tests genuinely fire, and production tools are
+   untouched. Findings are hardening/robustness, not correctness.
+
+   Findings (severity order)
+
+   F‑1326‑1 · Medium · non‑blocking — gc.auto=0 is inert for the detached writer on git 2.50.1; only maintenance.auto=false does the work.
+   • File/symbol: ci_workflow_hygiene_test_helpers.py:23‑31 (GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG).
+   • Measured (GIT_TRACE2_EVENT, real git): the writer is git maintenance run --auto --quiet --detach; it fires by default on every commit (true‑default repo:
+     5 spawns / 5 commits). Matrix:
+       • gc.auto=1, maintenance.auto=true → spawns; gc.auto=0, maintenance.auto=true → still spawns; gc.auto=1, maintenance.auto=false → none; gc.auto=0,
+         maintenance.auto=false → none. Legacy check (maintenance.auto unset): gc.auto=1 and gc.auto=0 spawned identically (6 each).
+       • So gc.auto=0 does not stop this writer; maintenance.auto=false does, and suffices alone.
+   • Why tests miss it: over‑suppression is safe, so nothing fails. Risk is forward‑looking: gc.auto=0 gives a false sense of redundancy — a future git that
+     flips the maintenance.auto default would not be saved by gc.auto=0.
+   • Smallest fix: keep both (harmless) but document in the helper that maintenance.auto=false is the load‑bearing knob and gc.auto=0 is belt‑and‑suspenders
+     for the legacy git gc --auto path.
+
+   F‑1326‑2 · Low‑Medium · non‑blocking — the checker catches only the ["git", …] list‑literal spelling; ~8 runnable forms pass silently.
+   • File/symbol: verify_fixture_git_helper_usage.py:41‑62 (visit_List/_starts_with_git).
+   • Planted & measured (python3.12, violations_in): flagged ['git',…] lists (incl. false‑positives on return ['git',…] data and the base=['git'] half of a
+     concat). Silently passed: tuple argv ('git','commit',…), os.system("git …"), subprocess.run("git …", shell=True), f‑string shell,
+     [shutil.which('git'),…], g='git'; [g,…], and ['sh'/'bash','-c','git …']. The tuple case is the cleanest accidental bypass (one‑character list→tuple
+     change).
+   • Why it matters: it's the only fence for the next test file. Bounded because a slipped argv must also target a non‑persisted fixture to race, and
+     assert_routed_fixture_module_spawns_no_background_maintenance + the stress harness backstop the existing routed suite (not arbitrary future files).
+   • Smallest fix: add visit_Tuple, and flag any Call whose first positional arg is a list/tuple starting with "git", or shutil.which('git'), or
+     os.system/shell=True with a "git"-led string.
+
+   F‑1326‑3 · Low · non‑blocking — persistence isn't enforced on ad‑hoc inits / clones; the helper has no clone_fixture_repo.
+   • File/symbol: repo_git_command("init",…) callers (test_cargo_shim.py:59/694/890/997, test_verify_bolt_v3_boundary_evidence.py:366) vs init_fixture_repo
+     (persists).
+   • Measured: git clone does not propagate gc.auto/maintenance.auto (clone shows <unset>). test_merge_queue_preflight.py:156‑157 correctly re‑persists its
+     clone — proving the authors know. Today's ad‑hoc‑init suites are safe: their own calls use repo_git_command (mechanism 1) and their code‑under‑test is
+     read‑only (verify_bolt_v3_boundary_evidence.py:485 only runs git show).
+   • Why the checker misses it: it enforces argv routing (mechanism 1), not persistence (mechanism 2).
+   • Smallest fix: route all fixture creation through init_fixture_repo (already persists) and add clone_fixture_repo that re‑persists; optionally have the
+     checker require persistence for non‑init_fixture_repo inits.
+
+   Verified‑correct (not defects):
+   • --local read is honest (measured): git -c gc.auto=0 config --local --get gc.auto returns the repo file value (999), not the -c value; with the key unset
+     it returns rc=1 even with -c; GIT_CONFIG_COUNT/KEY/VALUE env is excluded (rc=1); an include.path'd value is excluded (rc=1). The persistence test is not
+     self‑fulfilling.
+   • -c does propagate to child git via GIT_CONFIG_PARAMETERS (post‑commit hook saw gc.auto=0, not the repo's 999), so the suite's own calls cover their
+     hooks/children via mechanism 1; persistence is specifically what covers the cross‑repo (receive‑pack) and cross‑harness (code‑under‑test) cases — design
+     holds.
+   • test_clean_merged_artifacts.py rewrite is a pure _run(["git",…]) → _run(repo_git_command(…)) swap; _run signature identical base→head (check=True,
+     capture_output=True, text=True, timeout=30), check=False sites preserved (5 head sites), .stdout/.stderr/returns unchanged. The run_repo_git-vs‑_run
+     worry does not apply (file kept its own _run).
+   • init_fixture_repo window is safe: git init runs with the -c flags, no git op sits between init and the adjacent persist, and git init doesn't trigger
+     auto‑maintenance.
+   • assert_push_to_fixture_remote_spawns_no_background_maintenance is load‑bearing (measured): push with persistence → 0 maintenance children; without
+     persistence → 2 (receive‑pack auto‑maintenance fires even on a tiny push). I initially suspected vacuity; measurement refuted it.
+   • assert_suppression_args_match_suppression_config: ARGS is derived from CONFIG by comprehension (:27‑31), so they can't drift; the assert guards the
+     derivation wiring, not an impossible split. Fine.
+   • Two __main__ shapes pre‑exist; run_fences.py:207‑251 supports both (main() if present else loadTestsFromModule). unittest.main() is correct here. Agree
+     it's cosmetic.
+   • Stress harness fidelity: fake‑git triggers the writer on commit+missing‑suppression (correct inversion), hammers .git/objects, start_new_session models
+     --detach. Gaps: Python‑writer startup latency > real compiled git (may under‑count), keys off argv so only exercises mechanism 1 (mechanism 2 covered by
+     the push test), models only the commit trigger.
+
+   Code defects vs runtime‑evidence gaps
+
+   • Code defects: none blocking. F‑1326‑1 (latent, doc), F‑1326‑2/F‑1326‑3 (defense‑in‑depth hardening).
+   • Evidence gaps: I reproduced the teardown‑race mechanism (live writer → 12/30 ENOTEMPTY; no writer → 0/30) but not the exact 20/20↔0/20 counts
+     (timing/latency‑sensitive; my Python/sh writer didn't always hit the rmtree window). The causal chain those counts rest on is verified with real git
+     (default spawns the writer every commit; maintenance.auto=false → none). Git behavior measured on Apple git 2.50.1, not CI's exact build.
+
+   Checks
+
+   Ran: git config --local honesty (A1–A6); GIT_TRACE2_EVENT spawn matrix (T/gc0/mf/both) + legacy + true‑default; clone config‑propagation; hook/alias -c
+   propagation; push with/without persistence (E1); checker planting (18 cases); fake‑git race mechanism; run_ci_lint_suites wiring; base↔head _run/diff;
+   run_fences dispatch; production‑files‑untouched.
+   Did not run: remote CI lane; exact 20/20 count reproduction; CI's exact git build; live submodule/alternates/GIT_DIR (reasoned only).
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   PR #1333 — share MinIO setup across flaky‑test lanes
+
+   Verdict (the question this review exists to answer)
+
+   A silently‑skipped S3 test is NOT reachable at this head. No blocking defects for the central failure mode. The most important substantive issue (partition
+   drift) is pre‑existing and out of scope for this diff — flagged because the PR's headline evidence rests on it.
+
+   Why silent‑skip is unreachable (verified):
+   • No workflow overrides CI (grep clean), so GHA's default CI=true holds in all three lanes → the Rust guard CI=true && BVS_MINIO_S3_SMOKE!=1 → panic makes
+     an env‑propagation failure loud (panic), never a skip.
+   • The action writes BVS_MINIO_S3_SMOKE=1 to $GITHUB_ENV in the same job as the test step (composite‑action $GITHUB_ENV propagates to later job steps), and
+     backtester-ci.yml:777 also sets it explicitly. The live run proves propagation: shard 1 executed and passed the S3 test (didn't panic).
+   • A setup‑action failure (docker pull/run/health) fails that step; the test step has default if (no continue-on-error, no if: always()), so it's skipped →
+     red job, not a green skip.
+   • The only skip path (CI!=true) is unused.
+
+   Findings (severity order)
+
+   F‑1333‑1 · Medium‑High · non‑blocking (pre‑existing, surfaced by this PR) — flaky‑smoke watches a single, drifting quarter of the tests.
+   • File/symbol: .github/workflows/flaky-test-smoke.yml:140‑141 (matrix: shard: [1]) + :215 (--partition "count:1/4").
+   • Independently verified at this head (run 29074700891, job 86303622445, 2231‑line log): shard 1 = 319 tests, 0 failures; the S3 test that executed was
+     …::nt_catalog_round_trips_trade_ticks_over_minio_s3_uri (PASS); minio_put_mode_create_conformance_records_no_overwrite_proof is absent from the shard‑1
+     log → it did not run. nextest count:N membership shifts whenever tests are added/removed/renamed — the 318→319 shift is exactly such a reshuffle.
+   • Consequence: the headline "MinIO S3 catalog smoke test: passed" is true only for this run's shard‑1 member and does not establish the originally‑failing
+     S3 test passes in the smoke lane — only backtester-ci.yml (all shards via :789 loop + explicit S3 invocation at :774‑782) establishes that. As a fast
+     canary this is defensible‑but‑weak; as a guard for the S3 smoke test it is not, because the guarded test isn't deterministically in shard 1. This is the
+     silent‑coverage‑loss analog of the very failure mode the PR targets, at the lane‑design level.
+   • This PR's +7 only adds the Setup/Stop MinIO steps; it neither causes nor fixes the partition design. Smallest fix (separate change): run all 4 shards in
+     flaky‑smoke (as flaky‑detection does) or explicitly enumerate the S3 smoke test there like backtester‑ci does.
+
+   F‑1333‑2 · Low‑Medium · non‑blocking — readiness curl has no timeout.
+   • File/symbol: action.yml:86 (curl -fsS "$BVS_MINIO_HEALTH_URL"). The loop is bounded in attempts (60) but a hanging health endpoint (accepts, never
+     responds) makes curl hang indefinitely → the Wait step hangs to the job timeout instead of failing in ~120 s. Still fails closed (not silent), but
+     defeats the bounded‑readiness intent.
+   • Why verifiers miss it: it's runtime shell behavior, not workflow shape. Fix: curl -fsS --max-time <x> --connect-timeout <y>. (Reasoned, not docker‑tested
+     — see gaps.)
+
+   F‑1333‑3 · Low · non‑blocking — set -euo pipefail not explicit; relies on GHA default -eo pipefail (no -u).
+   • File/symbol: action.yml run blocks. With -u off, a typo'd var expands empty (mitigated since the commands error on empty args). No exit 1 is in a
+     subshell/pipeline, so none is swallowed (Wait loop's exit 0/1 are in the main shell). Hardening: add set -euo pipefail.
+
+   F‑1333‑4 · Low · conditional · non‑blocking — fixed container name + fixed host port across lanes.
+   • File/symbol: action.yml:69‑74 (docker rm -f "$NAME" || true then --name "$NAME" --publish "${HOST}:${PORT}:${API}"), name/port from toml
+     (bvs-minio-s3-smoke, 9000).
+   • docker rm -f first is the correct stale‑leftover cleanup. But if two such jobs ever run concurrently on one persistent runner, the fixed host‑port bind
+     collides (second docker run → "port already allocated") and rm -f could kill the other job's container; no concurrency: guard exists. Safe if each job is
+     a fresh ephemeral runner (typical for the managed pool). Flag as runner‑topology‑dependent.
+
+   Verified‑correct (not defects):
+   • actionlint passes (rc=0) on the action + 3 workflows. (My first invocation wrongly passed action.yml as a workflow → "jobs/on missing"; reviewer error,
+     not a repo defect.)
+   • backtester‑ci behavior unchanged by the extraction: Start flags (--rm --detach --name --publish --env×2 image server --address --console-address),
+     bounded Wait with exit 1, the S3‑test step, and Stop are byte‑for‑byte the old inline. Only deltas are improvements: creds masked via ::add-mask:: + step
+     outputs (old put MINIO_ROOT_* unmasked in GITHUB_ENV), explicit docker pull step, more specific readiness‑failure message.
+   • Single source of truth holds: action.yml hardcodes no MinIO literal (grep clean; only composition is HEALTH_URL = endpoint + health_path, both from
+     toml).
+   • Verifier is load‑bearing (measured mutation, python3.12): removing/reordering the MinIO step in flaky-test-smoke.yml → "must keep BVS job steps
+     unchanged"; removing/duplicating the action in backtester-ci.yml → "must set up MinIO through the shared action exactly once". Not decoration.
+   • ci/rust-ci-inputs.toml +1 is correctly placed: the action path goes in [sets.backtester_detect] (BVS change‑detection), not backtester_cache (which
+     ci_input_sets.py:67 forbids from CI‑governance inputs). So action changes trigger BVS CI detection without busting the compiled‑target cache.
+   • Credentials: minioadmin/minioadmin are MinIO factory defaults for a throwaway 127.0.0.1 container, ::add-mask::'d, passed as step outputs/--env, never
+     written to GITHUB_STEP_SUMMARY, never reach a real endpoint. Acceptable test‑only plaintext.
+   • issue‑789 P/L failure is unrelated: the issue‑789 job is byte‑identical base→head in flaky-test-smoke.yml, no changed file touches the issue_789 P‑L test
+     or its fixture, and the run shows only the issue‑789 job red while the S3 shard‑1 job is green → the diff neither causes nor masks it.
+
+   Code defects vs runtime‑evidence gaps
+
+   • Code defects: none blocking. F‑1333‑2/F‑1333‑3 (robustness hardening); F‑1333‑4 (runner‑topology‑conditional); F‑1333‑1 (serious but
+     pre‑existing/out‑of‑scope lane design).
+   • Evidence gaps: Docker not installed → could not mechanically induce docker pull/run/health failures or a hanging/500 health endpoint; those conclusions
+     rest on GHA step semantics + the action's shell logic + curl -f semantics. F‑1333‑2 is reasoned, not measured. Did not recompute nextest partitions
+     locally (remote‑first Rust policy); drift is reasoned from count:N hashing + the observed 318→319 shift. No clean same‑branch pre‑fix flaky‑smoke run in
+     the last 50 to display the 318/panic firsthand (post‑fix half verified directly; pre‑fix half is deterministically implied by the test guard). Did not
+     dispatch CI (review‑only).
+
+   Checks
+
+   Ran: actionlint (rc=0); gh run 29074700891 meta+jobs+shard‑1 log (verified 319 / nt_catalog… / no minio_put_mode…); read action.yml, both flaky workflows,
+   backtester-ci.yml S3/partition region, base inline MinIO block; single‑source grep on action.yml; verifier mutation (python3.12) for flaky + backtester;
+   ci/rust-ci-inputs.toml set placement + ci_input_sets usage; CI‑override grep across 3 workflows; issue‑789 job identity base→head;
+   credentials/masking/summary grep; run‑list search for a pre‑fix run.
+   Did not run: docker pull/run/health/hang induction (no docker); nextest partition recompute (no local compile); CI dispatch (forbidden); runner‑concurrency
+   test (no runner access).
+
+---
+
+exyes
+
+---
+
+so is that issue 789 resulting in failures to backtester CI?
+
+---
+
+yes file it
+
+---
+
+ok do it - use cheaper model for investigation
+
+---
+
+explain the situation in plain English - make this concise
+
+---
+
+approve
+
+---
+
+<task-notification>
+<task-id>b9i4larn7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/a2712926-fa94-405b-b44f-792003993c06/tasks/b9i4larn7.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll both probe runs to completion" failed with exit code 1</summary>
+</task-notification>
+
+---
+
+you can give me an execution prompt for 1326 if that's being stalled

@@ -7,6 +7,7 @@ import fnmatch
 import pathlib
 import subprocess
 import sys
+from ci_workflow_hygiene_test_helpers import repo_git_command
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -51,7 +52,7 @@ FORBIDDEN_RUNTIME_FRAGMENTS = (
 
 def tracked_runtime_surfaces() -> tuple[pathlib.Path, ...]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        repo_git_command("ls-files", "-z"),
         cwd=REPO_ROOT,
         text=True,
         stdout=subprocess.PIPE,

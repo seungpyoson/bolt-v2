@@ -2336,8 +2336,10 @@ def _run_test_archive_build_script(script: str, *, sccache: str, fake_just_mode:
             "RUNNER_TEMP": str(root),
             "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
         }
+        script_path = root / "test-archive-build.sh"
+        script_path.write_text(script, encoding="utf-8")
         result = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", str(script_path)],
             cwd=REPO_ROOT,
             env=env,
             check=False,
@@ -9410,8 +9412,10 @@ git() {
                 "GITHUB_OUTPUT": str(output_path),
                 "GIT_CALLS": str(git_calls_path),
             }
+            script_path = tmp_path / "detector-refs.sh"
+            script_path.write_text(script, encoding="utf-8")
             completed = subprocess.run(
-                ["bash", "-c", script],
+                ["bash", str(script_path)],
                 cwd=tmp_path,
                 env=env,
                 text=True,
@@ -9471,8 +9475,10 @@ git() {
                 "GITHUB_OUTPUT": str(output_path),
                 "GIT_CALLS": str(git_calls_path),
             }
+            script_path = tmp_path / "dispatch-refs.sh"
+            script_path.write_text(script, encoding="utf-8")
             completed = subprocess.run(
-                ["bash", "-c", script],
+                ["bash", str(script_path)],
                 cwd=tmp_path,
                 env=env,
                 text=True,

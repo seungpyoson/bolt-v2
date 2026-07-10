@@ -417,9 +417,9 @@ mod tests {
         updown::{self, UpdownTargetPlan},
     };
     use crate::bolt_v3_providers::{
-        DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS, ProviderAdapterMapContext, ProviderBinding,
-        ProviderResolvedSecrets, ProviderSecretResolveContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS, NtReconnectBudgetCapability,
+        ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
+        ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
         binance::{self, ResolvedBoltV3BinanceSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
         polyresearch::ResolvedBoltV3PolyResearchSecrets,
@@ -507,6 +507,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[updown::KEY],
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -528,6 +529,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -549,6 +551,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,

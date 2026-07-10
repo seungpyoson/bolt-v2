@@ -1122,10 +1122,6 @@ jobs:
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
 
       - name: Run tests
-        env:
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          BOLT_RUST_VERIFICATION_SCCACHE: "1"
         run: |
           rc=0
           set +e

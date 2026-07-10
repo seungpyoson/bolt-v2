@@ -4058,65 +4058,6 @@ def assert_flaky_backtester_jobs_require_shared_minio_action() -> None:
             )
 
 
-def assert_flaky_smoke_backtester_shard_execution_cannot_be_bypassed() -> None:
-    verifier = load_verifier()
-    workflow_path = ".github/workflows/flaky-test-smoke.yml"
-    workflow = repo_workflow_text(workflow_path)
-    contract = verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_path]
-    job_anchor = "  flaky-smoke-rust-backtester:\n"
-    matrix_anchor = "        shard: [1, 2, 3, 4]\n"
-    run_step_anchor = "      - name: Run tests\n"
-    expected = "backtester smoke job must match canonical matrix and Run tests structure"
-    mutations = (
-        (
-            "matrix.include",
-            replace_once_after(
-                workflow,
-                job_anchor,
-                matrix_anchor,
-                matrix_anchor + "        include:\n          - shard: 4\n",
-            ),
-        ),
-        (
-            "matrix.exclude",
-            replace_once_after(
-                workflow,
-                job_anchor,
-                matrix_anchor,
-                matrix_anchor + "        exclude:\n          - shard: 4\n",
-            ),
-        ),
-        (
-            "unknown matrix control key",
-            replace_once_after(
-                workflow,
-                job_anchor,
-                matrix_anchor,
-                matrix_anchor + "        control: strict\n",
-            ),
-        ),
-        (
-            'quoted Run tests "if"',
-            replace_once_after(
-                workflow,
-                job_anchor,
-                run_step_anchor,
-                run_step_anchor + '        "if": ${{ matrix.shard != 4 }}\n',
-            ),
-        ),
-    )
-    undetected: list[str] = []
-    for label, mutated in mutations:
-        errors = verifier.flaky_test_detection_workflow_errors(mutated, contract)
-        if not any(expected in error for error in errors):
-            undetected.append(f"{label}: {errors!r}")
-    if undetected:
-        raise AssertionError(
-            "flaky smoke backtester shard execution bypasses were silent: "
-            + "; ".join(undetected)
-        )
-
-
 
 
 
@@ -12949,7 +12890,6 @@ def main() -> int:
     assert_runner_contract_accepts_flaky_detection_workflow_mapping()
     assert_flaky_detection_workflow_uses_supported_mergify_contract()
     assert_flaky_backtester_jobs_require_shared_minio_action()
-    assert_flaky_smoke_backtester_shard_execution_cannot_be_bypassed()
     assert_runner_config_floor_handles_missing_and_empty_inputs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()

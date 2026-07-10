@@ -10,6 +10,7 @@ universe_id = "binance-bnbusdc-spot-2026-03-01-2026-05-31"
 scope_label = "BNBUSDC spot daily trades"
 status = "converted"
 completion_ledger_path = "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json"
+completion_ledger_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json"
 
 [[venue.universe]]
 universe_id = "binance-data-vision-trades-2026-03-01-all-instruments"
@@ -40,6 +41,7 @@ universe_id = "bybit-bnbusdc-spot-2026-03-01-2026-06-01"
 scope_label = "BNBUSDC spot tick trades"
 status = "converted"
 completion_ledger_path = "target/reference-regen/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json"
+completion_ledger_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json"
 
 [[venue.universe]]
 universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
@@ -48,7 +50,8 @@ status = "source_only"
 source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json"
 source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/queue/source-universe-conversion-queue.json"
 source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json"
-source_universe_conversion_run_plan_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json"
+source_universe_conversion_run_plan_path = "target/reference-regen/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json"
+source_universe_conversion_run_plan_artifact_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json"
 
 [[venue]]
 venue_id = "pmxt-current-reference"
@@ -68,8 +71,11 @@ status = "blocked"
 source_archive_discovery_seed_path = "specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/pmxt-polymarket-v2-current/seed/source-archive-discovery-seed.json"
 source_archive_index_manifest_path = "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json"
 source_universe_manifest_path = "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
-source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
-source_universe_source_proof_set_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json"
+source_universe_manifest_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+source_universe_conversion_queue_path = "target/reference-regen/pmxt-polymarket-v2-current/conversion-queue/source-universe-conversion-queue.json"
+source_universe_conversion_queue_artifact_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
+source_universe_source_proof_set_path = "target/reference-regen/pmxt-polymarket-v2-current/source-proofs/source-universe-source-proof-set.json"
+source_universe_source_proof_set_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json"
 selected_source_report_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
 blocking_issues = [
   "missing_accepted_source_proof",

@@ -41,7 +41,7 @@ pub const PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS: &[&str] = &[
 ];
 
 pub fn tempdir_in_repo_target() -> tempfile::TempDir {
-    let target_dir = repo_root_from_manifest_dir().join("target");
+    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
     fs::create_dir_all(&target_dir).unwrap_or_else(|error| {
         panic!("create target temp root {}: {error}", target_dir.display())
     });
@@ -74,17 +74,21 @@ pub fn rewrite_assignment(source: &str, key: &str, value: &Path) -> String {
 }
 
 pub fn assert_generated_fixture_matches_index(repo_relative_path: &str, generated_path: &Path) {
-    let index =
-        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
-    let entry = index
-        .entry_for(repo_relative_path)
-        .unwrap_or_else(|| panic!("eviction index must contain {repo_relative_path}"));
     let bytes = fs::read(generated_path).unwrap_or_else(|error| {
         panic!(
             "read generated fixture {}: {error}",
             generated_path.display()
         )
     });
+    assert_generated_fixture_bytes_match_index(repo_relative_path, &bytes);
+}
+
+pub fn assert_generated_fixture_bytes_match_index(repo_relative_path: &str, bytes: &[u8]) {
+    let index =
+        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
+    let entry = index
+        .entry_for(repo_relative_path)
+        .unwrap_or_else(|| panic!("eviction index must contain {repo_relative_path}"));
     assert_eq!(
         (bytes.len() as u64, sha256_hex(&bytes)),
         (entry.bytes, entry.sha256.clone()),

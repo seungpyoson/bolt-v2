@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
+
 use backtesting_vertical_slice::source_universe_conversion_work_order::{
     SourceUniverseConversionWorkOrder, SourceUniverseConversionWorkOrderStatus,
     write_source_universe_conversion_work_order_from_spec_file,
@@ -26,7 +28,7 @@ fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir:
 
 #[test]
 fn source_universe_conversion_work_order_lists_only_executable_operator_inputs() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
     let output_dir = temp_dir.path().join("work-order");
     let spec_path = temp_dir
@@ -175,7 +177,7 @@ output_dir = "{output_dir}"
 
 #[test]
 fn source_universe_conversion_work_order_overwrites_existing_artifact_only_when_enabled() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
     let output_dir = temp_dir.path().join("work-order");
     let spec_path = temp_dir
@@ -272,7 +274,7 @@ overwrite_existing_artifacts = true
 fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scope() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
 
     let committed_bybit_spec = reference_root
         .join("source-universe-conversion-work-orders/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")

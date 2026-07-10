@@ -51,7 +51,7 @@ fn source_universe_conversion_queue_materializes_every_bybit_manifest_object() {
         .join("../../specs/023-nt-research-analytics-platform/reference");
     let manifest_path = reference_root
         .join("backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("conversion-queue");
     let spec_path = temp_dir
         .path()
@@ -144,7 +144,7 @@ fn source_universe_conversion_queue_materializes_every_binance_all_instrument_ma
         .join("../../specs/023-nt-research-analytics-platform/reference");
     let manifest_path = reference_root
         .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("conversion-queue");
     let spec_path = temp_dir
         .path()
@@ -252,7 +252,7 @@ output_prefix_template = "source-universe={universe_id}/category={category}/symb
 
 #[test]
 fn source_universe_conversion_queue_preserves_non_sha_source_hash_without_sha256_claim() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let manifest_path = temp_dir.path().join("pmxt-source-universe.json");
     let output_dir = temp_dir.path().join("conversion-queue");
     let spec_path = temp_dir

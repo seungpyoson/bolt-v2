@@ -103,25 +103,27 @@ pub fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
 }
 
 /// Rewrite an absolute path under the repo root back to its repo-relative
-/// form so committed artifacts stay portable across checkouts; non-repo
-/// paths pass through unchanged.
-#[must_use]
-pub fn portable_artifact_path(path: &Path) -> PathBuf {
-    candidate_portable_artifact_path(path).unwrap_or_else(|| path.to_path_buf())
+/// form so committed artifacts stay portable across checkouts.
+///
+/// Serialization fails rather than embedding a machine-specific absolute path.
+pub fn portable_artifact_path(path: &Path) -> Result<PathBuf> {
+    candidate_portable_artifact_path(path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "artifact path {} could not be serialized as a canonical repo-relative identity",
+            path.display()
+        )
+    })
 }
 
-/// Rewrite an artifact path for serialization, failing if a repo-relative spec
-/// input/output cannot be represented as a repo-relative committed path.
+/// Rewrite an artifact path for serialization, failing if it cannot be
+/// represented as a repo-relative committed identity.
 pub fn portable_artifact_path_for_spec(path: &Path, spec_path: &Path) -> Result<PathBuf> {
     let Some(portable) = candidate_portable_artifact_path(path) else {
-        if looks_repo_relative(spec_path) {
-            bail!(
-                "repo-relative artifact path {} resolved to {} but could not be serialized portably",
-                spec_path.display(),
-                path.display()
-            );
-        }
-        return Ok(path.to_path_buf());
+        bail!(
+            "artifact path {} resolved from {} but could not be serialized as a canonical repo-relative identity",
+            path.display(),
+            spec_path.display()
+        );
     };
     Ok(portable)
 }
@@ -419,13 +421,14 @@ mod tests {
             .expect("repo root");
         let absolute_target_artifact = repo_root.join("target/reference-regen/scope/artifact.json");
 
-        assert_eq!(
-            portable_artifact_path_for_spec(
-                &absolute_target_artifact,
-                Path::new("target/reference-regen/scope/artifact.json"),
-            )
-            .expect("target scratch output is not a committed portable artifact prefix"),
-            absolute_target_artifact
+        let err = portable_artifact_path_for_spec(
+            &absolute_target_artifact,
+            Path::new("target/reference-regen/scope/artifact.json"),
+        )
+        .expect_err("target scratch output requires a stable artifact identity");
+        assert!(
+            err.to_string().contains("canonical repo-relative identity"),
+            "{err}"
         );
     }
 
@@ -437,7 +440,7 @@ mod tests {
         )
         .expect_err("repo-relative spec path must fail loud if it stays absolute");
         assert!(
-            err.to_string().contains("could not be serialized portably"),
+            err.to_string().contains("canonical repo-relative identity"),
             "{err}"
         );
     }
@@ -455,7 +458,7 @@ mod tests {
             portable_artifact_path_for_spec(&artifact, Path::new("specs/reference/artifact.json"))
                 .expect_err("markerless /specs path must not be treated as this repo");
         assert!(
-            err.to_string().contains("could not be serialized portably"),
+            err.to_string().contains("canonical repo-relative identity"),
             "{err}"
         );
 
@@ -477,12 +480,13 @@ mod tests {
     }
 
     #[test]
-    fn non_repo_temp_paths_can_remain_absolute() {
+    fn non_repo_temp_paths_fail_instead_of_serializing_absolute_locations() {
         let path = std::env::temp_dir().join("path-resolution-temp-artifact.json");
-        assert_eq!(
-            portable_artifact_path_for_spec(&path, Path::new("temp-artifact.json"))
-                .expect("non-repo temp artifact path may remain absolute"),
-            path
+        let err = portable_artifact_path_for_spec(&path, Path::new("temp-artifact.json"))
+            .expect_err("non-repo temp artifact path must not be serialized");
+        assert!(
+            err.to_string().contains("canonical repo-relative identity"),
+            "{err}"
         );
     }
 }

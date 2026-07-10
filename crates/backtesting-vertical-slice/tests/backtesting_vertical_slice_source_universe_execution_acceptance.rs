@@ -85,7 +85,7 @@ fn artifact_ref_sha256(
 
 #[test]
 fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_without_overclaiming() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let gates_path = temp_dir.path().join("source-universe-object-gates.json");
     let run_plan_path = temp_dir
         .path()
@@ -728,7 +728,7 @@ fn source_universe_execution_acceptance_blocks_on_spec_vs_artifact_family_mismat
     // construction in the round-trip-free fixture test above (a conversion-queue
     // artifact), but deliberately declares a spec family that disagrees with the
     // artifact's `orderbook` family.
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let manifest_path = temp_dir.path().join("pmxt-source-universe-manifest.json");
     let queue_path = temp_dir.path().join("pmxt-conversion-queue.json");
     let output_dir = temp_dir.path().join("execution-ledger");

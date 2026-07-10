@@ -29,6 +29,7 @@ fn binance_all_instrument_category_source_proofs_are_materialized_from_manifests
             r#"
 proof_set_id = "source-universe-source-proofs-binance-data-vision-trades-2026-03-01-all-instruments"
 output_dir = "{output_dir}"
+artifact_output_dir = "specs/test-generated/source-proofs/binance-all-instruments"
 source_bindings_path = "{source_bindings_path}"
 venue = "binance"
 table_family = "trades"
@@ -180,6 +181,7 @@ fn source_universe_source_proofs_preserve_configured_l2_replay_evidence() {
             r#"
 proof_set_id = "source-universe-source-proofs-binance-l2-evidence-regression"
 output_dir = "{output_dir}"
+artifact_output_dir = "specs/test-generated/source-proofs/binance-l2-regression"
 source_bindings_path = "{source_bindings_path}"
 venue = "binance"
 table_family = "trades"
@@ -288,6 +290,7 @@ fn source_universe_source_proofs_materialize_pmxt_pending_manifest_scoped_l2_pro
             r#"
 proof_set_id = "source-universe-source-proofs-pmxt-polymarket-v2-current"
 output_dir = "{output_dir}"
+artifact_output_dir = "specs/test-generated/source-proofs/pmxt-pending"
 source_bindings_path = "{source_bindings_path}"
 venue = "polymarket"
 table_family = "order_book_snapshot_deltas"
@@ -442,7 +445,16 @@ fn committed_pmxt_source_proof_spec_regenerates_evicted_indexed_outputs() {
     let spec_path = reference_root.join(
         "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
     );
-    let artifact = write_source_universe_source_proof_set_from_spec_file(&spec_path)
+    let temp_dir = tempdir_in_repo_target();
+    let scratch_output_dir = temp_dir.path().join("source-proofs");
+    let scratch_spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
+    let committed_spec = fs::read_to_string(&spec_path).expect("read committed PMXT proof spec");
+    fs::write(
+        &scratch_spec_path,
+        rewrite_assignment(&committed_spec, "output_dir", &scratch_output_dir),
+    )
+    .expect("write scratch PMXT proof spec");
+    let artifact = write_source_universe_source_proof_set_from_spec_file(&scratch_spec_path)
         .expect("committed PMXT source-proof spec regenerates into scratch");
     let proof_path = artifact
         .path
@@ -477,13 +489,11 @@ fn source_universe_source_proofs_use_stable_proof_identity_across_output_roots()
         let output_dir = materialization_root.join("source-proofs");
         fs::create_dir_all(&materialization_root).expect("create materialization root");
         let spec_path = materialization_root.join("source-universe-source-proofs.toml");
-        let rewritten = rewrite_assignment(&committed_spec, "output_dir", &output_dir).replacen(
-            &format!("output_dir = \"{}\"\n", output_dir.display()),
-            &format!(
-                "output_dir = \"{}\"\nartifact_output_dir = \"{stable_proof_dir}\"\n",
-                output_dir.display()
-            ),
-            1,
+        let rewritten = rewrite_assignment(&committed_spec, "output_dir", &output_dir);
+        let rewritten = rewrite_assignment(
+            &rewritten,
+            "artifact_output_dir",
+            Path::new(stable_proof_dir),
         );
         fs::write(&spec_path, rewritten).expect("write differential proof spec");
 

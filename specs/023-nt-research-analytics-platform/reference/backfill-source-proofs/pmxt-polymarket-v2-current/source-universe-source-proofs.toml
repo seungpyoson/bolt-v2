@@ -1,5 +1,6 @@
 proof_set_id = "source-universe-source-proofs-pmxt-polymarket-v2-current"
 output_dir = "target/reference-regen/pmxt-polymarket-v2-current/source-proofs"
+artifact_output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current"
 source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 venue = "polymarket"
 table_family = "order_book_snapshot_deltas"

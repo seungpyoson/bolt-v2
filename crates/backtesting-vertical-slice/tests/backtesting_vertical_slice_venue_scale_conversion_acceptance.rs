@@ -4,9 +4,13 @@ use crate::backtesting_vertical_slice_test_support::{
     BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
     BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
     PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, generate_evicted_completion_ledger,
-    tempdir_in_repo_target,
+    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, assert_generated_fixture_bytes_match_index,
+    assert_generated_fixture_matches_index, generate_evicted_completion_ledger,
+    generate_evicted_pmxt_object_manifests, rewrite_assignment, tempdir_in_repo_target,
 };
+use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
+use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
+use backtesting_vertical_slice::source_universe_source_proofs::write_source_universe_source_proof_set_from_spec_file;
 use backtesting_vertical_slice::venue_scale_conversion_acceptance::{
     VenueScaleConversionAcceptanceLedger, VenueScaleConversionAcceptanceStatus,
     write_venue_scale_conversion_acceptance_ledger_from_spec_file,
@@ -203,6 +207,7 @@ universe_id = "binance-bnbusdc-spot-2026-03-01-2026-05-31"
 scope_label = "BNBUSDC spot daily trades"
 status = "converted"
 completion_ledger_path = "{binance_completion_ledger}"
+completion_ledger_artifact_path = "specs/test-generated/venue-scale/binance-completion-ledger.json"
 
 [[venue.universe]]
 universe_id = "binance-data-vision-trades-2026-03-01-all-instruments"
@@ -218,6 +223,7 @@ universe_id = "binance-public-archive-full-current-data"
 scope_label = "Binance public archive full current data"
 status = "blocked"
 source_archive_discovery_seed_path = "{binance_archive_seed}"
+source_archive_discovery_seed_artifact_path = "specs/test-generated/venue-scale/binance-archive-seed.json"
 blocking_issues = [
   "missing_binance_full_source_universe_manifest",
   "missing_binance_full_source_universe_conversion_queue",
@@ -233,6 +239,7 @@ universe_id = "bybit-bnbusdc-spot-2026-03-01-2026-06-01"
 scope_label = "BNBUSDC spot tick trades"
 status = "converted"
 completion_ledger_path = "{bybit_completion_ledger}"
+completion_ledger_artifact_path = "specs/test-generated/venue-scale/bybit-completion-ledger.json"
 
 [[venue.universe]]
 universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
@@ -242,6 +249,7 @@ source_universe_manifest_path = "{bybit_source_manifest}"
 source_universe_conversion_queue_path = "{bybit_conversion_queue}"
 source_universe_object_gates_path = "{bybit_object_gates}"
 source_universe_conversion_run_plan_path = "{bybit_conversion_run_plan}"
+source_universe_conversion_run_plan_artifact_path = "specs/test-generated/venue-scale/bybit-conversion-run-plan.json"
 
 [[venue]]
 venue_id = "pmxt-current-reference"
@@ -259,10 +267,15 @@ universe_id = "pmxt-polymarket-full-current-data"
 scope_label = "Polymarket full current local/archive data"
 status = "blocked"
 source_archive_discovery_seed_path = "{pmxt_archive_seed}"
+source_archive_discovery_seed_artifact_path = "specs/test-generated/venue-scale/pmxt-archive-seed.json"
 source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
+source_archive_index_manifest_artifact_path = "specs/test-generated/venue-scale/pmxt-archive-index-manifest.json"
 source_universe_manifest_path = "{pmxt_source_manifest}"
+source_universe_manifest_artifact_path = "specs/test-generated/venue-scale/pmxt-source-manifest.json"
 source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
+source_universe_conversion_queue_artifact_path = "specs/test-generated/venue-scale/pmxt-conversion-queue.json"
 source_universe_source_proof_set_path = "{pmxt_source_proof_set}"
+source_universe_source_proof_set_artifact_path = "specs/test-generated/venue-scale/pmxt-source-proof-set.json"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
   "missing_accepted_source_proof",
@@ -669,65 +682,151 @@ blocking_issues = [
 
 #[test]
 fn venue_scale_ledger_uses_stable_manifest_identity_across_materialization_roots() {
-    let stable_manifest_identity = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json";
-    let manifest = r#"{
-  "schema_version": "backfill-source-universe-object-manifest.v1",
-  "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
-  "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
-  "object_count": 1351,
-  "accepted_bytes": 557815904970,
-  "category_summaries": []
-}"#;
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let queue_spec = fs::read_to_string(reference_root.join(
+        "source-universe-conversion-queues/pmxt-polymarket-v2-current/source-universe-conversion-queue.toml",
+    ))
+    .expect("read committed queue spec");
+    let proof_spec = fs::read_to_string(reference_root.join(
+        "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+    ))
+    .expect("read committed proof spec");
+    let venue_spec = fs::read_to_string(reference_root.join(
+        "venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml",
+    ))
+    .expect("read committed venue-scale spec");
     let mut generated = Vec::new();
 
     for root_name in ["first-root", "second-root-with-a-different-length"] {
         let temp_dir = tempdir_in_repo_target();
         let materialization_root = temp_dir.path().join(root_name);
-        let manifest_path = materialization_root.join("source-universe-object-manifest.json");
-        let output_dir = materialization_root.join("ledger");
-        let spec_path = materialization_root.join("venue-scale-ledger.toml");
         fs::create_dir_all(&materialization_root).expect("create materialization root");
-        fs::write(&manifest_path, manifest).expect("write materialized manifest");
+        let binance_completion_root = materialization_root.join("binance-completion");
+        let bybit_completion_root = materialization_root.join("bybit-completion");
+        fs::create_dir_all(&binance_completion_root).expect("create binance completion root");
+        fs::create_dir_all(&bybit_completion_root).expect("create bybit completion root");
+        let binance_completion_ledger = generate_evicted_completion_ledger(
+            &reference_root,
+            "binance-bnbusdc-2026-03-01-2026-05-31",
+            PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+            BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
+            &binance_completion_root,
+        );
+        let bybit_completion_ledger = generate_evicted_completion_ledger(
+            &reference_root,
+            "bybit-bnbusdc-2026-03-01-2026-06-01",
+            PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+            BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
+            &bybit_completion_root,
+        );
+        let manifest_root = materialization_root.join("object-manifests");
+        fs::create_dir_all(&manifest_root).expect("create object-manifest root");
+        let (manifest_path, category_manifest_path) =
+            generate_evicted_pmxt_object_manifests(&reference_root, &manifest_root);
+
+        let queue_root = materialization_root.join("conversion-queue");
+        fs::create_dir_all(&queue_root).expect("create queue root");
+        let queue_spec_path = queue_root.join("source-universe-conversion-queue.toml");
+        let rewritten_queue =
+            rewrite_assignment(&queue_spec, "source_universe_manifest_path", &manifest_path);
+        let rewritten_queue =
+            rewrite_assignment(&rewritten_queue, "output_dir", &queue_root.join("output"));
+        fs::write(&queue_spec_path, rewritten_queue).expect("write differential queue spec");
+        let queue_artifact =
+            write_source_universe_conversion_queue_from_spec_file(&queue_spec_path)
+                .expect("generate differential queue");
+
+        let proof_root = materialization_root.join("source-proofs");
+        fs::create_dir_all(&proof_root).expect("create proof root");
+        let proof_spec_path = proof_root.join("source-universe-source-proofs.toml");
+        let rewritten_proof =
+            rewrite_assignment(&proof_spec, "output_dir", &proof_root.join("output"));
+        let rewritten_proof = rewrite_assignment(
+            &rewritten_proof,
+            "category_manifest_path",
+            &category_manifest_path,
+        );
+        fs::write(&proof_spec_path, rewritten_proof).expect("write differential proof spec");
+        let proof_artifact =
+            write_source_universe_source_proof_set_from_spec_file(&proof_spec_path)
+                .expect("generate differential proof set");
+
+        let run_plan_root = materialization_root.join("bybit-run-plan");
+        fs::create_dir_all(&run_plan_root).expect("create bybit run-plan root");
+        let committed_run_plan_spec_path = reference_root.join(
+            "source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-conversion-run-plan.toml",
+        );
+        let committed_run_plan_spec = fs::read_to_string(&committed_run_plan_spec_path)
+            .expect("read committed bybit run-plan spec");
+        let run_plan_spec_path = run_plan_root.join("source-universe-conversion-run-plan.toml");
         fs::write(
-            &spec_path,
-            format!(
-                r#"
-ledger_id = "venue-scale-conversion-acceptance-ledger-pmxt-location-independent"
-output_dir = "{output_dir}"
-
-[[venue]]
-venue_id = "pmxt-current-reference"
-venue = "pmxt"
-
-[[venue.universe]]
-universe_id = "pmxt-polymarket-full-current-data"
-scope_label = "Polymarket full current local/archive data"
-status = "blocked"
-source_universe_manifest_path = "{manifest_path}"
-source_universe_manifest_artifact_path = "{stable_manifest_identity}"
-blocking_issues = ["missing_accepted_source_proof"]
-"#,
-                output_dir = output_dir.display(),
-                manifest_path = manifest_path.display(),
+            &run_plan_spec_path,
+            rewrite_assignment(
+                &committed_run_plan_spec,
+                "output_dir",
+                &run_plan_root.join("output"),
             ),
         )
-        .expect("write differential venue-scale spec");
+        .expect("write differential bybit run-plan spec");
+        let run_plan_artifact =
+            write_source_universe_conversion_run_plan_from_spec_file(&run_plan_spec_path)
+                .expect("generate differential bybit run plan");
+        assert_generated_fixture_matches_index(
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json",
+            &run_plan_artifact.path,
+        );
 
-        let artifact = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
-            .expect("venue-scale generation succeeds");
+        let venue_root = materialization_root.join("venue-scale");
+        fs::create_dir_all(&venue_root).expect("create venue-scale root");
+        let venue_spec_path = venue_root.join("venue-scale-conversion-acceptance-ledger.toml");
+        let mut rewritten_venue =
+            rewrite_assignment(&venue_spec, "output_dir", &venue_root.join("output"));
+        for (committed_materialization, actual_materialization) in [
+            (
+                "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json",
+                binance_completion_ledger.as_path(),
+            ),
+            (
+                "target/reference-regen/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json",
+                bybit_completion_ledger.as_path(),
+            ),
+            (
+                "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+                manifest_path.as_path(),
+            ),
+            (
+                "target/reference-regen/pmxt-polymarket-v2-current/conversion-queue/source-universe-conversion-queue.json",
+                queue_artifact.path.as_path(),
+            ),
+            (
+                "target/reference-regen/pmxt-polymarket-v2-current/source-proofs/source-universe-source-proof-set.json",
+                proof_artifact.path.as_path(),
+            ),
+            (
+                "target/reference-regen/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json",
+                run_plan_artifact.path.as_path(),
+            ),
+        ] {
+            let needle = format!("= \"{committed_materialization}\"");
+            let replacement = format!("= \"{}\"", actual_materialization.display());
+            assert!(rewritten_venue.contains(&needle));
+            rewritten_venue = rewritten_venue.replacen(&needle, &replacement, 1);
+        }
+        fs::write(&venue_spec_path, rewritten_venue).expect("write differential venue-scale spec");
+
+        let artifact =
+            write_venue_scale_conversion_acceptance_ledger_from_spec_file(&venue_spec_path)
+                .expect("venue-scale generation succeeds");
         let bytes = fs::read(&artifact.path).expect("read generated venue-scale ledger");
-        let ledger: VenueScaleConversionAcceptanceLedger =
-            serde_json::from_slice(&bytes).expect("venue-scale ledger parses");
-        let manifest_ref = ledger.venues[0].universes[0]
-            .artifact_refs
-            .iter()
-            .find(|artifact_ref| artifact_ref.role == "source_universe_manifest")
-            .expect("manifest artifact ref");
-        assert_eq!(manifest_ref.path, Path::new(stable_manifest_identity));
         generated.push(bytes);
     }
 
     assert_eq!(generated[0], generated[1]);
+    assert_generated_fixture_bytes_match_index(
+        "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/ledger/venue-scale-conversion-acceptance-ledger.json",
+        &generated[0],
+    );
 }
 
 /// Regression for the selected-conversion-manifest completion-proof gate: a
@@ -758,7 +857,7 @@ selected_conversion_manifest_path = "{manifest_path}"
         )
     }
 
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("acceptance-ledger");
 
     // Zero canonical rows: parses (all required fields present) but is not a
@@ -810,7 +909,7 @@ selected_conversion_manifest_path = "{manifest_path}"
 
 #[test]
 fn source_proof_set_rejects_accepted_count_above_total_count() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("acceptance-ledger");
     let source_manifest = temp_dir.path().join("source-manifest.json");
     let source_proof_set = temp_dir.path().join("source-proof-set.json");
@@ -853,7 +952,9 @@ universe_id = "test-source-only"
 scope_label = "test source-only universe"
 status = "source_only"
 source_universe_manifest_path = "{}"
+source_universe_manifest_artifact_path = "specs/test-generated/venue-scale/source-manifest.json"
 source_universe_source_proof_set_path = "{}"
+source_universe_source_proof_set_artifact_path = "specs/test-generated/venue-scale/source-proof-set.json"
 "#,
             output_dir.display(),
             source_manifest.display(),

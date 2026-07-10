@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "82d290699702",
+  "session_id": "37d4d1c2-6010-406b-b013-f806f0150fa1",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T09:33:41.291913Z",
+  "branch": "fix/1179-trader-not-started-launch-abort",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "src/bolt_v3_live_node.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b6a11e9d4fc8",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 23212,
+    "cache_creation_tokens": 162114,
+    "cache_read_tokens": 2491243,
+    "output_tokens": 29536,
+    "api_call_count": 29
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T09:33:41.252689Z",
+    "agent_lines": 224,
+    "agent_removed": 7,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 224,
+    "total_lines_changed": 231,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 3,
+      "user_lines_removed": 4,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "scripts/verify_ci_workflow_hygiene.py": 1,
+        "tests/binance_sbe_schema_v5_decode.rs": 2
+      },
+      "user_removed_per_file": {
+        "scripts/verify_ci_workflow_hygiene.py": 1,
+        "tests/binance_sbe_schema_v5_decode.rs": 3
+      }
+    }
+  ]
+}

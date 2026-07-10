@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw09t1pex</task-id>
+<tool-use-id>toolu_01R82b1t224ukVyvT8R2YtQk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/37d4d1c2-6010-406b-b013-f806f0150fa1/tasks/bw09t1pex.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch both PRs until all CI checks complete" completed (exit code -1)</summary>
+</task-notification>

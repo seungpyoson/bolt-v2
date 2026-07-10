@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import time
 
+import ci_workflow_hygiene_test_helpers as hygiene_helpers
 from ci_workflow_hygiene_test_helpers import (
     BASE_WORKFLOW,
     DEBUG_TEST_WORKFLOW_PATH,
@@ -25,6 +27,220 @@ from ci_workflow_hygiene_test_helpers import (
     run_repo_git,
     write_repo_text,
 )
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+def assert_run_repo_git_suppresses_background_maintenance() -> None:
+    calls: list[tuple[str, ...]] = []
+    original_run = hygiene_helpers.subprocess.run
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(command))
+        return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+    hygiene_helpers.subprocess.run = fake_run
+    try:
+        output = hygiene_helpers.run_repo_git(pathlib.Path("/tmp/repo"), "status")
+    finally:
+        hygiene_helpers.subprocess.run = original_run
+
+    if output != "ok\n":
+        raise AssertionError(f"run_repo_git must return stdout, got: {output!r}")
+    expected = (
+        "git",
+        *hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS,
+        "status",
+    )
+    if calls != [expected]:
+        raise AssertionError(f"run_repo_git must suppress background maintenance, got: {calls}")
+
+
+def assert_suppression_args_match_suppression_config() -> None:
+    """The command and persisted-config suppression paths must stay in agreement."""
+    argv = hygiene_helpers.repo_git_command()
+    if argv[0] != "git":
+        raise AssertionError(f"repo_git_command must start with 'git', got: {argv!r}")
+
+    parsed_items: list[tuple[str, str]] = []
+    tokens = argv[1:]
+    index = 0
+    while index < len(tokens):
+        if tokens[index] != "-c":
+            raise AssertionError(
+                "repo_git_command suppression args must be flat '-c KEY=VALUE' pairs, "
+                f"got unexpected token {tokens[index]!r} at argv index {index + 1}: {argv!r}"
+            )
+        if index + 1 >= len(tokens):
+            raise AssertionError(
+                "repo_git_command suppression args must provide KEY=VALUE after every '-c', "
+                f"got: {argv!r}"
+            )
+        key, separator, value = tokens[index + 1].partition("=")
+        if not separator or not key:
+            raise AssertionError(
+                "repo_git_command suppression settings must use non-empty KEY=VALUE syntax, "
+                f"got {tokens[index + 1]!r}: {argv!r}"
+            )
+        parsed_items.append((key, value))
+        index += 2
+
+    parsed_config = dict(parsed_items)
+    declared_config = dict(hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG)
+    if parsed_config != declared_config:
+        raise AssertionError(
+            "repo_git_command suppression settings must match the persisted suppression config, "
+            f"got {parsed_config!r}, want {declared_config!r}"
+        )
+
+    parsed_order = tuple(key for key, _value in parsed_items)
+    declared_order = tuple(
+        key for key, _value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+    )
+    if parsed_order != declared_order:
+        raise AssertionError(
+            "repo_git_command suppression key order must match the persisted suppression config, "
+            f"got {parsed_order!r}, want {declared_order!r}"
+        )
+
+
+def _maintenance_children(trace_path: pathlib.Path) -> int:
+    """`git maintenance`/`git gc` processes recorded in a GIT_TRACE2 event log."""
+    if not trace_path.exists():
+        return 0
+    total = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("event") != "child_start":
+            continue
+        argv = " ".join(event.get("argv", []))
+        if "maintenance" in argv or argv.startswith("git gc"):
+            total += 1
+    return total
+
+
+def assert_init_fixture_repo_persists_suppression() -> None:
+    """A fixture remote must carry the suppression in its own config.
+
+    Git drops the repo-scoped config environment when it runs against another
+    repository, so `-c gc.auto=0` on a `git push` never reaches the remote's
+    `receive-pack`.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        bare = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
+        for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            actual = hygiene_helpers.read_persisted_repo_config(bare, key)
+            if actual is None:
+                raise AssertionError(
+                    f"fixture remote never persisted {key!r}; "
+                    "a git process launched outside this suite will not see it"
+                )
+            if actual != value:
+                raise AssertionError(f"fixture remote {key}={actual!r}, want {value!r}")
+
+
+def assert_self_authorizing_fixture_repo_persists_suppression() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = hygiene_helpers.init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            actual = hygiene_helpers.read_persisted_repo_config(repo, key)
+            if actual != value:
+                raise AssertionError(
+                    f"self-authorizing fixture repo {key}={actual!r}, want {value!r}"
+                )
+
+
+def assert_clone_fixture_repo_persists_suppression() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        source = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
+        clone = hygiene_helpers.clone_fixture_repo(source, root / "clone")
+        plain_clone = hygiene_helpers.clone_fixture_repo_without_suppression(
+            source, root / "plain-clone"
+        )
+
+        for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            actual = hygiene_helpers.read_persisted_repo_config(clone, key)
+            if actual != value:
+                raise AssertionError(f"fixture clone {key}={actual!r}, want {value!r}")
+            plain_actual = hygiene_helpers.read_persisted_repo_config(plain_clone, key)
+            if plain_actual is not None:
+                raise AssertionError(
+                    f"plain git clone unexpectedly persisted {key}={plain_actual!r}"
+                )
+
+
+def assert_push_to_fixture_remote_spawns_no_background_maintenance() -> None:
+    """Trace real receive-pack maintenance with persisted suppression off and on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        unsuppressed = hygiene_helpers.init_fixture_repo(
+            root / "unsuppressed.git", "--bare"
+        )
+        suppressed = hygiene_helpers.init_fixture_repo(root / "suppressed.git", "--bare")
+        for key, _value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            hygiene_helpers.run_repo_git(unsuppressed, "config", "--unset-all", key)
+        work = hygiene_helpers.init_fixture_repo(root / "work", "-b", "main")
+        run_repo_git(work, "config", "user.email", "fixture@example.invalid")
+        run_repo_git(work, "config", "user.name", "Fixture")
+        run_repo_git(work, "commit", "--allow-empty", "-m", "seed")
+        run_repo_git(work, "remote", "add", "unsuppressed", str(unsuppressed))
+        run_repo_git(work, "remote", "add", "suppressed", str(suppressed))
+
+        maintenance_children: dict[str, int] = {}
+        for remote in ("unsuppressed", "suppressed"):
+            trace = root / f"{remote}-trace.json"
+            environ = dict(os.environ, GIT_TRACE2_EVENT=str(trace))
+            subprocess.run(
+                hygiene_helpers.repo_git_command("push", remote, "main"),
+                cwd=work,
+                env=environ,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            maintenance_children[remote] = _maintenance_children(trace)
+
+        if maintenance_children["unsuppressed"] == 0:
+            raise AssertionError(
+                "push into the unsuppressed fixture remote did not expose the "
+                "receive-pack maintenance child"
+            )
+        if maintenance_children["suppressed"] != 0:
+            raise AssertionError(
+                "push into the suppressed fixture remote spawned "
+                f"{maintenance_children['suppressed']} maintenance children"
+            )
+
+
+def assert_routed_fixture_module_spawns_no_background_maintenance() -> None:
+    """A newly routed fixture suite must not detach a writer into its tmpdir.
+
+    `test_ci_input_sets.py` built its own `git` argv before #1323 and spawned a
+    background writer per commit, into a `TemporaryDirectory` it then deleted.
+    """
+    module = "scripts/test_ci_input_sets.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = pathlib.Path(tmp) / "trace.json"
+        environ = dict(os.environ, GIT_TRACE2_EVENT=str(trace))
+        completed = subprocess.run(
+            [sys.executable, module],
+            cwd=REPO_ROOT,
+            env=environ,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(f"{module} failed: {completed.stderr[-2000:]}")
+        spawned = _maintenance_children(trace)
+        if spawned:
+            raise AssertionError(f"{module} spawned {spawned} background maintenance children")
+
 
 def self_authorizing_errors_for_changes(
     changes: dict[str, str],
@@ -919,6 +1135,13 @@ def assert_debug_test_workflow_contract() -> None:
 
 
 def main() -> int:
+    assert_run_repo_git_suppresses_background_maintenance()
+    assert_suppression_args_match_suppression_config()
+    assert_init_fixture_repo_persists_suppression()
+    assert_self_authorizing_fixture_repo_persists_suppression()
+    assert_clone_fixture_repo_persists_suppression()
+    assert_push_to_fixture_remote_spawns_no_background_maintenance()
+    assert_routed_fixture_module_spawns_no_background_maintenance()
     assert_self_authorizing_governance_detector_contract()
     assert_debug_test_workflow_contract()
     print("OK: governance diff analysis tests passed.")

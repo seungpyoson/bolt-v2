@@ -1,0 +1,54 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "d2aac8e2157f",
+  "session_id": "a2712926-fa94-405b-b44f-792003993c06",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T13:23:58.553717Z",
+  "branch": "fix/1349-settlement-currency-park",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "src/strategies/binary_oracle_edge_taker/mod.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "088e4f5a4778",
+  "checkpoint_transcript_start": 4254,
+  "transcript_lines_at_start": 4254,
+  "compact_transcript_start": 987,
+  "token_usage": {
+    "input_tokens": 141,
+    "cache_creation_tokens": 4593,
+    "cache_read_tokens": 4474112,
+    "output_tokens": 4405,
+    "api_call_count": 5
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T13:23:58.218096Z",
+    "agent_lines": 13,
+    "agent_removed": 4,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 13,
+    "total_lines_changed": 17,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 81,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs": 81
+      }
+    }
+  ]
+}

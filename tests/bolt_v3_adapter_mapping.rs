@@ -451,9 +451,29 @@ fn configured_sockudo_transport_backend_is_compiled_for_live_connectivity() {
     let _ = std::any::type_name::<SockudoTransport<tokio::net::TcpStream>>();
 }
 
+/// Captured live exchangeInfo wire (schema 3, highest-compatible version).
+/// Same fixture as `tests/binance_sbe_schema_v5_decode.rs` — one place owns the
+/// expected version for vendor bumps.
+const CAPTURED_LIVE_EXCHANGE_INFO_SBE: &[u8] =
+    include_bytes!("fixtures/binance_sbe/exchange_info_btc_usdt_schema_3_5.bin");
+
+fn captured_live_exchange_info_sbe_version() -> u16 {
+    assert!(
+        CAPTURED_LIVE_EXCHANGE_INFO_SBE.len() >= 8,
+        "captured exchangeInfo fixture must contain at least the SBE message header"
+    );
+    u16::from_le_bytes([
+        CAPTURED_LIVE_EXCHANGE_INFO_SBE[6],
+        CAPTURED_LIVE_EXCHANGE_INFO_SBE[7],
+    ])
+}
+
 #[test]
 fn nt_binance_spot_sbe_schema_matches_live_exchange_info_version() {
-    assert_eq!(NT_BINANCE_SPOT_SBE_SCHEMA_VERSION, 4);
+    assert_eq!(
+        NT_BINANCE_SPOT_SBE_SCHEMA_VERSION,
+        captured_live_exchange_info_sbe_version()
+    );
 }
 
 #[test]

@@ -35,7 +35,7 @@ from ci_workflow_hygiene_test_helpers import (
     LOCAL_LANE_POLICY_TOML,
     REPO_ROOT,
     TEST_HARNESS_MEMBER,
-    TEST_HARNESS_NAMES,
+    test_harness_names,
     VERIFIER_PATH,
     all_standalone_live_node_manifest,
     assert_error,
@@ -6425,7 +6425,7 @@ def test_harness_manifest_rejects_double_modded_members() -> None:
     assert_test_harness_manifest_clean()
     harness_to_members = {
         harness: ((harness, TEST_HARNESS_MEMBER) if harness in {"iv", "pricing"} else (harness,))
-        for harness in TEST_HARNESS_NAMES
+        for harness in test_harness_names()
     }
     assert_test_harness_manifest_error(
         f"tests/{TEST_HARNESS_MEMBER}.rs is registered by multiple harnesses: iv, pricing",
@@ -6469,7 +6469,7 @@ def test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs() -> None:
     source = (REPO_ROOT / "tests" / "bolt_v3_binary_oracle_edge_taker_a10_structure.rs").read_text(encoding="utf-8")
     harness_to_members = {
         harness: ((harness, "bolt_v3_binary_oracle_edge_taker_a10_structure") if harness == "maker_taker" else (harness,))
-        for harness in TEST_HARNESS_NAMES
+        for harness in test_harness_names()
     }
     assert_test_harness_manifest_clean(
         manifest=base_test_harness_manifest(harness_to_members),

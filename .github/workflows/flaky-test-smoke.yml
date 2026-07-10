@@ -200,6 +200,9 @@ jobs:
             'store-failure-output = true' \
             > "$RUNNER_TEMP/nextest-junit.toml"
 
+      - name: Setup BVS MinIO S3 smoke
+        uses: ./.github/actions/setup-bvs-minio-s3-smoke
+
       - name: Run tests
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
@@ -251,6 +254,10 @@ jobs:
           token: ${{ secrets.MERGIFY_TOKEN }}
           job_name: bvs-test archive
           report_path: "junit-*.xml"
+
+      - name: Stop BVS MinIO S3 smoke container
+        if: always()
+        run: docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   flaky-smoke-rust-backtester-issue-789:
     name: Backtester Issue 789 - Flaky Smoke (Run ${{ matrix.run_number }})

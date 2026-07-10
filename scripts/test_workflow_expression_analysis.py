@@ -1004,6 +1004,9 @@ jobs:
         run_number: [1, 2, 3, 4, 5]
         shard: [1, 2, 3, 4]
     steps:
+      - name: Setup BVS MinIO S3 smoke
+        uses: ./.github/actions/setup-bvs-minio-s3-smoke
+
       - name: Run tests
         run: |
           rc=0
@@ -1029,6 +1032,10 @@ jobs:
         with:
           job_name: bvs-test archive
           report_path: "junit-*.xml"
+
+      - name: Stop BVS MinIO S3 smoke container
+        if: always()
+        run: docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   flaky-detection-rust-backtester-issue-789:
     strategy:
@@ -1106,6 +1113,9 @@ jobs:
         run_number: [1]
         shard: [1]
     steps:
+      - name: Setup BVS MinIO S3 smoke
+        uses: ./.github/actions/setup-bvs-minio-s3-smoke
+
       - name: Run tests
         run: |
           rc=0
@@ -1131,6 +1141,10 @@ jobs:
         with:
           job_name: bvs-test archive
           report_path: "junit-*.xml"
+
+      - name: Stop BVS MinIO S3 smoke container
+        if: always()
+        run: docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   flaky-smoke-rust-backtester-issue-789:
     strategy:

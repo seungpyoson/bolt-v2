@@ -145,15 +145,16 @@ runs:
             exit 0
           fi
         done
-        sudo apt-get update
-        for rust_linker_program in "${rust_linker_programs[@]}"; do
-          if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
-            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-            exit 0
-          fi
-        done
-        echo "::error::failed to install any configured Rust linker"
-        exit 1
+        if sudo apt-get update; then
+          for rust_linker_program in "${rust_linker_programs[@]}"; do
+            if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
+              echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+        fi
+        echo "::warning::failed to install any configured Rust linker; continuing without fast linker"
+        echo "Rust linker: unavailable; continuing without BOLT_RUST_FAST_LINKER" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}

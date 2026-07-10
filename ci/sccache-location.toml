@@ -1,0 +1,6 @@
+schema_version = 1
+
+[location]
+bucket = "bolt-v2-ci-cache-675819144420-us-east-2"
+region = "us-east-2"
+key_prefix = "sccache/bolt-v2/arm64/root-nextest/"

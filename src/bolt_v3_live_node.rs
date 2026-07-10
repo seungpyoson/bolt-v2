@@ -2310,9 +2310,9 @@ enum LiveNodeRunStartupOutcome {
 
 /// Pure launch invariant: `NodeState::Running` requires the NT trader to be running.
 ///
-/// NT's engines-not-connected path sets `NodeState::Running` without calling
-/// `start_trader()`. On the successful path `start_trader()` runs before the
-/// node transitions to `Running`, so this is not a race — it is the fail-open
+/// NT's engines-not-connected path sets `NodeState::Running` before the trader
+/// is started. On the successful path the trader is started before the node
+/// transitions to `Running`, so this is not a race — it is the fail-open
 /// signature of a trader-less "Running" node.
 fn live_node_trader_running_invariant(node_state: NodeState, trader_running: bool) -> bool {
     !matches!(node_state, NodeState::Running) || trader_running

@@ -61,6 +61,10 @@ const BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/";
 const BACKFILL_CONVERSION_COMPLETION_LEDGER_SUFFIX: &str =
     "/ledger/backfill-conversion-completion-ledger.json";
+const PMXT_OBJECT_MANIFESTS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-";
+const PMXT_AGGREGATE_OBJECT_MANIFEST_SUFFIX: &str =
+    "/manifest/source-universe-object-manifest.json";
+const PMXT_CATEGORY_OBJECT_MANIFEST_DIR: &str = "/category-manifests/";
 
 /// Tier-1 subtree prefixes whose generated JSON artifacts are evicted.
 pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
@@ -258,6 +262,7 @@ pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
         || is_tier1_evicted_reference_fixture_path(path)
         || is_phase3_conversion_batch_plan_path(path)
         || is_backfill_conversion_completion_ledger_path(path)
+        || is_pmxt_source_universe_object_manifest_path(path)
 }
 
 /// `true` iff `path` is a Phase-3 generated conversion batch plan.
@@ -280,6 +285,26 @@ pub fn is_backfill_conversion_completion_ledger_path(path: &str) -> bool {
         return false;
     };
     !scope.is_empty() && !scope.contains('/')
+}
+
+/// `true` iff `path` is a generated PMXT source-universe object manifest.
+pub fn is_pmxt_source_universe_object_manifest_path(path: &str) -> bool {
+    let Some(scoped_path) = path.strip_prefix(PMXT_OBJECT_MANIFESTS_PREFIX) else {
+        return false;
+    };
+    if let Some(scope) = scoped_path.strip_suffix(PMXT_AGGREGATE_OBJECT_MANIFEST_SUFFIX) {
+        return !scope.is_empty() && !scope.contains('/');
+    }
+    let Some((scope, file)) = scoped_path.split_once(PMXT_CATEGORY_OBJECT_MANIFEST_DIR) else {
+        return false;
+    };
+    !scope.is_empty()
+        && !scope.contains('/')
+        && !file.contains('/')
+        && file.ends_with(".json")
+        && file.strip_suffix(".json").is_some_and(|stem| {
+            stem.contains("-object-manifest-") && !stem.ends_with("-object-manifest-")
+        })
 }
 
 /// `true` iff `path` is a per-record (non-`00000`) execution-pack run artifact.
@@ -525,6 +550,38 @@ mod tests {
         ));
         assert!(!is_backfill_conversion_completion_ledger_path(
             &rejected_other_json
+        ));
+    }
+
+    #[test]
+    fn pmxt_object_manifest_scope_accepts_only_family_shapes() {
+        let accepted_aggregate = format!(
+            "{PMXT_OBJECT_MANIFESTS_PREFIX}example/manifest/source-universe-object-manifest.json"
+        );
+        let accepted_category = format!(
+            "{PMXT_OBJECT_MANIFESTS_PREFIX}example/category-manifests/example-object-manifest-category.json"
+        );
+        let rejected_non_manifest =
+            format!("{PMXT_OBJECT_MANIFESTS_PREFIX}example/category-manifests/metadata.json");
+        let rejected_nested = format!(
+            "{PMXT_OBJECT_MANIFESTS_PREFIX}example/nested/manifest/source-universe-object-manifest.json"
+        );
+        let rejected_non_pmxt = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/example/manifest/source-universe-object-manifest.json";
+
+        assert!(is_pmxt_source_universe_object_manifest_path(
+            &accepted_aggregate
+        ));
+        assert!(is_pmxt_source_universe_object_manifest_path(
+            &accepted_category
+        ));
+        assert!(!is_pmxt_source_universe_object_manifest_path(
+            &rejected_non_manifest
+        ));
+        assert!(!is_pmxt_source_universe_object_manifest_path(
+            &rejected_nested
+        ));
+        assert!(!is_pmxt_source_universe_object_manifest_path(
+            rejected_non_pmxt
         ));
     }
 }

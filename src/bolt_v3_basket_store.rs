@@ -157,7 +157,6 @@ impl BoltV3BasketStore {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedBasketState {
     schema_version: u32,
-    #[serde(rename = "state_v2")]
     state: BoltV3BasketExecutionState,
 }
 

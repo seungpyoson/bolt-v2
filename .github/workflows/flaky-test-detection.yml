@@ -72,9 +72,28 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          report="target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -148,6 +167,9 @@ jobs:
             'store-failure-output = true' \
             > "$RUNNER_TEMP/nextest-junit.toml"
 
+      - name: Setup BVS MinIO S3 smoke
+        uses: ./.github/actions/setup-bvs-minio-s3-smoke
+
       - name: Run tests
         run: |
           rc=0
@@ -156,9 +178,28 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -169,6 +210,10 @@ jobs:
           token: ${{ secrets.MERGIFY_TOKEN }}
           job_name: bvs-test archive
           report_path: "junit-*.xml"
+
+      - name: Stop BVS MinIO S3 smoke container
+        if: always()
+        run: docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   flaky-detection-rust-backtester-issue-789:
     name: Backtester Issue 789 - Flaky Detection (Run ${{ matrix.run_number }})
@@ -239,9 +284,28 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()

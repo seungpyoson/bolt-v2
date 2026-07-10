@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 const WORKSPACE_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const WORKSPACE_CARGO_LOCK: &str = include_str!("../Cargo.lock");
-const NT_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
+const NT_GIT_URL: &str = "https://github.com/seungpyoson/nautilus_trader.git";
 const REQUIRED_BACKTEST_FEATURES: [&str; 2] = ["examples", "streaming"];
 const REQUIRED_PERSISTENCE_FEATURES: [&str; 1] = ["cloud"];
 

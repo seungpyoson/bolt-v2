@@ -967,12 +967,50 @@ reason = "Stable log label naming the stop-and-grace path for an already-shuttin
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
+literal = '''"trader-not-started launch invariant"'''
+context = '''"trader-not-started launch invariant",'''
+classification = "startup_watchdog_shutdown_reason_label"
+reason = "Stable log label naming the stop-and-grace path for the Running-without-trader launch invariant; it reports observed NT launch state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"trader-not-started after capture failure"'''
+context = '''"trader-not-started after capture failure",'''
+classification = "startup_watchdog_shutdown_reason_label"
+reason = "Stable log label naming the stop-and-grace path when capture failure coincides with the Running-without-trader fail-open; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
 literal = '''"bolt-v3 live-node startup shutdown grace elapsed after {trigger} \
-                 ({shutdown_grace:?}); node_state={node_state}; \
-                 registered_client_labels={}"'''
+                         ({shutdown_grace:?}); node_state={node_state}; \
+                         registered_client_labels={}"'''
 context = '''"bolt-v3 live-node startup shutdown grace elapsed after {trigger} \'''
 classification = "startup_watchdog_shutdown_grace_timeout_diagnostic"
 reason = "Display template for a fail-loud startup shutdown-grace timeout diagnostic; trigger, grace duration, node state, and client labels are derived from runtime state and TOML-owned Nautilus timeout fields."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 live-node launch aborted: NT NodeState is Running but the \
+                         trader was never started (engines-not-connected fail-open); \
+                         startup shutdown grace elapsed after {trigger} ({shutdown_grace:?}) \
+                         before the runner returned; node_state={node_state}; \
+                         registered_client_labels={}"'''
+context = '''"bolt-v3 live-node launch aborted: NT NodeState is Running but the \'''
+classification = "startup_watchdog_trader_not_started_diagnostic"
+reason = "Static fail-loud operator diagnostic for the trader-not-started launch invariant when shutdown grace also elapsed; node state, trigger, grace duration, and client labels are observed runtime state and do not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 live-node launch aborted: NT NodeState is Running but the trader \
+                 was never started (engines-not-connected fail-open); \
+                 node_state={node_state}; registered_client_labels={}"'''
+context = '''"bolt-v3 live-node launch aborted: NT NodeState is Running but the trader \'''
+classification = "startup_watchdog_trader_not_started_diagnostic"
+reason = "Static fail-loud operator diagnostic for NT NodeState::Running without a started trader (engines-not-connected fail-open); node state and client labels are observed runtime state and do not configure trading behavior."
 
 [[allowed]]
 path = "src/bolt_v3_live_node/transport_scope.rs"

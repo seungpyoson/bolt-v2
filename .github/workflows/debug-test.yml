@@ -69,6 +69,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: debug_test.debug-test
 
       - name: Resolve debug nextest fingerprint
@@ -251,65 +252,12 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
-      - name: Resolve sccache eligibility
-        id: sccache-eligible
-        if: steps.debug-archive-ready.outputs.value != 'true'
-        continue-on-error: true
-        env:
-          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
-          REGION: ${{ vars.CI_SCCACHE_REGION }}
-          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
-        run: |
-          vars_present=true
-          [[ -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
-          location_matches=true
-          [[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false
-          if [[ "$vars_present" == "true" && "$location_matches" == "true" ]]; then
-            echo "eligible=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"
-          echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"
-          echo "cache_mode=read_only vars_present=$vars_present location_matches=$location_matches"
-
-      - name: Configure AWS credentials for sccache
-        id: sccache-aws
-        if: steps.sccache-eligible.outputs.eligible == 'true'
-        continue-on-error: true
-        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
-        with:
-          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}
-          aws-region: ${{ vars.CI_SCCACHE_REGION }}
-
-      - name: Install sccache
-        id: sccache-install
-        if: steps.sccache-eligible.outputs.eligible == 'true' && steps.sccache-aws.outcome == 'success'
-        continue-on-error: true
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-        with:
-          version: "v0.10.0"
-
-      - name: Resolve sccache enablement
+      - name: Setup read-only sccache
         id: sccache
-        if: steps.debug-archive-ready.outputs.value != 'true'
-        continue-on-error: true
-        run: |
-          enabled=false
-          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
-                && "${{ steps.sccache-aws.outcome }}" == "success" \
-                && "${{ steps.sccache-install.outcome }}" == "success" \
-                && -n "${SCCACHE_PATH:-}" ]]; then
-            if "$SCCACHE_PATH" --start-server; then
-              "$SCCACHE_PATH" --zero-stats || true
-              enabled=true
-            else
-              echo "sccache server failed to start; building without cache"
-            fi
-          fi
-          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
-          echo "sccache enabled=$enabled"
+        uses: ./.github/actions/sccache-setup
+        with:
+          active: ${{ (steps.debug-archive-ready.outputs.value != 'true' || inputs.package != '') && 'true' || 'false' }}
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
 
       - name: Run debug test
         id: run-debug-test
@@ -321,7 +269,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/debug-test.log"
           set +e
-          just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee "$log"
+          just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee -a "$log"
           rc="${PIPESTATUS[0]}"
           set -e
           if [[ "$rc" -eq 0 ]]; then
@@ -339,5 +287,7 @@ jobs:
           exit "$rc"
 
       - name: Print sccache stats
-        if: always() && steps.sccache.outputs.enabled == 'true'
-        run: '"$SCCACHE_PATH" --show-stats || true'
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}

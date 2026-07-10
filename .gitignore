@@ -100,3 +100,7 @@ specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-p
 # Issue #704 Phase 3: generated venue conversion batch plans are regenerated
 # from committed TOML specs in tests and fingerprinted in the eviction index.
 specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/*/plan/backfill-conversion-batch-plan.json
+
+# Issue #704: generated backfill conversion completion ledgers are regenerated
+# from committed TOML specs in tests and fingerprinted in the eviction index.
+specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/*/ledger/backfill-conversion-completion-ledger.json

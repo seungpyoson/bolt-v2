@@ -1532,15 +1532,16 @@ runs:
             exit 0
           fi
         done
-        sudo apt-get update
-        for rust_linker_program in "${rust_linker_programs[@]}"; do
-          if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
-            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-            exit 0
-          fi
-        done
-        echo "::error::failed to install any configured Rust linker"
-        exit 1
+        if sudo apt-get update; then
+          for rust_linker_program in "${rust_linker_programs[@]}"; do
+            if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
+              echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+        fi
+        echo "::warning::failed to install any configured Rust linker; continuing without fast linker"
+        echo "Rust linker: unavailable; continuing without BOLT_RUST_FAST_LINKER" >> "$GITHUB_STEP_SUMMARY"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -1575,31 +1576,54 @@ def all_standalone_live_node_manifest(verifier=None) -> CiTestManifest:
     harness_to_members = {member: (member,) for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
     return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
 
-TEST_HARNESS_NAMES = (
+# Harness identities pinned by hygiene self-tests that assert names by string.
+# Length of the fixture is never taken from this tuple — it is derived from
+# verify_ci_workflow_hygiene.EXPECTED_HARNESS_COUNT so a count bump cannot
+# desync the fake-repo fixture from the production pin.
+_PINNED_TEST_HARNESS_NAMES: tuple[str, ...] = (
     "iv",
-    "outcome_groups",
-    "maker_taker",
-    "kill_switch_loss",
     "pricing",
-    "admission_orders",
-    "platform_config",
-    "runtime_capture_io",
-    "wiring_registration",
-    "chainlink_startup_boot",
-    "bolt_v3_polymarket_venue_truth",
-    "bolt_v3_risk_reservation_substrate",
-    "bolt_v3_risk_reservation_epoch_manager",
+    "maker_taker",
 )
 
 TEST_HARNESS_MEMBER = "bolt_v3_fixture_member"
 
+
+def test_harness_names(verifier=None) -> tuple[str, ...]:
+    """Fixture harness names sized exactly to EXPECTED_HARNESS_COUNT.
+
+    Single source of truth for fixture length is the verifier constant. Pinned
+    names keep self-tests that hardcode harness identities (iv/pricing/maker_taker)
+    stable; remaining slots are synthetic filler.
+    """
+    if verifier is None:
+        verifier = load_verifier()
+    expected = verifier.EXPECTED_HARNESS_COUNT
+    if not isinstance(expected, int) or expected < len(_PINNED_TEST_HARNESS_NAMES):
+        raise AssertionError(
+            "EXPECTED_HARNESS_COUNT must be an int >= "
+            f"{len(_PINNED_TEST_HARNESS_NAMES)} (pinned self-test harnesses), got {expected!r}"
+        )
+    names: list[str] = list(_PINNED_TEST_HARNESS_NAMES)
+    next_idx = 0
+    while len(names) < expected:
+        candidate = f"fixture_harness_{next_idx}"
+        next_idx += 1
+        if candidate in names:
+            continue
+        names.append(candidate)
+    return tuple(names)
+
+
 def base_test_harness_manifest(
     harness_to_members: dict[str, tuple[str, ...]] | None = None,
+    *,
+    verifier=None,
 ) -> CiTestManifest:
     if harness_to_members is None:
         harness_to_members = {
             harness: ((harness, TEST_HARNESS_MEMBER) if harness == "iv" else (harness,))
-            for harness in TEST_HARNESS_NAMES
+            for harness in test_harness_names(verifier)
         }
     member_to_harness: dict[str, str] = {}
     for harness, members in harness_to_members.items():
@@ -1618,6 +1642,8 @@ def write_test_harness_fixture(
     write_workflow: bool = True,
     write_justfile: bool = True,
 ) -> None:
+    effective_manifest = manifest if manifest is not None else base_test_harness_manifest()
+    harness_names = tuple(effective_manifest.harness_to_members.keys())
     cargo_lines = [
         "[package]",
         'name = "bolt-v2-fixture"',
@@ -1626,7 +1652,7 @@ def write_test_harness_fixture(
         f"autotests = {cargo_autotests}",
         "",
     ]
-    for harness in TEST_HARNESS_NAMES:
+    for harness in harness_names:
         cargo_lines.extend(
             [
                 "[[test]]",
@@ -1638,9 +1664,8 @@ def write_test_harness_fixture(
     (root / "Cargo.toml").write_text("\n".join(cargo_lines), encoding="utf-8")
     tests_root = root / "tests"
     tests_root.mkdir()
-    fixture_files = {harness: "" for harness in TEST_HARNESS_NAMES}
-    manifest_members = manifest.harness_to_members if manifest is not None else base_test_harness_manifest().harness_to_members
-    for harness, members in manifest_members.items():
+    fixture_files = {harness: "" for harness in harness_names}
+    for harness, members in effective_manifest.harness_to_members.items():
         for member in members:
             if member != harness:
                 fixture_files[member] = "#[test]\nfn fixture_member_runs() {}\n"
@@ -1699,6 +1724,20 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+
+[remote_compile_cache]
+enabled = true
+enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+ci_env = "GITHUB_ACTIONS"
+wrapper_env = "SCCACHE_PATH"
+wrapper_program = "sccache"
+
+[remote_fast_linker]
+enabled = true
+ci_env = "GITHUB_ACTIONS"
+linker_env = "BOLT_RUST_FAST_LINKER"
+programs = ["mold", "lld"]
+
 {LOCAL_LANE_POLICY_TOML}
 """
 
@@ -1853,7 +1892,7 @@ def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ..
     return tuple(
         int(denominator)
         for denominator in re.findall(
-            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            r"(?m)^\s*(?:BOLT_RUST_VERIFICATION_SCCACHE=0\s+)?just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
             "\n".join(job_lines),
         )
     )
@@ -1917,6 +1956,17 @@ def run_verifier_main_with_no_mistakes(
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
         action_path.write_text(BASE_ACTION)
+        sccache_action_path = tmp_path / ".github" / "actions" / "sccache-setup" / "action.yml"
+        sccache_action_path.parent.mkdir(parents=True)
+        sccache_action_path.write_text(repo_source_text(".github/actions/sccache-setup/action.yml"))
+        sccache_stats_action_path = tmp_path / ".github" / "actions" / "sccache-stats" / "action.yml"
+        sccache_stats_action_path.parent.mkdir(parents=True)
+        sccache_stats_action_path.write_text(repo_source_text(".github/actions/sccache-stats/action.yml"))
+        sccache_eligibility_path = tmp_path / "scripts" / "sccache_eligibility.py"
+        sccache_eligibility_path.write_text(repo_source_text("scripts/sccache_eligibility.py"))
+        sccache_config_path = tmp_path / "ci" / "sccache-location.toml"
+        sccache_config_path.parent.mkdir(parents=True, exist_ok=True)
+        sccache_config_path.write_text(repo_source_text("ci/sccache-location.toml"))
 
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)

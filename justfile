@@ -116,11 +116,6 @@ managed-clippy: check-workspace
     cargo clippy --locked -- -D warnings
 
 [private]
-managed-test *args: check-workspace
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-test must run through scripts/rust_verification.py run"; exit 2; fi
-    cargo nextest run --locked {{args}}
-
-[private]
 managed-build: check-workspace
     if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
     cargo zigbuild --release --target {{target}} --locked
@@ -131,7 +126,7 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
-debug-test filter package="": check-workspace require-rust-verification-owner
+debug-test filter package="" *extra_args: check-workspace require-rust-verification-owner
     #!/usr/bin/env bash
     set -euo pipefail
     filter="${DEBUG_TEST_FILTER:-}"
@@ -141,15 +136,16 @@ debug-test filter package="": check-workspace require-rust-verification-owner
     if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
     args=(-E "$filter")
     if [[ "$filter" =~ ^[[:alnum:]_:.:-]+$ ]]; then args=("$filter"); fi
+    extra=({{extra_args}})
     if [[ "$package" == "backtesting-vertical-slice" ]]; then
-        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --locked "${args[@]}"
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --locked "${args[@]}" "${extra[@]}"
     elif [[ -s "${NEXTEST_ARCHIVE_PATH:-}" && -z "$package" ]]; then
         extract_root="${RUNNER_TEMP:-/tmp}/debug-nextest-archive-extract"
         mkdir -p "$extract_root"
-        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}"
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}" "${extra[@]}"
     else
         if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
-        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}"
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}" "${extra[@]}"
     fi
 
 test-archive archive *args: check-workspace require-rust-verification-owner
@@ -285,6 +281,8 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     [ -f .github/workflows/flaky-test-detection.yml ] && workflow_files+=(.github/workflows/flaky-test-detection.yml)
     [ -f .github/workflows/flaky-test-smoke.yml ] && workflow_files+=(.github/workflows/flaky-test-smoke.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
+    [ -f .github/actions/sccache-setup/action.yml ] && action_files+=(.github/actions/sccache-setup/action.yml)
+    [ -f .github/actions/sccache-stats/action.yml ] && action_files+=(.github/actions/sccache-stats/action.yml)
     github_script_files=(.github/scripts/*.sh)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}" "${github_script_files[@]}")

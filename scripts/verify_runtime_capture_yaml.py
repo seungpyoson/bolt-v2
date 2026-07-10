@@ -231,6 +231,19 @@ def load_yaml(path: Path):
     return yaml.safe_load(read(path))
 
 
+
+def _is_nautilus_trader_git_source(git_source: str) -> bool:
+    """Accept upstream or an explicit pin-fork of nautilus_trader.
+
+    Pin forks (for example seungpyoson/nautilus_trader carrying a single
+    cherry-picked adapter fix on top of a verified pin) remain a single
+    source of truth: every nautilus-* crate must still share one rev.
+    """
+    return git_source.rstrip("/").endswith("nautilus_trader.git") and (
+        "github.com/nautechsystems/nautilus_trader.git" in git_source
+        or "github.com/seungpyoson/nautilus_trader.git" in git_source
+    )
+
 def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
     cargo_doc = tomllib.loads(read(REPO_ROOT / "Cargo.toml"))
     dependencies = cargo_doc.get("dependencies", {})
@@ -259,9 +272,8 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
             )
             continue
         git_source = spec.get("git")
-        if (
-            not isinstance(git_source, str)
-            or "nautechsystems/nautilus_trader.git" not in git_source
+        if not isinstance(git_source, str) or not _is_nautilus_trader_git_source(
+            git_source
         ):
             findings.append(
                 (

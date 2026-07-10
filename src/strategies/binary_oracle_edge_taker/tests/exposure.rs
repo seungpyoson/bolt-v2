@@ -3943,6 +3943,77 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
 }
 
 #[test]
+fn live_entered_and_pending_adopted_positions_retain_interval_end_boundary() {
+    let live_pending_entry = || {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        strategy.config.order_notional_target = 25.0;
+        strategy.config.maximum_position_notional = 25.0;
+        strategy.config.risk_lambda = 0.0001;
+        strategy
+            .try_submit_entry_order(1_200)
+            .expect("live entry should be admissible")
+            .expect("live entry should create pending exposure");
+        strategy
+    };
+
+    let mut fill_strategy = live_pending_entry();
+    let (fill_client_order_id, fill_instrument_id, fill_interval_end_ms) = {
+        let pending = fill_strategy
+            .pending_entry()
+            .expect("live submit should retain pending entry context");
+        (
+            pending.client_order_id,
+            pending.instrument_id,
+            pending
+                .lifecycle
+                .interval_end_ms()
+                .expect("live pending entry must inherit the selected market interval end"),
+        )
+    };
+    fill_strategy
+        .on_order_filled(&order_filled_event(
+            fill_client_order_id,
+            fill_instrument_id,
+            PositionId::from("P-LIVE-ENTRY-INTERVAL-PIN"),
+        ))
+        .expect("live entry fill should materialize managed exposure");
+    assert_eq!(
+        managed_position_ref(&fill_strategy)
+            .and_then(|position| position.lifecycle.interval_end_ms()),
+        Some(fill_interval_end_ms),
+        "live-entered position must preserve the pending entry interval end"
+    );
+
+    let mut position_strategy = live_pending_entry();
+    let (position_instrument_id, position_interval_end_ms) = {
+        let pending = position_strategy
+            .pending_entry()
+            .expect("live submit should retain pending entry context");
+        (
+            pending.instrument_id,
+            pending
+                .lifecycle
+                .interval_end_ms()
+                .expect("live pending entry must inherit the selected market interval end"),
+        )
+    };
+    position_strategy.on_position_opened(position_opened_event(
+        position_instrument_id,
+        PositionId::from("P-PENDING-ADOPTED-INTERVAL-PIN"),
+        Quantity::new(10.0, 2),
+        0.450,
+    ));
+    assert_eq!(
+        managed_position_ref(&position_strategy)
+            .and_then(|position| position.lifecycle.interval_end_ms()),
+        Some(position_interval_end_ms),
+        "pending-adopted position must inherit the pending entry interval end"
+    );
+}
+
+#[test]
 fn direct_entry_fill_materialization_clears_stale_flat_terminal_override() {
     let mut strategy = ready_to_trade_strategy();
     let instrument_id = selected_entry_instrument(&strategy);

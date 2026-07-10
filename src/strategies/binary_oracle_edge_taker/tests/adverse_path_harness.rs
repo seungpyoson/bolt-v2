@@ -441,7 +441,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
             // single-exposure strategy is not parked forever. Venue residual may
             // still exist in NT cache; occupancy is strategy-local.
             && matches!(strategy.exposure, ExposureState::Flat)
-            && strategy.settlement_booking_terminal_latched,
+            && !strategy.settlement_booking_terminal_evidence_keys.is_empty(),
         "resolution feed outage must fail closed after close-fetch retry exhaustion: no settlement booking, one loud booking-error record, exposure released to Flat; exposure={:?}, close_fetch_count={close_fetch_count}, events={events:?}",
         strategy.exposure
     );
@@ -1163,7 +1163,7 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
                 .contains(&settlement_key)
             // #1349: terminal booking-error releases exposure (Flat).
             && matches!(strategy.exposure, ExposureState::Flat)
-            && strategy.settlement_booking_terminal_latched,
+            && !strategy.settlement_booking_terminal_evidence_keys.is_empty(),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error after close-fetch retry exhaustion and release exposure to Flat; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
     );
@@ -1239,7 +1239,7 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
                 .contains(&settlement_key)
             // #1349: terminal booking-error releases exposure (Flat).
             && matches!(strategy.exposure, ExposureState::Flat)
-            && strategy.settlement_booking_terminal_latched,
+            && !strategy.settlement_booking_terminal_evidence_keys.is_empty(),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered cache position with missing instrument metadata must record a terminal booking-error and release exposure to Flat; exposure={:?} events={events:?}",
         strategy.exposure,
     );
@@ -1732,7 +1732,11 @@ fn missing_settlement_currency_records_booking_error_from_config_derived_fixture
     assert_eq!(settlement_booking_error_count(&events), 1);
     // #1349: terminal booking-error releases single-exposure occupancy.
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    assert!(strategy.settlement_booking_terminal_latched);
+    assert!(
+        !strategy
+            .settlement_booking_terminal_evidence_keys
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1778,7 +1782,11 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
     assert!(sink.venue_explanations().is_empty());
     // #1349: terminal booking-error releases single-exposure occupancy.
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    assert!(strategy.settlement_booking_terminal_latched);
+    assert!(
+        !strategy
+            .settlement_booking_terminal_evidence_keys
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1859,7 +1867,11 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         ],
         "each distinct settlement booking-error key must emit terminal lifecycle evidence"
     );
-    assert!(strategy.settlement_booking_terminal_latched);
+    assert!(
+        !strategy
+            .settlement_booking_terminal_evidence_keys
+            .is_empty()
+    );
 }
 
 #[test]

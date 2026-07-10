@@ -718,9 +718,6 @@ pub struct BinaryOracleEdgeTaker {
     /// Flood guard for entry-evaluation log volume: last gate+pricing block-reason
     /// sets. WARN/INFO only on set change (blocked↔unblocked); full field dump is debug.
     last_entry_block_reason_sets: Option<(Vec<EntryBlockReason>, Vec<EntryPricingBlockReason>)>,
-    /// Sticky-until-restart latch for terminal settlement booking failure. There is
-    /// no operator-ack clear path; process restart is the only reset.
-    settlement_booking_terminal_latched: bool,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -841,7 +838,6 @@ impl BinaryOracleEdgeTaker {
             settlement_booking_error_keys: BTreeSet::new(),
             settlement_booking_terminal_evidence_keys: BTreeSet::new(),
             last_entry_block_reason_sets: None,
-            settlement_booking_terminal_latched: false,
             settlement_close_fetch_attempts: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
@@ -1253,8 +1249,10 @@ impl BinaryOracleEdgeTaker {
         Ok(())
     }
 
-    /// Fail-loud terminal handling for settlement booking errors: durable lifecycle
-    /// evidence, sticky-until-restart signal latch, and exposure Flat.
+    /// Fail-loud terminal release applies only under the two-leg invariant:
+    /// the market is expired, or the position is unmanageable by construction
+    /// because an unknown interval permanently blocks both exit and settlement.
+    /// Durable lifecycle evidence and ERROR output are deduped per settlement key.
     fn apply_settlement_booking_terminal_release(
         &mut self,
         position: &OpenPositionState,
@@ -1262,7 +1260,6 @@ impl BinaryOracleEdgeTaker {
         reason_detail: String,
         observed_at_ns: Option<u64>,
     ) {
-        self.settlement_booking_terminal_latched = true;
         if self
             .settlement_booking_terminal_evidence_keys
             .insert(settlement_key)

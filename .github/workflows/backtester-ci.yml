@@ -768,7 +768,7 @@ jobs:
       - name: test issue-789
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
-          just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
+          just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --success-output immediate issue_789_first_real_free_data_taker_pl
 
       - name: Upload issue #789 first-P/L artifact
         id: upload-issue-789-first-pl

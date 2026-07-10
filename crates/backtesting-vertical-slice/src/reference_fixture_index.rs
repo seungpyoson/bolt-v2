@@ -57,6 +57,10 @@ const TIER1_PMXT_SOURCE_PROOFS_PREFIX: &str = "specs/023-nt-research-analytics-p
 const PHASE3_CONVERSION_BATCHES_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/";
 const PHASE3_CONVERSION_BATCH_PLAN_SUFFIX: &str = "/plan/backfill-conversion-batch-plan.json";
+const BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/";
+const BACKFILL_CONVERSION_COMPLETION_LEDGER_SUFFIX: &str =
+    "/ledger/backfill-conversion-completion-ledger.json";
 
 /// Tier-1 subtree prefixes whose generated JSON artifacts are evicted.
 pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
@@ -253,6 +257,7 @@ pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
     is_evicted_execution_pack_record_path(path)
         || is_tier1_evicted_reference_fixture_path(path)
         || is_phase3_conversion_batch_plan_path(path)
+        || is_backfill_conversion_completion_ledger_path(path)
 }
 
 /// `true` iff `path` is a Phase-3 generated conversion batch plan.
@@ -261,6 +266,17 @@ pub fn is_phase3_conversion_batch_plan_path(path: &str) -> bool {
         return false;
     };
     let Some(scope) = scope.strip_suffix(PHASE3_CONVERSION_BATCH_PLAN_SUFFIX) else {
+        return false;
+    };
+    !scope.is_empty() && !scope.contains('/')
+}
+
+/// `true` iff `path` is a generated backfill conversion-completion ledger.
+pub fn is_backfill_conversion_completion_ledger_path(path: &str) -> bool {
+    let Some(scope) = path.strip_prefix(BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX) else {
+        return false;
+    };
+    let Some(scope) = scope.strip_suffix(BACKFILL_CONVERSION_COMPLETION_LEDGER_SUFFIX) else {
         return false;
     };
     !scope.is_empty() && !scope.contains('/')
@@ -484,5 +500,31 @@ mod tests {
             &rejected_direct_json
         ));
         assert!(!is_tier1_evicted_reference_fixture_path(&rejected_nested));
+    }
+
+    #[test]
+    fn backfill_conversion_completion_ledger_scope_is_single_scope_generated_json() {
+        let accepted = format!(
+            "{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/ledger/backfill-conversion-completion-ledger.json"
+        );
+        let rejected_toml = format!(
+            "{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/backfill-conversion-completion-ledger.toml"
+        );
+        let rejected_nested = format!(
+            "{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/nested/ledger/backfill-conversion-completion-ledger.json"
+        );
+        let rejected_other_json =
+            format!("{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/ledger/metadata.json");
+
+        assert!(is_backfill_conversion_completion_ledger_path(&accepted));
+        assert!(!is_backfill_conversion_completion_ledger_path(
+            &rejected_toml
+        ));
+        assert!(!is_backfill_conversion_completion_ledger_path(
+            &rejected_nested
+        ));
+        assert!(!is_backfill_conversion_completion_ledger_path(
+            &rejected_other_json
+        ));
     }
 }

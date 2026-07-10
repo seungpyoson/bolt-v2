@@ -17,6 +17,9 @@ jobs:
   flaky-smoke-rust-root:
     name: Root Rust Tests - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +34,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-root
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -55,6 +59,12 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Setup read-only sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
       - name: Configure nextest JUnit output
         run: |
           cp .config/nextest.toml "$RUNNER_TEMP/nextest-junit.toml"
@@ -67,16 +77,46 @@ jobs:
             >> "$RUNNER_TEMP/nextest-junit.toml"
 
       - name: Run tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
+          log="$RUNNER_TEMP/flaky-smoke-root-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
-          rc=$?
+          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Stage JUnit report
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          report="target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -91,6 +131,9 @@ jobs:
   flaky-smoke-rust-backtester:
     name: Backtester Rust Tests - Flaky Smoke (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +148,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester
 
       - name: Resolve crate managed target dir
@@ -141,6 +185,12 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Setup read-only sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
       - name: Configure nextest JUnit output
         run: |
           printf '%s\n' \
@@ -154,16 +204,46 @@ jobs:
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
 
       - name: Run tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
+          log="$RUNNER_TEMP/flaky-smoke-backtester-${{ matrix.shard }}-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
-          rc=$?
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -182,6 +262,9 @@ jobs:
   flaky-smoke-rust-backtester-issue-789:
     name: Backtester Issue 789 - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -195,6 +278,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester-issue-789
 
       - name: Resolve crate managed target dir
@@ -231,6 +315,12 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Setup read-only sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
       - name: Configure nextest JUnit output
         run: |
           printf '%s\n' \
@@ -241,16 +331,46 @@ jobs:
             > "$RUNNER_TEMP/nextest-junit.toml"
 
       - name: Run tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
+          log="$RUNNER_TEMP/flaky-smoke-backtester-issue-789-${{ matrix.run_number }}.log"
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
-          rc=$?
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()

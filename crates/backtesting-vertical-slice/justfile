@@ -18,11 +18,6 @@ managed-clippy:
     cargo clippy --locked -- -D warnings
 
 [private]
-managed-test *args:
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-test must run through scripts/rust_verification.py run"; exit 2; fi
-    cargo nextest run --locked {{args}}
-
-[private]
 managed-build:
     if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
     cargo build --release --target {{target}} --locked

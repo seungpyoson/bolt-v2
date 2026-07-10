@@ -877,8 +877,10 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "schedule:" in full_workflow:
         raise AssertionError("flaky-test-detection.yml must remain manual-only")
-    if "workflow_dispatch:" in smoke_workflow:
-        raise AssertionError("flaky-test-smoke.yml must remain schedule-only")
+    if full_workflow.count('exit "$rc"') != 3:
+        raise AssertionError("flaky-test-detection.yml run steps must exit with the captured rc")
+    if "workflow_dispatch:" not in smoke_workflow:
+        raise AssertionError("flaky-test-smoke.yml must remain schedule-driven and manually dispatchable")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
         (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
@@ -922,6 +924,7 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     if full_issue_runs != (1, 2, 3, 4, 5):
         raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
     smoke_fragments = (
+        "workflow_dispatch:",
         "schedule:",
         "cron: '0 */12 * * 1-5'",
         "flaky-smoke-rust-root:",
@@ -974,9 +977,14 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -1001,9 +1009,14 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -1027,9 +1040,14 @@ jobs:
           rc=$?
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -1043,6 +1061,7 @@ jobs:
     good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 */12 * * 1-5'
 
@@ -1056,13 +1075,18 @@ jobs:
         run: |
           rc=0
           set +e
-          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
-          rc=$?
+          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -1083,13 +1107,18 @@ jobs:
         run: |
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
-          rc=$?
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -1109,13 +1138,18 @@ jobs:
         run: |
           rc=0
           set +e
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
-          rc=$?
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl 2>&1 | tee -a "$log"
+          rc="${PIPESTATUS[0]}"
           set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+          exit "$rc"
 
       - name: Stage JUnit report
-        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -1126,6 +1160,59 @@ jobs:
           job_name: bvs-test issue-789
           report_path: "junit-*.xml"
 """
+    root_stage_step = """        if: success() || failure()
+        run: |
+          if [[ -f "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi"""
+    root_stage_step_with_fallback = """        if: success() || failure()
+        run: |
+          report="target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi"""
+    bvs_stage_step = """        if: success() || failure()
+        run: |
+          if [[ -f "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" ]]; then
+            cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+          fi"""
+    bvs_stage_step_with_fallback = """        if: success() || failure()
+        run: |
+          report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"
+          staged="junit-unit-${{ matrix.run_number }}.xml"
+          if [[ -f "$report" ]]; then
+            cp "$report" "$staged"
+          else
+            python3 - > "$staged" <<'PY'
+          import os
+          import xml.sax.saxutils as sax
+          rc = sax.escape(os.environ.get("MERGIFY_TEST_EXIT_CODE", "unknown"))
+          print('<?xml version="1.0" encoding="UTF-8"?>')
+          print('<testsuite name="nextest-preflight" tests="1" failures="1">')
+          print('<testcase classname="ci" name="missing-nextest-junit">')
+          print(f'<failure message="nextest JUnit report was not produced">MERGIFY_TEST_EXIT_CODE={rc}; see the Run tests log.</failure>')
+          print('</testcase></testsuite>')
+          PY
+          fi"""
+    good_full_workflow = good_full_workflow.replace(root_stage_step, root_stage_step_with_fallback).replace(
+        bvs_stage_step, bvs_stage_step_with_fallback
+    )
+    good_smoke_workflow = good_smoke_workflow.replace(root_stage_step, root_stage_step_with_fallback).replace(
+        bvs_stage_step, bvs_stage_step_with_fallback
+    )
+    smoke_bvs_stage_step = bvs_stage_step_with_fallback
     good_errors = verifier.verify_flaky_test_detection_workflows(
         {
             full_workflow_name: good_full_workflow,
@@ -1139,6 +1226,62 @@ jobs:
     if verifier.PARTITIONED_BVS_BACKTESTER_POLICY_LABELS != expected_partitioned_bvs_policy_labels:
         raise AssertionError(
             "partitioned BVS step allowlist must stay scoped to the sharded backtester full/smoke jobs"
+        )
+
+    echo_exit_full_workflow = good_full_workflow.replace(
+        '          exit "$rc"',
+        '          echo \'exit "$rc"\'',
+        1,
+    )
+    echo_exit_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: echo_exit_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root full job missing 'exit \"$rc\"'" in error for error in echo_exit_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject echo-spoofed exit propagation, "
+            f"got: {echo_exit_errors}"
+        )
+
+    stage_if_spoof_full_workflow = good_full_workflow.replace(
+        """      - name: Stage JUnit report
+        if: success() || failure()
+""",
+        """      - name: Stage JUnit report
+        env:
+          SPOOF: "if: success() || failure()"
+""",
+        1,
+    )
+    stage_if_spoof_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: stage_if_spoof_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root full job missing 'if: success() || failure()'" in error for error in stage_if_spoof_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject non-step-level stage if spoofing, "
+            f"got: {stage_if_spoof_errors}"
+        )
+
+    stage_junit_echo_full_workflow = good_full_workflow.replace(
+        '          python3 - > "$staged" <<\'PY\'',
+        '          echo missing-nextest-junit > "$staged"',
+        1,
+    )
+    stage_junit_echo_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: stage_junit_echo_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root full job JUnit staging must synthesize a missing-report failure" in error for error in stage_junit_echo_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject synthetic-JUnit echo spoofing, "
+            f"got: {stage_junit_echo_errors}"
         )
 
     def flaky_detection_errors(
@@ -1539,7 +1682,7 @@ jobs:
             f"got: {dead_only_partition_smoke_errors}"
         )
     changed_stage_shell_smoke_workflow = good_smoke_workflow.replace(
-        '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+        smoke_bvs_stage_step,
         """        run: |
           if false; then
           echo "skip an unrelated staging branch"
@@ -1554,7 +1697,7 @@ jobs:
             f"got: {changed_stage_shell_smoke_errors}"
         )
     cross_step_bte_smoke_workflow = good_smoke_workflow.replace(
-        '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+        smoke_bvs_stage_step,
         """        run: |
           just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl
           cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
@@ -1577,7 +1720,7 @@ jobs:
         ),
     ):
         cross_step_extra_work_smoke_workflow = good_smoke_workflow.replace(
-            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            smoke_bvs_stage_step,
             f"""        run: |
           {extra_command}
           cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
@@ -1621,10 +1764,10 @@ jobs:
     ):
         extra_step_smoke_workflow = good_smoke_workflow.replace(
             '      - name: Stage JUnit report\n'
-            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            + smoke_bvs_stage_step,
             extra_step
             + '      - name: Stage JUnit report\n'
-            + '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            + smoke_bvs_stage_step,
             1,
         )
         extra_step_smoke_errors = flaky_detection_errors(smoke_workflow=extra_step_smoke_workflow)
@@ -1677,6 +1820,16 @@ jobs:
 
     drift_cases = (
         (
+            "root full job missing 'exit \"$rc\"'",
+            good_full_workflow.replace("          exit \"$rc\"\n", "", 1),
+            good_smoke_workflow,
+        ),
+        (
+            "root full job missing 'if: success() || failure()'",
+            good_full_workflow.replace("        if: success() || failure()\n", "", 1),
+            good_smoke_workflow,
+        ),
+        (
             "workflow triggers must be ['workflow_dispatch']",
             good_full_workflow.replace(
                 "on:\n  workflow_dispatch:\n",
@@ -1686,9 +1839,9 @@ jobs:
             good_smoke_workflow,
         ),
         (
-            "workflow triggers must be ['schedule']",
+            "workflow triggers must be ['schedule', 'workflow_dispatch']",
             good_full_workflow,
-            good_smoke_workflow.replace("on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
+            good_smoke_workflow.replace("on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
         ),
         (
             "root smoke job missing 'if: success() || failure()'",
@@ -1712,12 +1865,12 @@ jobs:
             raise AssertionError(f"flaky detection verifier must reject {expected!r}, got: {drift_errors}")
 
     managed_target_workflow = good_full_workflow.replace(
-        'cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
-        'cp "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
         1,
     ).replace(
-        'cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
-        'cp "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'report="${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
         1,
     )
     managed_target_errors = verifier.verify_flaky_test_detection_workflows(

@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
+
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH, repo_root_from_manifest_dir,
 };
@@ -52,7 +54,7 @@ fn assert_bytes_match_committed(generated_path: &Path, committed_path: &Path, la
 
 #[test]
 fn source_universe_operator_inputs_materialize_ready_bybit_spot_object() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let gates_path = temp_dir.path().join("source-universe-object-gates.json");
     let run_plan_path = temp_dir
         .path()
@@ -270,7 +272,7 @@ default_taker_fee = "0"
 
 #[test]
 fn source_universe_operator_inputs_overwrites_existing_artifact_only_when_enabled() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let gates_path = temp_dir.path().join("source-universe-object-gates.json");
     let run_plan_path = temp_dir
         .path()
@@ -433,7 +435,7 @@ fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
     let spec_path = reference_root
         .join("source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
         .join("source-universe-operator-inputs.toml");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
 
     let run_plan_spec_path = temp_dir
         .path()
@@ -533,7 +535,7 @@ fn committed_binance_source_universe_operator_inputs_track_current_gates_without
         .parent()
         .expect("operator-inputs spec parent")
         .join("operator-inputs/source-universe-operator-inputs.json");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let temp_spec_path = temp_dir
         .path()
         .join("binance-source-universe-operator-inputs.toml");

@@ -1,5 +1,9 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::{
+    assert_generated_fixture_matches_index, generate_evicted_pmxt_object_manifests,
+    materialize_evicted_pmxt_object_manifests, rewrite_assignment, tempdir_in_repo_target,
+};
 use backtesting_vertical_slice::{
     source_proof::{
         CheckOutcome, EvidenceState, SourceProofFidelityClass, SourceProofReport, SourceProofStatus,
@@ -25,6 +29,7 @@ fn binance_all_instrument_category_source_proofs_are_materialized_from_manifests
             r#"
 proof_set_id = "source-universe-source-proofs-binance-data-vision-trades-2026-03-01-all-instruments"
 output_dir = "{output_dir}"
+artifact_output_dir = "specs/test-generated/source-proofs/binance-all-instruments"
 source_bindings_path = "{source_bindings_path}"
 venue = "binance"
 table_family = "trades"
@@ -176,6 +181,7 @@ fn source_universe_source_proofs_preserve_configured_l2_replay_evidence() {
             r#"
 proof_set_id = "source-universe-source-proofs-binance-l2-evidence-regression"
 output_dir = "{output_dir}"
+artifact_output_dir = "specs/test-generated/source-proofs/binance-l2-regression"
 source_bindings_path = "{source_bindings_path}"
 venue = "binance"
 table_family = "trades"
@@ -272,12 +278,11 @@ category_manifest_path = "{manifest_path}"
 fn source_universe_source_proofs_materialize_pmxt_pending_manifest_scoped_l2_proof() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("source-proofs");
     let spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
-    let manifest_path = reference_root.join(
-        "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
-    );
+    let (_, manifest_path) =
+        generate_evicted_pmxt_object_manifests(&reference_root, temp_dir.path());
 
     fs::write(
         &spec_path,
@@ -285,6 +290,7 @@ fn source_universe_source_proofs_materialize_pmxt_pending_manifest_scoped_l2_pro
             r#"
 proof_set_id = "source-universe-source-proofs-pmxt-polymarket-v2-current"
 output_dir = "{output_dir}"
+artifact_output_dir = "specs/test-generated/source-proofs/pmxt-pending"
 source_bindings_path = "{source_bindings_path}"
 venue = "polymarket"
 table_family = "order_book_snapshot_deltas"
@@ -429,4 +435,83 @@ category_manifest_path = "{manifest_path}"
             .to_string()
             .contains("evidence_state")
     );
+}
+
+#[test]
+fn committed_pmxt_source_proof_spec_regenerates_evicted_indexed_outputs() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    materialize_evicted_pmxt_object_manifests(&reference_root);
+    let spec_path = reference_root.join(
+        "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+    );
+    let temp_dir = tempdir_in_repo_target();
+    let scratch_output_dir = temp_dir.path().join("source-proofs");
+    let scratch_spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
+    let committed_spec = fs::read_to_string(&spec_path).expect("read committed PMXT proof spec");
+    fs::write(
+        &scratch_spec_path,
+        rewrite_assignment(&committed_spec, "output_dir", &scratch_output_dir),
+    )
+    .expect("write scratch PMXT proof spec");
+    let artifact = write_source_universe_source_proof_set_from_spec_file(&scratch_spec_path)
+        .expect("committed PMXT source-proof spec regenerates into scratch");
+    let proof_path = artifact
+        .path
+        .parent()
+        .expect("proof-set output parent")
+        .join("source-proof-pmxt-polymarket-v2-current-orderbook.json");
+    assert_generated_fixture_matches_index(
+        "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json",
+        &artifact.path,
+    );
+    assert_generated_fixture_matches_index(
+        "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-proof-pmxt-polymarket-v2-current-orderbook.json",
+        &proof_path,
+    );
+}
+
+#[test]
+fn source_universe_source_proofs_use_stable_proof_identity_across_output_roots() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    materialize_evicted_pmxt_object_manifests(&reference_root);
+    let committed_spec_path = reference_root.join(
+        "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+    );
+    let committed_spec = fs::read_to_string(&committed_spec_path).expect("read committed spec");
+    let stable_proof_dir = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current";
+    let mut generated = Vec::new();
+
+    for root_name in ["first-root", "second-root-with-a-different-length"] {
+        let temp_dir = tempdir_in_repo_target();
+        let materialization_root = temp_dir.path().join(root_name);
+        let output_dir = materialization_root.join("source-proofs");
+        fs::create_dir_all(&materialization_root).expect("create materialization root");
+        let spec_path = materialization_root.join("source-universe-source-proofs.toml");
+        let rewritten = rewrite_assignment(&committed_spec, "output_dir", &output_dir);
+        let rewritten = rewrite_assignment(
+            &rewritten,
+            "artifact_output_dir",
+            Path::new(stable_proof_dir),
+        );
+        fs::write(&spec_path, rewritten).expect("write differential proof spec");
+
+        let artifact = write_source_universe_source_proof_set_from_spec_file(&spec_path)
+            .expect("source-proof generation succeeds");
+        let proof_set_bytes = fs::read(&artifact.path).expect("read generated proof set");
+        let proof_set: SourceUniverseSourceProofSet =
+            serde_json::from_slice(&proof_set_bytes).expect("proof set parses");
+        assert_eq!(
+            proof_set.proofs[0].proof_path,
+            Path::new(stable_proof_dir)
+                .join("source-proof-pmxt-polymarket-v2-current-orderbook.json")
+        );
+        let proof_bytes =
+            fs::read(output_dir.join("source-proof-pmxt-polymarket-v2-current-orderbook.json"))
+                .expect("read generated proof");
+        generated.push((proof_set_bytes, proof_bytes));
+    }
+
+    assert_eq!(generated[0], generated[1]);
 }

@@ -18,13 +18,14 @@ use std::process::Command;
 
 use crate::backtesting_vertical_slice_test_support::{
     BACKFILL_CONVERSION_COMPLETION_LEDGER_EVICTED_REFERENCE_PATHS, PHASE3_EVICTED_REFERENCE_PATHS,
+    PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS,
 };
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
     TIER1_KEPT_REFERENCE_PATHS, is_backfill_conversion_completion_ledger_path,
     is_evicted_execution_pack_record_path, is_evicted_reference_fixture_path,
-    is_phase3_conversion_batch_plan_path, is_tier1_evicted_reference_fixture_path,
-    repo_root_from_manifest_dir,
+    is_phase3_conversion_batch_plan_path, is_pmxt_source_universe_object_manifest_path,
+    is_tier1_evicted_reference_fixture_path, repo_root_from_manifest_dir,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPack;
 
@@ -667,4 +668,95 @@ fn backfill_conversion_completion_ledger_gitignore_patterns_match_eviction_predi
         !git_check_ignore(&repo_root, nested_scope),
         "nested scope must not be ignored by .gitignore"
     );
+}
+
+#[test]
+fn pmxt_object_manifest_index_entries_match_declared_exact_scope() {
+    let repo_root = repo_root_from_manifest_dir();
+    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
+    let indexed: BTreeSet<String> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .filter(|path| is_pmxt_source_universe_object_manifest_path(path))
+        .collect();
+    let declared: BTreeSet<String> = PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect();
+
+    assert_eq!(
+        indexed,
+        declared,
+        "PMXT object-manifest index entries must exactly match the declared generated-reference eviction scope; \
+         indexed but undeclared: {:?}; declared but unindexed: {:?}",
+        indexed.difference(&declared).collect::<Vec<_>>(),
+        declared.difference(&indexed).collect::<Vec<_>>(),
+    );
+
+    for path in &declared {
+        assert!(
+            !repo_root.join(path).exists(),
+            "PMXT object-manifest artifact {path:?} must be absent from the working tree"
+        );
+    }
+}
+
+#[test]
+fn pmxt_object_manifest_scope_has_no_regrown_working_tree_artifacts() {
+    let repo_root = repo_root_from_manifest_dir();
+    let manifest_root = repo_root.join(
+        "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests",
+    );
+    for path in files_under(&manifest_root) {
+        let repo_relative = repo_relative_path(&repo_root, &path);
+        assert!(
+            !is_pmxt_source_universe_object_manifest_path(&repo_relative),
+            "PMXT object-manifest artifact {repo_relative:?} must remain evicted from the working tree"
+        );
+    }
+}
+
+#[test]
+fn pmxt_object_manifest_gitignore_patterns_match_eviction_predicates() {
+    let repo_root = repo_root_from_manifest_dir();
+    for &path in PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS {
+        assert!(
+            is_pmxt_source_universe_object_manifest_path(path),
+            "PMXT object-manifest path {path:?} must be in the eviction predicate"
+        );
+        assert!(
+            git_check_ignore(&repo_root, path),
+            "PMXT object-manifest path {path:?} must be ignored by .gitignore"
+        );
+    }
+
+    let hypothetical_aggregate = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-hypothetical/manifest/source-universe-object-manifest.json";
+    let hypothetical_category = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-hypothetical/category-manifests/hypothetical-object-manifest-category.json";
+    for path in [hypothetical_aggregate, hypothetical_category] {
+        assert!(
+            is_pmxt_source_universe_object_manifest_path(path),
+            "hypothetical PMXT object-manifest path must be in the eviction predicate: {path}"
+        );
+        assert!(
+            git_check_ignore(&repo_root, path),
+            "hypothetical PMXT object-manifest path must be ignored by .gitignore: {path}"
+        );
+    }
+
+    let non_manifest_json = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-hypothetical/category-manifests/metadata.json";
+    assert!(!is_pmxt_source_universe_object_manifest_path(
+        non_manifest_json
+    ));
+    assert!(!git_check_ignore(&repo_root, non_manifest_json));
+
+    let nested_scope = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-hypothetical/nested/manifest/source-universe-object-manifest.json";
+    assert!(!is_pmxt_source_universe_object_manifest_path(nested_scope));
+    assert!(!git_check_ignore(&repo_root, nested_scope));
+
+    let non_pmxt_scope = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/hypothetical/manifest/source-universe-object-manifest.json";
+    assert!(!is_pmxt_source_universe_object_manifest_path(
+        non_pmxt_scope
+    ));
+    assert!(!git_check_ignore(&repo_root, non_pmxt_scope));
 }

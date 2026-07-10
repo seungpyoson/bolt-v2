@@ -1,4 +1,5 @@
 queue_id = "source-universe-conversion-queue-pmxt-polymarket-v2-current"
-source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
-output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue"
+source_universe_manifest_path = "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+source_universe_manifest_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+output_dir = "target/reference-regen/pmxt-polymarket-v2-current/conversion-queue"
 output_prefix_template = "source-universe={universe_id}/category={category}/symbol={symbol}/dt={archive_date}/object={source_hash}"

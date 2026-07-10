@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
+
 use backtesting_vertical_slice::{
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
     catalog_projection::CatalogInstrumentSpec,
@@ -13,7 +15,7 @@ use serde_json::json;
 
 #[test]
 fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let template_path = temp_dir.path().join("run-spec-template.toml");
     let source_proof_path = temp_dir.path().join("source-proof.json");
     let object_gates_path = temp_dir.path().join("source-universe-object-gates.json");
@@ -247,12 +249,14 @@ crypto_future = "MARGIN"
             .expect("execution pack parses");
     let initial_record = &initial_pack.records[0];
     let initial_run_spec_text =
-        fs::read_to_string(&initial_record.run_spec_path).expect("read initial run spec");
+        fs::read_to_string(resolve_repo_relative(&initial_record.run_spec_path))
+            .expect("read initial run spec");
     let initial_run_spec: RunSpec =
         toml::from_str(&initial_run_spec_text).expect("initial run spec parses");
     assert_eq!(initial_run_spec.manifest.venue.account_type, "CASH");
     let initial_execution_plan: BackfillExecutionPlan = serde_json::from_slice(
-        &fs::read(&initial_record.execution_plan_path).expect("read initial plan"),
+        &fs::read(resolve_repo_relative(&initial_record.execution_plan_path))
+            .expect("read initial plan"),
     )
     .expect("initial execution plan parses");
 
@@ -289,7 +293,8 @@ crypto_future = "MARGIN"
     assert_eq!(pack.records.len(), 1);
 
     let record = &pack.records[0];
-    let run_spec_text = fs::read_to_string(&record.run_spec_path).expect("read run spec");
+    let run_spec_text =
+        fs::read_to_string(resolve_repo_relative(&record.run_spec_path)).expect("read run spec");
     let run_spec: RunSpec = toml::from_str(&run_spec_text).expect("run spec parses");
     assert_eq!(run_spec.manifest.run_id, record.operator_run_id);
     assert_eq!(
@@ -328,9 +333,10 @@ crypto_future = "MARGIN"
     ));
     assert_eq!(run_spec.manifest.venue.account_type, "MARGIN");
 
-    let execution_plan: BackfillExecutionPlan =
-        serde_json::from_slice(&fs::read(&record.execution_plan_path).expect("read plan"))
-            .expect("execution plan parses");
+    let execution_plan: BackfillExecutionPlan = serde_json::from_slice(
+        &fs::read(resolve_repo_relative(&record.execution_plan_path)).expect("read plan"),
+    )
+    .expect("execution plan parses");
     assert_ne!(
         execution_plan.run_spec_hash,
         initial_execution_plan.run_spec_hash
@@ -449,7 +455,7 @@ fn sha256_file(path: &Path) -> String {
 // informative error rather than silently falling through to a spot account type.
 #[test]
 fn execution_pack_rejects_binary_option_instrument_spec() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let template_path = temp_dir.path().join("run-spec-template.toml");
     let source_proof_path = temp_dir.path().join("source-proof.json");
     let object_gates_path = temp_dir.path().join("source-universe-object-gates.json");

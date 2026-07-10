@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+    stable_artifact_identity_path_for_spec,
 };
 use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
@@ -62,6 +63,8 @@ pub struct SourceUniverseExecutionAcceptanceUniverseSpec {
     pub family: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_universe_manifest_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_universe_manifest_artifact_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_universe_conversion_queue_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,6 +354,7 @@ fn evaluate_universe(
         base_dir,
         "source_universe_manifest",
         spec.source_universe_manifest_path.as_ref(),
+        spec.source_universe_manifest_artifact_path.as_deref(),
     )?;
     let queue = read_optional_artifact::<SourceUniverseConversionQueue>(
         base_dir,
@@ -847,6 +851,7 @@ fn push_optional_ref(
     base_dir: &Path,
     role: &str,
     path: Option<&PathBuf>,
+    artifact_identity_path: Option<&Path>,
 ) -> Result<()> {
     let Some(path) = path else {
         return Ok(());
@@ -856,7 +861,7 @@ fn push_optional_ref(
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
     artifact_refs.push(ReferenceArtifactPin {
         role: role.to_string(),
-        path: portable_artifact_path_for_spec(&resolved, path)?,
+        path: stable_artifact_identity_path_for_spec(&resolved, path, artifact_identity_path)?,
         sha256: sha256_hex(&bytes),
     });
     Ok(())

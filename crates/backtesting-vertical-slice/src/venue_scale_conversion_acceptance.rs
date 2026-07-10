@@ -10,7 +10,10 @@ use std::{
 };
 
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path, resolve_existing_path, resolve_output_dir,
+    stable_artifact_identity_path_for_spec,
+};
 use crate::reference_artifact::ReferenceArtifactPin;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -45,15 +48,25 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub scope_label: String,
     pub status: VenueScaleConversionAcceptanceStatus,
     pub completion_ledger_path: Option<PathBuf>,
+    pub completion_ledger_artifact_path: Option<PathBuf>,
     pub source_archive_discovery_seed_path: Option<PathBuf>,
+    pub source_archive_discovery_seed_artifact_path: Option<PathBuf>,
     pub source_archive_index_manifest_path: Option<PathBuf>,
+    pub source_archive_index_manifest_artifact_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
+    pub source_universe_manifest_artifact_path: Option<PathBuf>,
     pub source_universe_conversion_queue_path: Option<PathBuf>,
+    pub source_universe_conversion_queue_artifact_path: Option<PathBuf>,
     pub source_universe_source_proof_set_path: Option<PathBuf>,
+    pub source_universe_source_proof_set_artifact_path: Option<PathBuf>,
     pub source_universe_object_gates_path: Option<PathBuf>,
+    pub source_universe_object_gates_artifact_path: Option<PathBuf>,
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
+    pub source_universe_conversion_run_plan_artifact_path: Option<PathBuf>,
     pub selected_conversion_manifest_path: Option<PathBuf>,
+    pub selected_conversion_manifest_artifact_path: Option<PathBuf>,
     pub selected_source_report_path: Option<PathBuf>,
+    pub selected_source_report_artifact_path: Option<PathBuf>,
     #[serde(default)]
     pub blocking_issues: Vec<String>,
 }
@@ -541,7 +554,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.completion_ledger_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("completion_ledger", &path)?);
+        artifact_refs.push(artifact_ref(
+            "completion_ledger",
+            &path,
+            spec.completion_ledger_artifact_path.as_deref(),
+        )?);
         let ledger: CompletionLedgerSummary = read_json(&path)?;
         ensure!(
             ledger.status == "ready",
@@ -557,7 +574,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_archive_discovery_seed_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_archive_discovery_seed", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_archive_discovery_seed",
+            &path,
+            spec.source_archive_discovery_seed_artifact_path.as_deref(),
+        )?);
         let seed: SourceArchiveDiscoverySeedSummary = read_json(&path)?;
         ensure!(
             seed.status == "ready",
@@ -572,7 +593,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_archive_index_manifest_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_archive_index_manifest", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_archive_index_manifest",
+            &path,
+            spec.source_archive_index_manifest_artifact_path.as_deref(),
+        )?);
         let manifest: SourceArchiveIndexManifestSummary = read_json(&path)?;
         ensure!(
             manifest.status == "ready",
@@ -593,7 +618,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_universe_manifest_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_universe_manifest", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_universe_manifest",
+            &path,
+            spec.source_universe_manifest_artifact_path.as_deref(),
+        )?);
         let manifest: SourceUniverseManifestSummary = read_json(&path)?;
         source_manifest_id = Some(manifest.manifest_id);
         source_manifest_universe_id = Some(manifest.universe_id);
@@ -612,7 +641,12 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_universe_conversion_queue_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_universe_conversion_queue", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_universe_conversion_queue",
+            &path,
+            spec.source_universe_conversion_queue_artifact_path
+                .as_deref(),
+        )?);
         let queue: SourceUniverseConversionQueueSummary = read_json(&path)?;
         ensure!(
             queue.status == "ready",
@@ -668,7 +702,12 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_universe_source_proof_set_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_universe_source_proof_set", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_universe_source_proof_set",
+            &path,
+            spec.source_universe_source_proof_set_artifact_path
+                .as_deref(),
+        )?);
         let proof_set: SourceUniverseSourceProofSetSummary = read_json(&path)?;
         ensure!(
             proof_set.accepted_proof_count <= proof_set.proof_count,
@@ -702,7 +741,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_universe_object_gates_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_universe_object_gates", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_universe_object_gates",
+            &path,
+            spec.source_universe_object_gates_artifact_path.as_deref(),
+        )?);
         let gates: SourceUniverseObjectGateSummary = read_json(&path)?;
         ensure!(
             gates.status == "ready",
@@ -758,7 +801,12 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.source_universe_conversion_run_plan_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("source_universe_conversion_run_plan", &path)?);
+        artifact_refs.push(artifact_ref(
+            "source_universe_conversion_run_plan",
+            &path,
+            spec.source_universe_conversion_run_plan_artifact_path
+                .as_deref(),
+        )?);
         let run_plan: SourceUniverseConversionRunPlanSummary = read_json(&path)?;
         ensure!(
             run_plan.status == "ready",
@@ -801,7 +849,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.selected_conversion_manifest_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("selected_conversion_manifest", &path)?);
+        artifact_refs.push(artifact_ref(
+            "selected_conversion_manifest",
+            &path,
+            spec.selected_conversion_manifest_artifact_path.as_deref(),
+        )?);
         let conversion: SelectedConversionManifestSummary = read_json(&path)?;
         // A selected conversion manifest is accepted as a completion proof only
         // when it attests a *finalized* conversion that actually produced catalog
@@ -842,7 +894,11 @@ fn evaluate_universe(
 
     if let Some(path) = &spec.selected_source_report_path {
         let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref("selected_source_report", &path)?);
+        artifact_refs.push(artifact_ref(
+            "selected_source_report",
+            &path,
+            spec.selected_source_report_artifact_path.as_deref(),
+        )?);
         let report: SelectedSourceReportSummary = read_json(&path)?;
         selected_source_rows = Some(report.source_rows);
         selected_source_row_groups = Some(report.source_row_groups);
@@ -1041,11 +1097,24 @@ fn count_status(
         .count() as u64
 }
 
-fn artifact_ref(role: &str, path: &Path) -> Result<ReferenceArtifactPin> {
+fn artifact_ref(
+    role: &str,
+    materialized_path: &Path,
+    artifact_identity_path: Option<&Path>,
+) -> Result<ReferenceArtifactPin> {
+    let path = if artifact_identity_path.is_some() {
+        stable_artifact_identity_path_for_spec(
+            materialized_path,
+            materialized_path,
+            artifact_identity_path,
+        )?
+    } else {
+        portable_artifact_path(materialized_path)?
+    };
     Ok(ReferenceArtifactPin {
         role: role.to_string(),
-        path: portable_artifact_path(path),
-        sha256: sha256_file(path)?,
+        path,
+        sha256: sha256_file(materialized_path)?,
     })
 }
 fn read_json<T>(path: &Path) -> Result<T>
@@ -1071,15 +1140,25 @@ mod tests {
             scope_label: "test-scope".to_string(),
             status: VenueScaleConversionAcceptanceStatus::Converted,
             completion_ledger_path: None,
+            completion_ledger_artifact_path: None,
             source_archive_discovery_seed_path: None,
+            source_archive_discovery_seed_artifact_path: None,
             source_archive_index_manifest_path: None,
+            source_archive_index_manifest_artifact_path: None,
             source_universe_manifest_path: None,
+            source_universe_manifest_artifact_path: None,
             source_universe_conversion_queue_path: None,
+            source_universe_conversion_queue_artifact_path: None,
             source_universe_source_proof_set_path: None,
+            source_universe_source_proof_set_artifact_path: None,
             source_universe_object_gates_path: None,
+            source_universe_object_gates_artifact_path: None,
             source_universe_conversion_run_plan_path: None,
+            source_universe_conversion_run_plan_artifact_path: None,
             selected_conversion_manifest_path: None,
+            selected_conversion_manifest_artifact_path: None,
             selected_source_report_path: None,
+            selected_source_report_artifact_path: None,
             blocking_issues: Vec::new(),
         }
     }

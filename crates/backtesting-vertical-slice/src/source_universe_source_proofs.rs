@@ -15,7 +15,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::path_resolution::{
-    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+    resolve_existing_path, resolve_output_dir, stable_artifact_identity_path_for_spec,
 };
 use crate::source_proof::{
     AcceptanceMode, AcceptanceScope, CONTRACT_VERSION, CheckOutcome, L2ReplayEvidence,
@@ -33,6 +33,7 @@ pub const SOURCE_UNIVERSE_SOURCE_PROOF_SET_FILE: &str = "source-universe-source-
 pub struct SourceUniverseSourceProofSetSpec {
     pub proof_set_id: String,
     pub output_dir: PathBuf,
+    pub artifact_output_dir: Option<PathBuf>,
     pub source_bindings_path: PathBuf,
     pub venue: String,
     pub table_family: String,
@@ -461,7 +462,8 @@ fn evaluate_and_write_source_universe_source_proofs(
                 })?;
             accepted_proof_count += 1;
         }
-        let proof_path = output_dir.join(format!("{}.json", proof.source_proof_id));
+        let proof_file_name = format!("{}.json", proof.source_proof_id);
+        let proof_path = output_dir.join(&proof_file_name);
         let proof_artifact = crate::reference_artifact::write_reference_artifact_with_len(
             &proof_path,
             SOURCE_PROOF_SCHEMA_VERSION,
@@ -469,7 +471,15 @@ fn evaluate_and_write_source_universe_source_proofs(
             crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
         )
         .with_context(|| format!("write source proof {}", proof_path.display()))?;
-        let proof_artifact_path = portable_artifact_path_for_spec(&proof_path, &spec.output_dir)?;
+        let proof_artifact_identity = spec
+            .artifact_output_dir
+            .as_ref()
+            .map(|artifact_output_dir| artifact_output_dir.join(&proof_file_name));
+        let proof_artifact_path = stable_artifact_identity_path_for_spec(
+            &proof_path,
+            &spec.output_dir,
+            proof_artifact_identity.as_deref(),
+        )?;
         summaries.push(SourceUniverseSourceProofSummary {
             source_binding: binding.source_binding.clone(),
             source_proof_id: proof.source_proof_id,

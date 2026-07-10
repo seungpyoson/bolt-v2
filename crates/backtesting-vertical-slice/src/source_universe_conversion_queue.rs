@@ -11,7 +11,7 @@ use std::{
 
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
-    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+    resolve_existing_path, resolve_output_dir, stable_artifact_identity_path_for_spec,
 };
 use crate::reference_artifact::ReferenceArtifactPin;
 use anyhow::{Context, Result, ensure};
@@ -26,6 +26,8 @@ pub const SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE: &str = "source-universe-convers
 pub struct SourceUniverseConversionQueueSpec {
     pub queue_id: String,
     pub source_universe_manifest_path: PathBuf,
+    #[serde(default)]
+    pub source_universe_manifest_artifact_path: Option<PathBuf>,
     pub output_dir: PathBuf,
     #[serde(default)]
     pub table_family: Option<String>,
@@ -228,9 +230,10 @@ pub fn evaluate_source_universe_conversion_queue(
 
     let source_manifest_path = resolve_existing_path(base_dir, &spec.source_universe_manifest_path);
     let source_manifest_hash = sha256_file(&source_manifest_path)?;
-    let source_manifest_artifact_path = portable_artifact_path_for_spec(
+    let source_manifest_artifact_path = stable_artifact_identity_path_for_spec(
         &source_manifest_path,
         &spec.source_universe_manifest_path,
+        spec.source_universe_manifest_artifact_path.as_deref(),
     )?;
     let manifest: SourceUniverseManifest = read_json(&source_manifest_path)?;
     ensure!(

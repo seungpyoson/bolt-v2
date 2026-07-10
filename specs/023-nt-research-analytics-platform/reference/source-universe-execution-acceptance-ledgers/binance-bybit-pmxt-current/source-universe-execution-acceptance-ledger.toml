@@ -26,7 +26,8 @@ universe_id = "backfill-source-universe-pmxt-polymarket-v2-current"
 venue = "pmxt"
 source = "polymarket-v2-archive"
 family = "orderbook"
-source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+source_universe_manifest_path = "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+source_universe_manifest_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
 source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
 blocking_reasons = [
   "missing_pmxt_l2_tick_size_epoch_policy",

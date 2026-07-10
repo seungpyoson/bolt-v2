@@ -1,5 +1,5 @@
 plan_id = "source-universe-conversion-run-plan-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
 source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json"
-output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan"
+output_dir = "target/reference-regen/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan"
 max_objects_per_run = 500
 max_source_bytes_per_run = 2000000000

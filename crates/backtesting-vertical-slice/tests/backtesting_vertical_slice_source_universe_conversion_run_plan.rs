@@ -4,6 +4,8 @@ use std::{
     process::Command,
 };
 
+use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
+
 use backtesting_vertical_slice::source_universe_conversion_run_plan::{
     SourceUniverseConversionRunPlan, SourceUniverseConversionRunPlanStatus,
     write_source_universe_conversion_run_plan_from_spec_file,
@@ -24,7 +26,7 @@ fn source_universe_conversion_run_plan_covers_every_bybit_object_gate() {
     let object_gates_path = reference_root.join(
         "source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
     );
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("run-plan");
     let spec_path = temp_dir
         .path()
@@ -192,7 +194,7 @@ fn committed_source_universe_conversion_run_plans_record_portable_object_gate_pa
 
 #[test]
 fn source_universe_conversion_run_plan_splits_when_next_object_exceeds_budget() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let gates_path = temp_dir.path().join("source-universe-object-gates.json");
     let output_dir = temp_dir.path().join("run-plan");
     let spec_path = temp_dir
@@ -366,7 +368,7 @@ fn source_universe_conversion_run_plan_json_paths(root: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn source_universe_conversion_run_plan_overwrites_existing_artifact_only_when_enabled() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let gates_path = temp_dir.path().join("source-universe-object-gates.json");
     let output_dir = temp_dir.path().join("run-plan");
     let spec_path = temp_dir

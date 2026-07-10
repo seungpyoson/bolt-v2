@@ -1,5 +1,8 @@
 use std::{fs, path::Path};
 
+use crate::backtesting_vertical_slice_test_support::{
+    generate_evicted_pmxt_object_manifests, tempdir_in_repo_target,
+};
 use backtesting_vertical_slice::source_archive_index_source_universe::{
     SourceArchiveIndexSourceUniverseCategoryManifest, SourceArchiveIndexSourceUniverseManifest,
     write_source_archive_index_source_universe_manifest_from_spec_file,
@@ -148,14 +151,11 @@ schema_columns = ["asset_id", "price", "size", "side", "timestamp"]
 fn pmxt_source_archive_index_source_universe_reference_manifest_matches_full_index() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let spec_path = reference_root.join(
-        "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/source-archive-index-source-universe.toml",
-    );
-
-    let artifact = write_source_archive_index_source_universe_manifest_from_spec_file(&spec_path)
-        .expect("PMXT source-universe manifest remains reproducible");
+    let temp_dir = tempdir_in_repo_target();
+    let (manifest_path, category_manifest_path) =
+        generate_evicted_pmxt_object_manifests(&reference_root, temp_dir.path());
     let manifest: SourceArchiveIndexSourceUniverseManifest =
-        serde_json::from_slice(&fs::read(&artifact.path).expect("read manifest"))
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest"))
             .expect("manifest parses");
 
     assert_eq!(
@@ -206,9 +206,6 @@ fn pmxt_source_archive_index_source_universe_reference_manifest_matches_full_ind
             .ends_with("object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70.parquet")
     );
 
-    let category_manifest_path = reference_root.join(
-        "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
-    );
     let category_manifest: SourceArchiveIndexSourceUniverseCategoryManifest =
         serde_json::from_slice(
             &fs::read(category_manifest_path).expect("read PMXT category manifest"),

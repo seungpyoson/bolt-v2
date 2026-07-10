@@ -3,6 +3,10 @@ use std::{
     path::{Component, Path},
 };
 
+use crate::backtesting_vertical_slice_test_support::{
+    PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_REGEN_PATH, materialize_evicted_pmxt_object_manifests,
+    tempdir_in_repo_target,
+};
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, TIER1_PMXT_CONVERSION_QUEUE_PATH, repo_root_from_manifest_dir,
 };
@@ -10,25 +14,6 @@ use backtesting_vertical_slice::source_universe_conversion_queue::{
     SourceUniverseConversionQueue, SourceUniverseConversionQueueStatus,
     SourceUniverseConversionWorkState, write_source_universe_conversion_queue_from_spec_file,
 };
-
-fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
-    let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
-    let mut replaced = false;
-    let updated = spec
-        .lines()
-        .map(|line| {
-            if line.starts_with("output_dir = ") {
-                replaced = true;
-                format!("output_dir = \"{}\"", output_dir.display())
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(replaced, "committed source-universe spec has output_dir");
-    fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
-}
 
 fn assert_source_manifest_path_is_portable(
     queue: &SourceUniverseConversionQueue,
@@ -66,7 +51,7 @@ fn source_universe_conversion_queue_materializes_every_bybit_manifest_object() {
         .join("../../specs/023-nt-research-analytics-platform/reference");
     let manifest_path = reference_root
         .join("backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("conversion-queue");
     let spec_path = temp_dir
         .path()
@@ -159,7 +144,7 @@ fn source_universe_conversion_queue_materializes_every_binance_all_instrument_ma
         .join("../../specs/023-nt-research-analytics-platform/reference");
     let manifest_path = reference_root
         .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("conversion-queue");
     let spec_path = temp_dir
         .path()
@@ -267,7 +252,7 @@ output_prefix_template = "source-universe={universe_id}/category={category}/symb
 
 #[test]
 fn source_universe_conversion_queue_preserves_non_sha_source_hash_without_sha256_claim() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let temp_dir = tempdir_in_repo_target();
     let manifest_path = temp_dir.path().join("pmxt-source-universe.json");
     let output_dir = temp_dir.path().join("conversion-queue");
     let spec_path = temp_dir
@@ -358,30 +343,41 @@ fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object
  {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
+    materialize_evicted_pmxt_object_manifests(&reference_root);
     let committed_spec_path = reference_root.join(
         "source-universe-conversion-queues/pmxt-polymarket-v2-current/source-universe-conversion-queue.toml",
     );
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let spec_path = temp_dir
+    let temp_dir = tempdir_in_repo_target();
+    let scratch_spec_path = temp_dir
         .path()
-        .join("pmxt-source-universe-conversion-queue.toml");
-    copy_spec_with_output_dir(
-        &committed_spec_path,
-        &spec_path,
-        &temp_dir.path().join("pmxt-conversion-queue"),
-    );
-
-    let artifact = write_source_universe_conversion_queue_from_spec_file(&spec_path)
+        .join("source-universe-conversion-queue.toml");
+    let output_dir = temp_dir.path().join("queue");
+    let committed_spec =
+        fs::read_to_string(&committed_spec_path).expect("read committed queue spec");
+    let scratch_spec = committed_spec
+        .lines()
+        .map(|line| {
+            if line.starts_with("output_dir = ") {
+                format!("output_dir = \"{}\"", output_dir.display())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&scratch_spec_path, scratch_spec).expect("write scratch queue spec");
+    let artifact = write_source_universe_conversion_queue_from_spec_file(&scratch_spec_path)
         .expect("PMXT queue remains reproducible");
     let evicted_index =
         EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
+    let queue_entry = evicted_index
+        .entry_for(TIER1_PMXT_CONVERSION_QUEUE_PATH)
+        .unwrap_or_else(|| {
+            panic!("evicted fixture index does not contain {TIER1_PMXT_CONVERSION_QUEUE_PATH}")
+        });
     assert_eq!(
-        artifact.content_hash,
-        evicted_index
-            .sha256_for(TIER1_PMXT_CONVERSION_QUEUE_PATH)
-            .unwrap_or_else(|| {
-                panic!("evicted fixture index does not contain {TIER1_PMXT_CONVERSION_QUEUE_PATH}")
-            }),
+        (artifact.bytes, artifact.content_hash.clone()),
+        (queue_entry.bytes, queue_entry.sha256.clone()),
         "regenerated PMXT conversion queue bytes must match the evicted fixture index"
     );
     let queue: SourceUniverseConversionQueue =
@@ -440,5 +436,55 @@ fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object
             "source-universe=backfill-source-universe-pmxt-polymarket-v2-current/category=orderbook/symbol=POLYMARKET/dt=2026-06-10T15:00:00Z/object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70"
         ),
         "output prefix must be derived from the PMXT archive index object"
+    );
+}
+
+#[test]
+fn source_universe_conversion_queue_uses_stable_manifest_identity_across_materialization_roots() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    materialize_evicted_pmxt_object_manifests(&reference_root);
+    let materialized_manifest =
+        repo_root_from_manifest_dir().join(PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_REGEN_PATH);
+    let manifest_bytes = fs::read(&materialized_manifest).expect("read materialized PMXT manifest");
+    let stable_manifest_identity = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json";
+
+    let mut generated = Vec::new();
+    for root_name in ["first-root", "second-root-with-a-different-length"] {
+        let temp_dir = tempdir_in_repo_target();
+        let materialization_root = temp_dir.path().join(root_name);
+        let manifest_path = materialization_root.join("source-universe-object-manifest.json");
+        fs::create_dir_all(&materialization_root).expect("create materialization root");
+        fs::write(&manifest_path, &manifest_bytes).expect("copy PMXT manifest");
+        let output_dir = materialization_root.join("queue");
+        let spec_path = materialization_root.join("source-universe-conversion-queue.toml");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"
+queue_id = "source-universe-conversion-queue-pmxt-polymarket-v2-current"
+source_universe_manifest_path = "{manifest_path}"
+source_universe_manifest_artifact_path = "{stable_manifest_identity}"
+output_dir = "{output_dir}"
+output_prefix_template = "source-universe={{universe_id}}/category={{category}}/symbol={{symbol}}/dt={{archive_date}}/object={{source_hash}}"
+"#,
+                manifest_path = manifest_path.display(),
+                output_dir = output_dir.display(),
+            ),
+        )
+        .expect("write queue spec");
+
+        let artifact = write_source_universe_conversion_queue_from_spec_file(&spec_path)
+            .expect("queue generation succeeds");
+        let bytes = fs::read(&artifact.path).expect("read generated queue");
+        let queue: SourceUniverseConversionQueue =
+            serde_json::from_slice(&bytes).expect("queue parses");
+        assert_source_manifest_path_is_portable(&queue, Path::new(stable_manifest_identity));
+        generated.push(bytes);
+    }
+
+    assert_eq!(
+        generated[0], generated[1],
+        "queue bytes must depend on the manifest's stable identity, not its materialization root"
     );
 }

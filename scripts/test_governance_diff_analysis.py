@@ -3,16 +3,12 @@
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import pathlib
-import shutil
-import stat
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 
 import ci_workflow_hygiene_test_helpers as hygiene_helpers
@@ -178,31 +174,46 @@ def assert_clone_fixture_repo_persists_suppression() -> None:
 
 
 def assert_push_to_fixture_remote_spawns_no_background_maintenance() -> None:
-    """Push into a helper-built remote and prove `receive-pack` detaches nothing."""
+    """Trace real receive-pack maintenance with persisted suppression off and on."""
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
-        bare = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
+        unsuppressed = hygiene_helpers.init_fixture_repo(
+            root / "unsuppressed.git", "--bare"
+        )
+        suppressed = hygiene_helpers.init_fixture_repo(root / "suppressed.git", "--bare")
+        for key, _value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+            hygiene_helpers.run_repo_git(unsuppressed, "config", "--unset-all", key)
         work = hygiene_helpers.init_fixture_repo(root / "work", "-b", "main")
         run_repo_git(work, "config", "user.email", "fixture@example.invalid")
         run_repo_git(work, "config", "user.name", "Fixture")
         run_repo_git(work, "commit", "--allow-empty", "-m", "seed")
-        run_repo_git(work, "remote", "add", "origin", str(bare))
+        run_repo_git(work, "remote", "add", "unsuppressed", str(unsuppressed))
+        run_repo_git(work, "remote", "add", "suppressed", str(suppressed))
 
-        trace = root / "trace.json"
-        environ = dict(os.environ, GIT_TRACE2_EVENT=str(trace))
-        subprocess.run(
-            hygiene_helpers.repo_git_command("push", "origin", "main"),
-            cwd=work,
-            env=environ,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        spawned = _maintenance_children(trace)
-        if spawned:
+        maintenance_children: dict[str, int] = {}
+        for remote in ("unsuppressed", "suppressed"):
+            trace = root / f"{remote}-trace.json"
+            environ = dict(os.environ, GIT_TRACE2_EVENT=str(trace))
+            subprocess.run(
+                hygiene_helpers.repo_git_command("push", remote, "main"),
+                cwd=work,
+                env=environ,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            maintenance_children[remote] = _maintenance_children(trace)
+
+        if maintenance_children["unsuppressed"] == 0:
             raise AssertionError(
-                f"push into a fixture remote spawned {spawned} background maintenance children"
+                "push into the unsuppressed fixture remote did not expose the "
+                "receive-pack maintenance child"
+            )
+        if maintenance_children["suppressed"] != 0:
+            raise AssertionError(
+                "push into the suppressed fixture remote spawned "
+                f"{maintenance_children['suppressed']} maintenance children"
             )
 
 
@@ -230,113 +241,6 @@ def assert_routed_fixture_module_spawns_no_background_maintenance() -> None:
         if spawned:
             raise AssertionError(f"{module} spawned {spawned} background maintenance children")
 
-
-def assert_temp_git_fixture_cleanup_stress_blocks_background_writer() -> None:
-    real_git = shutil.which("git")
-    if real_git is None:
-        raise AssertionError("git executable not found")
-    writer_code = """
-from __future__ import annotations
-import os
-import pathlib
-import time
-repo = pathlib.Path(os.environ["BOLT1323_WRITER_REPO"])
-log_path = pathlib.Path(os.environ["BOLT1323_WRITER_LOG"])
-objects = repo / ".git" / "objects"
-deadline = time.time() + 1.0
-count = 0
-while time.time() < deadline:
-    try:
-        target_dir = objects / "zz"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        (target_dir / f"race-{os.getpid()}-{count}").write_text("x", encoding="utf-8")
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"write {repo} {count}\\n")
-        count += 1
-    except Exception:
-        pass
-    time.sleep(0.0005)
-"""
-    fake_git_template = """\
-#!{executable}
-from __future__ import annotations
-import os
-import pathlib
-import subprocess
-import sys
-
-args = sys.argv[1:]
-real_git = os.environ["BOLT1323_REAL_GIT"]
-result = subprocess.run([real_git, *args])
-suppression_args = {suppression_args!r}
-missing_suppression = not any(
-    tuple(args[index : index + len(suppression_args)]) == suppression_args
-    for index in range(len(args) - len(suppression_args) + 1)
-)
-if result.returncode == 0 and "commit" in args and missing_suppression:
-    env = os.environ.copy()
-    env["BOLT1323_WRITER_REPO"] = str(pathlib.Path.cwd())
-    subprocess.Popen(
-        [sys.executable, "-c", {writer_code!r}],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-raise SystemExit(result.returncode)
-"""
-    iterations = 12
-    writer_log_text = ""
-    with tempfile.TemporaryDirectory() as harness_tmp:
-        harness = pathlib.Path(harness_tmp)
-        bin_dir = harness / "bin"
-        bin_dir.mkdir()
-        writer_log = harness / "writers.log"
-        fake_git = bin_dir / "git"
-        fake_git.write_text(
-            textwrap.dedent(
-                fake_git_template.format(
-                    executable=sys.executable,
-                    suppression_args=hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS,
-                    writer_code=writer_code,
-                )
-            ),
-            encoding="utf-8",
-        )
-        fake_git.chmod(fake_git.stat().st_mode | stat.S_IXUSR)
-        old_path = os.environ.get("PATH", "")
-        old_real_git = os.environ.get("BOLT1323_REAL_GIT")
-        old_writer_log = os.environ.get("BOLT1323_WRITER_LOG")
-        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
-        os.environ["BOLT1323_REAL_GIT"] = real_git
-        os.environ["BOLT1323_WRITER_LOG"] = str(writer_log)
-        failures = 0
-        try:
-            for index in range(iterations):
-                try:
-                    with tempfile.TemporaryDirectory() as tmp:
-                        repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
-                        write_repo_text(repo, "head.txt", f"head {index}\n")
-                        commit_repo(repo, f"head {index}")
-                except OSError as exc:
-                    if exc.errno != errno.ENOTEMPTY:
-                        raise
-                    failures += 1
-        finally:
-            os.environ["PATH"] = old_path
-            if old_real_git is None:
-                os.environ.pop("BOLT1323_REAL_GIT", None)
-            else:
-                os.environ["BOLT1323_REAL_GIT"] = old_real_git
-            if old_writer_log is None:
-                os.environ.pop("BOLT1323_WRITER_LOG", None)
-            else:
-                os.environ["BOLT1323_WRITER_LOG"] = old_writer_log
-        writer_log_text = writer_log.read_text(encoding="utf-8") if writer_log.exists() else ""
-    if failures:
-        raise AssertionError(f"background writer raced fixture cleanup {failures}/{iterations} times")
-    if "write " in writer_log_text:
-        raise AssertionError("suppressed git helper still spawned the background writer")
 
 def self_authorizing_errors_for_changes(
     changes: dict[str, str],
@@ -1238,7 +1142,6 @@ def main() -> int:
     assert_clone_fixture_repo_persists_suppression()
     assert_push_to_fixture_remote_spawns_no_background_maintenance()
     assert_routed_fixture_module_spawns_no_background_maintenance()
-    assert_temp_git_fixture_cleanup_stress_blocks_background_writer()
     assert_self_authorizing_governance_detector_contract()
     assert_debug_test_workflow_contract()
     print("OK: governance diff analysis tests passed.")

@@ -123,6 +123,131 @@ class ExecutionEdgeTests(unittest.TestCase):
             4,
         )
 
+    def test_keyword_tuple_argv_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(args=('git', 'commit'), cwd=repo)\n",
+            2,
+        )
+
+    def test_keyword_shell_command_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(args='git commit', shell=True)\n",
+            2,
+        )
+
+    def test_os_keyword_command_fails(self) -> None:
+        self.assert_violation(
+            "import os\nos.system(command='git commit')\n",
+            2,
+        )
+
+    def test_getoutput_keyword_command_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\nsubprocess.getoutput(cmd='git status')\n",
+            2,
+        )
+
+    def test_name_bound_to_tuple_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "cmd = ('git', 'commit')\n"
+            "subprocess.run(cmd)\n",
+            3,
+        )
+
+    def test_name_bound_to_shutil_which_fails(self) -> None:
+        self.assert_violation(
+            "import shutil\nimport subprocess\n"
+            "g = shutil.which('git')\n"
+            "subprocess.run([g, 'commit'])\n",
+            4,
+        )
+
+    def test_env_options_and_assignments_before_git_fail(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(['env', '-u', 'HOME', "
+            "'GIT_OPTIONAL_LOCKS=0', 'git', 'commit'])\n",
+            2,
+        )
+
+    def test_nested_wrapper_fails(self) -> None:
+        self.assert_violation(
+            "def outer():\n"
+            "    import subprocess\n"
+            "    def _run(a, cwd=None):\n"
+            "        return subprocess.run(a, cwd=cwd)\n"
+            "    _run(('git', 'commit'), cwd=repo)\n"
+            "outer()\n",
+            5,
+        )
+
+    def test_method_wrapper_fails(self) -> None:
+        self.assert_violation(
+            "class Runner:\n"
+            "    def run(self, command):\n"
+            "        import subprocess\n"
+            "        return subprocess.run(command)\n"
+            "Runner().run(('git', 'commit'))\n",
+            5,
+        )
+
+    def test_async_wrapper_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "async def run(command):\n"
+            "    return subprocess.run(command)\n"
+            "run(('git', 'commit'))\n",
+            4,
+        )
+
+    def test_lambda_wrapper_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "run = lambda command: subprocess.run(command)\n"
+            "run(('git', 'commit'))\n",
+            3,
+        )
+
+    def test_literal_string_constructions_fail(self) -> None:
+        sources = (
+            "import subprocess\nsubprocess.run(('g' + 'it', 'commit'))\n",
+            "import subprocess\nsubprocess.run((''.join(('g', 'it')), 'commit'))\n",
+            "import subprocess\nsubprocess.run(('{}{}'.format('g', 'it'), 'commit'))\n",
+            "import subprocess\nsubprocess.run(('%s%s' % ('g', 'it'), 'commit'))\n",
+            "import subprocess\nsubprocess.run((f'{\"g\"}{\"it\"}', 'commit'))\n",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                self.assert_violation(source, 2)
+
+    def test_unresolved_execution_command_fails_closed(self) -> None:
+        self.assert_violation(
+            "import subprocess\nsubprocess.run(command_factory())\n",
+            2,
+        )
+
+    def test_unresolved_env_command_fails_closed(self) -> None:
+        self.assert_violation(
+            "import subprocess\nsubprocess.run(['env', *command_factory()])\n",
+            2,
+        )
+
+    def test_executable_override_to_git_fails(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(['commit'], executable='git')\n",
+            2,
+        )
+
+    def test_proven_non_git_command_passes(self) -> None:
+        rc, err = run_against(
+            "import subprocess\nsubprocess.run(['python3', '--version'])\n"
+        )
+        self.assertEqual(rc, 0, err)
+
 
 class ArgvSpellingTests(unittest.TestCase):
     def test_list_literal_fails(self) -> None:
@@ -235,6 +360,31 @@ class FixtureConstructorTests(unittest.TestCase):
     def test_fixture_helper_passes(self) -> None:
         rc, _ = run_against("init_fixture_repo(r, '--bare')\n")
         self.assertEqual(rc, 0)
+
+    def test_global_options_before_init_fail(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(repo_git_command('-C', str(repo), 'init'))\n",
+            2,
+        )
+
+    def test_git_config_pairs_before_clone_fail(self) -> None:
+        self.assert_violation(
+            "import subprocess\n"
+            "subprocess.run(['git', '-c', 'gc.auto=0', 'clone', src, dst])\n",
+            2,
+        )
+
+    def test_unrelated_init_and_clone_strings_pass(self) -> None:
+        sources = (
+            "print('init')\n",
+            "config.get('init')\n",
+            "import pathlib\npathlib.Path('clone')\n",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                rc, err = run_against(source)
+                self.assertEqual(rc, 0, err)
 
 
 class RepositoryTests(unittest.TestCase):

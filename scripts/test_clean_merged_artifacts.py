@@ -3918,13 +3918,18 @@ class CleanupContractTests(unittest.TestCase):
         )
         _run(repo_git_command("remote", "add", "upstream", "https://example.invalid/upstream.git"),
              cwd=self.work)
-        script = f"""
-set -euo pipefail
-clean_merged_remote="$({sys.executable} {REPO_ROOT / "scripts" / "clean_merged_artifacts.py"} --print-remote-name)"
-git config "remote.${{clean_merged_remote}}.prune" true
-"""
-
-        _run(["bash", "-c", script], cwd=self.work)
+        clean_merged_remote = _run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "clean_merged_artifacts.py"),
+                "--print-remote-name",
+            ],
+            cwd=self.work,
+        ).stdout.strip()
+        _run(
+            repo_git_command("config", f"remote.{clean_merged_remote}.prune", "true"),
+            cwd=self.work,
+        )
 
         self.assertEqual(git(self.work, "config", "--get", "remote.upstream.prune").strip(), "true")
         origin_prune = _run(repo_git_command("config", "--get", "remote.origin.prune"),
@@ -3999,7 +4004,7 @@ git config "remote.${{clean_merged_remote}}.prune" true
         fake_entire.chmod(0o755)
 
         proc = _run(
-            [str(hook), "amend"],
+            ["sh", str(hook), "amend"],
             cwd=self.work,
             env={
                 "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
@@ -4265,7 +4270,7 @@ class HookEndToEndTests(unittest.TestCase):
         for hook_name, args in cases:
             start = time.monotonic()
             proc = subprocess.run(
-                [str(hooks_dir / hook_name), *args],
+                ["sh", str(hooks_dir / hook_name), *args],
                 cwd=self.work,
                 env={**os.environ, **GIT_ENV},
                 capture_output=True,

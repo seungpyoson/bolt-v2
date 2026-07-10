@@ -1529,7 +1529,7 @@ def assert_cache_prune_apply_waits_for_managed_run_lock() -> None:
         bin_dir.mkdir()
         marker = tmp_path / "started"
         write_executable(
-            bin_dir / "just",
+            bin_dir / "cargo",
             """#!/usr/bin/env bash
 printf started > "$MARKER"
 sleep 0.5
@@ -1565,7 +1565,7 @@ exit 0
             while not marker.exists() and time.time() < deadline:
                 time.sleep(0.05)
             if not marker.exists():
-                raise AssertionError("fake managed run did not start")
+                raise AssertionError("fake managed cargo run did not start")
 
             policy_file = repo / "ci" / "rust-verification.toml"
             policy_file.write_text(policy_file.read_text().replace("soft_limit_bytes = 1000000000000", "soft_limit_bytes = 1"))
@@ -3384,7 +3384,7 @@ exit 0
 
 def assert_direct_private_managed_just_recipes_require_wrapper_env() -> None:
     failures: list[str] = []
-    recipes = ["managed-clippy", "managed-test", "managed-build"]
+    recipes = ["managed-clippy", "managed-build"]
     for recipe in recipes:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -3484,10 +3484,10 @@ def assert_v6_red_managed_run_allows_post_separator_binary_args() -> None:
 
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        marker = tmp_path / "just-started"
-        captured = tmp_path / "just-args"
+        marker = tmp_path / "cargo-started"
+        captured = tmp_path / "cargo-args"
         write_executable(
-            bin_dir / "just",
+            bin_dir / "cargo",
             f"""#!/usr/bin/env bash
 touch {marker}
 printf '%s\\n' "$@" > {captured}
@@ -3503,11 +3503,11 @@ exit 0
             env=env,
         )
         captured_args = captured.read_text().splitlines() if captured.exists() else []
-        expected_tail = ["managed-test", "--", "--target-dir", "/tmp/valid-test-binary-arg"]
-        if result.returncode != 0 or not marker.exists() or captured_args[-4:] != expected_tail:
+        expected_args = ["nextest", "run", "--locked", "--", "--target-dir", "/tmp/valid-test-binary-arg"]
+        if result.returncode != 0 or not marker.exists() or captured_args != expected_args:
             raise AssertionError(
                 "managed run test must preserve Cargo separator semantics for test-binary args: "
-                f"returncode={result.returncode} just_started={marker.exists()} "
+                f"returncode={result.returncode} cargo_started={marker.exists()} "
                 f"captured={captured_args!r} "
                 f"stdout={result.stdout!r} stderr={result.stderr!r}"
             )

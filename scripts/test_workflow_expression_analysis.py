@@ -941,18 +941,26 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     smoke_issue_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "run_number")
     assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-root"], "shard")
     assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "shard")
-    if smoke_root_runs != (1,) or smoke_backtester_runs != (1,) or smoke_backtester_shards != (1,) or smoke_issue_runs != (1,):
-        raise AssertionError("flaky-test-smoke.yml must keep one execution per smoke job")
+    if smoke_root_runs != (1,) or smoke_backtester_runs != (1,) or smoke_issue_runs != (1,):
+        raise AssertionError("flaky-test-smoke.yml must keep one run per smoke job")
+    if smoke_backtester_shards != full_backtester_shards:
+        raise AssertionError(
+            "flaky-test-smoke.yml backtester shard matrix must cover every flaky-test-detection.yml shard"
+        )
     smoke_partition_denominators = shard_partition_argument_denominators(smoke_jobs["flaky-smoke-rust-backtester"])
-    if len(smoke_partition_denominators) != 1 or smoke_partition_denominators[0] <= len(smoke_backtester_shards):
-        raise AssertionError("flaky-test-smoke.yml backtester job must run one partitioned shard subset")
+    if smoke_partition_denominators != (len(smoke_backtester_shards),):
+        raise AssertionError("flaky-test-smoke.yml backtester shard partition denominator must match shard matrix length")
     smoke_execution_count = (
         len(smoke_root_runs)
         + len(smoke_backtester_runs) * len(smoke_backtester_shards)
         + len(smoke_issue_runs)
     )
-    if smoke_execution_count != 3:
-        raise AssertionError(f"flaky-test-smoke.yml must keep 3 matrix executions, got {smoke_execution_count}")
+    expected_smoke_execution_count = 2 + len(full_backtester_shards)
+    if smoke_execution_count != expected_smoke_execution_count:
+        raise AssertionError(
+            f"flaky-test-smoke.yml must keep {expected_smoke_execution_count} matrix executions, "
+            f"got {smoke_execution_count}"
+        )
 
 def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
     verifier = load_verifier()
@@ -1108,7 +1116,7 @@ jobs:
     strategy:
       matrix:
         run_number: [1]
-        shard: [1]
+        shard: [1, 2, 3, 4]
     steps:
       - name: Setup BVS MinIO S3 smoke
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
@@ -1794,7 +1802,7 @@ jobs:
     oversized_smoke_workflow = good_smoke_workflow.replace(
         "run_number: [1]",
         "run_number: [1, 2, 3, 4, 5]",
-    ).replace("shard: [1]", "shard: [1, 2, 3, 4]")
+    )
     oversized_smoke_errors = verifier.verify_flaky_test_detection_workflows(
         {
             full_workflow_name: good_full_workflow,
@@ -1805,9 +1813,20 @@ jobs:
         raise AssertionError(
             f"flaky detection verifier must reject multi-run smoke root jobs, got: {oversized_smoke_errors}"
         )
-    if not any("backtester smoke job" in error and "shard: [1]" in error for error in oversized_smoke_errors):
+    incomplete_smoke_workflow = good_smoke_workflow.replace("shard: [1, 2, 3, 4]", "shard: [1]")
+    incomplete_smoke_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: incomplete_smoke_workflow,
+        }
+    )
+    if not any(
+        "backtester smoke job partition denominator must match shard matrix length" in error
+        for error in incomplete_smoke_errors
+    ):
         raise AssertionError(
-            f"flaky detection verifier must reject multi-shard smoke BVS jobs, got: {oversized_smoke_errors}"
+            "flaky detection verifier must reject incomplete smoke BVS shard coverage, "
+            f"got: {incomplete_smoke_errors}"
         )
 
     missing_smoke_workflow = good_smoke_workflow.replace("  flaky-smoke-rust-backtester:\n", "  removed-backtester-smoke:\n")

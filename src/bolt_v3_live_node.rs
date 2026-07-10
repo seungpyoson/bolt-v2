@@ -2636,7 +2636,10 @@ pub async fn run_bolt_v3_live_node(
                 startup_timeout: Duration::from_secs(startup_timeout_secs),
                 shutdown_grace: Duration::from_secs(startup_shutdown_grace_secs),
                 trader_invariant_poll: Duration::from_millis(
-                    loaded.root.persistence.runtime_capture_start_poll_interval_ms,
+                    loaded
+                        .root
+                        .persistence
+                        .runtime_capture_start_poll_interval_ms,
                 ),
             },
             startup_client_labels,

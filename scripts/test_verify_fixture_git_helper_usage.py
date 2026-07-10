@@ -86,4 +86,7 @@ class RepositoryTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    import lane_governor
+
+    lane_governor.acquire()
+    unittest.main()

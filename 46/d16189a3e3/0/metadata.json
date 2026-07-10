@@ -1,0 +1,133 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "46d16189a3e3",
+  "session_id": "a2712926-fa94-405b-b44f-792003993c06",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T04:52:30.647659Z",
+  "branch": "fix/704-evict-backfill-completion-ledgers",
+  "checkpoints_count": 33,
+  "save_step_count": 9,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_test_support.rs",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/backfill-conversion-completion-ledger.toml",
+    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/backfill-conversion-completion-ledger.toml",
+    "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json",
+    "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
+    "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "1abe2c0f4f24",
+  "checkpoint_transcript_start": 2136,
+  "transcript_lines_at_start": 2136,
+  "compact_transcript_start": 485,
+  "token_usage": {
+    "input_tokens": 4461,
+    "cache_creation_tokens": 616686,
+    "cache_read_tokens": 57626566,
+    "output_tokens": 141923,
+    "api_call_count": 145
+  },
+  "session_metrics": {
+    "turn_count": 49
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T04:52:30.318255Z",
+    "agent_lines": 387,
+    "agent_removed": 11,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 387,
+    "total_lines_changed": 398,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 4583,
+      "user_lines_removed": 5045,
+      "agent_lines_added": 234,
+      "agent_lines_removed": 44,
+      "user_added_per_file": {
+        "scratchpad/batch_1_categories.txt": 99,
+        "scratchpad/batch_2_categories.txt": 99,
+        "scratchpad/batch_3_categories.txt": 99,
+        "scratchpad/batch_4_categories.txt": 99,
+        "scratchpad/batch_5_categories.txt": 99,
+        "scratchpad/batch_6_categories.txt": 94,
+        "scratchpad/registry_all_rows.tsv": 2610,
+        "scratchpad/registry_samples_per_category.tsv": 1384
+      },
+      "user_removed_per_file": {
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json": 2509,
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json": 2536
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 29,
+      "agent_lines_removed": 4
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 29,
+      "agent_lines_removed": 4
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 31,
+      "agent_lines_removed": 6
+    }
+  ]
+}

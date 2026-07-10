@@ -415,17 +415,24 @@ fn live_node_trader_running_invariant_rejects_running_without_trader() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn startup_watchdog_aborts_when_node_running_without_trader() {
-    // Green: watchdog detects the fail-open and returns TraderNotStarted
-    // instead of idling forever as a trader-less "Running" node.
-    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
-    tokio::pin!(run_future);
+    // Green: watchdog detects the fail-open and aborts. When the runner returns
+    // after stop, the outcome is TraderNotStarted (named launch failure).
     let stop_called = Cell::new(false);
+    let run_future = async {
+        loop {
+            if stop_called.get() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::pin!(run_future);
     let mut capture_failure_receiver = None;
-    let shutdown_grace = Duration::from_millis(25);
+    let shutdown_grace = Duration::from_millis(200);
     let started = std::time::Instant::now();
 
     let outcome = tokio::time::timeout(
-        Duration::from_millis(300),
+        Duration::from_millis(500),
         live_node_run_startup_watchdog(
             run_future.as_mut(),
             &mut capture_failure_receiver,
@@ -452,7 +459,7 @@ async fn startup_watchdog_aborts_when_node_running_without_trader() {
         "trader-not-started abort must request stop"
     );
     assert!(
-        elapsed < Duration::from_millis(250),
+        elapsed < Duration::from_millis(400),
         "trader-not-started abort should fire on the poll path well before the startup bound, elapsed {elapsed:?}"
     );
     match outcome {
@@ -470,6 +477,77 @@ async fn startup_watchdog_aborts_when_node_running_without_trader() {
             );
         }
         other => panic!("expected TraderNotStarted for Running-without-trader, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_grace_timeout_still_names_trader_not_started() {
+    // When the runner never returns after stop, the outcome is a grace timeout
+    // but the trigger must remain TraderNotStartedInvariant — not StartupDeadline.
+    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
+    tokio::pin!(run_future);
+    let stop_called = Cell::new(false);
+    let mut capture_failure_receiver = None;
+    let shutdown_grace = Duration::from_millis(25);
+
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(400),
+        live_node_run_startup_watchdog(
+            run_future.as_mut(),
+            &mut capture_failure_receiver,
+            || NodeState::Running,
+            || false,
+            || stop_called.set(true),
+            LiveNodeStartupWatchdogBounds {
+                startup_timeout: Duration::from_secs(10),
+                shutdown_grace,
+                trader_invariant_poll: Duration::from_millis(50),
+            },
+            vec!["data:binance_reference".to_string()],
+        ),
+    )
+    .await
+    .expect("hung runner after trader-not-started must still return after grace");
+
+    assert!(stop_called.get());
+    match outcome {
+        LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
+            trigger,
+            shutdown_grace: observed_grace,
+            node_state,
+            registered_client_labels,
+        } => {
+            assert_eq!(
+                trigger,
+                LiveNodeStartupShutdownGraceTrigger::TraderNotStartedInvariant,
+                "grace-timeout after trader-not-started must not be attributed to StartupDeadline"
+            );
+            assert_eq!(observed_grace, shutdown_grace);
+            assert_eq!(node_state, "Running");
+            assert_eq!(
+                registered_client_labels,
+                vec!["data:binance_reference".to_string()]
+            );
+            // Public error surface also preserves the named cause.
+            let public_error = BoltV3LiveNodeError::LiveNodeStartupShutdownGraceTimeout {
+                trigger,
+                shutdown_grace: observed_grace,
+                node_state: node_state.clone(),
+                registered_client_labels: registered_client_labels.clone(),
+            };
+            let display = public_error.to_string();
+            assert!(
+                display.contains("trader was never started"),
+                "grace-timeout Display must still name trader-not-started: {display}"
+            );
+            assert!(
+                display.contains("trader-not-started launch invariant"),
+                "grace-timeout Display must name the invariant trigger: {display}"
+            );
+        }
+        other => panic!(
+            "expected StartupShutdownGraceTimeout with TraderNotStartedInvariant, got {other:?}"
+        ),
     }
 }
 

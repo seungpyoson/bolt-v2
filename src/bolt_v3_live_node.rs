@@ -1786,6 +1786,11 @@ impl std::error::Error for BoltV3LiveNodeBuilderError {
 pub enum LiveNodeStartupShutdownGraceTrigger {
     StartupDeadline,
     RuntimeCaptureFailure,
+    /// Stop was requested because `NodeState::Running` without a started trader
+    /// was observed (engines-not-connected fail-open). The startup shutdown
+    /// grace elapsed before the runner returned; the launch cause is still the
+    /// trader-not-started invariant, not a generic startup/connect timeout.
+    TraderNotStartedInvariant,
 }
 
 impl std::fmt::Display for LiveNodeStartupShutdownGraceTrigger {
@@ -1794,6 +1799,9 @@ impl std::fmt::Display for LiveNodeStartupShutdownGraceTrigger {
             LiveNodeStartupShutdownGraceTrigger::StartupDeadline => f.write_str("startup deadline"),
             LiveNodeStartupShutdownGraceTrigger::RuntimeCaptureFailure => {
                 f.write_str("runtime capture failure")
+            }
+            LiveNodeStartupShutdownGraceTrigger::TraderNotStartedInvariant => {
+                f.write_str("trader-not-started launch invariant")
             }
         }
     }
@@ -2089,13 +2097,33 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 shutdown_grace,
                 node_state,
                 registered_client_labels,
-            } => write!(
-                f,
-                "bolt-v3 live-node startup shutdown grace elapsed after {trigger} \
-                 ({shutdown_grace:?}); node_state={node_state}; \
-                 registered_client_labels={}",
-                live_node_client_list_for_display(registered_client_labels)
-            ),
+            } => {
+                // Keep the trader-not-started cause in the operator-visible string even
+                // when the runner hung through the shutdown grace — do not look like a
+                // generic startup timeout.
+                if matches!(
+                    trigger,
+                    LiveNodeStartupShutdownGraceTrigger::TraderNotStartedInvariant
+                ) {
+                    write!(
+                        f,
+                        "bolt-v3 live-node launch aborted: NT NodeState is Running but the \
+                         trader was never started (engines-not-connected fail-open); \
+                         startup shutdown grace elapsed after {trigger} ({shutdown_grace:?}) \
+                         before the runner returned; node_state={node_state}; \
+                         registered_client_labels={}",
+                        live_node_client_list_for_display(registered_client_labels)
+                    )
+                } else {
+                    write!(
+                        f,
+                        "bolt-v3 live-node startup shutdown grace elapsed after {trigger} \
+                         ({shutdown_grace:?}); node_state={node_state}; \
+                         registered_client_labels={}",
+                        live_node_client_list_for_display(registered_client_labels)
+                    )
+                }
+            }
             BoltV3LiveNodeError::LiveNodeTraderNotStarted {
                 node_state,
                 registered_client_labels,
@@ -2324,6 +2352,37 @@ where
     }
 }
 
+/// Map a graceful-stop result after a trader-not-started invariant abort.
+///
+/// When the runner returns within the grace window, the outcome is
+/// [`LiveNodeRunStartupOutcome::TraderNotStarted`]. When the grace elapses
+/// first, the outcome is still attributed to the trader-not-started invariant
+/// via [`LiveNodeStartupShutdownGraceTrigger::TraderNotStartedInvariant`] —
+/// never a generic `StartupDeadline` (which would send operators to the wrong
+/// failure class).
+fn trader_not_started_stop_outcome(
+    stop_result: Option<Result<(), anyhow::Error>>,
+    shutdown_grace: Duration,
+    node_state: String,
+    registered_client_labels: Vec<String>,
+) -> LiveNodeRunStartupOutcome {
+    if let Some(Err(error)) = &stop_result {
+        log::error!("LiveNode run failed during trader-not-started shutdown: {error}");
+    }
+    match stop_result {
+        Some(_) => LiveNodeRunStartupOutcome::TraderNotStarted {
+            node_state,
+            registered_client_labels,
+        },
+        None => LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
+            trigger: LiveNodeStartupShutdownGraceTrigger::TraderNotStartedInvariant,
+            shutdown_grace,
+            node_state,
+            registered_client_labels,
+        },
+    }
+}
+
 async fn live_node_run_startup_watchdog<F, State, TraderRunning, Stop>(
     mut run_future: Pin<&mut F>,
     capture_failure_receiver: &mut Option<tokio::sync::oneshot::Receiver<()>>,
@@ -2369,23 +2428,12 @@ where
                         "trader-not-started launch invariant",
                     )
                     .await;
-                    if let Some(Err(error)) = &stop_result {
-                        log::error!(
-                            "LiveNode run failed during trader-not-started shutdown: {error}"
-                        );
-                    }
-                    match stop_result {
-                        Some(_) => break LiveNodeRunStartupOutcome::TraderNotStarted {
-                            node_state,
-                            registered_client_labels,
-                        },
-                        None => break LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
-                            trigger: LiveNodeStartupShutdownGraceTrigger::StartupDeadline,
-                            shutdown_grace: bounds.shutdown_grace,
-                            node_state,
-                            registered_client_labels,
-                        },
-                    }
+                    break trader_not_started_stop_outcome(
+                        stop_result,
+                        bounds.shutdown_grace,
+                        node_state,
+                        registered_client_labels,
+                    );
                 }
             }
             _ = &mut startup_deadline, if !startup_deadline_fired => {
@@ -2406,23 +2454,12 @@ where
                         "trader-not-started launch invariant",
                     )
                     .await;
-                    if let Some(Err(error)) = &stop_result {
-                        log::error!(
-                            "LiveNode run failed during trader-not-started shutdown: {error}"
-                        );
-                    }
-                    match stop_result {
-                        Some(_) => break LiveNodeRunStartupOutcome::TraderNotStarted {
-                            node_state,
-                            registered_client_labels,
-                        },
-                        None => break LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
-                            trigger: LiveNodeStartupShutdownGraceTrigger::StartupDeadline,
-                            shutdown_grace: bounds.shutdown_grace,
-                            node_state,
-                            registered_client_labels,
-                        },
-                    }
+                    break trader_not_started_stop_outcome(
+                        stop_result,
+                        bounds.shutdown_grace,
+                        node_state,
+                        registered_client_labels,
+                    );
                 } else if matches!(&state, NodeState::Idle | NodeState::Starting) {
                     let node_state = format!("{state:?}");
                     log::error!(
@@ -2504,18 +2541,15 @@ where
                             "trader-not-started after capture failure",
                         )
                         .await;
-                        match stop_result {
-                            Some(_) => break LiveNodeRunStartupOutcome::TraderNotStarted {
-                                node_state,
-                                registered_client_labels,
-                            },
-                            None => break LiveNodeRunStartupOutcome::StartupShutdownGraceTimeout {
-                                trigger: LiveNodeStartupShutdownGraceTrigger::RuntimeCaptureFailure,
-                                shutdown_grace: bounds.shutdown_grace,
-                                node_state,
-                                registered_client_labels,
-                            },
-                        }
+                        // Invariant (not capture failure) is the launch cause when the
+                        // node is Running without a trader — preserve that attribution
+                        // even if shutdown grace elapses.
+                        break trader_not_started_stop_outcome(
+                            stop_result,
+                            bounds.shutdown_grace,
+                            node_state,
+                            registered_client_labels,
+                        );
                     }
                     log::error!(
                         "NT runtime capture failure detected after LiveNode reached Running \
@@ -2644,12 +2678,25 @@ pub async fn run_bolt_v3_live_node(
                     "NT runtime capture shutdown failed after startup shutdown grace elapsed: {error}"
                 );
             }
-            Err(BoltV3LiveNodeError::LiveNodeStartupShutdownGraceTimeout {
+            // Preserve the named trader-not-started launch error even when the
+            // runner hung through the shutdown grace — operators must not be
+            // sent to investigate a generic startup timeout.
+            if matches!(
                 trigger,
-                shutdown_grace,
-                node_state,
-                registered_client_labels,
-            })
+                LiveNodeStartupShutdownGraceTrigger::TraderNotStartedInvariant
+            ) {
+                Err(BoltV3LiveNodeError::LiveNodeTraderNotStarted {
+                    node_state,
+                    registered_client_labels,
+                })
+            } else {
+                Err(BoltV3LiveNodeError::LiveNodeStartupShutdownGraceTimeout {
+                    trigger,
+                    shutdown_grace,
+                    node_state,
+                    registered_client_labels,
+                })
+            }
         }
         LiveNodeRunStartupOutcome::TraderNotStarted {
             node_state,

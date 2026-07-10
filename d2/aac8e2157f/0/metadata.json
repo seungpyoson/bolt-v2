@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "d2aac8e2157f",
+  "session_id": "019f4c23-b342-7472-bdb4-d8923f27f415",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T13:23:56.43979Z",
+  "branch": "fix/1349-settlement-currency-park",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/strategies/binary_oracle_edge_taker/mod.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "f56c33de2e65",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 178501,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7486720,
+    "output_tokens": 17700,
+    "api_call_count": 72
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T13:23:56.40597Z",
+    "agent_lines": 94,
+    "agent_removed": 4,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 94,
+    "total_lines_changed": 98,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

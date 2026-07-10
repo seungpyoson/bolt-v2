@@ -5,6 +5,7 @@
 
 mod bolt_v3_basket_admission;
 mod bolt_v3_basket_execution;
+mod bolt_v3_kill_switch_store;
 mod bolt_v3_capital_admission_recovery_equivalence;
 mod bolt_v3_capital_admission_runtime_feed;
 mod bolt_v3_order_intent;

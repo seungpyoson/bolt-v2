@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6e23df530599",
+  "strategy": "manual-commit",
+  "branch": "fix/1179-binance-sbe-schema-v5",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/src/nt_dependency_proof.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6e/23df530599/0/metadata.json",
+      "transcript": "/6e/23df530599/0/full.jsonl",
+      "compact_transcript": "/6e/23df530599/0/transcript.jsonl",
+      "content_hash": "/6e/23df530599/0/content_hash.txt",
+      "prompt": "/6e/23df530599/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 373,
+    "cache_creation_tokens": 12626,
+    "cache_read_tokens": 8666196,
+    "output_tokens": 10709,
+    "api_call_count": 12
+  }
+}

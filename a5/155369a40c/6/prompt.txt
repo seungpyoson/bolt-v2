@@ -1,0 +1,53 @@
+### PR #1351 — encode the terminal transition structurally
+
+  Rework PR #1351 around one typed terminal-settlement transition. Green CI and approval do not override the missing architecture or requirement.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1349-settlement-currency-park
+
+  Expected state:
+  - Clean worktree
+  - Local and GitHub head: 189f6d3779c3c9bdcbe6f7c5db67649d06aa8c94
+
+  Convert the PR back to draft before pushing changes.
+
+  Preserve D1/D2 only after confirming:
+  - settlement currency derives from the non-enforcing capital pool
+  - missing currency fails at load through the same production predicate
+  - no submit admission is accidentally armed
+
+  Rework terminal handling:
+  - Introduce one typed terminal-eligibility result representing only:
+    1. market expired, or
+    2. recovery-only unknown interval that is unmanageable by construction.
+  - A live-manageable, pending, or nonterminal position must be unable to construct that eligibility.
+  - One canonical transition must atomically:
+    - persist durable terminal evidence
+    - emit the lifecycle transition
+    - publish the real operator-health transition required by #1349
+    - release exposure to Flat
+  - Do not rely on callers to establish eligibility before an unconditional `Flat`.
+  - Do not use the process-local dedupe set as health or safety state. Any log dedupe must be merely a reporter detail derived from the canonical transition.
+  - Remove every discarded invariant result such as `let _ = enforce_one_position_invariant()`. Propagate or explicitly fail closed.
+  - Do not add timers, fallback release paths, acknowledgement shortcuts, or another parallel latch.
+
+  Evidence:
+  - both valid terminal eligibility legs transition successfully
+  - live-manageable/nonterminal positions cannot be released
+  - durable evidence and health transition are emitted exactly once per transition
+  - restart behavior is explicit and tested
+  - invariant failures cannot be swallowed
+  - log suppression follows actual state transitions, not nested special cases
+  - config differential without/with the settlement pool remains green
+
+  Use permitted local non-compile checks and remote-first Rust verification. Commit and publish with `just sandbox-safe-push`; keep the PR draft.
+
+  Report the exact remote head, deleted fallback/convention paths, and evidence. Do not deploy, trade, request external review, queue, or merge.
+
+---
+
+conduct an internal adverserial review
+
+---
+
+address them with systematic solutions

@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "1372e73b6c95",
+  "strategy": "manual-commit",
+  "branch": "fix/1349-settlement-currency-park",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "config/root.toml",
+    "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+    "src/bolt_v3_live_node/live_node_config.rs",
+    "src/bolt_v3_live_node/tests/live_node_config.rs",
+    "src/strategies/binary_oracle_edge_taker/mod.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/13/72e73b6c95/0/metadata.json",
+      "transcript": "/13/72e73b6c95/0/full.jsonl",
+      "compact_transcript": "/13/72e73b6c95/0/transcript.jsonl",
+      "content_hash": "/13/72e73b6c95/0/content_hash.txt",
+      "prompt": "/13/72e73b6c95/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3378,
+    "cache_creation_tokens": 55735,
+    "cache_read_tokens": 12192171,
+    "output_tokens": 42072,
+    "api_call_count": 36
+  }
+}

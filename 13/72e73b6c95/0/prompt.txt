@@ -1,0 +1,25 @@
+lets monitor whether it's firing trades and whether that's consistently profitable - also need to review whether that what the 40000 lines of logs are for
+
+---
+
+also when market rotated - there was no trade - so we need to check if trades stopped or whether it just didn't find any edge
+
+---
+
+yes - but we need to investigate the failure - one trade succeeding is not sufficient and it is failing that it's a systematic infra. we need to address the log question as well.
+
+---
+
+so what was the session stop issue?
+
+---
+
+so the prompt you sent out - is that for fixing that bug or was that for logs issue?
+
+---
+
+why are we having these issues? seriously
+
+---
+
+so what do we need to do?

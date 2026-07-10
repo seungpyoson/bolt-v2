@@ -76,7 +76,7 @@
     },
     "pmxt_source_proof_spec": {
       "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
-      "sha256": "2b0ece5774eea20a610a326e1a3819b2c6816229b687b6966a8d0985e0750ad6"
+      "sha256": "a2eb976df899a92f6670c27b26febeac79bc16ad3a5546a631822684b39e0c24"
     }
   },
   "guard_verification": {

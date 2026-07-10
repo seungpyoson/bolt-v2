@@ -13,9 +13,11 @@ Rust semantics, so it is built to NEVER flag valid code (no false positives)
 while covering the idiomatic evasions:
 
   * Every string literal *spelling* is normalized by `_canonical_code` before
-    any rule runs — plain `"x"`, raw `r"x"`, raw-hashed `r#"x"#`, byte `b"x"`,
-    and byte-raw `br#"x"#` all collapse to a plain empty-string token, so the
-    `r`/`b`/`#` prefix cannot slip a literal past the branch rules.
+    any rule runs — plain, raw, byte, byte-raw, C, and C-raw literals all
+    collapse to a plain empty-string token, so a prefix cannot slip a literal
+    past the branch rules.
+  * Balanced turbofish contents and transparent grouping parentheses are
+    normalized before matching while call-argument parentheses remain intact.
   * Comments, char literals, and string-literal bodies are blanked (newlines
     preserved), so a venue-branch phrase living inside a raw-string body or a
     comment is NOT scanned as code (no false positive).
@@ -32,11 +34,7 @@ do soundly; the capability-contract design + code review cover them):
     `VenueId::from("polymarket") == other`, `some_non_venue_var == "polymarket"`;
   * venue-name read via a `venue`-*suffixed* getter (`obj.get_venue()`) rather
     than a `venue`-prefixed token;
-  * a `match`/`if let` guard comparing a non-venue operand to a venue literal;
-  * redundant grouping parentheses around comparison operands or macro
-    arguments (distinguishing them from call arguments needs expression
-    parsing rather than sound local text matching);
-  * 2+ level nested-generic turbofish (`::<Vec<Cow<str>>>`).
+  * a `match`/`if let` guard comparing a non-venue operand to a venue literal.
 These are accepted false negatives, recorded here so the boundary is explicit.
 """
 
@@ -66,7 +64,7 @@ def production_text(path: Path) -> str:
 # stops `venue` from matching inside a larger identifier (`subvenue`,
 # `revenue`, `myvenue`). Receiver/accessor repetition is bounded so a
 # pathological line cannot drive quadratic backtracking.
-_TURBOFISH = r"(?:\s*::\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?"
+_TURBOFISH = r"(?:\s*::\s*<[^<>]*>)?"
 _NAME = (
     r"(?<![A-Za-z0-9_])"
     r"(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*){0,16}"
@@ -121,30 +119,25 @@ FORBIDDEN_RULES = (
             re.IGNORECASE,
         ),
     ),
-    Rule(
-        "FR080_MATCHES",
-        "venue-name matches! arm",
-        re.compile(
-            rf"matches!\s*\(\s*{_NAME}\s*,(?:(?!\bif\b)[^)])*{_LIT}",
-            re.IGNORECASE,
-        ),
-    ),
-    Rule(
-        "FR080_LET_PATTERN",
-        "venue-name if/while-let",
-        re.compile(rf"\b(?:if|while)\s+let\s+[^=\n]*?{_LIT}[^=\n]*?=\s*{_NAME}", re.IGNORECASE),
-    ),
 )
 
 _MATCH_KW = re.compile(r"\bmatch\b")
+_MATCHES_KW = re.compile(r"\bmatches!\s*([([{])")
+_CONDITION_KW = re.compile(r"\b(?:if|while)\b")
+_LET_KW = re.compile(r"\blet\b")
 _MATCH_HEAD_RE = re.compile(
     rf"(?:(?:&\s*(?:mut\s+)?)|(?:\(\s*))*{_NAME}(?:\s*\))*",
     re.IGNORECASE,
 )
 _LIT_RE = re.compile(_LIT, re.IGNORECASE)
+_NAME_RE = re.compile(_NAME, re.IGNORECASE)
 _GUARD = re.compile(r"\bif\b")
 _MATCH_ARM_LABEL = "venue-name match arm (venue scrutinee)"
 _MATCH_ARM_RULE_ID = "FR080_MATCH_ARM"
+_MATCHES_LABEL = "venue-name matches! arm"
+_MATCHES_RULE_ID = "FR080_MATCHES"
+_LET_PATTERN_LABEL = "venue-name if/while-let"
+_LET_PATTERN_RULE_ID = "FR080_LET_PATTERN"
 _DISCOVERY_FLOOR_RULE_ID = "FR080_DISCOVERY_FLOOR"
 
 # A complete Rust char literal: `'a'`, `'\n'`, `'\''`, `'\x41'`, `'\u{1F600}'`,
@@ -177,19 +170,18 @@ def _scan_plain(text: str, quote: int, start: int) -> tuple[int, int, str | None
 
 def _scan_string(text: str, i: int) -> tuple[int, int, str | None] | None:
     """If a string literal begins at index `i`, return (start, end_exclusive,
-    value); else None. Handles plain, raw `r"..."`, raw-hashed `r#"..."#`, byte
-    `b"..."`, and byte-raw `br#"..."#`. `value` is the opaque source content,
-    or None when the literal is unterminated."""
+    value); else None. Handles plain, raw, byte, and C string literals,
+    including hashed raw spellings. `value` is the opaque source content, or
+    None when the literal is unterminated."""
     n = len(text)
     c = text[i]
     if c == '"':
         return _scan_plain(text, i, i)
-    # raw/byte prefixes are only string starts when not the tail of an identifier
-    if c in ("r", "b") and (i == 0 or text[i - 1] not in _IDENT):
+    # Raw/byte/C prefixes are string starts only when not an identifier tail.
+    if c in ("r", "b", "c") and (i == 0 or text[i - 1] not in _IDENT):
         j = i
-        is_byte = False
-        if text[j] == "b":
-            is_byte = True
+        has_plain_prefix = text[j] in ("b", "c")
+        if has_plain_prefix:
             j += 1
         if j < n and text[j] == "r":
             j += 1
@@ -204,11 +196,95 @@ def _scan_string(text: str, i: int) -> tuple[int, int, str | None] | None:
                     return (i, n, None)
                 body = text[j + 1 : k]
                 return (i, k + len(closing), body)
-            return None  # `r`/`br` not followed by a raw string body
-        if is_byte and j < n and text[j] == '"':
-            return _scan_plain(text, j, i)  # byte string b"..."
+            return None  # raw prefix not followed by a raw string body
+        if has_plain_prefix and j < n and text[j] == '"':
+            return _scan_plain(text, j, i)
         return None
     return None
+
+
+def _flatten_turbofish(text: str) -> str:
+    """Blank balanced turbofish contents while retaining the outer `<...>`."""
+    out = list(text)
+    n = len(text)
+    i = 0
+    while i + 2 < n:
+        if text[i : i + 2] != "::":
+            i += 1
+            continue
+        opening = i + 2
+        while opening < n and text[opening].isspace():
+            opening += 1
+        if opening >= n or text[opening] != "<":
+            i += 2
+            continue
+        depth = 1
+        delimiters: list[str] = []
+        j = opening + 1
+        while j < n and depth:
+            ch = text[j]
+            if ch in "([{":
+                delimiters.append({"(": ")", "[": "]", "{": "}"}[ch])
+            elif ch in ")]}" and delimiters and ch == delimiters[-1]:
+                delimiters.pop()
+            elif not delimiters and ch == "<":
+                depth += 1
+            elif not delimiters and ch == ">" and text[j - 1] != "-":
+                depth -= 1
+            j += 1
+        if depth:
+            break
+        for k in range(opening + 1, j - 1):
+            if out[k] != "\n":
+                out[k] = " "
+        i = j
+    return "".join(out)
+
+
+def _group_prefix_allows_transparency(chars: list[str], opening: int) -> bool:
+    i = opening - 1
+    while i >= 0 and chars[i].isspace():
+        i -= 1
+    if i < 0:
+        return True
+    if chars[i] not in _IDENT:
+        return chars[i] not in "!)]>"
+    end = i + 1
+    while i >= 0 and chars[i] in _IDENT:
+        i -= 1
+    if i >= 0 and chars[i] == "#":
+        return False
+    return "".join(chars[i + 1 : end]) in {
+        "break",
+        "else",
+        "if",
+        "let",
+        "match",
+        "move",
+        "return",
+        "while",
+        "yield",
+    }
+
+
+def _flatten_transparent_groups(text: str) -> str:
+    """Blank grouping parens around a complete venue read or string literal."""
+    out = list(text)
+    stack: list[int] = []
+    pairs: list[tuple[int, int]] = []
+    for i, ch in enumerate(text):
+        if ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            pairs.append((stack.pop(), i))
+    for opening, closing in pairs:
+        inner = "".join(out[opening + 1 : closing]).strip()
+        if not _group_prefix_allows_transparency(out, opening):
+            continue
+        if _NAME_RE.fullmatch(inner) or _LIT_RE.fullmatch(inner):
+            out[opening] = " "
+            out[closing] = " "
+    return "".join(out)
 
 
 def _canonical_code(text: str) -> str:
@@ -236,8 +312,17 @@ def _canonical_code(text: str) -> str:
             i = j
             continue
         if c == "/" and i + 1 < n and text[i + 1] == "*":
-            j = text.find("*/", i + 2)
-            j = n if j == -1 else j + 2
+            depth = 1
+            j = i + 2
+            while j < n and depth:
+                if text[j : j + 2] == "/*":
+                    depth += 1
+                    j += 2
+                elif text[j : j + 2] == "*/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
             blank(i, j)
             i = j
             continue
@@ -260,7 +345,7 @@ def _canonical_code(text: str) -> str:
             continue
         i += 1
 
-    return "".join(out)
+    return _flatten_transparent_groups(_flatten_turbofish("".join(out)))
 
 
 def line_number(text: str, pos: int) -> int:
@@ -269,6 +354,182 @@ def line_number(text: str, pos: int) -> int:
 
 def normalize_path(path: str) -> str:
     return posixpath.normpath(path.replace("\\", "/"))
+
+
+_OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}"}
+_CLOSERS = frozenset(_OPEN_TO_CLOSE.values())
+
+
+def _closing_delimiter(text: str, opening: int) -> int | None:
+    stack = [_OPEN_TO_CLOSE[text[opening]]]
+    for i in range(opening + 1, len(text)):
+        ch = text[i]
+        if ch in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch in _CLOSERS:
+            if ch != stack[-1]:
+                return None
+            stack.pop()
+            if not stack:
+                return i
+    return None
+
+
+def _top_level_comma(text: str, start: int, end: int) -> int | None:
+    stack: list[str] = []
+    for i in range(start, end):
+        ch = text[i]
+        if ch in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch in _CLOSERS:
+            if stack and ch == stack[-1]:
+                stack.pop()
+        elif ch == "," and not stack:
+            return i
+    return None
+
+
+def _top_level_guard(text: str, start: int, end: int) -> int | None:
+    stack: list[str] = []
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch in _CLOSERS:
+            if stack and ch == stack[-1]:
+                stack.pop()
+        elif not stack and text.startswith("if", i):
+            before = text[i - 1] if i > start else " "
+            after = text[i + 2] if i + 2 < end else " "
+            if before not in _IDENT and after not in _IDENT:
+                return i
+        i += 1
+    return None
+
+
+def _matches_positions(scan_text: str) -> list[int]:
+    positions: list[int] = []
+    for macro in _MATCHES_KW.finditer(scan_text):
+        opening = macro.end() - 1
+        closing = _closing_delimiter(scan_text, opening)
+        if closing is None:
+            continue
+        comma = _top_level_comma(scan_text, opening + 1, closing)
+        if comma is None:
+            continue
+        scrutinee = scan_text[opening + 1 : comma].strip()
+        if not _MATCH_HEAD_RE.fullmatch(scrutinee):
+            continue
+        pattern_start = comma + 1
+        guard = _top_level_guard(scan_text, pattern_start, closing)
+        pattern_end = closing if guard is None else guard
+        positions.extend(
+            pattern_start + literal.start()
+            for literal in _LIT_RE.finditer(scan_text[pattern_start:pattern_end])
+        )
+    return positions
+
+
+def _condition_end(scan_text: str, start: int) -> int:
+    stack: list[str] = []
+    last_nonspace = ""
+    i = start
+    while i < len(scan_text):
+        ch = scan_text[i]
+        if ch in "([":
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch == "{" and (stack or last_nonspace == "!"):
+            stack.append("}")
+        elif ch in _CLOSERS:
+            if stack and ch == stack[-1]:
+                stack.pop()
+        elif not stack and (ch == "{" or ch == ";"):
+            return i
+        if not ch.isspace():
+            last_nonspace = ch
+        i += 1
+    return len(scan_text)
+
+
+def _top_level_assignment(text: str, start: int, end: int) -> int | None:
+    stack: list[str] = []
+    for i in range(start, end):
+        ch = text[i]
+        if ch in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch in _CLOSERS:
+            if stack and ch == stack[-1]:
+                stack.pop()
+        elif ch == "=" and not stack:
+            before = text[i - 1] if i > start else " "
+            after = text[i + 1] if i + 1 < end else " "
+            if before not in "!<=>" and after not in "=>":
+                return i
+    return None
+
+
+def _let_rhs_end(text: str, start: int, end: int) -> int:
+    stack: list[str] = []
+    prefix_only_borrows = True
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch in _CLOSERS:
+            if stack and ch == stack[-1]:
+                stack.pop()
+        elif not stack and text[i : i + 2] in ("&&", "||"):
+            unary_borrow = text[i : i + 2] == "&&" and prefix_only_borrows
+            if not unary_borrow:
+                return i
+            i += 2
+            continue
+        if ch not in "& \t\r\n":
+            prefix_only_borrows = False
+        i += 1
+    return end
+
+
+def _let_pattern_positions(scan_text: str) -> list[int]:
+    positions: list[int] = []
+    for condition in _CONDITION_KW.finditer(scan_text):
+        end = _condition_end(scan_text, condition.end())
+        for let_kw in _LET_KW.finditer(scan_text, condition.end(), end):
+            assignment = _top_level_assignment(scan_text, let_kw.end(), end)
+            if assignment is None:
+                continue
+            rhs_end = _let_rhs_end(scan_text, assignment + 1, end)
+            if not _MATCH_HEAD_RE.fullmatch(scan_text[assignment + 1 : rhs_end].strip()):
+                continue
+            positions.extend(
+                let_kw.end() + literal.start()
+                for literal in _LIT_RE.finditer(scan_text[let_kw.end() : assignment])
+            )
+    return positions
+
+
+def _next_top_level_token_is_arm(scan_text: str, start: int) -> bool:
+    """Return whether a comma-less block body is followed by another arm."""
+    stack: list[str] = []
+    i = start
+    while i < len(scan_text):
+        ch = scan_text[i]
+        if ch in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[ch])
+        elif ch in _CLOSERS:
+            if stack and ch == stack[-1]:
+                stack.pop()
+            elif not stack:
+                return False
+        elif not stack:
+            if ch == ",":
+                return False
+            if scan_text[i : i + 2] == "=>":
+                return True
+        i += 1
+    return False
 
 
 def _match_arm_positions(scan_text: str) -> list[int]:
@@ -317,7 +578,11 @@ def _match_arm_positions(scan_text: str) -> list[int]:
                 if depth == 0:
                     break  # end of the match body
                 depth -= 1
-                if depth == 0 and not in_pattern:
+                if (
+                    depth == 0
+                    and not in_pattern
+                    and _next_top_level_token_is_arm(scan_text, k + 1)
+                ):
                     # A block-bodied arm (`pat => { .. }`) closes its body here
                     # and, per Rust, needs no trailing comma. The next character
                     # begins a new arm pattern, so resume pattern context;
@@ -348,6 +613,10 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
     for rule in FORBIDDEN_RULES:
         for match in rule.pattern.finditer(scan_text):
             found.append((match.start(), rule.rule_id, rule.label))
+    for pos in _matches_positions(scan_text):
+        found.append((pos, _MATCHES_RULE_ID, _MATCHES_LABEL))
+    for pos in _let_pattern_positions(scan_text):
+        found.append((pos, _LET_PATTERN_RULE_ID, _LET_PATTERN_LABEL))
     for pos in _match_arm_positions(scan_text):
         found.append((pos, _MATCH_ARM_RULE_ID, _MATCH_ARM_LABEL))
 

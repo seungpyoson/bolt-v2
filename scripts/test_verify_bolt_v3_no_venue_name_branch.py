@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import time
 import unittest
 from pathlib import Path
 
@@ -79,6 +80,12 @@ class FenceTests(unittest.TestCase):
     def test_empty_string_literal_is_caught(self):
         self.assertEqual(len(self._one('if venue_id == "" {')), 1)
 
+    def test_c_string_literal_is_caught(self):
+        self.assertEqual(len(self._one('if venue_cstr == c"somevenue" {')), 1)
+
+    def test_raw_c_string_literal_is_caught(self):
+        self.assertEqual(len(self._one('if venue_cstr == cr#"somevenue"# {')), 1)
+
     # --- additional idiomatic branch forms ---
 
     def test_if_let_is_caught(self):
@@ -145,6 +152,39 @@ class FenceTests(unittest.TestCase):
     def test_nested_generic_turbofish_is_caught(self):
         self.assertEqual(len(self._one('if venue.cast::<Cow<str>>() == "polymarket" {}')), 1)
 
+    def test_deeply_nested_generic_turbofish_is_caught(self):
+        self.assertEqual(
+            len(self._one('if venue.cast::<Vec<Cow<str>>>() == "somevenue" {}')), 1
+        )
+
+    def test_const_generic_angle_operators_do_not_desync_turbofish(self):
+        for expression in ("N > 1", "N < 1", "N >> 1"):
+            snippet = f'if venue.cast::<Foo<{{ {expression} }}>>() == "somevenue" {{}}'
+            with self.subTest(expression=expression):
+                self.assertEqual(len(self._one(snippet)), 1)
+
+    def test_unterminated_turbofish_scan_is_bounded(self):
+        source = "::< " * 8_000
+        started = time.monotonic()
+        self.assertEqual(self._one(source), [])
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_grouped_equality_operands_are_caught(self):
+        self.assertEqual(len(self._one('if (venue_id) == "somevenue" {}')), 1)
+        self.assertEqual(len(self._one('if "somevenue" == (venue_id) {}')), 1)
+
+    def test_grouped_method_receiver_is_caught(self):
+        self.assertEqual(len(self._one('if (venue_id).contains("somevenue") {}')), 1)
+
+    def test_grouped_function_argument_is_not_a_venue_read(self):
+        self.assertEqual(self._one('if classify(venue_id) == "somevenue" {}'), [])
+
+    def test_macro_argument_is_not_a_venue_read(self):
+        self.assertEqual(self._one('if classify!(venue_id) == "somevenue" {}'), [])
+
+    def test_raw_keyword_function_argument_is_not_a_venue_read(self):
+        self.assertEqual(self._one('if r#if(venue_id) == "somevenue" {}'), [])
+
     def test_while_let_is_caught(self):
         self.assertEqual(len(self._one('while let "polymarket" = venue_id {}')), 1)
 
@@ -197,6 +237,11 @@ class FenceTests(unittest.TestCase):
         src = 'const NOTE: &str = r#"\nLegacy: venue_id == "polymarket" to branch.\n"#;'
         self.assertEqual(self._one(src), [])
 
+    def test_nested_block_comment_is_not_a_violation(self):
+        self.assertEqual(
+            self._one('/* outer /* inner */ if venue_id == "somevenue" {} */'), []
+        )
+
     def test_unterminated_string_does_not_crash_or_create_a_literal(self):
         self.assertEqual(self._one('if venue_id == "'), [])
 
@@ -214,10 +259,51 @@ class FenceTests(unittest.TestCase):
             self._one('matches!(venue_id, _ if status == "active")'), []
         )
 
+    def test_grouped_matches_scrutinee_is_caught(self):
+        self.assertEqual(len(self._one('matches!((venue_id), "somevenue")')), 1)
+
+    def test_matches_literal_after_grouped_constant_is_caught(self):
+        self.assertEqual(
+            len(self._one('matches!(venue_id, (DEFAULT_VENUE) | "somevenue")')), 1
+        )
+
+    def test_matches_accepts_bracket_and_brace_delimiters(self):
+        self.assertEqual(len(self._one('matches![venue_id, "somevenue"]')), 1)
+        self.assertEqual(len(self._one('matches! { venue_id, "somevenue" }')), 1)
+
+    def test_if_let_chain_is_caught(self):
+        self.assertEqual(len(self._one('if ready && let "somevenue" = venue_id {}')), 1)
+
+    def test_if_and_while_let_double_references_are_caught(self):
+        self.assertEqual(len(self._one('if let &&"somevenue" = &&venue_id {}')), 1)
+        self.assertEqual(len(self._one('while let &&&"somevenue" = &&&venue_id {}')), 1)
+
+    def test_let_reference_prefix_scan_is_bounded(self):
+        source = 'if let "somevenue" = ' + ("&" * 16_000) + "venue_id {}"
+        started = time.monotonic()
+        self.assertEqual(len(self._one(source)), 1)
+        self.assertLess(time.monotonic() - started, 0.5)
+
     def test_nested_non_venue_match_inside_venue_match_is_not_a_violation(self):
         # FP class: a benign nested match must not be flagged by the outer venue match.
         self.assertEqual(
             self._one('match venue_id { _ => { match mode { "gamma" => a, _ => b } } }'), []
+        )
+
+    def test_if_else_match_arm_body_literals_are_not_patterns(self):
+        src = (
+            'match venue_id { '
+            '_ if cond => if nested { "data" } else { "other" }, '
+            '_ => fallback }'
+        )
+        self.assertEqual(self._one(src), [])
+
+    def test_async_and_closure_match_arm_body_literals_are_not_patterns(self):
+        self.assertEqual(
+            self._one('match venue_id { _ => async { "data" }.await, _ => fallback }'), []
+        )
+        self.assertEqual(
+            self._one('match venue_id { _ => (|| { "data" })(), _ => fallback }'), []
         )
 
     def test_venue_literal_in_arm_body_is_not_a_violation(self):

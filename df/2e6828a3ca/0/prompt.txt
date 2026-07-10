@@ -2144,3 +2144,7 @@ lets get these reviewed and get feedback by GPT
 
   Exact-SHA lightweight verification passed: runtime-literal self-tests and verifier, provider-leak self-tests and verifier, and shared verifier-I/O tests all
   exited 0. No Rust compilation was run.
+
+---
+
+yes - generate an execution handoff prompt

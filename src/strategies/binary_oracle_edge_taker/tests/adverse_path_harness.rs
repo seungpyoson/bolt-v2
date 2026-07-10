@@ -1782,6 +1782,87 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
 }
 
 #[test]
+fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposure() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let first_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-TERMINAL-BOOKING-ERROR-FIRST"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let first_key = settlement_key_for_position(&first_position)
+        .expect("first fixture position should derive a settlement key");
+
+    strategy
+        .record_settlement_booking_error(
+            &first_position,
+            first_key.clone(),
+            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            "first distinct terminal booking error".to_string(),
+            1,
+        )
+        .expect("first terminal booking error should be recorded");
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+
+    let second_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-TERMINAL-BOOKING-ERROR-SECOND"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let second_key = settlement_key_for_position(&second_position)
+        .expect("second fixture position should derive a settlement key");
+    assert_ne!(first_key, second_key);
+
+    strategy
+        .record_settlement_booking_error(
+            &second_position,
+            second_key,
+            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            "second distinct terminal booking error".to_string(),
+            2,
+        )
+        .expect("second terminal booking error should be recorded");
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+
+    let events = evidence.events();
+    let terminal_position_ids = events
+        .iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
+                if evidence.transition
+                    == BoltV3OrderLifecycleTransition::SettlementBookingTerminal =>
+            {
+                evidence.position_id.clone()
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(settlement_booking_error_count(&events), 2);
+    assert_eq!(
+        terminal_position_ids,
+        vec![
+            first_position.position_id.to_string(),
+            second_position.position_id.to_string(),
+        ],
+        "each distinct settlement booking-error key must emit terminal lifecycle evidence"
+    );
+    assert!(strategy.settlement_booking_terminal_latched);
+}
+
+#[test]
 fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     assert_reality_fixtures();
 

@@ -713,6 +713,7 @@ pub struct BinaryOracleEdgeTaker {
     entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     settled_position_keys: BTreeSet<String>,
     settlement_booking_error_keys: BTreeSet<String>,
+    settlement_booking_terminal_evidence_keys: BTreeSet<String>,
     settlement_close_fetch_attempts: BTreeMap<String, SettlementCloseFetchAttemptState>,
     /// Flood guard for entry-evaluation log volume: last gate+pricing block-reason
     /// sets. WARN/INFO only on set change (blocked↔unblocked); full field dump is debug.
@@ -838,6 +839,7 @@ impl BinaryOracleEdgeTaker {
             entry_reject_state: BTreeMap::new(),
             settled_position_keys: BTreeSet::new(),
             settlement_booking_error_keys: BTreeSet::new(),
+            settlement_booking_terminal_evidence_keys: BTreeSet::new(),
             last_entry_block_reason_sets: None,
             settlement_booking_terminal_latched: false,
             settlement_close_fetch_attempts: BTreeMap::new(),
@@ -1236,13 +1238,15 @@ impl BinaryOracleEdgeTaker {
         self.context
             .decision_evidence()
             .record_settlement_booking_error(&evidence)?;
-        self.settlement_booking_error_keys.insert(settlement_key);
+        self.settlement_booking_error_keys
+            .insert(settlement_key.clone());
         self.settlement_close_fetch_attempts
             .remove(&evidence.settlement_key);
         // Terminal lifecycle: release single-exposure occupancy so the strategy
         // is not parked forever. Health latch is sticky-until-restart (no ack).
         self.apply_settlement_booking_terminal_release(
             position,
+            settlement_key,
             format!("reason={reason:?} detail={}", evidence.detail),
             Some(observed_at_ns),
         );
@@ -1250,15 +1254,19 @@ impl BinaryOracleEdgeTaker {
     }
 
     /// Fail-loud terminal handling for settlement booking errors: durable lifecycle
-    /// evidence, sticky-until-restart operator-visible latch, and exposure Flat.
+    /// evidence, sticky-until-restart signal latch, and exposure Flat.
     fn apply_settlement_booking_terminal_release(
         &mut self,
         position: &OpenPositionState,
+        settlement_key: String,
         reason_detail: String,
         observed_at_ns: Option<u64>,
     ) {
-        if !self.settlement_booking_terminal_latched {
-            self.settlement_booking_terminal_latched = true;
+        self.settlement_booking_terminal_latched = true;
+        if self
+            .settlement_booking_terminal_evidence_keys
+            .insert(settlement_key)
+        {
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                 transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
                 outcome: BoltV3OrderLifecycleOutcome::Flat,
@@ -2724,6 +2732,7 @@ impl BinaryOracleEdgeTaker {
             if self.settlement_booking_error_keys.contains(&settlement_key) {
                 self.apply_settlement_booking_terminal_release(
                     &open_position,
+                    settlement_key.clone(),
                     format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
                     None,
                 );

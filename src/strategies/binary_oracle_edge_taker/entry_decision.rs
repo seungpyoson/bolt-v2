@@ -304,6 +304,21 @@ pub(super) struct BlockedStrategyInputDedupeKey {
 
 impl BlockedStrategyInputDedupeKey {
     pub(super) fn from_snapshot(snapshot: &BoltV3StrategyInputEvidenceSnapshot) -> Self {
+        let mut realized_volatility_source_states = snapshot
+            .realized_volatility_source_diagnostics
+            .iter()
+            .map(|diagnostic| BlockedStrategyInputSourceStateKey {
+                source_id: diagnostic.source_id.clone(),
+                enabled: diagnostic.enabled,
+                counts_toward_quorum: diagnostic.counts_toward_quorum,
+                status: diagnostic.status.clone(),
+                block_reason: diagnostic.block_reason.clone(),
+                last_rejected_reason: diagnostic.last_rejected_reason.clone(),
+            })
+            .collect::<Vec<_>>();
+        realized_volatility_source_states
+            .sort_by(|left, right| left.source_id.cmp(&right.source_id));
+
         Self {
             configured_target_id: snapshot.configured_target_id.clone(),
             market_selection_ruleset_id: snapshot.market_selection_ruleset_id.clone(),
@@ -323,18 +338,7 @@ impl BlockedStrategyInputDedupeKey {
             fast_venue_incoherent: snapshot.fast_venue_incoherent,
             realized_volatility_surface_id: snapshot.realized_volatility_surface_id.clone(),
             realized_volatility_blockers: snapshot.realized_volatility_blockers.clone(),
-            realized_volatility_source_states: snapshot
-                .realized_volatility_source_diagnostics
-                .iter()
-                .map(|diagnostic| BlockedStrategyInputSourceStateKey {
-                    source_id: diagnostic.source_id.clone(),
-                    enabled: diagnostic.enabled,
-                    counts_toward_quorum: diagnostic.counts_toward_quorum,
-                    status: diagnostic.status.clone(),
-                    block_reason: diagnostic.block_reason.clone(),
-                    last_rejected_reason: diagnostic.last_rejected_reason.clone(),
-                })
-                .collect(),
+            realized_volatility_source_states,
             realized_volatility_unknown_source_ids: snapshot
                 .realized_volatility_unknown_source_rejections
                 .keys()

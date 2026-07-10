@@ -3,7 +3,7 @@
   "checkpoint_id": "46d16189a3e3",
   "strategy": "manual-commit",
   "branch": "fix/704-evict-backfill-completion-ledgers",
-  "checkpoints_count": 33,
+  "checkpoints_count": 52,
   "files_touched": [
     "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs",
     "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_test_support.rs",
@@ -20,13 +20,20 @@
       "compact_transcript": "/46/d16189a3e3/0/transcript.jsonl",
       "content_hash": "/46/d16189a3e3/0/content_hash.txt",
       "prompt": "/46/d16189a3e3/0/prompt.txt"
+    },
+    {
+      "metadata": "/46/d16189a3e3/1/metadata.json",
+      "transcript": "/46/d16189a3e3/1/full.jsonl",
+      "compact_transcript": "/46/d16189a3e3/1/transcript.jsonl",
+      "content_hash": "/46/d16189a3e3/1/content_hash.txt",
+      "prompt": "/46/d16189a3e3/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 4461,
-    "cache_creation_tokens": 616686,
-    "cache_read_tokens": 57626566,
-    "output_tokens": 141923,
-    "api_call_count": 145
+    "input_tokens": 72164,
+    "cache_creation_tokens": 5529795,
+    "cache_read_tokens": 297771784,
+    "output_tokens": 1023244,
+    "api_call_count": 770
   }
 }

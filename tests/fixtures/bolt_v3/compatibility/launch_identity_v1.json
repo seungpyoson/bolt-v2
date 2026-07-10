@@ -1,0 +1,8 @@
+{
+  "build_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "profile": "legacy-profile",
+  "config_bundle_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "launched_at_unix_secs": 1700000000,
+  "pid": 4242,
+  "target_host_facts": null
+}

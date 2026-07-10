@@ -354,6 +354,32 @@ mod tests {
     }
 
     #[test]
+    fn launch_identity_v1_old_bytes_remain_readable() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            launch_identity_path(temp.path()),
+            include_bytes!("../tests/fixtures/bolt_v3/compatibility/launch_identity_v1.json"),
+        )
+        .expect("old-byte launch identity fixture should write");
+
+        let identity = read_launch_identity(temp.path())
+            .expect("old-byte launch identity should parse")
+            .expect("old-byte launch identity should exist");
+        assert_eq!(identity.profile, "legacy-profile");
+        assert_eq!(identity.pid, 4242);
+        assert_eq!(identity.launched_at_unix_secs, 1_700_000_000);
+        assert_eq!(
+            identity.build_head_sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            identity.config_bundle_checksum,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert!(identity.target_host_facts.is_none());
+    }
+
+    #[test]
     fn launch_identity_path_is_under_catalog_directory_with_expected_name() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let path = launch_identity_path(temp.path());

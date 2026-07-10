@@ -713,6 +713,9 @@ pub struct BinaryOracleEdgeTaker {
     settled_position_keys: BTreeSet<String>,
     settlement_booking_error_keys: BTreeSet<String>,
     settlement_close_fetch_attempts: BTreeMap<String, SettlementCloseFetchAttemptState>,
+    /// Flood guard for entry-evaluation WARN volume: last gate+pricing block-reason
+    /// sets that produced a WARN. WARN only on set change; full field dump is debug.
+    last_entry_block_reason_sets: Option<(Vec<EntryBlockReason>, Vec<EntryPricingBlockReason>)>,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -831,6 +834,7 @@ impl BinaryOracleEdgeTaker {
             entry_reject_state: BTreeMap::new(),
             settled_position_keys: BTreeSet::new(),
             settlement_booking_error_keys: BTreeSet::new(),
+            last_entry_block_reason_sets: None,
             settlement_close_fetch_attempts: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
@@ -3701,26 +3705,37 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn log_entry_evaluation(&self, now_ms: u64, submission: &EntrySubmissionDecision) {
+    fn log_entry_evaluation(&mut self, now_ms: u64, submission: &EntrySubmissionDecision) {
         let fields = self.entry_evaluation_log_fields_at(now_ms, submission);
         let blocked = !fields.gate_blocked_by.is_empty() || !fields.pricing_blocked_by.is_empty();
 
         if blocked {
-            log::warn!(
-                "binary_oracle_edge_taker entry blocked: strategy_id={} reasons={:?}",
-                self.config.strategy_id,
-                fields.gate_blocked_by
+            let reason_sets = (
+                fields.gate_blocked_by.clone(),
+                fields.pricing_blocked_by.clone(),
             );
-            if fields
-                .gate_blocked_by
-                .contains(&EntryBlockReason::FeesNotReady)
-            {
+            let reason_set_changed =
+                self.last_entry_block_reason_sets.as_ref() != Some(&reason_sets);
+            if reason_set_changed {
                 log::warn!(
-                    "binary_oracle_edge_taker fee-rate unavailable: strategy_id={} entry remains fail-closed",
-                    self.config.strategy_id
+                    "binary_oracle_edge_taker entry blocked: strategy_id={} gate_blocked_by={:?} pricing_blocked_by={:?}",
+                    self.config.strategy_id,
+                    fields.gate_blocked_by,
+                    fields.pricing_blocked_by
                 );
+                if fields
+                    .gate_blocked_by
+                    .contains(&EntryBlockReason::FeesNotReady)
+                {
+                    log::warn!(
+                        "binary_oracle_edge_taker fee-rate unavailable: strategy_id={} entry remains fail-closed",
+                        self.config.strategy_id
+                    );
+                }
+                self.last_entry_block_reason_sets = Some(reason_sets);
             }
-            log::warn!(
+            // Full field dump every blocked tick is debug-only (state-change WARN above).
+            log::debug!(
                 "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
@@ -3797,6 +3812,7 @@ impl BinaryOracleEdgeTaker {
                 fields.submission_blocked_reason,
             );
         } else {
+            self.last_entry_block_reason_sets = None;
             log::info!(
                 "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,

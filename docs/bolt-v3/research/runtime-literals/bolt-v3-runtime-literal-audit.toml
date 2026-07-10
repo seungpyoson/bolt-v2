@@ -20880,3 +20880,19 @@ literal = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}
 context = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",'''
 classification = "startup_subscription_derivation_diagnostic_template"
 reason = "Fail-loud startup diagnostic for a configured realized-volatility surface whose runtime context derives no subscribable feeds; surface selection remains TOML-owned and this template does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"'''
+context = '''"{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Load-time validation diagnostic when a settlement-booking strategy's execution client lacks account_id so settlement currency cannot be derived; match keys remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/live_node_config.rs"
+kind = "string"
+literal = '''"nautilus_model::orderbook::book"'''
+context = '''Ustr::from("nautilus_model::orderbook::book"),'''
+classification = "diagnostic_template"
+reason = "NT OrderBook rustc log-module path forced to Error so per-tick out-of-order sequence/ts WARN spam does not dominate operator logs; not an operator-tunable runtime value."

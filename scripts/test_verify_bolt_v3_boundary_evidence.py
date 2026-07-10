@@ -202,7 +202,7 @@ reason = "test"
 adapter_id = "POLYMARKET"
 class = "HttpResponseBody"
 feeder = "PolymarketVenueTruthRuntime"
-issue = 1179
+issue = 874
 expires_on = "2026-08-31"
 reason = "test"
 """,

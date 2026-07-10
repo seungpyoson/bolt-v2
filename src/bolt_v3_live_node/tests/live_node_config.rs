@@ -103,10 +103,12 @@ async fn startup_watchdog_capture_failure_after_running_still_awaits_runner_resu
         run_future.as_mut(),
         &mut capture_failure_receiver,
         || NodeState::Running,
+        || true,
         || stop_called.set(true),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(25),
+            trader_invariant_poll: Duration::from_millis(50),
         },
         vec!["data:chainlink_reference".to_string()],
     )
@@ -144,10 +146,12 @@ async fn startup_watchdog_capture_failure_during_shutdown_preserves_runner_resul
         run_future.as_mut(),
         &mut capture_failure_receiver,
         || NodeState::ShuttingDown,
+        || true,
         || stop_called.set(true),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(25),
+            trader_invariant_poll: Duration::from_millis(50),
         },
         vec!["data:chainlink_reference".to_string()],
     )
@@ -184,10 +188,12 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
             run_future.as_mut(),
             &mut capture_failure_receiver,
             || NodeState::Starting,
+            || true,
             || stop_called.set(true),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(1),
                 shutdown_grace,
+                trader_invariant_poll: Duration::from_millis(50),
             },
             vec!["data:chainlink_reference".to_string()],
         ),
@@ -240,10 +246,12 @@ async fn startup_watchdog_deadline_during_shutdown_preserves_runner_result() {
         run_future.as_mut(),
         &mut capture_failure_receiver,
         || NodeState::ShuttingDown,
+        || true,
         || stop_called.set(true),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_millis(1),
             shutdown_grace: Duration::from_millis(100),
+            trader_invariant_poll: Duration::from_millis(50),
         },
         vec!["data:chainlink_reference".to_string()],
     )
@@ -276,10 +284,12 @@ async fn startup_watchdog_deadline_during_hung_startup_timeout_names_shutdown_gr
             run_future.as_mut(),
             &mut capture_failure_receiver,
             || NodeState::Starting,
+            || true,
             || stop_called.set(true),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_millis(1),
                 shutdown_grace,
+                trader_invariant_poll: Duration::from_millis(50),
             },
             vec!["data:chainlink_reference".to_string()],
         ),
@@ -335,10 +345,12 @@ async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace(
             run_future.as_mut(),
             &mut capture_failure_receiver,
             || NodeState::ShuttingDown,
+            || true,
             || stop_called.set(true),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_millis(1),
                 shutdown_grace,
+                trader_invariant_poll: Duration::from_millis(50),
             },
             vec!["data:chainlink_reference".to_string()],
         ),
@@ -377,6 +389,109 @@ async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace(
             panic!("deadline during shutdown should name shutdown-grace timeout, got {other:?}")
         }
     }
+}
+
+#[test]
+fn live_node_trader_running_invariant_rejects_running_without_trader() {
+    // Red against the NT engines-not-connected fail-open shape: NodeState is
+    // Running while the trader was never started (07-10 journal repro class).
+    assert!(
+        !live_node_trader_running_invariant(NodeState::Running, false),
+        "Running without trader must violate the launch invariant"
+    );
+    assert!(
+        live_node_trader_running_invariant(NodeState::Running, true),
+        "Running with trader started is the successful launch signature"
+    );
+    assert!(
+        live_node_trader_running_invariant(NodeState::Starting, false),
+        "Starting without trader is still in progress, not a violation"
+    );
+    assert!(
+        live_node_trader_running_invariant(NodeState::Idle, false),
+        "Idle without trader is not a Running fail-open"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_aborts_when_node_running_without_trader() {
+    // Green: watchdog detects the fail-open and returns TraderNotStarted
+    // instead of idling forever as a trader-less "Running" node.
+    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
+    tokio::pin!(run_future);
+    let stop_called = Cell::new(false);
+    let mut capture_failure_receiver = None;
+    let shutdown_grace = Duration::from_millis(25);
+    let started = std::time::Instant::now();
+
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(300),
+        live_node_run_startup_watchdog(
+            run_future.as_mut(),
+            &mut capture_failure_receiver,
+            || NodeState::Running,
+            || false,
+            || stop_called.set(true),
+            LiveNodeStartupWatchdogBounds {
+                startup_timeout: Duration::from_secs(10),
+                shutdown_grace,
+                trader_invariant_poll: Duration::from_millis(50),
+            },
+            vec![
+                "data:binance_reference".to_string(),
+                "data:polymarket_main".to_string(),
+            ],
+        ),
+    )
+    .await
+    .expect("trader-not-started fail-open must abort promptly, not idle past the smoke guard");
+    let elapsed = started.elapsed();
+
+    assert!(
+        stop_called.get(),
+        "trader-not-started abort must request stop"
+    );
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "trader-not-started abort should fire on the poll path well before the startup bound, elapsed {elapsed:?}"
+    );
+    match outcome {
+        LiveNodeRunStartupOutcome::TraderNotStarted {
+            node_state,
+            registered_client_labels,
+        } => {
+            assert_eq!(node_state, "Running");
+            assert_eq!(
+                registered_client_labels,
+                vec![
+                    "data:binance_reference".to_string(),
+                    "data:polymarket_main".to_string(),
+                ]
+            );
+        }
+        other => panic!("expected TraderNotStarted for Running-without-trader, got {other:?}"),
+    }
+}
+
+#[test]
+fn live_node_trader_not_started_error_display_is_named() {
+    let error = BoltV3LiveNodeError::LiveNodeTraderNotStarted {
+        node_state: "Running".to_string(),
+        registered_client_labels: vec!["data:binance_reference".to_string()],
+    };
+    let display = error.to_string();
+    assert!(
+        display.contains("trader was never started"),
+        "named error must identify trader-not-started: {display}"
+    );
+    assert!(
+        display.contains("engines-not-connected fail-open"),
+        "named error must name the fail-open class: {display}"
+    );
+    assert!(
+        display.contains("data:binance_reference"),
+        "named error must list registered clients: {display}"
+    );
 }
 
 #[test]

@@ -58,6 +58,55 @@ def assert_run_repo_git_suppresses_background_maintenance() -> None:
     if calls != [expected]:
         raise AssertionError(f"run_repo_git must suppress background maintenance, got: {calls}")
 
+
+def assert_suppression_args_match_suppression_config() -> None:
+    """The command and persisted-config suppression paths must stay in agreement."""
+    argv = hygiene_helpers.repo_git_command()
+    if argv[0] != "git":
+        raise AssertionError(f"repo_git_command must start with 'git', got: {argv!r}")
+
+    parsed_items: list[tuple[str, str]] = []
+    tokens = argv[1:]
+    index = 0
+    while index < len(tokens):
+        if tokens[index] != "-c":
+            raise AssertionError(
+                "repo_git_command suppression args must be flat '-c KEY=VALUE' pairs, "
+                f"got unexpected token {tokens[index]!r} at argv index {index + 1}: {argv!r}"
+            )
+        if index + 1 >= len(tokens):
+            raise AssertionError(
+                "repo_git_command suppression args must provide KEY=VALUE after every '-c', "
+                f"got: {argv!r}"
+            )
+        key, separator, value = tokens[index + 1].partition("=")
+        if not separator or not key:
+            raise AssertionError(
+                "repo_git_command suppression settings must use non-empty KEY=VALUE syntax, "
+                f"got {tokens[index + 1]!r}: {argv!r}"
+            )
+        parsed_items.append((key, value))
+        index += 2
+
+    parsed_config = dict(parsed_items)
+    declared_config = dict(hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG)
+    if parsed_config != declared_config:
+        raise AssertionError(
+            "repo_git_command suppression settings must match the persisted suppression config, "
+            f"got {parsed_config!r}, want {declared_config!r}"
+        )
+
+    parsed_order = tuple(key for key, _value in parsed_items)
+    declared_order = tuple(
+        key for key, _value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+    )
+    if parsed_order != declared_order:
+        raise AssertionError(
+            "repo_git_command suppression key order must match the persisted suppression config, "
+            f"got {parsed_order!r}, want {declared_order!r}"
+        )
+
+
 def _maintenance_children(trace_path: pathlib.Path) -> int:
     """`git maintenance`/`git gc` processes recorded in a GIT_TRACE2 event log."""
     if not trace_path.exists():
@@ -87,7 +136,12 @@ def assert_init_fixture_repo_persists_suppression() -> None:
         root = pathlib.Path(tmp)
         bare = hygiene_helpers.init_fixture_repo(root / "origin.git", "--bare")
         for key, value in hygiene_helpers.GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
-            actual = run_repo_git(bare, "config", "--get", key).strip()
+            actual = hygiene_helpers.read_persisted_repo_config(bare, key)
+            if actual is None:
+                raise AssertionError(
+                    f"fixture remote never persisted {key!r}; "
+                    "a git process launched outside this suite will not see it"
+                )
             if actual != value:
                 raise AssertionError(f"fixture remote {key}={actual!r}, want {value!r}")
 
@@ -1147,6 +1201,7 @@ def assert_debug_test_workflow_contract() -> None:
 
 def main() -> int:
     assert_run_repo_git_suppresses_background_maintenance()
+    assert_suppression_args_match_suppression_config()
     assert_init_fixture_repo_persists_suppression()
     assert_push_to_fixture_remote_spawns_no_background_maintenance()
     assert_routed_fixture_module_spawns_no_background_maintenance()

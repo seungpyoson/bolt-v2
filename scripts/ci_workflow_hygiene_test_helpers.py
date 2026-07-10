@@ -20,16 +20,14 @@ from ci_test_manifest import CiTestManifest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = (
-    "-c",
-    "gc.auto=0",
-    "-c",
-    "maintenance.auto=false",
-)
-
 GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG = (
     ("gc.auto", "0"),
     ("maintenance.auto", "false"),
+)
+GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = tuple(
+    arg
+    for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+    for arg in ("-c", f"{key}={value}")
 )
 
 DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
@@ -1798,6 +1796,32 @@ def suppress_repo_auto_maintenance(repo: pathlib.Path) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+
+def read_persisted_repo_config(repo: pathlib.Path, key: str) -> str | None:
+    """Read a setting honestly from `repo`'s own config file.
+
+    `--local` makes this read honest: reading through the suppression arguments
+    would report the injected value whether or not it was ever persisted. The
+    repository config file is what a git process launched by anyone else
+    actually reads.
+    """
+    completed = subprocess.run(
+        repo_git_command("-C", str(repo), "config", "--local", "--get", key),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode == 1:
+        return None
+    if completed.returncode == 0:
+        return completed.stdout.strip()
+    raise AssertionError(
+        f"failed to read persisted repo config {key!r} from {repo}: "
+        f"git exited {completed.returncode}: {completed.stderr.strip()}"
+    )
+
 
 def init_fixture_repo(repo: pathlib.Path, *init_args: str) -> pathlib.Path:
     """`git init` a fixture repo that never spawns auto-maintenance."""

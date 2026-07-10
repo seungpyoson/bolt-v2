@@ -1,0 +1,208 @@
+Complete PR #1346, the durable fixture-Git enforcement slice for issue #1323.
+
+  Context
+  - Read AGENTS.md first and follow it exactly.
+  - PR #1326 is PR A: it implements and verifies the maintenance-suppression mechanism.
+  - PR #1346 is PR B: it prevents future scripts/test_*.py code from bypassing the shared fixture-Git helpers.
+  - Do not merge #1346 before #1326. Final integrated verification must run after #1326 is on main.
+  - Current PR head: 8ebdfe553a50eabaace8332a2f8927270b1ee606.
+  - Keep this PR focused on enforcement; do not change production Rust behavior.
+
+  Problem
+  The current verifier in scripts/verify_fixture_git_helper_usage.py models only a subset of Python process-execution edges. It can miss direct Git execution
+  through wrappers or APIs such as:
+
+  - asyncio.create_subprocess_exec / create_subprocess_shell
+  - pty.spawn
+  - os.execlpe, spawnlpe, spawnvpe, posix_spawnp
+  - subprocess commands wrapped by xargs, nice, nohup, stdbuf, timeout, time, command, env, or shells
+  - dynamic exec/eval paths
+
+  The checker must not claim comprehensive fail-closed coverage while these paths bypass it. Avoid raw string scanning and false positives such as
+  print("init").
+
+  Implementation direction
+  1. Begin with differential RED tests proving every supported bypass currently escapes detection.
+  2. Expand the AST/process-command resolver so direct Git execution through aliases, keyword arguments, variables, local wrappers, process APIs, and command
+  wrappers is rejected.
+  3. Treat unresolved dynamic execution fail-closed. For actual exec/eval calls, either recursively prove a constant payload non-Git or reject it; ordinary
+  string literals and expected argv fixtures must remain legal.
+  4. Reuse or align with the execution-edge vocabulary already present in scripts/test_lane_governor.py. Do not create another silently divergent process-API
+  list.
+  5. Make the module documentation precisely match the enforced scope.
+  6. Preserve legal uses:
+     - repo_git_command / run_repo_git
+     - init_fixture_repo / clone_fixture_repo
+     - comparisons, expected values, CompletedProcess/CalledProcessError fixtures
+     - provably non-Git commands
+  7. After #1326 is merged, update from main and verify the real repository scan reports zero violations. Do not add blanket exclusions or weaken detection to
+  obtain green.
+
+  Required evidence
+  - Focused verifier tests include planted positive and negative cases for every execution API/wrapper above.
+  - Each planted direct-Git case fails before its fix and passes after.
+  - Provably non-Git cases remain accepted.
+  - python3.12 scripts/test_verify_fixture_git_helper_usage.py
+  - python3.12 scripts/verify_fixture_git_helper_usage.py
+  - just ci-lint-workflow
+  - just source-fence-static
+  - just fmt-check
+  - just deny
+  - git diff --check
+
+  Completion process
+  - Keep the PR draft until #1326 is merged and all local checks are green.
+  - Commit and push the exact final head.
+  - Run required exact-head remote CI.
+  - Resolve every finding.
+  - Then obtain unanimous configured external review, reporting each reviewer source and exact model from ci/ai-review.toml.
+  - Obtain the required sp-reviewer approval.
+  - Report the final SHA, tests, reviewers/models, and whether any execution-edge limitation remains.
+  - Do not merge; return the PR ready for the owner to queue.
+
+---
+
+don't think we should be building a lot of conditional fallbacks and tech debts
+
+---
+
+commit push
+
+---
+
+> Commit and push the completed #1346 work now. Do not wait for #1326.
+  >
+  > - Commit only the scoped #1346 changes.
+  > - Push using just sandbox-safe-push.
+  > - Verify the remote PR head exactly matches local HEAD.
+  > - Keep #1346 as a draft.
+  > - Report the commit SHA, changed files, and verification results.
+  >
+  > The 337 expected source-fence violations are a temporary dependency condition that #1326 will remove. They do not prevent committing and pushing this draft
+  > work.
+  >
+  > Do not mark ready, request external review, queue, or merge yet. After #1326 lands, update #1346 from main, rerun all integrated checks, obtain exact-head
+  > CI and required review, then prepare it for merge.
+
+---
+
+### PR #1346 — close the analyzer
+
+  Handle PR #1346 as a closure task, not an implementation task.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1323-git-fixture-helper-fence
+
+  Expected state:
+  - Clean worktree
+  - HEAD and GitHub PR head: fcfb6a043f03146725b8fb0fd4a6addb396ab193
+
+  Read AGENTS.md first.
+
+  Verify directly that main contains #1326’s runtime fix and accepted differential evidence:
+  - fixture constructors persist gc.auto=0 and maintenance.auto=false
+  - routed fixture Git produces no maintenance child
+  - suppression has one owning implementation
+
+  If confirmed, do not modify code. Post a concise rationale and close PR #1346:
+
+  “Closing this enforcement slice. #1326 landed the actual runtime invariant and differential proof. #1346 grew into a 1,675-line partial Python/process-
+  language analyzer covering aliases, wrappers, shells, xargs, eval/exec, exceptions, and special cases. That is a second incomplete execution analyzer and
+  would accumulate precisely the conditional/exception debt we are removing. We will not attempt to enumerate every spelling that can launch Git.”
+
+  Update issue #1323 explaining that its earlier requirement for #1346 is superseded. If #1326 satisfies all original behavioral acceptance criteria, close
+  #1323 as completed by #1326. Otherwise leave only a narrowly stated missing runtime behavior—no proposed checker.
+
+  Do not delete the branch or worktree. Report the final PR and issue states.
+
+---
+
+### #1346 — prove whether any work remains
+
+  Audit whether closed PR #1346 needs any replacement. Do not edit code, create a branch, or reopen #1323 unless a current behavioral gap is proven.
+
+  Start from current main, where #1326 is merged. Read AGENTS.md.
+
+  Verify these owners:
+
+  scripts/ci_workflow_hygiene_test_helpers.py:
+  - GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+  - GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS
+  - repo_git_command
+  - run_repo_git
+  - suppress_repo_auto_maintenance
+  - init_fixture_repo
+  - clone_fixture_repo
+
+  scripts/test_governance_diff_analysis.py:
+  - suppression arguments derive from the single config
+  - init/clone constructors persist suppression
+  - local receive-pack is protected
+  - suppression-off launches a maintenance child
+  - suppression-on and the routed fixture suite launch zero children
+
+  Run:
+  python3.12 scripts/test_governance_diff_analysis.py
+  python3.12 scripts/test_ci_input_sets.py
+  just fmt-check
+  just deny
+  just source-fence-static
+  git diff --check
+  git status --short
+
+  Decision:
+  - If everything passes and no current fixture bypass is demonstrated, report:
+    “NO REPLACEMENT REQUIRED. #1326 satisfies #1323. #1346 attempted to protect against hypothetical future Python spellings and would add more debt than it
+    removes.”
+  - Do not create a PR merely because future code could ignore an API.
+
+  Separately inspect `scripts/merge_queue_preflight.py::PrivateFetchRefs`, which creates a temporary bare repository outside the fixture helpers. Measure with
+  GIT_TRACE2_EVENT whether `fetch_sha` launches detached maintenance before cleanup.
+
+  If it does not, stop.
+
+  If it does, report exact RED evidence and propose a separate one-scope fix that persists suppression when PrivateFetchRefs creates its repository. Do not
+  revive #1346 or build any AST/shell/source-spelling analyzer.
+
+---
+
+Fix the measured PrivateFetchRefs temporary-repository maintenance race as a fresh one-scope issue and draft PR from current main. Do not reopen #1323 or
+  #1346.
+
+  Measured RED:
+  - PrivateFetchRefs.fetch_sha returned the requested SHA
+  - 82 Trace2 events
+  - 5 children
+  - 1 detached `git maintenance run --auto --quiet --detach` child before cleanup
+
+  Scope:
+  - scripts/merge_queue_preflight.py
+  - scripts/test_merge_queue_preflight.py
+  - the existing shared Git-maintenance suppression ownership only
+
+  Implementation:
+  1. Move `GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG` into a small production-neutral shared module. Update `ci_workflow_hygiene_test_helpers.py` to import it so
+  the values retain one owner.
+  2. In `PrivateFetchRefs.create`, immediately after `git init --bare`, persist both settings into the temporary repository using the existing timeout-aware
+  `git()` path:
+     - gc.auto=0
+     - maintenance.auto=false
+  3. Keep configuration inside the existing create/cleanup error boundary.
+  4. Do not modify fetch behavior, add retries, ignore cleanup errors, inject flags at every command, or add any source/command analyzer.
+
+  Regression evidence:
+  - Assert both values exist in the temporary bare repository’s local config before fetch.
+  - Run a real `PrivateFetchRefs.fetch_sha` under GIT_TRACE2_EVENT.
+  - Assert requested SHA equals fetched SHA.
+  - Assert zero maintenance/gc children before cleanup.
+  - Reuse or extract the existing Trace2 maintenance-child counter; do not duplicate another parser.
+
+  Verification:
+  - focused RED on unmodified main
+  - GREEN after the fix
+  - `python3.12 scripts/test_merge_queue_preflight.py`
+  - `python3.12 scripts/test_governance_diff_analysis.py`
+  - permitted static gates from AGENTS.md
+  - `git diff --check`
+
+  Keep the PR draft, publish with `just sandbox-safe-push`, and report exact remote SHA plus RED/GREEN Trace2 counts. Do not ready, review, queue, or merge.

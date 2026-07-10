@@ -3,8 +3,14 @@
   "checkpoint_id": "a5155369a40c",
   "strategy": "manual-commit",
   "branch": "fix/1355-private-fetch-maintenance",
-  "checkpoints_count": 2,
-  "files_touched": null,
+  "checkpoints_count": 3,
+  "files_touched": [
+    "scripts/ci_workflow_hygiene_test_helpers.py",
+    "scripts/git_maintenance.py",
+    "scripts/merge_queue_preflight.py",
+    "scripts/test_governance_diff_analysis.py",
+    "scripts/test_merge_queue_preflight.py"
+  ],
   "sessions": [
     {
       "metadata": "/a5/155369a40c/0/metadata.json",
@@ -19,13 +25,20 @@
       "compact_transcript": "/a5/155369a40c/1/transcript.jsonl",
       "content_hash": "/a5/155369a40c/1/content_hash.txt",
       "prompt": "/a5/155369a40c/1/prompt.txt"
+    },
+    {
+      "metadata": "/a5/155369a40c/2/metadata.json",
+      "transcript": "/a5/155369a40c/2/full.jsonl",
+      "compact_transcript": "/a5/155369a40c/2/transcript.jsonl",
+      "content_hash": "/a5/155369a40c/2/content_hash.txt",
+      "prompt": "/a5/155369a40c/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 576347,
+    "input_tokens": 1013507,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 53926912,
-    "output_tokens": 50394,
-    "api_call_count": 241
+    "cache_read_tokens": 71175680,
+    "output_tokens": 107450,
+    "api_call_count": 422
   }
 }

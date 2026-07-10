@@ -58,7 +58,7 @@
     },
     "venue_acceptance_ledger_spec": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml",
-      "sha256": "41778a9fac8dbf9fb5cafd56f2c207361ef9c623fe0727a24d15f4356ee3bf90"
+      "sha256": "9d02977dbc28e3370b9b8c3f96b222b0df5b2b87d59650c79b568280ccffc666"
     },
     "pending_source_fixture": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",

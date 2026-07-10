@@ -1,6 +1,6 @@
 ledger_id = "backfill-conversion-completion-ledger-binance-bnbusdc-2026-03-01-2026-05-31"
 batch_plan_path = "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json"
-output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger"
+output_dir = "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/ledger"
 
 [requirements]
 scope_status = "accepted_gate_committed_and_s3_published"

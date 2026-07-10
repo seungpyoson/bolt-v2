@@ -96,6 +96,9 @@ jobs:
     if: ${{ inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes == '60' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -110,6 +113,7 @@ jobs:
           include-build-values: "true"
           include-deny-version: "true"
           include-nextest-version: "true"
+          include-managed-target-dir: "true"
           install-rust-linker: "true"
           build-jobs-key: rust_probe.probe-heavy
 
@@ -120,6 +124,12 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Setup read-only sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
       - name: Run Rust Probe
         shell: bash
         env:
@@ -128,13 +138,26 @@ jobs:
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
-        run: bash .github/scripts/run-rust-probe.sh
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        run: |
+          bash .github/scripts/run-rust-probe.sh
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   probe-light:
     name: probe-light
     if: ${{ inputs.runner_tier == 'light' && inputs.job_timeout_minutes == '60' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -149,6 +172,7 @@ jobs:
           include-build-values: "true"
           include-deny-version: "true"
           include-nextest-version: "true"
+          include-managed-target-dir: "true"
           install-rust-linker: "true"
           build-jobs-key: rust_probe.probe-light
 
@@ -159,6 +183,12 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Setup read-only sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
       - name: Run Rust Probe
         shell: bash
         env:
@@ -167,4 +197,14 @@ jobs:
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
-        run: bash .github/scripts/run-rust-probe.sh
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        run: |
+          bash .github/scripts/run-rust-probe.sh
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}

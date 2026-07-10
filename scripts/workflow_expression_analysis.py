@@ -231,27 +231,37 @@ def simple_shell_lines(run_text: str) -> tuple[str, ...]:
 def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ...]:
     # Allowlist the whole BVS shell block instead of predicting shell wrapper syntax.
     lines = simple_shell_lines(run_block)
-    expected_prefix = ("rc=0", "set +e")
-    expected_suffix = (
-        "rc=$?",
-        "set -e",
-        "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
-    )
-    if len(lines) != len(expected_prefix) + 1 + len(expected_suffix):
+    if lines and lines[0].startswith('log="$RUNNER_TEMP/'):
+        lines = lines[1:]
+    expected_head = ("rc=0", "set +e")
+    if lines[: len(expected_head)] != expected_head:
         return ()
-    if lines[: len(expected_prefix)] != expected_prefix or lines[-len(expected_suffix) :] != expected_suffix:
-        return ()
+    lines = lines[len(expected_head) :]
 
-    command_prefix = (
+    run_prefix = (
         'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
         '--partition "count:${{ matrix.shard }}/'
     )
-    command_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
-    command = lines[len(expected_prefix)]
-    if not command.startswith(command_prefix) or not command.endswith(command_suffix):
-        return ()
+    run_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
+    run_tee_suffix = f'{run_suffix} 2>&1 | tee -a "$log"'
 
-    denominator = command[len(command_prefix) : -len(command_suffix)]
-    if not denominator or denominator[0] == "0" or not denominator.isdecimal():
-        return ()
-    return (int(denominator),)
+    def partition_denominator(command: str, prefix: str, suffix: str) -> str | None:
+        if not command.startswith(prefix) or not command.endswith(suffix):
+            return None
+        value = command[len(prefix) : -len(suffix)]
+        if not value or value[0] == "0" or not value.isdecimal():
+            return None
+        return value
+
+    old_execution_tails = (
+        (run_suffix, ("rc=$?", "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"", 'exit "$rc"')),
+        (
+            run_tee_suffix,
+            ('rc="${PIPESTATUS[0]}"', "set -e", "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"", 'exit "$rc"'),
+        ),
+    )
+    for command_suffix, tail in old_execution_tails:
+        if len(lines) == 1 + len(tail) and lines[1:] == tail:
+            denominator = partition_denominator(lines[0], run_prefix, command_suffix)
+            return (int(denominator),) if denominator is not None else ()
+    return ()

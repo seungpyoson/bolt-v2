@@ -11,6 +11,7 @@ import sys
 import tempfile
 import textwrap
 import tomllib
+from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -37,7 +38,7 @@ def run(command: list[str], *, cwd: pathlib.Path | None = None, check: bool = Tr
 
 
 def git(repo: pathlib.Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run(["git", "-C", str(repo), *args], check=check)
+    return run(repo_git_command("-C", str(repo), *args), check=check)
 
 
 def write_policy(repo: pathlib.Path, *, remote: str = "origin") -> None:
@@ -72,7 +73,7 @@ def assert_fallback_config_loader_matches_tomllib_for_full_policy() -> None:
 
 def init_work_repo(tmp: pathlib.Path, *, remote_path: pathlib.Path) -> pathlib.Path:
     repo = tmp / "repo"
-    run(["git", "-c", "init.defaultBranch=main", "init", str(repo)])
+    init_fixture_repo(repo, "-b", "main")
     git(repo, "config", "user.name", "Sandbox Push Test")
     git(repo, "config", "user.email", "sandbox-push@example.invalid")
     git(repo, "checkout", "-b", BRANCH)
@@ -95,7 +96,7 @@ def assert_push_uses_url_without_remote_tracking_write() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
         bare = tmp / "origin.git"
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(bare)])
+        init_fixture_repo(bare, "--bare", "-b", "main")
         repo = init_work_repo(tmp, remote_path=bare)
 
         result = run_helper(repo)
@@ -103,7 +104,7 @@ def assert_push_uses_url_without_remote_tracking_write() -> None:
             raise AssertionError(result.stderr)
 
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
-        remote_ref = run(["git", "ls-remote", "--heads", str(bare), BRANCH]).stdout.strip()
+        remote_ref = run(repo_git_command("ls-remote", "--heads", str(bare), BRANCH)).stdout.strip()
         if remote_ref != f"{head}\trefs/heads/{BRANCH}":
             raise AssertionError(remote_ref)
 
@@ -126,8 +127,8 @@ def assert_push_uses_configured_push_url() -> None:
         tmp = pathlib.Path(tmp_raw)
         fetch_bare = tmp / "fetch.git"
         push_bare = tmp / "push.git"
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(fetch_bare)])
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(push_bare)])
+        init_fixture_repo(fetch_bare, "--bare", "-b", "main")
+        init_fixture_repo(push_bare, "--bare", "-b", "main")
         repo = init_work_repo(tmp, remote_path=fetch_bare)
         git(repo, "remote", "set-url", "--push", "origin", str(push_bare))
 
@@ -136,10 +137,10 @@ def assert_push_uses_configured_push_url() -> None:
             raise AssertionError(result.stderr)
 
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
-        push_ref = run(["git", "ls-remote", "--heads", str(push_bare), BRANCH]).stdout.strip()
+        push_ref = run(repo_git_command("ls-remote", "--heads", str(push_bare), BRANCH)).stdout.strip()
         if push_ref != f"{head}\trefs/heads/{BRANCH}":
             raise AssertionError(push_ref)
-        fetch_ref = run(["git", "ls-remote", "--heads", str(fetch_bare), BRANCH]).stdout.strip()
+        fetch_ref = run(repo_git_command("ls-remote", "--heads", str(fetch_bare), BRANCH)).stdout.strip()
         if fetch_ref:
             raise AssertionError(fetch_ref)
 
@@ -150,9 +151,9 @@ def assert_multiple_push_urls_fail_closed() -> None:
         fetch_bare = tmp / "fetch.git"
         push_one = tmp / "push-one.git"
         push_two = tmp / "push-two.git"
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(fetch_bare)])
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(push_one)])
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(push_two)])
+        init_fixture_repo(fetch_bare, "--bare", "-b", "main")
+        init_fixture_repo(push_one, "--bare", "-b", "main")
+        init_fixture_repo(push_two, "--bare", "-b", "main")
         repo = init_work_repo(tmp, remote_path=fetch_bare)
         git(repo, "remote", "set-url", "--add", "--push", "origin", str(push_one))
         git(repo, "remote", "set-url", "--add", "--push", "origin", str(push_two))
@@ -163,7 +164,7 @@ def assert_multiple_push_urls_fail_closed() -> None:
         if "exactly one push URL" not in result.stderr:
             raise AssertionError(result.stderr)
         for remote in (push_one, push_two):
-            remote_ref = run(["git", "ls-remote", "--heads", str(remote), BRANCH]).stdout.strip()
+            remote_ref = run(repo_git_command("ls-remote", "--heads", str(remote), BRANCH)).stdout.strip()
             if remote_ref:
                 raise AssertionError(remote_ref)
 
@@ -222,7 +223,7 @@ def assert_rejects_unsafe_branch_before_push() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
         bare = tmp / "origin.git"
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(bare)])
+        init_fixture_repo(bare, "--bare", "-b", "main")
         repo = init_work_repo(tmp, remote_path=bare)
 
         result = run_helper(repo, "--branch", "bad branch")
@@ -230,7 +231,7 @@ def assert_rejects_unsafe_branch_before_push() -> None:
             raise AssertionError(result)
         if "must be a safe git branch" not in result.stderr:
             raise AssertionError(result.stderr)
-        remote_ref = run(["git", "ls-remote", "--heads", str(bare), BRANCH]).stdout.strip()
+        remote_ref = run(repo_git_command("ls-remote", "--heads", str(bare), BRANCH)).stdout.strip()
         if remote_ref:
             raise AssertionError(remote_ref)
 
@@ -313,7 +314,7 @@ def assert_requires_clean_worktree() -> None:
     with tempfile.TemporaryDirectory() as tmp_raw:
         tmp = pathlib.Path(tmp_raw)
         bare = tmp / "origin.git"
-        run(["git", "-c", "init.defaultBranch=main", "init", "--bare", str(bare)])
+        init_fixture_repo(bare, "--bare", "-b", "main")
         repo = init_work_repo(tmp, remote_path=bare)
         (repo / "untracked.txt").write_text("dirty\n", encoding="utf-8")
 

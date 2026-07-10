@@ -20908,8 +20908,39 @@ reason = "NT OrderBook rustc log-module path forced to Error so per-tick out-of-
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"settlement_booking_terminal {reason_detail} sticky_until_restart=true"'''
-context = '''"settlement_booking_terminal {reason_detail} sticky_until_restart=true"'''
+literal = '''"settlement_booking_terminal eligibility={} {reason_detail}"'''
+context = '''"settlement_booking_terminal eligibility={} {reason_detail}",'''
 classification = "order_lifecycle_evidence_source_label"
-reason = "Lifecycle raw_reason_text template for terminal settlement booking release; sticky_until_restart documents no operator-ack clear path."
+reason = "Lifecycle raw_reason_text template for the typed terminal-settlement transition; it reports the already-proven eligibility leg and does not configure strategy behavior."
 
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"terminal settlement is ineligible for live-manageable or nonterminal position {}"'''
+context = '''"terminal settlement is ineligible for live-manageable or nonterminal position {}",'''
+classification = "strategy_safety_diagnostic_template"
+reason = "Static fail-closed diagnostic emitted when a caller cannot construct typed terminal eligibility; expiry and recovery facts come from position state."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"recovered terminal settlement is ineligible before market expiry for position {}"'''
+context = '''"recovered terminal settlement is ineligible before market expiry for position {}",'''
+classification = "strategy_safety_diagnostic_template"
+reason = "Static fail-closed restart diagnostic; the market boundary comes from recovered position state rather than a runtime literal."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "0"
+context = '''terminal_transition_count: 0,'''
+classification = "operator_health_counter_identity"
+reason = "A fresh settlement-health surface has observed zero canonical terminal transitions; it is observability state, not a configured runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "1"
+context = '''self.terminal_transition_count = self.terminal_transition_count.saturating_add(1);'''
+classification = "operator_health_counter_increment"
+reason = "One typed health event represents one completed canonical terminal transition; this is a counter identity, not an operator-configurable runtime value."

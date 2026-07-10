@@ -67,6 +67,7 @@ use crate::{
         SECONDS_PER_YEAR_F64, UNIT_F64, is_non_negative_finite, is_positive_finite,
         notional_float_tolerance,
     },
+    bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
@@ -290,6 +291,50 @@ struct FlatTerminalEntryOverride {
     client_order_id: ClientOrderId,
     market_id: Option<String>,
     instrument_id: InstrumentId,
+}
+
+#[derive(Debug, Clone)]
+enum TerminalSettlementEligibility {
+    MarketExpired {
+        position: OpenPositionState,
+        settlement_key: String,
+        observed_at_ns: u64,
+    },
+    RecoveryUnknownInterval {
+        position: OpenPositionState,
+        settlement_key: String,
+        observed_at_ns: u64,
+    },
+}
+
+impl TerminalSettlementEligibility {
+    fn position(&self) -> &OpenPositionState {
+        match self {
+            Self::MarketExpired { position, .. }
+            | Self::RecoveryUnknownInterval { position, .. } => position,
+        }
+    }
+
+    fn settlement_key(&self) -> &str {
+        match self {
+            Self::MarketExpired { settlement_key, .. }
+            | Self::RecoveryUnknownInterval { settlement_key, .. } => settlement_key,
+        }
+    }
+
+    fn observed_at_ns(&self) -> u64 {
+        match self {
+            Self::MarketExpired { observed_at_ns, .. }
+            | Self::RecoveryUnknownInterval { observed_at_ns, .. } => *observed_at_ns,
+        }
+    }
+
+    fn reason_label(&self) -> &'static str {
+        match self {
+            Self::MarketExpired { .. } => stringify!(market_expired),
+            Self::RecoveryUnknownInterval { .. } => stringify!(recovery_unknown_interval),
+        }
+    }
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -713,7 +758,6 @@ pub struct BinaryOracleEdgeTaker {
     entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     settled_position_keys: BTreeSet<String>,
     settlement_booking_error_keys: BTreeSet<String>,
-    settlement_booking_terminal_evidence_keys: BTreeSet<String>,
     settlement_close_fetch_attempts: BTreeMap<String, SettlementCloseFetchAttemptState>,
     /// Flood guard for entry-evaluation log volume: last gate+pricing block-reason
     /// sets. WARN/INFO only on set change (blocked↔unblocked); full field dump is debug.
@@ -836,7 +880,6 @@ impl BinaryOracleEdgeTaker {
             entry_reject_state: BTreeMap::new(),
             settled_position_keys: BTreeSet::new(),
             settlement_booking_error_keys: BTreeSet::new(),
-            settlement_booking_terminal_evidence_keys: BTreeSet::new(),
             last_entry_block_reason_sets: None,
             settlement_close_fetch_attempts: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
@@ -1224,73 +1267,135 @@ impl BinaryOracleEdgeTaker {
         if self.settlement_booking_error_keys.contains(&settlement_key) {
             return Ok(());
         }
+        let eligibility =
+            self.terminal_settlement_eligibility(position, settlement_key, observed_at_ns)?;
         let evidence = self.settlement_booking_error_evidence(
             position,
-            settlement_key.clone(),
+            eligibility.settlement_key().to_string(),
             reason,
             detail,
             observed_at_ns,
         );
-        self.context
-            .decision_evidence()
-            .record_settlement_booking_error(&evidence)?;
-        self.settlement_booking_error_keys
-            .insert(settlement_key.clone());
-        self.settlement_close_fetch_attempts
-            .remove(&evidence.settlement_key);
-        // Terminal lifecycle: release single-exposure occupancy so the strategy
-        // is not parked forever. Health latch is sticky-until-restart (no ack).
-        self.apply_settlement_booking_terminal_release(
-            position,
-            settlement_key,
-            format!("reason={reason:?} detail={}", evidence.detail),
-            Some(observed_at_ns),
-        );
-        Ok(())
+        let reason_detail = format!("reason={reason:?} detail={}", evidence.detail);
+        self.apply_terminal_settlement_transition(eligibility, Some(evidence), reason_detail)
     }
 
-    /// Fail-loud terminal release applies only under the two-leg invariant:
-    /// the market is expired, or the position is unmanageable by construction
-    /// because an unknown interval permanently blocks both exit and settlement.
-    /// Durable lifecycle evidence and ERROR output are deduped per settlement key.
-    fn apply_settlement_booking_terminal_release(
-        &mut self,
+    fn terminal_settlement_eligibility(
+        &self,
         position: &OpenPositionState,
         settlement_key: String,
-        reason_detail: String,
-        observed_at_ns: Option<u64>,
-    ) {
-        if self
-            .settlement_booking_terminal_evidence_keys
-            .insert(settlement_key)
-        {
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
-                outcome: BoltV3OrderLifecycleOutcome::Flat,
-                source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
-                market_id: position.lifecycle.market_id_owned(),
-                instrument_id: Some(position.instrument_id),
-                position_id: Some(position.position_id),
-                client_order_id: None,
-                prior_client_order_id: None,
-                raw_reason_text: Some(format!(
-                    "settlement_booking_terminal {reason_detail} sticky_until_restart=true"
-                )),
-                order_side: Some(position.entry_order_side),
-                filled_quantity: None,
-                residual_quantity: Some(position.quantity),
-                ts_event_ns: observed_at_ns,
+        observed_at_ns: u64,
+    ) -> Result<TerminalSettlementEligibility> {
+        let observed_at_ms = observed_at_ns / NANOS_PER_MILLI_U64;
+        if position.lifecycle.interval_ended_at(observed_at_ms) {
+            return Ok(TerminalSettlementEligibility::MarketExpired {
+                position: position.clone(),
+                settlement_key,
+                observed_at_ns,
             });
-            log::error!(
-                "binary_oracle_edge_taker settlement booking terminal: strategy_id={} position_id={} instrument_id={} {reason_detail} sticky_until_restart=true (no operator-ack; process restart is the only reset)",
-                self.config.strategy_id,
-                position.position_id,
-                position.instrument_id,
-            );
         }
+        let recovery_unknown_interval = position.lifecycle.interval_end_ms().is_none()
+            && self.managed_position().is_some_and(|managed| {
+                managed.origin == ManagedPositionOrigin::RecoveryBootstrap
+                    && managed.position.position_id == position.position_id
+            });
+        if recovery_unknown_interval {
+            return Ok(TerminalSettlementEligibility::RecoveryUnknownInterval {
+                position: position.clone(),
+                settlement_key,
+                observed_at_ns,
+            });
+        }
+        anyhow::bail!(
+            "terminal settlement is ineligible for live-manageable or nonterminal position {}",
+            position.position_id
+        )
+    }
+
+    fn recovered_terminal_settlement_eligibility(
+        position: OpenPositionState,
+        settlement_key: String,
+        observed_at_ns: u64,
+    ) -> Result<TerminalSettlementEligibility> {
+        let observed_at_ms = observed_at_ns / NANOS_PER_MILLI_U64;
+        if position.lifecycle.interval_ended_at(observed_at_ms) {
+            return Ok(TerminalSettlementEligibility::MarketExpired {
+                position,
+                settlement_key,
+                observed_at_ns,
+            });
+        }
+        if position.lifecycle.interval_end_ms().is_none() {
+            return Ok(TerminalSettlementEligibility::RecoveryUnknownInterval {
+                position,
+                settlement_key,
+                observed_at_ns,
+            });
+        }
+        anyhow::bail!(
+            "recovered terminal settlement is ineligible before market expiry for position {}",
+            position.position_id
+        )
+    }
+
+    /// The only terminal-settlement transition. Eligibility is already encoded by
+    /// [`TerminalSettlementEligibility`], so no caller can release a pending,
+    /// live-manageable, or nonterminal position. The transition writes durable
+    /// booking/lifecycle evidence, publishes operator health, then releases exposure.
+    fn apply_terminal_settlement_transition(
+        &mut self,
+        eligibility: TerminalSettlementEligibility,
+        booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
+        reason_detail: String,
+    ) -> Result<()> {
+        let position = eligibility.position();
+        let settlement_key = eligibility.settlement_key().to_string();
+        if let Some(evidence) = booking_error.as_ref() {
+            self.context
+                .decision_evidence()
+                .record_settlement_booking_error(evidence)?;
+        }
+        self.persist_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
+            outcome: BoltV3OrderLifecycleOutcome::Flat,
+            source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
+            market_id: position.lifecycle.market_id_owned(),
+            instrument_id: Some(position.instrument_id),
+            position_id: Some(position.position_id),
+            client_order_id: None,
+            prior_client_order_id: None,
+            raw_reason_text: Some(format!(
+                "settlement_booking_terminal eligibility={} {reason_detail}",
+                eligibility.reason_label()
+            )),
+            order_side: Some(position.entry_order_side),
+            filled_quantity: None,
+            residual_quantity: Some(position.quantity),
+            ts_event_ns: Some(eligibility.observed_at_ns()),
+        })?;
+        let health_emitter = self
+            .context
+            .settlement_health_transition_emitter()
+            .context("terminal settlement health emitter is not configured")?;
+        health_emitter(BoltV3SettlementHealthTransition {
+            settlement_key: settlement_key.clone(),
+            position_id: position.position_id.to_string(),
+            reason: eligibility.reason_label().to_string(),
+        });
+        self.settlement_booking_error_keys
+            .insert(settlement_key.clone());
+        self.settlement_close_fetch_attempts.remove(&settlement_key);
+        log::error!(
+            "binary_oracle_edge_taker settlement booking terminal: strategy_id={} position_id={} instrument_id={} eligibility={} {reason_detail}",
+            self.config.strategy_id,
+            position.position_id,
+            position.instrument_id,
+            eligibility.reason_label(),
+        );
         self.exposure = ExposureState::Flat;
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
+        Ok(())
     }
 
     fn record_missing_interval_end_settlement_booking_error(
@@ -2625,6 +2730,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn bootstrap_recovery_from_cache(&mut self) {
+        let observed_at_ns = self.clock().timestamp_ns().as_u64();
         // Scope recovery to the configured execution venue. The shared NT cache can hold positions
         // from every registered execution client; a foreign-venue position must never be accepted
         // into Managed state because the exit path would build/submit an order for it with no
@@ -2728,12 +2834,24 @@ impl BinaryOracleEdgeTaker {
         if let Ok(settlement_key) = settlement_key_for_position(&open_position)
             && self.settlement_booking_error_keys.contains(&settlement_key)
         {
-            self.apply_settlement_booking_terminal_release(
-                &open_position,
+            let eligibility = match Self::recovered_terminal_settlement_eligibility(
+                open_position.clone(),
                 settlement_key.clone(),
-                format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
+                observed_at_ns,
+            ) {
+                Ok(eligibility) => eligibility,
+                Err(error) => {
+                    self.enter_blind_settlement_recovery(error);
+                    return;
+                }
+            };
+            if let Err(error) = self.apply_terminal_settlement_transition(
+                eligibility,
                 None,
-            );
+                format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
+            ) {
+                self.enter_blind_settlement_recovery(error);
+            }
             return;
         }
         let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
@@ -3113,6 +3231,15 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn record_order_lifecycle_evidence(&self, input: OrderLifecycleEvidenceInput) {
+        if let Err(error) = self.persist_order_lifecycle_evidence(input) {
+            log::error!(
+                "binary_oracle_edge_taker order lifecycle evidence write failed: strategy_id={} error={error:#}",
+                self.config.strategy_id,
+            );
+        }
+    }
+
+    fn persist_order_lifecycle_evidence(&self, input: OrderLifecycleEvidenceInput) -> Result<()> {
         let evidence = BoltV3OrderLifecycleEvidence {
             strategy_id: self.config.strategy_id.clone(),
             transition: input.transition,
@@ -3135,18 +3262,9 @@ impl BinaryOracleEdgeTaker {
             residual_quantity: input.residual_quantity.map(|quantity| quantity.to_string()),
             ts_event_ns: input.ts_event_ns,
         };
-        if let Err(error) = self
-            .context
+        self.context
             .decision_evidence()
             .record_order_lifecycle(&evidence)
-        {
-            log::error!(
-                "binary_oracle_edge_taker order lifecycle evidence write failed: strategy_id={} transition={:?} source={} error={error:#}",
-                self.config.strategy_id,
-                evidence.transition,
-                evidence.source,
-            );
-        }
     }
 
     fn clear_pending_entry_state(&mut self) {
@@ -6815,26 +6933,17 @@ impl BinaryOracleEdgeTaker {
                 BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
                 None,
             )?;
-            // Keep WARN on the same dedupe as evidence (not per-tick).
+            // Keep WARN on the same dedupe as evidence (not per-tick), then
+            // propagate the invariant failure so admission fails closed.
             if newly_recorded {
-                if let Err(error) = self.enforce_one_position_invariant() {
-                    log::warn!(
-                        "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={} error={error:#}",
-                        self.config.strategy_id,
-                        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
-                    );
-                } else {
-                    log::warn!(
-                        "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                        self.config.strategy_id,
-                        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
-                    );
-                }
-            } else {
-                // Still enforce the invariant; just don't re-WARN.
-                let _ = self.enforce_one_position_invariant();
+                log::warn!(
+                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
+                    self.config.strategy_id,
+                    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
+                );
             }
-            return Ok(None);
+            self.enforce_one_position_invariant()?;
+            unreachable!("occupied exposure must fail the one-position invariant");
         }
 
         self.entry_reject_state.remove(&instrument_id);

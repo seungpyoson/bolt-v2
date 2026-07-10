@@ -15,7 +15,7 @@ use crate::bolt_v3_iv::error::IvRejectReason;
 use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
 use crate::bolt_v3_operator_health::{
     BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3OperatorHealthSurface,
-    BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
+    BoltV3RejectObserverHealth, BoltV3SettlementHealth, BoltV3VenueTruthHealth,
 };
 use crate::bolt_v3_providers::hyperliquid::{
     ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
@@ -88,7 +88,14 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
     }));
     let submit_admission = BoltV3SubmitAdmissionState::new(writer);
 
-    let surface = live_operator_health_surface(Some(&feed), &submit_admission, false, 0, None);
+    let surface = live_operator_health_surface(
+        Some(&feed),
+        &submit_admission,
+        false,
+        0,
+        None,
+        BoltV3SettlementHealth::nominal(),
+    );
 
     assert_eq!(
         surface.reject_observer.status,
@@ -115,7 +122,14 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
     }));
     assert!(poisoned.is_err());
 
-    let surface = live_operator_health_surface(None, &submit_admission, true, 0, None);
+    let surface = live_operator_health_surface(
+        None,
+        &submit_admission,
+        true,
+        0,
+        None,
+        BoltV3SettlementHealth::nominal(),
+    );
 
     assert_eq!(
         surface.venue_truth.status,

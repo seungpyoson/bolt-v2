@@ -873,6 +873,28 @@ pub(super) fn fixture_settlement_currency() -> Currency {
     fixture_settlement_identity().1
 }
 
+pub(super) fn noop_settlement_health_transition_emitter()
+-> crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter {
+    Arc::new(|_| {})
+}
+
+pub(super) fn attach_recording_settlement_health_transitions(
+    strategy: &mut BinaryOracleEdgeTaker,
+) -> Arc<Mutex<Vec<crate::bolt_v3_operator_health::BoltV3SettlementHealthTransition>>> {
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let recorded = transitions.clone();
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_health_transition_emitter(Some(Arc::new(move |transition| {
+            recorded
+                .lock()
+                .expect("recording settlement health transition mutex poisoned")
+                .push(transition);
+        })));
+    transitions
+}
+
 fn fixture_settlement_identity() -> (String, Currency) {
     let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
@@ -1217,7 +1239,10 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             fixture_execution_venue(),
         )
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
-        .with_settlement_currency(Some(fixture_settlement_currency())),
+        .with_settlement_currency(Some(fixture_settlement_currency()))
+        .with_settlement_health_transition_emitter(Some(
+            noop_settlement_health_transition_emitter(),
+        )),
     );
     register_test_strategy(&mut strategy);
     strategy
@@ -1499,7 +1524,8 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         fixture_execution_venue(),
     )
     .with_settlement_account_id(Some(fixture_settlement_account_id()))
-    .with_settlement_currency(Some(fixture_settlement_currency()));
+    .with_settlement_currency(Some(fixture_settlement_currency()))
+    .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()));
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy

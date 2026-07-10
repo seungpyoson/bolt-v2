@@ -217,8 +217,10 @@ use crate::{
     bolt_v3_operator_health::{
         BoltV3InputHealth, BoltV3InputHealthSourceTransition, BoltV3InputHealthTransitionEmitter,
         BoltV3MissingInputSource, BoltV3OperatorHealthSurface,
-        BoltV3OperatorHealthTransitionEmitter, BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
-        node_scoped_runtime_source_announcements, runtime_source_announcements,
+        BoltV3OperatorHealthTransitionEmitter, BoltV3RejectObserverHealth, BoltV3SettlementHealth,
+        BoltV3SettlementHealthTransition, BoltV3SettlementHealthTransitionEmitter,
+        BoltV3VenueTruthHealth, node_scoped_runtime_source_announcements,
+        runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
@@ -360,6 +362,7 @@ pub struct BoltV3LiveNodeRuntime {
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
+    settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -674,6 +677,7 @@ fn live_operator_health_surface(
     venue_truth_configured: bool,
     input_health_configured_source_count: usize,
     input_health: Option<BoltV3InputHealth>,
+    settlement_health: BoltV3SettlementHealth,
 ) -> BoltV3OperatorHealthSurface {
     let reject_observer = order_reject_observer_feed.map_or_else(
         BoltV3RejectObserverHealth::not_configured,
@@ -697,7 +701,7 @@ fn live_operator_health_surface(
     } else {
         BoltV3VenueTruthHealth::not_configured()
     };
-    BoltV3OperatorHealthSurface::from_parts(
+    BoltV3OperatorHealthSurface::from_live_parts(
         reject_observer,
         venue_truth,
         input_health.unwrap_or_else(|| {
@@ -705,6 +709,7 @@ fn live_operator_health_surface(
             // keep the surface fail-closed as Unobserved for the configured sources.
             BoltV3InputHealth::unobserved(input_health_configured_source_count)
         }),
+        settlement_health,
     )
 }
 
@@ -859,6 +864,7 @@ struct BoltV3LiveNodeRuntimeComponents {
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
+    settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -893,6 +899,7 @@ impl BoltV3LiveNodeRuntime {
             operator_health_transition_logger: runtime_components.operator_health_transition_logger,
             input_health_configured_source_count: runtime_components
                 .input_health_configured_source_count,
+            settlement_health: runtime_components.settlement_health,
             redaction_values: runtime_components.redaction_values,
         }
     }
@@ -1385,6 +1392,10 @@ impl BoltV3LiveNodeRuntime {
             self.capital_admission_runtime_feed.is_some(),
             self.input_health_configured_source_count,
             input_health,
+            self.settlement_health
+                .lock()
+                .expect("settlement health lock poisoned")
+                .clone(),
         )
     }
 
@@ -3070,6 +3081,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         )))
     });
     let operator_health_transition_logger = BoltV3OperatorHealthTransitionLogger::new();
+    let settlement_health = Arc::new(Mutex::new(BoltV3SettlementHealth::nominal()));
     let input_health_sources_by_client =
         reference_current_price_live_input_sources_by_client(loaded);
     let input_health_configured_source_count =
@@ -3084,6 +3096,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let order_reject_observer_feed = order_reject_observer_feed.clone();
         let submit_admission = submit_admission.clone();
         let logger = operator_health_transition_logger.clone();
+        let settlement_health = settlement_health.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
             let surface = live_operator_health_surface(
@@ -3092,6 +3105,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 venue_truth_configured,
                 input_health_configured_source_count,
                 input_health,
+                settlement_health
+                    .lock()
+                    .expect("settlement health lock poisoned")
+                    .clone(),
             );
             logger.emit_surface(reason, surface);
         })
@@ -3116,6 +3133,22 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 Err(_) => BoltV3InputHealth::unobserved(input_health_configured_source_count),
             };
             emit_operator_health_surface(reason, Some(input_health));
+        })
+    };
+    let settlement_health_transition_emitter: BoltV3SettlementHealthTransitionEmitter = {
+        let emit_operator_health_surface = emit_operator_health_surface.clone();
+        let input_health_accumulator = input_health_accumulator.clone();
+        let settlement_health = settlement_health.clone();
+        Arc::new(move |transition: BoltV3SettlementHealthTransition| {
+            settlement_health
+                .lock()
+                .expect("settlement health lock poisoned")
+                .apply_transition(transition);
+            let input_health = input_health_accumulator
+                .lock()
+                .ok()
+                .map(|accumulator| accumulator.snapshot());
+            emit_operator_health_surface(stringify!(settlement_booking_terminal), input_health);
         })
     };
     let order_reject_observer_feed_subscription = order_reject_observer_feed.as_ref().map(|feed| {
@@ -3190,6 +3223,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         order_execution_policy,
         settlement_runtime_sink,
         settlement_recovery,
+        settlement_health_transition_emitter: Some(settlement_health_transition_emitter),
     };
     let iv_runtime = loaded
         .root
@@ -3363,6 +3397,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             iv_event_bindings,
             operator_health_transition_logger,
             input_health_configured_source_count,
+            settlement_health,
             redaction_values: resolved.redaction_values(),
         },
     );

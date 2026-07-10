@@ -487,7 +487,10 @@ pub fn register_runtime_strategy(
     .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
     .with_settlement_recovery(context.settlement_recovery.clone())
     .with_settlement_account_id(settlement_account_id)
-    .with_settlement_currency(settlement_currency);
+    .with_settlement_currency(settlement_currency)
+    .with_settlement_health_transition_emitter(
+        context.settlement_health_transition_emitter.clone(),
+    );
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry

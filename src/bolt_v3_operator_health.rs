@@ -20,6 +20,8 @@ use crate::{
 pub type BoltV3OperatorHealthTransitionEmitter = Arc<dyn Fn(&'static str) + Send + Sync + 'static>;
 pub type BoltV3InputHealthTransitionEmitter =
     Arc<dyn Fn(&'static str, BoltV3InputHealthSourceTransition) + Send + Sync + 'static>;
+pub type BoltV3SettlementHealthTransitionEmitter =
+    Arc<dyn Fn(BoltV3SettlementHealthTransition) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +32,55 @@ pub enum BoltV3OperatorHealthStatus {
     MissingInput,
     Unobserved,
     NotConfigured,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SettlementHealthTransition {
+    pub settlement_key: String,
+    pub position_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3SettlementHealth {
+    pub status: BoltV3OperatorHealthStatus,
+    pub configured: bool,
+    pub terminal_transition_count: u64,
+    pub latest_settlement_key: Option<String>,
+    pub latest_position_id: Option<String>,
+    pub latest_reason: Option<String>,
+}
+
+impl BoltV3SettlementHealth {
+    pub fn not_configured() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::NotConfigured,
+            configured: false,
+            terminal_transition_count: 0,
+            latest_settlement_key: None,
+            latest_position_id: None,
+            latest_reason: None,
+        }
+    }
+
+    pub fn nominal() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Nominal,
+            configured: true,
+            terminal_transition_count: 0,
+            latest_settlement_key: None,
+            latest_position_id: None,
+            latest_reason: None,
+        }
+    }
+
+    pub fn apply_transition(&mut self, transition: BoltV3SettlementHealthTransition) {
+        self.status = BoltV3OperatorHealthStatus::Degraded;
+        self.terminal_transition_count = self.terminal_transition_count.saturating_add(1);
+        self.latest_settlement_key = Some(transition.settlement_key);
+        self.latest_position_id = Some(transition.position_id);
+        self.latest_reason = Some(transition.reason);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -297,6 +348,7 @@ pub struct BoltV3OperatorHealthSurface {
     pub reject_observer: BoltV3RejectObserverHealth,
     pub venue_truth: BoltV3VenueTruthHealth,
     pub input_health: BoltV3InputHealth,
+    pub settlement: BoltV3SettlementHealth,
 }
 
 impl BoltV3OperatorHealthSurface {
@@ -305,6 +357,7 @@ impl BoltV3OperatorHealthSurface {
             reject_observer: BoltV3RejectObserverHealth::not_configured(),
             venue_truth: BoltV3VenueTruthHealth::not_configured(),
             input_health: BoltV3InputHealth::not_configured(),
+            settlement: BoltV3SettlementHealth::not_configured(),
         }
     }
 
@@ -317,6 +370,21 @@ impl BoltV3OperatorHealthSurface {
             reject_observer,
             venue_truth,
             input_health,
+            settlement: BoltV3SettlementHealth::not_configured(),
+        }
+    }
+
+    pub fn from_live_parts(
+        reject_observer: BoltV3RejectObserverHealth,
+        venue_truth: BoltV3VenueTruthHealth,
+        input_health: BoltV3InputHealth,
+        settlement: BoltV3SettlementHealth,
+    ) -> Self {
+        Self {
+            reject_observer,
+            venue_truth,
+            input_health,
+            settlement,
         }
     }
 }

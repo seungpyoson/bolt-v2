@@ -441,7 +441,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
             // single-exposure strategy is not parked forever. Venue residual may
             // still exist in NT cache; occupancy is strategy-local.
             && matches!(strategy.exposure, ExposureState::Flat)
-            && !strategy.settlement_booking_terminal_evidence_keys.is_empty(),
+            && terminal_settlement_lifecycle_count(&events) == 1,
         "resolution feed outage must fail closed after close-fetch retry exhaustion: no settlement booking, one loud booking-error record, exposure released to Flat; exposure={:?}, close_fetch_count={close_fetch_count}, events={events:?}",
         strategy.exposure
     );
@@ -1102,6 +1102,7 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
         evidence.clone(),
         submit_admission,
     );
+    let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
     let position_interval_end_ms = strategy
@@ -1163,10 +1164,15 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
                 .contains(&settlement_key)
             // #1349: terminal booking-error releases exposure (Flat).
             && matches!(strategy.exposure, ExposureState::Flat)
-            && !strategy.settlement_booking_terminal_evidence_keys.is_empty(),
+            && terminal_settlement_lifecycle_count(&events) == 1,
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error after close-fetch retry exhaustion and release exposure to Flat; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
     );
+    let transitions = health_transitions
+        .lock()
+        .expect("recording settlement health transition mutex poisoned");
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0].reason, "market_expired");
 }
 
 #[test]
@@ -1182,6 +1188,7 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
         evidence.clone(),
         submit_admission,
     );
+    let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
     let position_interval_end_ms = strategy
@@ -1239,10 +1246,15 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
                 .contains(&settlement_key)
             // #1349: terminal booking-error releases exposure (Flat).
             && matches!(strategy.exposure, ExposureState::Flat)
-            && !strategy.settlement_booking_terminal_evidence_keys.is_empty(),
+            && terminal_settlement_lifecycle_count(&events) == 1,
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered cache position with missing instrument metadata must record a terminal booking-error and release exposure to Flat; exposure={:?} events={events:?}",
         strategy.exposure,
     );
+    let transitions = health_transitions
+        .lock()
+        .expect("recording settlement health transition mutex poisoned");
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0].reason, "recovery_unknown_interval");
 }
 
 #[test]
@@ -1732,11 +1744,7 @@ fn missing_settlement_currency_records_booking_error_from_config_derived_fixture
     assert_eq!(settlement_booking_error_count(&events), 1);
     // #1349: terminal booking-error releases single-exposure occupancy.
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    assert!(
-        !strategy
-            .settlement_booking_terminal_evidence_keys
-            .is_empty()
-    );
+    assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
 }
 
 #[test]
@@ -1782,11 +1790,7 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
     assert!(sink.venue_explanations().is_empty());
     // #1349: terminal booking-error releases single-exposure occupancy.
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    assert!(
-        !strategy
-            .settlement_booking_terminal_evidence_keys
-            .is_empty()
-    );
+    assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
 }
 
 #[test]
@@ -1801,6 +1805,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         evidence.clone(),
         submit_admission,
     );
+    let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
     let first_position = materialize_configured_position(
         &mut strategy,
@@ -1811,6 +1816,11 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
     );
     let first_key = settlement_key_for_position(&first_position)
         .expect("first fixture position should derive a settlement key");
+    let first_terminal_ns = first_position
+        .lifecycle
+        .interval_end_ms()
+        .expect("live fixture position must retain an interval end")
+        .saturating_mul(NANOS_PER_MILLI_U64);
 
     strategy
         .record_settlement_booking_error(
@@ -1818,7 +1828,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
             first_key.clone(),
             BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
             "first distinct terminal booking error".to_string(),
-            1,
+            first_terminal_ns,
         )
         .expect("first terminal booking error should be recorded");
     assert!(matches!(strategy.exposure, ExposureState::Flat));
@@ -1832,15 +1842,20 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
     );
     let second_key = settlement_key_for_position(&second_position)
         .expect("second fixture position should derive a settlement key");
+    let second_terminal_ns = second_position
+        .lifecycle
+        .interval_end_ms()
+        .expect("live fixture position must retain an interval end")
+        .saturating_mul(NANOS_PER_MILLI_U64);
     assert_ne!(first_key, second_key);
 
     strategy
         .record_settlement_booking_error(
             &second_position,
-            second_key,
+            second_key.clone(),
             BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
             "second distinct terminal booking error".to_string(),
-            2,
+            second_terminal_ns,
         )
         .expect("second terminal booking error should be recorded");
     assert!(matches!(strategy.exposure, ExposureState::Flat));
@@ -1859,6 +1874,13 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         })
         .collect::<Vec<_>>();
     assert_eq!(settlement_booking_error_count(&events), 2);
+    let recorded_health_transitions = health_transitions
+        .lock()
+        .expect("recording settlement health transition mutex poisoned")
+        .clone();
+    assert_eq!(recorded_health_transitions.len(), 2);
+    assert_eq!(recorded_health_transitions[0].settlement_key, first_key);
+    assert_eq!(recorded_health_transitions[1].settlement_key, second_key);
     assert_eq!(
         terminal_position_ids,
         vec![
@@ -1867,10 +1889,186 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         ],
         "each distinct settlement booking-error key must emit terminal lifecycle evidence"
     );
+
+    strategy
+        .record_settlement_booking_error(
+            &second_position,
+            recorded_health_transitions[1].settlement_key.clone(),
+            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            "duplicate terminal booking error".to_string(),
+            second_terminal_ns,
+        )
+        .expect("duplicate terminal booking error should be idempotent");
+    assert_eq!(settlement_booking_error_count(&evidence.events()), 2);
+    assert_eq!(
+        health_transitions
+            .lock()
+            .expect("recording settlement health transition mutex poisoned")
+            .len(),
+        2,
+        "health reporting must follow canonical terminal transitions"
+    );
+}
+
+#[test]
+fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transition() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-NONTERMINAL-SETTLEMENT-GUARD"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let settlement_key = settlement_key_for_position(&position)
+        .expect("fixture position should derive a settlement key");
+    let before_expiry_ns = position
+        .lifecycle
+        .interval_end_ms()
+        .expect("live fixture position must retain an interval end")
+        .saturating_mul(NANOS_PER_MILLI_U64)
+        .saturating_sub(1);
+
+    let error = strategy
+        .record_settlement_booking_error(
+            &position,
+            settlement_key,
+            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            "nonterminal position must not release".to_string(),
+            before_expiry_ns,
+        )
+        .expect_err("nonterminal position must be ineligible for terminal settlement");
+
+    assert!(error.to_string().contains("ineligible"));
+    assert!(matches!(strategy.exposure, ExposureState::Managed(_)));
+    let events = evidence.events();
+    assert_eq!(settlement_booking_error_count(&events), 0);
+    assert_eq!(terminal_settlement_lifecycle_count(&events), 0);
     assert!(
-        !strategy
-            .settlement_booking_terminal_evidence_keys
+        health_transitions
+            .lock()
+            .expect("recording settlement health transition mutex poisoned")
             .is_empty()
+    );
+}
+
+#[test]
+fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error() {
+    assert_reality_fixtures();
+
+    let temp = tempfile::tempdir().expect("settlement recovery tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
+    strategy.context =
+        strategy
+            .context
+            .clone()
+            .with_settlement_recovery(Some(BoltV3SettlementRecoveryConfig {
+                path: evidence_path.clone(),
+                max_bytes: 100_000,
+            }));
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "terminal-restart-market",
+        "terminal-restart-market",
+        "Up",
+        1_000,
+        1_000,
+        2_000,
+    );
+    let position_id = PositionId::from("P-TERMINAL-RESTART");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("TERMINAL-RESTART-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_instrument(instrument)
+            .expect("test cache should accept recovery instrument");
+        cache
+            .add_position(&position, NtOmsType::Netting)
+            .expect("test cache should accept recovery position");
+    }
+    clock.borrow_mut().set_time(UnixNanos::from(
+        2_500_u64.saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+    let recovered_position = OpenPositionState {
+        lifecycle: BoltV3PositionMarketLifecycle::recover_from_instrument(
+            cache.borrow().instrument(&instrument_id),
+        ),
+        instrument_id,
+        position_id,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    let settlement_key = settlement_key_for_position(&recovered_position)
+        .expect("recovered position should derive settlement key");
+    write_settlement_booking_error_line(
+        &evidence_path,
+        BoltV3SettlementBookingErrorEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            settlement_key: settlement_key.clone(),
+            market_id: recovered_position.lifecycle.market_id_owned(),
+            position_id: Some(position_id.to_string()),
+            instrument_id: Some(instrument_id.to_string()),
+            resolution_instrument_id: strategy
+                .resolution_instrument_id()
+                .map(|instrument_id| instrument_id.to_string()),
+            reason: BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            detail: "durable terminal booking error".to_string(),
+            observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
+        },
+    );
+
+    strategy.bootstrap_recovery_from_cache();
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert_eq!(terminal_settlement_lifecycle_count(&evidence.events()), 1);
+    let transitions = health_transitions
+        .lock()
+        .expect("recording settlement health transition mutex poisoned");
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0].settlement_key, settlement_key);
+    assert_eq!(transitions[0].reason, "market_expired");
+    assert_eq!(
+        crate::bolt_v3_decision_evidence::read_settlement_booking_error_evidence(
+            &evidence_path,
+            100_000,
+        )
+        .expect("durable booking error should remain readable")
+        .len(),
+        1,
+        "restart must not append a parallel booking-error record"
     );
 }
 
@@ -2391,6 +2589,20 @@ fn settlement_booking_error_count(events: &[RecordedDecisionEvidenceEvent]) -> u
         .count()
 }
 
+fn terminal_settlement_lifecycle_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
+                    if evidence.transition
+                        == BoltV3OrderLifecycleTransition::SettlementBookingTerminal
+            )
+        })
+        .count()
+}
+
 fn settlement_booking_error_reasons(
     events: &[RecordedDecisionEvidenceEvent],
 ) -> Vec<BoltV3SettlementBookingErrorReason> {
@@ -2458,6 +2670,28 @@ fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3Settle
         ),
     )
     .expect("settlement evidence fixture should write");
+}
+
+fn write_settlement_booking_error_line(
+    path: &std::path::Path,
+    evidence: BoltV3SettlementBookingErrorEvidence,
+) {
+    let line = json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 1_000_i64,
+        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": crate::bolt_v3_decision_evidence::BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+        "booking_error": evidence,
+    });
+    std::fs::write(
+        path,
+        format!(
+            "{}\n",
+            serde_json::to_string(&line).expect("settlement booking error should encode")
+        ),
+    )
+    .expect("settlement booking-error fixture should write");
 }
 
 fn assert_incident_lifecycle_counts() {

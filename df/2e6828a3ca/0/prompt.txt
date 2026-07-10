@@ -1,0 +1,2146 @@
+give me an execution handoff prompt for that fix
+
+---
+
+give me an execution handoff prompt for that fix - create a worktree and give me a command line
+
+---
+
+<task-notification>
+<task-id>b3jl3ngvu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/dca29518-fa99-4628-826b-1fb630035bd9/tasks/b3jl3ngvu.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI to completion at restored head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+what's next
+
+---
+
+and PR 1309 is merged -
+
+---
+
+so explain why pr 1312 can be merged without external review
+
+---
+
+AI reviewers are turned off - so don't regard it - sp-reviewer is me - so you need to tell me why this PR is safe to merge
+
+---
+
+did we get clean review on 1312? what do you suggest that we do for 1312? what should we do?
+
+---
+
+yes
+
+---
+
+• Committed and pushed cdbc56bccb6592d92abe1dd06da39e77a979ecd6.
+
+  Symbols Changed
+  verify_bolt_v3_boundary_evidence, verify_bolt_v3_strategy_policy_fence, WORKFLOW_RUNNER_CONFIG_KEYS,
+  assert_deleted_ai_review_model_freshness_workflow_is_unmapped, REQUIRED_DISCOVERY_FLOOR_CONTRACTS, verify-bolt-v3-boundary-evidence, verify-bolt-v3-strategy-
+  policy-fence, cheap_lane_labels, RequoteBudget::new, RequoteBudgetPair::new.
+
+  A1 Differential
+
+  $ python3.12 scripts/verify_bolt_v3_boundary_evidence.py
+  FAIL: ci/bolt-v3-boundary-exemptions.toml: row 0 expired on 2026-07-08
+
+  $ python3.12 scripts/verify_bolt_v3_boundary_evidence.py
+  OK: bolt-v3 boundary evidence audit passed.
+
+  $ python3.12 scripts/verify_bolt_v3_strategy_policy_fence.py
+  FAIL: Bolt-v3 strategy policy hardcode direct NT venue mutation call at src/strategies/binary_oracle_maker/mod.rs:295: self.submit_order(todo!());
+
+  $ python3.12 scripts/verify_bolt_v3_strategy_policy_fence.py
+  OK: Bolt-v3 strategy policy fence passed.
+
+  A2 Sweep
+
+  $ git diff --name-status ca0d9d244..HEAD | awk '$1=="D"{print $2}' | wc -l
+        77
+
+  deleted_count=77
+  basenames_with_surviving_matches=28
+  total_surviving_matches=312
+  non_doc_spec_matches=2
+  .github/workflows/ai-review-model-freshness.yml: ./scripts/test_verify_ci_workflow_hygiene.py:3869:        "ai-review-model-freshness.yml",
+  .github/workflows/ai-review-model-freshness.yml: ./scripts/test_verify_ci_workflow_hygiene.py:3870:        ".github/workflows/ai-review-model-freshness.yml",
+
+  A3 Green
+
+  python3.12 scripts/run_fences.py
+  OK: run_fences self-tests passed.
+  OK: verifier_io self-tests passed.
+
+  just ci-lint-workflow
+  OK: 33 ci-lint suite(s) passed.
+  OK: No raw cargo workflow commands or explicit Rust-wrapper bypasses found
+
+  python3.12 scripts/test_verifier_io.py
+  OK: verifier_io self-tests passed.
+
+  python3.12 scripts/verify_fail_closed_contracts.py
+  OK: fail-closed contract verifier passed.
+
+  python3.12 scripts/test_lane_governor.py
+  OK: lane governor self-tests passed.
+
+  A4 CI
+
+  OK: remote full CI passed for cdbc56bccb6592d92abe1dd06da39e77a979ecd6 on https://github.com/seungpyoson/bolt-v2/pull/1312: workflow run 29021551032
+  [completed/success] https://github.com/seungpyoson/bolt-v2/actions/runs/29021551032
+
+---
+
+yes - generate a review promtp
+
+---
+
+GLM: All 50 fence checks pass via the integrated runner. I have everything I need. Here is the round-2 report.
+Round 2 Adversarial Review — PR #1312 @ cdbc56bcc
+Verdict on C8 (central claim)
+Could not refute. No live-behavior change.
+- src/ diff vs main = 6 lines of doc-comment text in bolt_v3_requote_budget.rs:24,:159 (deleted false claim of static enforcement, replaced with honest "by convention"). Zero executable code changed.
+- config/ diff = zero.
+- crates/ unchanged (no [workspace], no use crates::).
+- Probability/UsableMu re-verified at this head: bolt_v3_numeric.rs:58 mod financial_value_private { pub trait Sealed {} }; :62 FinancialValue: financial_value_private::Sealed; :83 Probability { value: f64 } (private field); :97 fn new(value: f64) -> Option<Self> (validating); bolt_v3_maker_mu_estimator.rs:64 UsableMu(f64) (private tuple). pub(crate) is correctly characterized as NOT compiler ownership in the rewritten comment.
+Claims I could NOT refute
+C1 — the rule holds. I attacked all four detection vectors:
+Vector    Status    Evidence
+UFCS (Strategy::submit_order, <Self as Strategy>::submit_order)    ✓ caught    DIRECT_NT_VENUE_MUTATION_RULE:145-150 — three prefix alternatives: dot-call, Path::method, <…>::method
+Raw TradingCommand / msgbus send    ✓ caught (common forms)    RAW_MSGBUS_NT_VENUE_MUTATION_RULE:153-163 — bare TradingCommand, send_trading_command, etc. with lookbehind/lookahead
+core_mut() / order_manager() escapes    ✓ caught    Both in NT_VENUE_MUTATION_METHOD_NAMES:58-59, matched by DIRECT rule
+Aliased / re-exported paths    ✓ caught    Path regex [A-Za-z_][A-Za-z0-9_]*(?:::…)* matches any alias
+Root coverage is complete: manifest [strategy] includes src/bolt_v3_archetypes/*.rs, src/bolt_v3_order_execution.rs, and all taker strategy files; source_files_for_strategy_policy_fence() unions configured roots with production_rust_files_under("src/strategies") (catches maker); ungated_production_strategy_source_roots() flags any new unregistered strategy directory. src/bolt_v3_archetypes/mod.rs is correctly excluded from strategy rules (it's a dispatch layer, not a strategy surface) but covered by mutation rules over all src/.
+One theoretical gap (not a practical finding): RAW_MSGBUS's negative lookbehind (?<![A-Za-z0-9_:]) blocks matches when a TradingCommand surface name follows :: (e.g., messages::execution::TradingCommand). But the common escape (use …TradingCommand; TradingCommand::SubmitOrder(…)) IS caught because the bare token starts the expression. Fully-qualified paths are exotic and would only appear in risk_admission_loss.rs (which has explicit ALLOWED_EXACT_VIOLATIONS).
+C4 — could not find a fail-open. scan_exemption_issue_state:358-373 is fail-closed:
+- Network error / HTTP error / timeout → except (OSError, URLError, RuntimeError) → finding appended → fence fails.
+- Issue closed → finding appended → fence fails.
+- json.JSONDecodeError → uncaught → crash → fence fails.
+- Local bypass (GITHUB_ACTIONS != "true" → return) is by design: the calendar expiry check in scan_exemptions:333 runs everywhere, only the GitHub-API issue-state check is CI-gated. Both CI jobs (source-fence-static:742 and source-fence:702) pass GITHUB_TOKEN and GITHUB_REPOSITORY.
+- Non-int issue field → continue in issue-state check, but already flagged by scan_exemptions:322-323.
+C6 — 77/77 basenames swept; effective dangling = 0. Checked every deleted basename (76 .py + 1 .yml) against scripts/, ci/, justfile, .github/, src/, crates/, tests/. One match: ai-review-model-freshness.yml at test_verify_ci_workflow_hygiene.py:3869 — intentional regression test assert_deleted_ai_review_model_freshness_workflow_is_unmapped that enforces the deleted workflow stays unmapped. Round 1's "zero" was correct in conclusion but I only swept .py files; this round confirms the .yml reference is a deliberate guard.
+Config-side cleanup verified consistent: ci/ai-review.toml removed [pr_agent_mirror] + model-freshness markers; ci/github-actions-runners.toml removed the ai_review_model_freshness mapping; ci/doc-decoupling-residuals.toml removed 5 stale residual entries for deleted scripts; specs/…/misnomer-allowlist.txt removed entries for deleted migrator scripts.
+C7 — wiring is correct.
+- RUN_FENCES_SOURCE_SHA256 = "76545cf5…b7f0" == sha256sum scripts/run_fences.py exactly. test_lane_governor.py passes.
+- Both restored fences are auto-discovered by run_fences.py:179-180 discover_fence_paths() (globs verify_*.py, excludes verify_ai_/verify_ci_/verify_runtime_capture_yaml). 50 checks ran via integrated runner, all OK, exit 0.
+- run_fences.py diff: removed test_migrate_bolt_v3_capital_admission_config.py from STANDALONE_TEST_FILENAMES. ✓
+- ci/rust-verification.toml + crates/…/rust-verification.toml: removed 39 stale labels for deleted fences, added 4 for restored fences. ✓
+- verifier_io.py: removed 15 RequiredDiscoveryFloorContract entries for deleted fences, added require_nonempty used by restored fences. ✓
+Ranked findings
+No live-behavior findings. Everything below is "removes a future-regression detector."
+R1 — Medium. Rule 5 (pure-Rust runtime) static enforcement stays homeless. verify_bolt_v3_pure_rust_runtime.py was NOT restored. The strategy policy fence catches NT venue-mutation API escapes (submit/cancel/msgbus), but it does NOT catch std::process::Command::new(…) or tokio::process::Command — the Rule 5 subprocess ban has no surviving static enforcer. #1310 just added run_reference_current_price_health_subprocess to src/main.rs, establishing runtime-subprocess precedent. Failure scenario: a future PR adds a std::process::Command call in src/; no static gate catches the Rule 5 regression; only human review remains. Typing-gated; no current behavior change.
+R2 — Low. PR-Agent mirror sync check homeless. verify_ai_review_governance.py deleted; ci/ai-review.toml [pr_agent_mirror] section (86 lines of required snippets) removed. .pr_agent.toml still inlines AGENTS.md rules as extra_instructions, but nothing verifies it stays in sync. Failure scenario: AGENTS.md rule text changes; .pr_agent.toml goes unmirrored; PR-Agent reviews against stale rules. Governance hygiene, not runtime.
+R3 — Low. scan_static_wiring self-check verifies the wrong thing. verify_bolt_v3_boundary_evidence.py:629-634 checks that "python3 scripts/verify_bolt_v3_boundary_evidence.py" appears somewhere in the justfile (it's in the standalone recipe at justfile:89). But the actual CI invocation path is run_fences.py auto-discovery, NOT the standalone recipe. The finding message says "source-fence-static-inner missing" but source-fence-static-inner doesn't invoke the standalone recipe — it runs run_fences.py. Failure scenario: someone renames the fence to verify_ci_bolt_v3_boundary_evidence.py (excluded prefix); standalone recipe still exists, self-check passes, but run_fences.py no longer discovers it. Low because test_run_fences.py and test_lane_governor.py provide independent coverage.
+R4 — Low. pub(crate) constructors now honesty-only. bolt_v3_requote_budget.rs:24,:159 — comments correctly say "by convention. No static fence currently prevents other same-crate code from calling this pub(crate) constructor directly." The deleted verify_bolt_v3_requote_construction.py was the static enforcer. pub(crate) means crate-visible; any same-crate module can call it. Typing-gated; no current behavior change.
+Bottom line
+The restored fences are well-constructed and correctly wired. C1 holds — the strategy policy fence's detection set is comprehensive for practical escape vectors, and its root coverage is complete via the manifest. C4 is fail-closed. C6 is clean. C7 is correct. C8 is verified — no live-behavior change.
+The one substantive governance gap is R1 (pure-Rust runtime, Rule 5) — Claude explicitly chose not to restore that fence, and #1310's runtime subprocess makes it the most likely future-regression surface. Everything else is Low. The PR is mechanically clean at head cdbc56bcc.
+Kimi: 
+ ● Read everything at cdbc56b via git show/git grep against the SHA (the local checkout is on a different branch with dirty files, so I never touched the
+   working tree). Net: the rule holds (C1), the wiring/digest holds (C7), the dangling sweep is clean (C6), the boundary probe is fail‑closed in the gate
+   (C4), and live behavior is unchanged (C8). The one real hit is a live‑path regression detector that was removed and that the source now openly admits is
+   unguarded.
+
+   Brief caveat: your paste jumps C1 → C4 → C6 → C7 → C8; C2, C3, C5 were not in the message I received, and C1/C4/C7 are truncated at the front. I refuted
+   every visible sub‑point and flag the gaps at the end.
+
+   Findings, ranked
+
+   F1 — Live‑path regression detector removed; source now documents the gap (detector‑removal severity, not a behavior change).
+   src/bolt_v3_requote_budget.rs:26 and :162 — RequoteBudget::new / RequoteBudgetPair::new are pub(crate) with private fields and no seal/trait guard. The
+   only thing that enforced "construct solely through bolt_v3_maker_rate_budget::build_requote_budget_pair" (TOML + venue‑derived caps) was
+   verify_bolt_v3_requote_construction.py, now deleted (and test_verify_bolt_v3_requote_construction.py with it; zero surviving references). The diff rewrites
+   the doc comments to say the bridge is reached "by convention" and that "No static fence currently prevents other same‑crate code from calling this
+   pub(crate) constructor directly."
+   • Failure scenario: a future same‑crate caller does RequoteBudget::new(999_999, 1_000, 0) bypassing the bridge → caps are no longer TOML/venue‑derived
+     (NO‑HARDCODES + risk‑cap bypass) and nothing catches it. Today no caller misuses it, so runtime is unchanged — but the detector is gone and the type
+     system does not enforce the invariant (pub(crate) is callable crate‑wide). This is the strongest item; it's on the live path.
+
+   F2 — Bulk removal of leaf regression detectors (detector‑removal severity). The other 75 deleted scripts/verify_*.py + paired test_verify_*.py (naming,
+   dependency_direction, schema_current, usable_mu_sole_mint, probability_typed_pilot, no_venue_name_branch, market_family_coupling, legacy_default_fence,
+   core_boundary, no_config_retype, outcome_group_nt_reuse, dashboard_read_only, doc_decoupling_residuals, all ra_*/bte_022*/pmxt*, pure_rust_runtime) are
+   read‑only CI scanners — deleting them cannot change runtime, only removes future detection. For UsableMu/Probability sole‑mint specifically: those types
+   are not present in src/ (no struct Probability/UsableMu anywhere on the live path), so their detector loss is off the live path; I could not positively
+   confirm compiler‑enforced sole‑mint because the types aren't in src/ to inspect (likely research/macro‑generated). Consistent with "crates/ is off the live
+   path."
+
+   F3 — Stale config keys for a removed feature (cleanliness, low). ci/ai-review.toml:11,19,21 still declares ai-review-model-freshness user_agent /
+   issue_marker / notice_marker_template, while .github/workflows/ai-review-model-freshness.yml and verify_ai_review_model_freshness.py are deleted;
+   scripts/test_ai_review_glm_fallback.py:2326,2339,2345 still uses the notice markers as fixture strings. No surviving producer consumes the keys, so it's
+   harmless dead config — but it is leftover surface from the removed feature.
+
+   Refuted — the claims hold
+
+   C1 — the rule holds. scripts/verify_bolt_v3_strategy_policy_fence.py DIRECT_NT_VENUE_MUTATION_RULE + RAW_MSGBUS_NT_VENUE_MUTATION_RULE cover every vector
+   you named: self.submit_order(...) (dot), Strategy::submit_order / nautilus_trader::strategy::Strategy::submit_order (path alt), <Self as
+   Strategy>::submit_order(...) (the <[^>\n]+>\s*::\s* alt), msgbus send_trading_command/send_any/… and bare TradingCommand/SubmitOrder surface, and
+   core_mut()/order_manager(). It is name‑keyed on the method token, so aliasing or re‑exporting the type does not evade it. Scan root for the mutation rules
+   is source_files_for_mutation_fence() = all of src/**/*.rs (production_rust_files_under("src")) — a superset of src/strategies/**, src/bolt_v3_archetypes/**
+    (present: binary_oracle_edge_taker.rs, complete_set_arbitrage.rs, mod.rs), and every other strategy surface; only src/bolt_v3_order_execution.rs is exempt
+   (the chokepoint), plus three exact‑match allowlisted lines in risk_admission_loss.rs. Two honest theoretical residuals I will not overclaim: a bare
+   free‑function call submit_order(...) (no receiver/::) isn't matched, and a generic‑trait UFCS <Self as Trait<T>>::submit_order evades the <[^>\n]+> alt on
+   the nested > — neither is reachable through NT's actual non‑generic Strategy API, and the file's own docstring calls it "a CI guardrail … not a complete
+   firewall."
+
+   C4 — not fail‑open. verify_bolt_v3_boundary_evidence.py:358 scan_exemption_issue_state skips only when root != REPO_ROOT or GITHUB_ACTIONS != "true" (i.e.,
+   local runs and unit fixtures that have no token/network). In the required merge gate — .github/workflows/ci.yml:645 source-fence (the gate job needs it at
+   :1737) — run_fences.py calls main()→scan_root(REPO_ROOT), GITHUB_ACTIONS=true, so the probe runs. Inside the gate it is fail‑closed: (OSError,
+   urllib.error.URLError, RuntimeError) → finding (:370); a non‑JSON reply raises json.JSONDecodeError (not caught) → crash → non‑zero; state != "open" →
+   finding (:373). The companion scan_static_wiring (:660‑666) also asserts the workflow wires GITHUB_TOKEN/GITHUB_REPOSITORY. The only "skip" is contexts
+   that cannot perform the API probe.
+
+   C6 — I checked all 77 (76 .py + 1 .yml), not just scripts/*.py. Word‑boundary stem grep across scripts/ ci/ justfile .github/ src/ crates/ tests/: 76/77
+   have zero surviving references — so "zero dangling .py refs" is correct, not a round‑1 miss. The single hit is the deleted workflow, and it is intentional:
+   scripts/test_verify_ci_workflow_hygiene.py:3868 assert_deleted_ai_review_model_freshness_workflow_is_unmapped is a negative regression assertion, paired
+   with the mapping removal in verify_ci_workflow_hygiene.py:416. (The stale toml markers are F3.)
+
+   C7 — digest matches the resolved file. scripts/test_lane_governor.py:124 RUN_FENCES_SOURCE_SHA256 = "76545cf5…8b7f0" equals sha256(scripts/run_fences.py)
+   at head; _validate_run_fences_source_digest (:2433) hashes self.path where self.path == SCRIPTS_DIR/"run_fences.py" (:1682, :2324), and a second direct
+   digest hashes (SCRIPTS_DIR/"run_fences.py").read_bytes() (:3365). run_fences.py discovers verifiers by glob("verify_*.py") (no hardcoded list, so deletions
+   can't dangle), the STANDALONE_TEST_FILENAMES entry for the deleted migrate test was removed, and verifier_io.py was modified (341→179), not deleted — so
+   test_verifier_io.py still has its module.
+
+   C8 — live behavior unchanged at this head, with one precision fix. config/ is byte‑identical (unchanged). src/ is not literally byte‑identical —
+   src/bolt_v3_requote_budget.rs differs by a comment‑only diff (4+/2−, both hunks doc comments) — so it is behavior‑identical but the quoted "byte‑identical
+   src/" is false. No deleted module is on the live path: all 76 deleted .py are scripts/ CI scanners plus one workflow .yml; build.rs references to
+   scripts/bolt_v3_source_roots.py are /// doc comments to a surviving module; crates/ contains only backtesting-vertical-slice (research, off the live path);
+   and stem grep found zero references to any deleted name in src/ or crates/.
+
+   Could not refute / limits
+
+   • C2, C3, C5 were absent from the brief I received; C1/C4/C7 were front‑truncated (e.g., C7's "Both #1309 and #1…" tail). I answered the visible fragments
+     only.
+   • I did not re‑run CI or read NT source to prove Strategy is non‑generic (C1 residual is framed conditionally); exact‑head CI (run 29021551032) I took as
+     asserted, per repo convention that the reviewer verifies head CI.
+   • I did not positively locate Probability/UsableMu definitions (absent from src/); F2 rests on their absence from the live path rather than on inspecting
+     their constructors.
+
+   Separating the two severities as asked: changes live trading behavior — none (only a comment diff in src/, nothing in config//crates/); removes a
+   future‑regression detector — the whole wave, with F1 the consequential one because a live, NO‑HARDCODES/risk invariant now rests on convention alone and
+   the source says so. 
+GPT: 
+• No new live-trading behavior finding at cdbc56bccb6592d92abe1dd06da39e77a979ecd6.
+
+  Findings
+
+  MEDIUM, future-regression detector only: verify_bolt_v3_pure_rust_runtime.py remains homeless.
+  Anchor: deny.toml:37, src/main.rs:713, scripts/run_fences.py:29.
+  Scenario: a future diff adds pyo3/maturin to root Cargo.toml, or adds Command::new("python3") on the live launch path. Rust compiles; cargo deny has no ban
+  list; the deleted pure-runtime fence no longer rejects it. This does not prove this PR changes current live behavior.
+
+  LOW, dangling sweep raw hit but not stale wiring.
+  Anchor: scripts/test_verify_ci_workflow_hygiene.py:3866.
+  I checked all 77 deleted basenames across scripts/, ci/, justfile, .github/, src/, crates/, tests/. Raw matches: 2, both inside a negative self-test
+  asserting deleted ai-review-model-freshness.yml is unmapped. No concrete failure scenario.
+
+  C1-C8
+
+  Could not refute C1/C2/C3 for the restored strategy fence. It catches direct NT submit/cancel/modify, UFCS, aliases, raw TradingCommand/msgbus, core_mut()/
+  order_manager(), sink wrapper methods, and scans src/strategies/**, src/bolt_v3_archetypes/**, plus all production src/**/*.rs for mutation calls. I measured
+  26 strategy-policy files, 204 mutation-scan files, ungated roots [].
+
+  Could not refute C4 for CI. scan_exemption_issue_state skips local/non-real-root runs, but CI sets GITHUB_ACTIONS, GITHUB_TOKEN, and GITHUB_REPOSITORY;
+  network/API failures append findings. Issues #991 and #1179 are open.
+
+  Could not refute C5 as inferred: the blanket sink escape is guarded by the negative test at
+  test_shared_policy_does_not_blanket_impl_raw_sink_for_every_strategy.
+
+  C6 verified as above: 77 deleted basenames checked; only intentional negative-test hits.
+
+  C7 verified. RUN_FENCES_SOURCE_SHA256 equals sha256(scripts/run_fences.py): 76545cf5591be92a9aedac673ee1d10a6ec022f687605f243da801d07fe5b7f0. run_fences.py
+  --fences-only and test_lane_governor.py pass. #1309/#1310 strengthened deleted fences; those losses are now explicit in #1318.
+
+  C8: current live behavior claim holds, except “src/ byte-identical” is literally false because src/bolt_v3_requote_budget.rs has comment-only changes.
+  config/, root Cargo.toml, and root Cargo.lock are byte-identical to main. Probability and UsableMu are compiler-owned by private fields/constructors;
+  UsableMu::new is module-private, not pub(crate). crates/ remains off the root live path: root has no workspace/path dependency; the subcrate depends on root,
+  not the reverse.
+
+  Verification run locally: restored fence tests, boundary fence, run_fences.py --fences-only, test_lane_governor.py, CI workflow hygiene verifier/tests.
+  Remote PR checks are green at exact head.
+
+---
+
+what's next?
+
+---
+
+explain in plain english-  i don't understand - make this concise
+
+---
+
+give me a prompt for adverserial review by codex
+
+---
+
+<task-notification>
+<task-id>bk3m4mza0</task-id>
+<tool-use-id>toolu_019vqDmLzbQvSPMTC66oHGMu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/dca29518-fa99-4628-826b-1fb630035bd9/tasks/bk3m4mza0.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI at new head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+GLM:Worktree clean, all probes restored. Here is the Round 3 report.
+Round 3 Adversarial Review — PR #1312 @ 96c5a9bfb
+(a) CHANGES LIVE TRADING BEHAVIOR
+No finding. Zero live-behavior changes at this head.
+- src/ diff vs main = 6 lines of doc-comment text in bolt_v3_requote_budget.rs (comments rewritten from false ownership claim to honest "by convention"). Zero executable code changed.
+- config/ diff = zero.
+- crates/ unchanged (off live path).
+(b) REMOVES A FUTURE-REGRESSION DETECTOR
+F1 — Medium. Strategy policy fence: compilable evasion chain via msgbus().send()
+Anchor: scripts/verify_bolt_v3_strategy_policy_fence.py:55-103 (NT_VENUE_MUTATION_METHOD_NAMES), :153-163 (RAW_MSGBUS_NT_VENUE_MUTATION_RULE lookbehind (?<![A-Za-z0-9_:])).
+Evidence (executed):
+Injection of 9 vectors into src/strategies/binary_oracle_edge_taker/orders.rs — 6 caught, 3 evaded:
+Vector
+self.submit_order(cmd)
+Strategy::submit_order(cmd)
+<Self as Strategy>::submit_order(cmd)
+send_trading_command(cmd)
+path::send_trading_command(cmd)
+TradingCommand::SubmitOrder(cmd) (bare)
+submit_order(cmd) (bare free-function)
+<Self as Trait<T>>::submit_order(cmd)
+path::TradingCommand::SubmitOrder(cmd)
+The fully-qualified TradingCommand evasion is compilable-plausible — a developer can write nautilus_trader::model::TradingCommand::SubmitOrder(cmd) without a use import. Constructing the command alone doesn't mutate, but the deeper evasion chain does:
+self.msgbus(0).send(path::TradingCommand::SubmitOrder(cmd), None, None, false);
+Verified by regex test: msgbus is NOT in any banned list (NT_VENUE_MUTATION_METHOD_NAMES, BARE_NAMES, or SURFACE_NAMES). send is not banned. path::TradingCommand evades RAW. This entire line evades all rules.
+Mitigating factor: The fence docstring (line 6-8) explicitly states: "It is a CI guardrail for reviewed source, not a complete firewall over every public NautilusTrader transport API." The gap is partially by-design. The msgbus/send tokens could be added to the detection set in a follow-up; the regex limitation on nested > and ::-preceded paths is structural.
+F2 — Low. Rule 5 pure-Rust-runtime static enforcement stays homeless (T5)
+Anchor: src/main.rs:717 (std::process::Command::new(current_exe)) — #1310's subprocess precedent.
+Evidence (executed):
+- just deny passes (exit 0) with current deny.toml. Both name= and crate= schemas work (verified by banning tokio → "bans FAILED").
+- But cargo-deny bans crates, not stdlib APIs. std::process::Command is stdlib — unbannable via cargo-deny. tokio (which provides tokio::process::Command) is the async runtime — banning it entirely is not viable.
+- No failure scenario reachable without a source diff. std::process::Command requires Rust source code. Downgrade from Medium (Round 2) to Low confirmed.
+- The deleted verify_bolt_v3_pure_rust_runtime.py was the only source-level scanner. Nothing replaces it. Human review is the sole remaining guard.
+F3 — Low. RequoteBudget construction bypass — no production bypass exists today (T6)
+Anchor: src/bolt_v3_requote_budget.rs:26 (pub(crate) fn new), :162 (pub(crate) fn new), :247 (#[cfg(test)] mod tests).
+Evidence (executed):
+- ALL 18 direct RequoteBudget::new(...) calls are in #[cfg(test)] mod tests (line 247+).
+- The bridge build_requote_budget_pair at src/bolt_v3_maker_rate_budget.rs:45 is the sole production construction path.
+- No surviving fence checks for direct construction bypass (confirmed: grep of all verify_*.py for "RequoteBudget" returns zero hits among surviving fences).
+- A probe adding RequoteBudget::new(100, 60000, 0) to a production file would compile (pub(crate) access) and no check would catch it.
+- Severity: Low — agrees with GLM Round 2. Kimi's "strongest finding" and GPT's "HIGH" are overstated: no production bypass exists today, maker is not live, bridge is intact. Future-regression risk only.
+F4 — Low. Fourth trigger class dropped: external AI model provider lineup (T4)
+Anchor: Deleted scripts/verify_ai_review_model_freshness.py + .github/workflows/ai-review-model-freshness.yml.
+The deleted fence queried external provider APIs (Kimi docs, GLM docs, Claude docs) to detect model deprecation/renaming. Trigger class: external AI model provider state — distinct from the three Claude identified (NT vendor capability, calendar, GitHub issue state). Deliberately dropped: 10 [model_freshness] config keys removed, workflow deleted, notice_marker_template kept but no surviving workflow invokes periodic checks. Operational impact only (AI review failures), not live trading.
+F5 — Low. Self-check verifies a copy, not the discovery path (T7)
+Anchor: scripts/verify_bolt_v3_boundary_evidence.py:629-634 (scan_static_wiring).
+Evidence (executed):
+- Renamed fence to verify_ci_bolt_v3_boundary_evidence.py (excluded prefix).
+- run_fences.py no longer discovers it (verified: discover_fence_paths excludes verify_ci_ prefix).
+- The fence's own scan_static_wiring self-check still PASSES (exit 0) — it checks for "python3 scripts/verify_bolt_v3_boundary_evidence.py" in the justfile, which still exists.
+- test_run_fences.py does NOT catch it (exit 0).
+- test_lane_governor.py CATCHES it: AssertionError: cheap lane script labels must exist: ['verify_bolt_v3_boundary_evidence.py'] — independent coverage via cheap_lane_labels validation.
+Gap exists in the self-check but is independently caught.
+T-Section Results
+Section    Result    Key Evidence
+T1    Could NOT refute    10 removed keys have zero consumers. Only [model_freshness] consumer reads notice_marker_template (line 2046). notice-env for all 3 providers: exit 0.
+T2    Could NOT refute    git diff-tree --cc 96c5a9bfb = 1 line (empty combined diff). Strategy fence on merged subscriptions.rs: exit 0.
+T3a    Could NOT refute    Past expiry → exit 1 + 2 FAILs. Revert → exit 0 + OK.
+T3b    Partially refuted    6/9 caught. 3 evaded (F1). msgbus().send() + fully-qualified TC = compilable evasion chain.
+T3c    Could NOT refute    market_exit inject → exit 1 + FAIL. Revert → exit 0 + OK.
+T4    Found    Fourth trigger: external AI model provider lineup changes (F4).
+T5    Downgraded    cargo-deny can't ban stdlib. No sourceless exploit. R1 → Low (F2).
+T6    Settled    Zero production bypass today. All RequoteBudget::new calls in test code. Low (F3).
+T7    Gap confirmed    Self-check passes after rename. test_lane_governor.py independently catches (F5).
+T8    0 active dangling    77 basenames swept. 16 hits: 1 intentional regression test, 1 historical plan ref, 14 frozen source-proof JSONs.
+T9    5/7 confirmed locally    SHA256 matches 76545cf5…b7f0. test_verifier_io.py, verify_fail_closed_contracts.py, test_lane_governor.py, run_fences.py (50 OK): all exit 0. ci-lint-workflow and test_verify_ci_workflow_hygiene.py hang locally (subprocess dependency on CI tooling); CI green at head.
+Bottom Line
+No live-behavior changes. The one Medium finding (F1: msgbus().send() evasion chain) is a detection-set gap in a fence that explicitly disclaims completeness — it's real and compilable, but the docstring acknowledges it. Everything else is Low: future-regression detector removals where the typing system, human review, or an independent test (test_lane_governor.py) provides residual coverage. The three-way disagreement on T6 is settled: GLM's Low is correct — no production bypass exists today, maker is not live, Kimi/GPT overstated the severity.
+Claims that survived attack: T1 (zero consumers), T2 (clean merge), T3a (expiry works), T3c (market_exit works), T8 (zero active dangling).
+Kimi: Round‑3 adversarial review, settled by execution at PR head 96c5a9bfb (detached, clean worktree verified).
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Scope & method
+
+   • Checked out 96c5a9bfb because the worktree was actually on main (c66b68430), not on the PR head.
+   • Diff vs merge-base: 99 files = 77 D + 22 M, +54 / -32,714.
+   • Merge commit 96c5a9bfb combined-diff body is empty; the 4 files #1316 added are byte-identical to main → no PR-side resolution.
+   • Every probe was reverted; final git status --short is empty.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   (a) CHANGES LIVE TRADING BEHAVIOR
+
+   No finding. The PR only deletes scripts/workflows and trims ci/ai-review.toml. src/ and config/ are unchanged. No production code path was altered.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   (b) REMOVES A FUTURE-REGRESSION DETECTOR
+
+   F1. Strategy fence: fully-qualified TradingCommand::SubmitOrder evades the RAW surface rule — Medium-High (b)
+
+   Anchor: scripts/verify_bolt_v3_strategy_policy_fence.py:155-165 (RAW_MSGBUS_NT_VENUE_MUTATION_RULE)
+
+   The TradingCommand-surface rule uses a negative lookbehind that excludes ::
+
+   ```python
+     r"(?<![A-Za-z0-9_:])"
+     rf"(?:{NT_TRADING_COMMAND_SURFACE_PATTERN})"
+   ```
+
+   So messages::execution::TradingCommand::SubmitOrder is invisible to the fence, while the bare TradingCommand::SubmitOrder is caught.
+
+   Proof by execution:
+
+   ```text
+     === direct regex-function test ===
+     EVADES  | FQ TradingCommand      | fn f(){ let _ = messages::execution::TradingCommand::SubmitOrder; }
+     CAUGHT  | bare TradingCommand    | fn f(){ let _ = TradingCommand::SubmitOrder; }
+     CAUGHT  | control method         | fn f(){ self.submit_order(order); }
+     CAUGHT  | path-UFCS              | fn f(){ Strategy::submit_order(self, order); }
+     CAUGHT  | angle-UFCS simple      | fn f(){ <Self as Strategy>::submit_order(self, order); }
+   ```
+
+   On-disk confirmation with a probe file under src/strategies/binary_oracle_edge_taker/__t3b_probe.rs produced exactly one violation — line 2
+   (self.submit_order(order);). The FQ path on line 5 was not reported.
+
+   Failure scenario: A future strategy author references nautilus_trader::model::commands::TradingCommand::SubmitOrder by fully-qualified path to build/submit
+   a command. The fence stays green, so the change reaches code review without the policy gate firing.
+
+   The generic-trait UFCS <Self as Trait<T>>::submit_order(...) and bare free-function submit_order(...) also evade, but NT’s Strategy is non-generic and
+   submit_order is a method, so they are not exploitable against real NT.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   F2. scan_static_wiring verifies a copy, not actual fence discovery — Low-Medium (b)
+
+   Anchors:
+   • scripts/run_fences.py:29-33 (NON_STATIC_VERIFY_PREFIXES)
+   • scripts/run_fences.py:170-181 (discover_fence_paths)
+   • scripts/verify_bolt_v3_boundary_evidence.py:627-634 (scan_static_wiring)
+
+   run_fences discovers verifiers by globbing verify_*.py and skipping names that start with verify_ai_, verify_ci_, or verify_runtime_capture_yaml.
+   scan_static_wiring only checks that the justfile contains the literal string python3 scripts/verify_bolt_v3_boundary_evidence.py.
+
+   Proof by execution: Renamed verify_bolt_v3_boundary_evidence.py → verify_ci_bolt_v3_boundary_evidence.py.
+
+   ```text
+     === before rename ===
+     boundary_evidence in discovered: True   (9 fences)
+
+     === after rename ===
+     verify_ci_bolt_v3_boundary_evidence.py in discovered: False
+     verify_bolt_v3_boundary_evidence.py in discovered: False
+     discovered count: 8
+
+     === scan_static_wiring from renamed file ===
+     findings: []
+     PASS
+   ```
+
+   run_fences silently drops the renamed fence; the wiring self-check stays green because the justfile text is unchanged.
+
+   Mitigation: test_lane_governor.py does catch this (exit 1: cheap lane script labels must exist: ['verify_bolt_v3_boundary_evidence.py']), via
+   label→file-existence, not via scan_static_wiring. test_run_fences.py does not catch it (exit 0).
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   F3. Requote construction: deleted detector, pub(crate) is only a soft convention — Low (b)
+
+   Anchors:
+   • src/bolt_v3_requote_budget.rs:26 (pub(crate) fn new)
+   • src/bolt_v3_maker_rate_budget.rs:45 (build_requote_budget_pair)
+
+   Evidence: Production non-test grep for direct constructors:
+
+   ```text
+     src/bolt_v3_maker_rate_budget.rs:80-82  -> the config bridge (allowed)
+   ```
+
+   All other RequoteBudget::new / RequoteBudgetPair::new hits are inside #[cfg(test)] / mod tests blocks (src/bolt_v3_requote_budget.rs,
+   src/strategies/binary_oracle_maker/mod.rs, src/bolt_v3_maker_quote_control.rs, src/bolt_v3_maker_quote_set.rs).
+
+   Conclusion: No production bypass exists today. The type-system boundary is real but soft — any future src/ module can call RequoteBudget::new directly, and
+   the deleted verify_bolt_v3_requote_construction.py was the only regression detector. I attempted a compile probe; cargo check --lib timed out at 300s,
+   which is why the repo policy discourages local compile-heavy work. The green CI at this head is the actual compile proof.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   F4. Pure-Rust runtime detector: no no-source-diff scenario, and deny.toml cannot replace it — Low-Medium (b)
+
+   Anchors:
+   • src/main.rs:713-726 (run_reference_current_price_health_subprocess uses std::process::Command)
+   • deny.toml:37-40 ([bans] with no deny = [...] list)
+   • scripts/verify_bolt_v3_pure_rust_runtime.py — deleted by this PR
+
+   just deny passes:
+
+   ```text
+     bans ok
+   ```
+
+   I tested temp configs against the installed cargo-deny:
+
+   ```text
+     === ban 'paste' with { name = ... } ===
+     error[banned]: crate 'paste = 1.0.15' is explicitly banned
+     bans FAILED
+
+     === ban 'paste' with { crate = ... } ===
+     error[banned]: crate 'paste = 1.0.15' is explicitly banned
+     bans FAILED
+   ```
+
+   So both { name = } and { crate = } are accepted schemas. But [bans] only denies crate dependencies, not source constructs. It cannot ban
+   std::process::Command or tokio::process, because those live in std/needed crates. Therefore deny.toml is not a valid home for the deleted fence.
+
+   No concrete failure scenario is reachable without a source diff. The existing run_reference_current_price_health_subprocess is intentional and already
+   present. The deletion removes a future-regression detector.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   F5. Claude’s trigger-class rule is incomplete — Low-Medium (b)
+
+   Claim: A fence should be kept only if its trigger is vendor capability, calendar, or external system state.
+
+   Fourth trigger class found: data-driven / ledger-state triggers.
+
+   Deleted file header evidence:
+
+   ```text
+     === scripts/verify_bte_022_pmxt_coverage_ledger.py ===
+     """Verify BTE-022 PMXT coverage-ledger status stays fail-closed."""
+     ...
+     PMXT_COVERAGE_STATUS = REFERENCE_ROOT / "source-proof-pmxt-coverage-ledger-status.2026-06-09.json"
+   ```
+
+   ```text
+     === scripts/verify_bte_022_pmxt_storage_proof.py ===
+     """Fail-closed guard for BTE-022 PMXT artifact-root storage proof."""
+     ...
+     PMXT_STORAGE_STATUS = REFERENCE_ROOT / "source-proof-pmxt-storage-proof-status.2026-06-17.json"
+   ```
+
+   These fences fire when JSON status/ledger files under specs/.../reference/ change because of backfill or data-pipeline output, not because of vendor
+   capability, calendar, or external system state.
+
+   Fifth trigger class found: source/dependency topology drift.
+
+   ```text
+     === scripts/verify_bolt_v3_dependency_direction.py ===
+     """Verify Bolt-v3 one-way dependency direction."""
+     ...
+     requires a one-way dependency: the strategy may use shared ... modules, but those shared/family modules must NEVER reference the strategy layer
+   ```
+
+   This fence fires when source imports change direction, i.e., when the code dependency graph drifts — again outside Claude’s three classes.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   T1–T9 claims I could NOT refute
+
+   ┌────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ Item                                   │ Result                                                                                                         │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T1 — 10 removed [model_freshness] keys │ Survived. 0 surviving refs; notice-env for glm/kimi/claude exits 0 with non-empty markers.                     │
+   │ unconsumed                             │                                                                                                                │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T2 — merge 96c5a9bfb is clean          │ Survived. Combined-diff body empty; #1316 files byte-identical to main.                                        │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T3a — boundary evidence expiry is      │ Survived. Past expires_on → exit 1; restored → exit 0.                                                         │
+   │ fail-closed                            │                                                                                                                │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T3c — market_exit injection fails      │ Survived. Injection → exit 1; restored → exit 0.                                                               │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T3b — Strategy::submit_order and <Self │ Survived. Both caught by execution.                                                                            │
+   │ as Strategy>::submit_order caught      │                                                                                                                │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T5 — just deny passes; [bans] schema   │ Survived. Both work, but neither implements a source-level std::process::Command ban.                          │
+   │ accepts both name/crate                │                                                                                                                │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T8 — no dangling references            │ Survived. 77 deletions swept; 8 hits all for the deleted .github/workflows/ai-review-model-freshness.yml, all  │
+   │                                        │ intentional negative assertions or stale marker strings.                                                       │
+   ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ T9 — gates green, SHA constant matches │ Survived. run_fences.py, test_verifier_io.py, verify_fail_closed_contracts.py, test_lane_governor.py,          │
+   │                                        │ test_verify_ci_workflow_hygiene.py, just ci-lint-workflow all pass. RUN_FENCES_SOURCE_SHA256 =                 │
+   │                                        │ sha256(scripts/run_fences.py) = 76545cf5591be92a9aedac673ee1d10a6ec022f687605f243da801d07fe5b7f0.              │
+   └────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Summary
+
+   • (a) live trading behavior: none.
+   • (b) future-regression detectors: five findings, ranked above.
+   • The strongest concrete attack is F1 (FQ TradingCommand evasion); the most policy-significant is F5 (the trigger-class rule is incomplete).
+   • Worktree left clean at PR head 96c5a9bfb43d1bab983edb41ba3706c9ebea7a4b.
+GPT:  Result
+
+  At exact head 96c5a9bfb43d1bab983edb41ba3706c9ebea7a4b, I found no current live-trading behavior change. I found future-regression detector gaps.
+
+  Final state:
+
+  git rev-parse HEAD
+  96c5a9bfb43d1bab983edb41ba3706c9ebea7a4b
+
+  git status --short
+  <empty>
+
+  The worktree is detached at the requested SHA. A local branch commit appeared during review (e8f556f8b, .githooks/post-rewrite only); I did not create it and
+  did not delete it.
+
+  Findings
+
+  1. HIGH, removes a future-regression detector: restored strategy fence is evadable
+     Anchor: scripts/verify_bolt_v3_strategy_policy_fence.py:142 DIRECT_NT_VENUE_MUTATION_RULE, scripts/verify_bolt_v3_strategy_policy_fence.py:153
+     RAW_MSGBUS_NT_VENUE_MUTATION_RULE.
+
+     Failure scenario: a future strategy diff constructs a raw NT TradingCommand::SubmitOrder through a fully-qualified path, or uses a generic-trait UFCS
+     shape, and bypasses the shared execution/admission policy. I proved this is compile-plausible and the fence misses it.
+
+     Evidence:
+
+     <Self as Trait<T>>::submit_order(self, todo!())
+     python3.12 scripts/verify_bolt_v3_strategy_policy_fence.py
+     OK: Bolt-v3 strategy policy fence passed.
+
+     nautilus_common::messages::execution::TradingCommand::SubmitOrder(todo!())
+     python3.12 scripts/verify_bolt_v3_strategy_policy_fence.py
+     OK: Bolt-v3 strategy policy fence passed.
+
+     BOLT_ALLOW_LOCAL_RUST=1 cargo check --locked --lib
+     Finished `dev` profile ... target(s) in 1m 39s
+
+     The positive controls worked:
+
+     Strategy::submit_order(...) -> FAIL
+     <Self as Strategy>::submit_order(...) -> FAIL
+     send_trading_command(...) -> FAIL
+     strategy.market_exit(...) -> FAIL
+
+  2. MEDIUM, removes a future-regression detector: deleted requote-construction fence left a same-crate bypass
+     Anchor: src/bolt_v3_requote_budget.rs:154 RequoteBudgetPair::new, src/bolt_v3_maker_rate_budget.rs:45 build_requote_budget_pair.
+
+     Current production has no non-test bypass today. But a future production call can construct RequoteBudgetPair directly from variables, bypassing the
+     config bridge’s fail-closed checks for malformed submit-rate strings, zero min_interval_ms, and REST caps below cancel+resubmit cost.
+
+     Evidence:
+
+     # literal probe
+     BOLT_ALLOW_LOCAL_RUST=1 cargo check --locked --lib
+     Finished `dev` profile ...
+
+     python3.12 scripts/run_fences.py --fences-only
+     FAIL: unclassified Bolt-v3 production literal ... RequoteBudget::new(1, 60_000, 500)
+
+     Then the non-literal direct-constructor probe:
+
+     BOLT_ALLOW_LOCAL_RUST=1 cargo check --locked --lib
+     Finished `dev` profile ...
+
+     python3.12 scripts/run_fences.py --fences-only
+     OK: verify_bolt_v3_runtime_literals.py
+     OK: verify_bolt_v3_strategy_policy_fence.py
+     ...
+     OK: all governed lane entry points acquire the lane lock.
+
+  3. LOW, removes/weakens a detector: boundary evidence self-check verifies a copy, not discovery
+     Anchor: scripts/verify_bolt_v3_boundary_evidence.py:627 scan_static_wiring, scripts/run_fences.py:29 NON_STATIC_VERIFY_PREFIXES.
+
+     Failure scenario: rename the boundary fence to an excluded verify_runtime_capture_yaml... prefix. run_fences.discover_fence_paths() skips it, while
+     scan_static_wiring() still reports no findings. Full test_lane_governor.py catches the missing cheap-lane file, so this is not a merge-gate hole in the
+     full run, but the self-check itself lies.
+
+     Evidence:
+
+     is_static_renamed= False
+     original_in_discovery= False
+     renamed_in_discovery= False
+     boundary_entries= []
+
+     scan_static_wiring_findings= []
+
+     python3.12 scripts/test_run_fences.py
+     OK: run_fences self-tests passed.
+
+     python3.12 scripts/test_lane_governor.py
+     AssertionError: cheap lane script labels must exist: ['verify_bolt_v3_boundary_evidence.py']
+
+  4. LOW, non-trading governance detector removed: scheduled model-freshness trigger
+     Anchor: deleted .github/workflows/ai-review-model-freshness.yml:on.schedule from base.
+
+     This refutes Claude’s trigger taxonomy. It is a fourth trigger class: scheduled/time-based external model-doc drift, not vendor capability/calendar/live
+     state. It does not affect live trading.
+
+     Evidence:
+
+     name: AI review model freshness
+     on:
+       workflow_dispatch:
+       schedule:
+         - cron: "17 8 * * 1"
+     ...
+     python3 scripts/verify_ai_review_model_freshness.py --live --advisory --github-notice
+
+  No Finding / Could Not Refute
+
+  - T1: no consumer break from removed [model_freshness] keys. Exercised workflow invocations with fake GitHub client:
+
+    notice-env-glm: rc=0
+    notice-env-kimi: rc=0
+    notice-env-claude: rc=0
+    glm-stamp: rc=0
+    glm-fallback: rc=0
+    kimi-fallback: rc=0
+    kimi-review: rc=0
+    claude-deliverable: rc=0
+    PR-authored delta since older review SHA:
+
+    commit=dba3470bed...
+    subject=chore(ci): drop dead model_freshness config keys after verifier deletion
+    M ci/ai-review.toml
+    M ci/ai-review.toml
+
+  - T2: merge has empty combined diff; strategy fence passes on merged source.
+
+    commit=96c5a9bf...
+    parents=dba3470bed... c66b68430...
+    subject=Merge branch 'main' into chore/scripts-teardown-wave1
+
+    git diff-tree --cc --name-status HEAD
+    96c5a9bfb43d1bab983edb41ba3706c9ebea7a4b
+
+    python3.12 scripts/verify_bolt_v3_strategy_policy_fence.py
+    OK: Bolt-v3 strategy policy fence passed.
+
+  - T5: pure-Rust-runtime deletion is downgraded. I could not construct a source-diff-free failure scenario. Current std::process::Command is src/main.rs:713
+    run_reference_current_price_health_subprocess, which launches the current executable. deny.toml [bans] schema works for both { name = "libc" } and { crate
+    = "libc" } against pinned cargo-deny; both failed as active bans, restored just deny passed. deny.toml does not replace a source-level
+    std::process::Command fence.
+
+  - T8: dangling sweep checked all 77 deleted basenames across scripts/ ci/ justfile .github/ src/ crates/ tests/. Only hit:
+
+    scripts/test_verify_ci_workflow_hygiene.py:3869: "ai-review-model-freshness.yml"
+    scripts/test_verify_ci_workflow_hygiene.py:3870: ".github/workflows/ai-review-model-freshness.yml"
+
+    That is an intentional negative assertion that the deleted workflow is unmapped.
+
+  - T9: exact-head gates passed:
+
+    python3.12 scripts/run_fences.py
+    OK: run_fences self-tests passed.
+    OK: verifier_io self-tests passed.
+
+    just ci-lint-workflow
+    OK: 33 ci-lint suite(s) passed.
+    OK: No raw cargo workflow commands or explicit Rust-wrapper bypasses found
+
+    python3.12 scripts/test_verifier_io.py
+    OK: verifier_io self-tests passed.
+
+    python3.12 scripts/verify_fail_closed_contracts.py
+    OK: fail-closed contract verifier passed.
+
+    python3.12 scripts/test_lane_governor.py
+    OK: lane governor self-tests passed.
+
+    python3.12 scripts/test_verify_ci_workflow_hygiene.py
+    OK: CI workflow hygiene verifier self-tests passed.
+
+    RUN_FENCES_SOURCE_SHA256 match= True
+
+---
+
+so explain the situation - explain in concise manner
+
+---
+
+1312 merged
+
+---
+
+ok let's proceed
+
+---
+
+yes - but do not waste Fable 5, given that its quite expensive - use it sparingly. give me the prompt first
+
+---
+
+ok - proceed. again I'm not the best engineer, so you should make the best judgment - for sanity check, i sent the same prompt for kimi and glm. let's compare. 
+
+generate the execution handoff prompt for codex as well (for another task)
+
+---
+
+<task-notification>
+<task-id>a2c976d414439d64f</task-id>
+<tool-use-id>toolu_014QEP38NViJsPbrf7xKoPfN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/dca29518-fa99-4628-826b-1fb630035bd9/tasks/a2c976d414439d64f.output</output-file>
+<status>failed</status>
+<summary>Agent "Classify runtime-literal registry" failed: Agent terminated early due to an API error: API Error: Server error mid-response. The response above may be incomplete.</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Now let me read through this evidence file in batches to make per-category judgment calls.</result>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2890c764bc5f974b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/dca29518-fa99-4628-826b-1fb630035bd9/tasks/a2890c764bc5f974b.output</output-file>
+<status>completed</status>
+<summary>Agent "Classify runtime-literal registry" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary
+
+Classified all 589 registry categories (2,604 rows) from `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml` against `scripts/verify_bolt_v3_runtime_literals.py`. TSV written to `/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/dca29518-fa99-4628-826b-1fb630035bd9/scratchpad/wave2-registry-classification.tsv` (589 data rows + header, verified row-count sum = 2,604). No source files changed. Local checkout is on `fix/704-evict-backfill-completion-ledgers`; I read all cited source at `origin/main` (`43d15eac3`) via `git show origin/main:&lt;path&gt;`, never switching branches.
+
+### STEP 1 — mechanism (`scripts/verify_bolt_v3_runtime_literals.py`)
+
+- **Scans**: every `src/**/*.rs` (`SCAN_GLOBS`), via a hand-rolled char-by-char Rust lexer (`scan_file`) over `production_source_text(path.read_text(...))` — that helper (imported from `verify_bolt_v3_provider_leaks.production_text`, line ~908) strips comments and **`#[cfg(test)]` modules before scanning**, so test-only code is invisible to the fence entirely.
+- **Skips by rule** (`is_ignored_by_rule`, line 517): literals inside `log::*/tracing::*/format!/panic!/anyhow!/expect/debug_struct/PathBuf::from/...` call or line contexts (`IGNORED_CONTEXT_PATTERNS`/`IGNORED_CALL_CONTEXT_PATTERNS`); string literals starting `"nautilus."`/`"risk."` or ending `"_ssm_path"`; literals whose lowercased words intersect `DIAGNOSTIC_WORDS` (error/invalid/missing/required/…); literals containing `" not "`; trivial unit strings (`""`,`"s"`,`"hours"`…); and `0`/`1` inside `if`/`match`. This filter is **keyword-based, not structural** — it misses plenty of diagnostic templates that don't happen to contain one of those 18 words or sit in one of those macro calls, which is exactly why 121 categories / 329 rows still land in my bucket C (diagnostic/log/CLI/test text the filter let through).
+- **`key()` tuple** = `(path, kind, literal, context)` where `context = line_context(text, line)` is the **entire stripped source line**. Any edit to that line — a rename elsewhere on the line, reflow, a new trailing comment — changes `context`, which changes the key, which simultaneously makes the old row `stale` (line 578: `allowed - {scanned keys}`) and the literal `unclassified` (line 577: `scanned - allowed`) even though nothing about the literal's *meaning* changed. That's the staleness cascade: line-level, not literal-level, keying.
+- **Special-cased classification**: `provider_credential_log_module` (`load_allowed`, lines 134–141) — the loader raises `ValueError` if a row with this classification doesn't have `path` under `src/bolt_v3_providers/` and isn't `mod.rs`. It is the *only* classification with a structural (non-free-text) ownership check in code.
+- **Other surviving enforcement**: none found. `scripts/` at `origin/main` has no `verify_bolt_v3_no_venue_name_branch`-equivalent; this fence is confirmed the sole enforcer of "no hardcoded venue name in a behavior branch."
+
+### STEP 4 — collapse proof
+
+| Bucket | Categories | Rows | % of 2,604 |
+|---|---|---|---|
+| A (invariant) | 106 | 575 | 22.1% |
+| B (schema-identifier) | 362 | 1,700 | 65.3% |
+| C (diagnostic/log/test) | 121 | 329 | 12.6% |
+| **B+C (removable tax)** | 483 | **2,029** | **77.9%** |
+
+Spot-verified against `origin/main` source (not just samples): `src/bolt_v3_iv/capability.rs` confirms `iv_capability_discovery_literal` (85 rows, largest A category) is `REQUIRED_CANDIDATE_SWEEP_TERMS`, a fixed grep-term array used to discover NT's IV/option surface — a genuine drift-detection invariant, not copy-tax. `src/bolt_v3_outcome_groups.rs` confirms `outcome_group_model_evidence_schema_label` (138 rows, largest B category) is purely a field-path string passed to `validate_sha256_field(label, value)` for error-message context — nothing external depends on the spelling.
+
+### STEP 3 — boundary mechanisms, grouped by pattern (106 A categories / 575 rows)
+
+| Pattern | Categories / rows | Boundary mechanism |
+|---|---|---|
+| NT-pin verification (symbols/keys/patterns that must match the pinned NautilusTrader source) | 18 / 189 | A dedicated `#[test]` NT-pin fence asserting the exact upstream symbol/key/pattern exists in the pinned NT source or `Cargo.lock` — outside this ledger entirely |
+| Pricing/financial math (formula coefficients, unit/fee conversions) | 18 / 130 | Named `const` in `bolt_v3_numeric.rs` (already the pattern for some) + a golden-value regression test |
+| Secrets/credentials/redaction | 12 / 97 | `const` deny-list/allow-list in the owning security module + a targeted unit test |
+| Vendor wire-protocol constants (HMAC, EVM/ABI, ERC-20, JSON-RPC, Chainlink report decode, Polymarket/Hyperliquid REST) | 29 / 88 | One named `const`/struct per vendor adapter module (one seam per vendor) + a decode/round-trip test against a captured fixture |
+| Market identity (cadence↔slug mapping, outcome semantics) | 8 / 26 | Closed Rust enum/newtype, matched exhaustively — compiler enforces coverage |
+| Behavior-gating classifier needle | 1 / 14 | Small allow-list `const` slice + table-driven unit test |
+| Venue/provider dispatch keys | 3 / 10 | Closed enum keyed by venue, exhaustive match |
+| SHA/Git-SHA shape guards | 5 / 8 | Shared newtype (`Sha256Hex`/`GitSha`) validating shape once in its constructor |
+| Kill-switch/hash-domain separators | 5 / 6 | Single named domain-separator `const` + collision/uniqueness test |
+| Misc safety invariants (day-unit, flatten-fee-bypass, sequence-contiguity) | 6 / 6 | Single named `const`/enum in the owning safety module + targeted invariant test |
+| OS-protocol constant (EXDEV) | 1 / 1 | Named `const` in the owning module |
+
+None needed "no boundary home — needs a scoped fence": every surviving-A category maps to an existing or obvious single-owner Rust construct.
+
+### Differential picks (5 representative A categories — one literal whose removal *should* fail a rescoped fence)
+
+1. **`forbidden_environment_variable`** → `"BINANCE_API_KEY"` (`src/bolt_v3_providers/binance.rs`): drop it from a deny-list `const` and an operator could set that env var and have it silently accepted instead of rejected for SSM-only secrets.
+2. **`provider_dispatch_key`** → `"POLYMARKET"` (`src/bolt_v3_providers/polymarket.rs`): drop the enum arm and an exhaustive-match dispatch fence fails to compile / a dispatch test fails to route Polymarket clients.
+3. **`chainlink_report_protocol_decoder`** → `32` (ABI word width, `src/bolt_v3_providers/chainlink/report.rs`): change it and every subsequent ABI-word offset misaligns; a decode round-trip test against a captured report fixture would fail.
+4. **`reference_price_secret_redaction_guard`** → `"api_key"` (`src/bolt_v3_reference_price.rs`): drop it and a redaction unit test asserting no credential substring survives in emitted diagnostics would fail.
+5. **`pricing_formula_constant`** → `-0.356_563_8` (normal-CDF coefficient, `src/bolt_v3_market_families/updown.rs`): change it and a golden-value regression test comparing computed CDF output to a reference table would fail outside tolerance.
+
+Full per-category detail (name, row_count, bucket, justification anchored to the registry's own path/literal/reason, proposed_real_home) is in the TSV.</result>
+<usage><subagent_tokens>242998</subagent_tokens><tool_uses>25</tool_uses><duration_ms>935640</duration_ms></usage>
+</task-notification>
+
+---
+
+GLM:The TSV is complete. Here is the full investigation report.
+STEP 1 — Mechanism
+Script: scripts/verify_bolt_v3_runtime_literals.py (604 lines)
+What it scans
+- All src/**/*.rs files, after production_source_text() (imported from verify_bolt_v3_provider_leaks.py:900) strips comments and #[cfg(test)] mod tests regions.
+- String literals ("...", raw r#"..."#, byte b"...", byte-raw br#"..."#), char literals ('x'), number literals (int, float, hex, octal, binary, suffixed).
+- Two structural-context literals: Decimal::ZERO in max_fee_bps: context and false in submit_lifecycle_policy: context (STRUCTURAL_CONTEXT_LITERALS at :95).
+What it skips (is_ignored_by_rule, :517)
+1. Context-based skips (IGNORED_CONTEXT_PATTERNS, :52): serde attributes, write!/writeln!/eprintln!/log::*!/format!/panic!/anyhow!/bail!/expect!/debug_struct/debug_tuple/f.write_str/.field()/PathBuf::from/ok_or_else/map_err/source: format!/field: "/block: "/message: "/self.0/.len() == 1.
+2. Call-context skips (IGNORED_CALL_CONTEXT_PATTERNS, :78): any literal inside a log::*! or tracing::*! macro call.
+3. String content skips (:523-536): strings starting with nautilus. or risk., strings ending with _ssm_path, strings containing any DIAGNOSTIC_WORD (already, allowed, contains, declares, error, expected, exceeded, failed, forbidden, invalid, missing, must, requires, required, rejected, resolved, supported, unsupported, unknown), strings containing  not , trivial strings ("", "s", "hours", "minutes", "seconds").
+4. Exception: strings in SUBMIT_ADMISSION_STATUS_REJECTED context are NOT skipped (:527).
+5. Number skips (:537-539): 0 or 1 in if/match contexts.
+key() tuple and staleness cascade
+def key(self) -> tuple[str, str, str, str]:
+    return (self.path, self.kind, self.literal, self.context)
+context is the stripped source line (line_context(), :229). Any edit that changes the line text — renaming a variable, adding a trailing comment, reformatting whitespace — changes the context string, which changes the key. The old registry row becomes stale (stale = allowed - {scanned keys}, :578), and the fence fails with "stale Bolt-v3 runtime literal allowlist entry." This is why the registry cascades on every line edit near a literal.
+Special classification handling
+Only provider_credential_log_module is treated specially (:134-141): its path must start with src/bolt_v3_providers/ and must NOT be src/bolt_v3_providers/mod.rs. This enforces that credential log module names are owned by concrete provider modules.
+Surviving overlapping checks
+None. I checked all 5 other verify_bolt_v3_*.py scripts:
+- verify_bolt_v3_provider_leaks.py — checks NT venue-crate imports and match venue.kind patterns, NOT individual literals.
+- verify_bolt_v3_no_exit_market_command.py — checks for ExitMarket command wiring, not literals.
+- verify_bolt_v3_strategy_policy_fence.py — checks strategy-local hardcode-policy regressions, not a per-literal ledger.
+- verify_bolt_v3_poison_lock_fence.py — checks for poisoned.into_inner(), not literals.
+- verify_bolt_v3_boundary_evidence.py — checks provider boundary evidence wiring, not literals.
+The deleted verify_bolt_v3_no_venue_name_branch.py (deleted in 255aa1bf7) caught venue-name string-literal branches (== "polymarket", match arms) outside src/bolt_v3_providers/. The runtime-literals fence subsumes this only weakly: any venue-name literal in behavior code requires a registry row, but the fence does not pattern-match branch context — it is an allowlist, not a denylist. A new venue-name branch would be caught only if the reviewer rejects the new registry row.
+STEP 2 — Classification
+Written to scratchpad/wave2-registry-classification.tsv (590 lines: 1 header + 589 data rows).
+Summary counts:
+Bucket    Categories
+A (INVARIANT-BEARING)    82
+B (SCHEMA-IDENTIFIER)    186
+C (DIAGNOSTIC/LOG/TEST)    321
+B+C (removable tax)    507
+STEP 3 — Boundary homes for bucket-A categories
+The 82 A categories group into 7 boundary-home clusters:
+1. Const deny-list / allow-list array (single source of truth) — 5 categories, 79 rows
+- forbidden_environment_variable (24), provider_forbidden_env_var_name (25), provider_credential_log_module (9), reference_price_secret_redaction_guard (15), operator_text_safety_denylist (1)
+- Mechanism: Replace per-literal registry rows with a single const FORBIDDEN_ENV_VARS: &[&str] = &[...] per provider module. The fence would check that every element of the deny-list array is itself registered, not every individual literal usage. For provider_credential_log_module, the existing :134 path check already enforces ownership; the deny-list could be a const in each provider module.
+2. Named const in the defining module (already defined; fence checks the VALUE) — 28 categories, 79 rows
+- All mathematical constants (pricing_formula_constant, annualization_constant, basis_point_conversion_factor, fee_bps_unit_scale, financial_unit_conversion, bolt_v3_utc_day_unit, shared_numeric_math_invariant, strategy_math_invariant, algorithmic_constant, float_tolerance_multiplier, time_unit_conversion, unit_conversion_constant, base256_integer_conversion), file permissions (operator_artifact_file_permission, atomic_io_*), hash lengths (sha256_hex_*), validation bounds (market_identity_shape_bound, underlying_asset_length_bound, venue_contract_static_fee_bps_bound, venue_capability_constant, config_file_read_safety_limit, venue_contract_schema_version, static_binary_event_outcome_count, updown_binary_option_outcome_count), and sentinel values (kill_switch_store_invalid_sentinel, cross_filesystem_rename_errno, nt_order_model_invariant, config_validation_zero_rejection, hip4_settlement_poll_zero_rejection_sentinel, config_file_read_safety_sentinel).
+- Mechanism: These are already named const declarations. The fence cannot be replaced by the compiler — the compiler catches type errors, not value errors (365.25 vs 365.0 compiles fine). No boundary home — needs a scoped fence that checks the value of named consts, not per-usage literals. A possible approach: a const-table fence that scans const NAME: TYPE = VALUE; declarations and checks the VALUE against a much smaller allowlist of (path, const_name, value) tuples.
+3. Newtype with constructor validation — 8 categories, 21 rows
+- chainlink_feed_id_shape_guard (3), entry_decision_source_input_feed_id_shape (2), evm_address_syntax_gate (4), evm_address_encoding (1), evm_abi_word_encoding (5), evm_abi_selector_encoding (1), evm_abi_word_buffer_initialization (1), git_head_sha_shape_bound (1), git_sha_or_sha256_width_validation (1)
+- Mechanism: struct FeedId(String) with FeedId::parse() that validates 0x prefix + 66 chars; struct EvmAddress(String) with parse() validating 40 hex chars; struct Sha256Hex(String) with parse() validating 64 hex chars. The compiler enforces that unvalidated strings cannot enter these types. The fence would shrink to checking the newtype constructors, not every usage.
+4. Typed URL-scheme validation function — 6 categories, 24 rows
+- url_scheme_validation (2), url_scheme_validation_literal (15), websocket_url_scheme_protocol (2), url_authority_separator_protocol (1), url_syntax_guard (1), url_syntax_validation_literal (1)
+- Mechanism: A single fn validate_transport_url(url: &str, allowed_schemes: &[&str]) -> Result<()> with a const ALLOWED_SCHEMES: &[&str] = &["https"] per call site. The fence checks the ALLOWED_SCHEMES const, not every "https" literal.
+5. Named const for vendor protocol field names — 18 categories, 65 rows
+- chainlink_report_protocol_decoder (12), chainlink_report_protocol_layout (2), chainlink_protocol_constant (5), chainlink_data_streams_rest_protocol (3), chainlink_data_streams_auth_protocol (5), chainlink_data_streams_hmac_protocol (4), erc20_abi_signature (2), json_rpc_protocol_constant (4), json_rpc_protocol_field (4), http_protocol_header_name (2), http_protocol_media_type (2), hyperliquid_protocol_fee_field (1), hyperliquid_protocol_request_type (1), hyperliquid_protocol_request_weight (1), hyperliquid_protocol_rest_egress_cap (1), ethereum_hex_encoding (1), ethereum_rpc_call_field (1), evm_private_key_normalization_prefix (2)
+- Mechanism: Already named consts. Same as cluster 2 — no boundary home beyond the named const itself — needs a scoped fence for the VALUE. These must match an external vendor spec (Chainlink V3, Hyperliquid API, ERC-20 ABI, JSON-RPC 2.0, HTTP 1.1).
+6. Named const for NT API constants — 6 categories, 43 rows
+- nt_msgbus_subscription_pattern (15), nt_persistence_type_name (7), nt_persistence_metadata_key (1), nt_binary_option_metadata_key (5), nt_binary_option_outcome_value (2), nt_instrument_metadata_field (4)
+- Mechanism: Already named consts. Must match the pinned NT source. No boundary home — needs a scoped fence that verifies these consts against the pinned NT checkout (similar to iv_capability_discovery_literal but targeted).
+7. Cryptographic domain separators — 4 categories, 4 rows
+- config_bundle_checksum_domain_separator (1), kill_switch_halt_id_domain_separator (1), hyperliquid_signer_owner_hash_domain (1), hyperliquid_live_submit_signer_fingerprint_hash_domain (1)
+- Mechanism: Already named const byte slices. No boundary home — needs a scoped fence for the VALUE. A wrong domain separator is a forgeability bug.
+8. Provider API symbol pinning — 1 category, 14 rows
+- hyperliquid_nt_api_symbol (14)
+- Mechanism: These are NT API symbol paths used in readiness/proof evidence. No boundary home — needs a scoped fence that verifies these symbols exist in the pinned NT source.
+STEP 4 — Collapse proof
+Numbers
+- Total registry rows: 2,604
+- Bucket A (must survive): 82 categories, 281 rows (10.8%)
+- Bucket B+C (removable tax): 2,323 rows (89.2%)
+- Maximum achievable collapse: 2,604 → 281 rows (90% reduction)
+Surviving A categories (by row count, top 15)
+Category    Rows
+provider_forbidden_env_var_name    25
+forbidden_environment_variable    24
+nt_msgbus_subscription_pattern    15
+reference_price_secret_redaction_guard    15
+url_scheme_validation_literal    15
+hyperliquid_nt_api_symbol    14
+chainlink_report_protocol_decoder    12
+pricing_formula_constant    11
+provider_credential_log_module    9
+nt_persistence_type_name    7
+time_unit_conversion    6
+chainlink_data_streams_auth_protocol    5
+chainlink_protocol_constant    5
+evm_abi_word_encoding    5
+nt_binary_option_metadata_key    5
+Differential proof (representative examples)
+Removing any of these literals from a rescoped (A-only) registry would produce FAIL: unclassified Bolt-v3 production literal:
+Category    Concrete literal
+forbidden_environment_variable    "BINANCE_API_KEY"
+pricing_formula_constant    -0.356_563_8
+provider_credential_log_module    "nautilus_binance::common::credential"
+reference_price_secret_redaction_guard    "api-key "
+chainlink_report_protocol_decoder    3 (schema version)
+config_bundle_checksum_domain_separator    b"bolt-v3.config-bundle.v1\n"
+nt_msgbus_subscription_pattern    "data.book.deltas.*.*"
+operator_artifact_file_permission    0o600
+operator_text_safety_denylist    "\u{00ad}\u{034f}..."
+chainlink_data_streams_hmac_protocol    0x36 (HMAC ipad)
+Each of these is a real literal in production Rust source that the scanner would detect if it were removed from the registry. The fence's catch is real: it finds the literal at the exact (path, kind, literal, context) tuple and reports it as unclassified.
+Key finding
+The registry is 89% copy tax (B+C), but the remaining 11% (281 rows across 82 categories) is genuine invariant — the literal's VALUE decides security, pricing, protocol compatibility, or validation correctness, and no compiler or type system currently catches a wrong value. The tax comes from the key() tuple including context (the source line), which staleness-cascades on every nearby edit, and from documenting 2,323 schema identifiers and diagnostic strings that the Rust code already owns as its own source of truth.
+The collapse path is not "delete the fence" but "rescope it": drop B+C rows from the registry, narrow the scanner to skip schema-identifier and diagnostic contexts (or move to a const-value fence that checks named declarations rather than per-usage literals), and keep the 281 A-category rows (or their boundary-home replacements) as the surviving invariant ledger.
+Kimi: 
+ ● Wave-2 investigation complete. Read-only; changed only scratchpad/ work products.
+
+   Artifacts
+   • scratchpad/wave2-registry-classification.tsv — the STEP-2 table with all 589 categories.
+   • scratchpad/wave2-registry-summary.md — the full prose summary.
+   • Supporting dumps: scratchpad/registry_all_rows.tsv, scratchpad/registry_samples_per_category.tsv, scratchpad/wave2-batch-*.tsv.
+
+   STEP 1 — Mechanism
+
+   scripts/verify_bolt_v3_runtime_literals.py:311 scans src/**/*.rs after production_source_text() (verify_bolt_v3_provider_leaks.py:900) strips ////* */
+   comments and #[cfg(test)] gated items (inner #![cfg(test)] aborts the file).
+
+   It extracts string/char/number literals plus two structural context literals at :95-106: Decimal::ZERO in max_fee_bps: Decimal::ZERO and false in
+   submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false).
+
+   Skips: log::*/tracing::*, write!/writeln!/eprintln!/format!/panic!/anyhow!/expect/debug_*, PathBuf::from, ok_or_else, map_err,
+   source:/field:/block:/message: labels, self.0, len() comparisons, strings starting with nautilus./risk. or ending with _ssm_path, strings containing
+   diagnostic words (:30-50) or " not ", numbers 0/1 in if/match, and units "s"/"hours"/"minutes"/"seconds".
+
+   Literal.key() at :118-119 is (path, kind, literal, context). context is the entire stripped source line, so any line edit changes the key and
+   stale-cascades the registry row.
+
+   Special code rule: provider_credential_log_module at :134-141 must live in a concrete src/bolt_v3_providers/<module>.rs (not mod.rs).
+
+   No other surviving fence reproduces the per-literal ledger or the absorbed "no hardcoded venue name in behavior" check; verify_bolt_v3_provider_leaks.py
+   still enforces the provider boundary.
+
+   STEP 2 — Classification
+
+   All 589 categories classified into A/B/C in scratchpad/wave2-registry-classification.tsv.
+
+   STEP 3 — Boundary-home patterns for A categories
+
+   A categories collapse into a handful of patterns:
+   • Single named const — annualization_constant, basis_point_conversion_factor, time_unit_conversion.
+   • Const deny-list — forbidden_environment_variable, provider_forbidden_env_var_name.
+   • Enum + as_str() / serde rename — provider_adapter_registry_key, polymarket_signature_type_label, websocket_url_scheme_protocol,
+     url_scheme_validation_literal.
+   • Newtype / shape type — sha256_hex_digest_length_guard, chainlink_feed_id_shape_guard, evm_address_encoding.
+   • Const schema version — schema_version, schema_version_gate, operator_artifact_schema_version, decision_evidence_schema_contract.
+   • Single allow-list constant — kill_switch_cancel_surface_config_token, runtime_contract_cadence_slug_mapping, reference_price_secret_redaction_guard.
+   • No clean boundary — needs scoped fence — mixed provider-wire contracts like chainlink_reference_provider_contract,
+     polyresearch_reference_provider_contract, reference_price_data_contract, iv_helper_contract_literal, and classifier needles like
+     strategy_entry_reject_reason_classifier_needle.
+
+   STEP 4 — Collapse proof
+
+   ┌─────────────────────────────┬────────────┬───────┬────────────┐
+   │ Bucket                      │ Categories │ Rows  │ % of 2,604 │
+   ├─────────────────────────────┼────────────┼───────┼────────────┤
+   │ A — must survive            │ 163        │ 508   │ 19.5%      │
+   ├─────────────────────────────┼────────────┼───────┼────────────┤
+   │ B — schema-identifier tax   │ 210        │ 1,475 │ 56.6%      │
+   ├─────────────────────────────┼────────────┼───────┼────────────┤
+   │ C — diagnostic/log/test tax │ 216        │ 621   │ 23.8%      │
+   ├─────────────────────────────┼────────────┼───────┼────────────┤
+   │ B + C removable             │ 426        │ 2,096 │ 80.5%      │
+   └─────────────────────────────┴────────────┴───────┴────────────┘
+
+   Largest surviving A categories:
+   • reference_price_data_contract (36)
+   • chainlink_reference_provider_contract (32)
+   • provider_forbidden_env_var_name (25)
+   • forbidden_environment_variable (24)
+   • polyresearch_reference_provider_contract (24)
+   • iv_helper_contract_literal (20)
+   • nt_msgbus_subscription_pattern (15)
+   • reference_price_secret_redaction_guard (15)
+   • url_scheme_validation_literal (15)
+   • strategy_entry_reject_reason_classifier_needle (14)
+
+   Differential examples that prove the rescoped catch is real (each row is in the TSV with expected failure):
+   • provider_forbidden_env_var_name — "HYPERLIQUID_API_KEY" removed → unclassified literal in the env-var deny-list.
+   • reference_price_secret_redaction_guard — "api_key" removed → credential header leaks in diagnostics.
+   • pricing_formula_constant — 2.0 removed → unclassified literal in updown fair-value math.
+   • runtime_contract_cadence_slug_mapping — "1d" removed → cadence-to-slug mapping fails.
+   • strategy_entry_reject_reason_classifier_needle — "Duplicate order" removed → reject-text classifier misses a fail-closed resubmission case.
+
+   Conclusion: ~80% of the registry is removable schema/diagnostic tax once the fence is narrowed to genuine invariants; the remaining ~20% are real A
+   invariants, and roughly half of those could move to typed consts/enums/newtypes rather than per-literal ledger rows.
+
+---
+
+give me an adjudicate & research request prompt for gpt
+
+---
+
+Reviewed the exact clean checkout at 43d15eac3cb9878b28d97b425b64fffd1459b1ad. The registry verifier passes. No claims below are unverified against
+  repository source; external provider documentation was not independently consulted.
+
+  ## 1. Disputed-band adjudication
+
+  Rule: keep A only when changing the literal, without changing surrounding code, changes wire compatibility, numerical output, dispatch, security validation,
+  retry/admission state, or fail-closed evidence acceptance. Drop B when Rust owns both sides of an identifier/label or the compiler owns the structure.
+  Behaviorally inert needles also drop.
+
+   Family                A    B/drop    Verdict and source
+  ━━━━━━━━━━━━━━━━━━  ━━━━━  ━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   reference_price_      3        33    Keep 0.0 positivity, pairwise skip(index + 1), and 10_000.0 bps scaling: wrong values accept invalid prices, miss
+   data_contract                        drift comparisons, or miscompute drift. The type/metadata/status strings are Rust-owned through src/
+                                        bolt_v3_reference_price.rs:201 and src/bolt_v3_reference_price.rs:364; validation labels and test-reason text drop.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   chainlink_refere     15        17    Keep KEY, chainlink_ws, feedIDs, comma joining, path //// checks, wss, unlimited, reconnect zero/reset/increment
+   nce_provider_con                     values, and backoff 0.0. Wrong values break provider dispatch, subscription URLs, TLS/path safety, or reconnect/
+   tract                                liveness behavior; see src/bolt_v3_providers/chainlink_reference.rs:1155, chainlink_reference_liveness_tick around
+                                        line 590, and binding_for_provider_key below. Drop SSM/config field names, data_type/params diagnostic owners,
+                                        consumer/error text, and CONFIG_TYPE; DataClientFactory::config_type is descriptive—the typed create downcast owns
+                                        compatibility.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   polyresearch_ref     16         8    Keep generation counters, backoff/limited-zero, provider keys, apiKey, chainlink, credential-log module, frame/action
+   erence_provider_                     tokens, and unlimited. Wrong values break authentication, subscription/ack/frame recognition, stale-timeout
+   contract                             invalidation, or credential-log suppression. Anchors: src/bolt_v3_providers/polyresearch.rs:628,
+                                        polyresearch_reference_update_from_parsed_price_frame at line 1005, and clear_polyresearch_provider_subscription_state
+                                        at line 757. Drop SSM field names, reconnect diagnostic label, consumer/error text, and CONFIG_TYPE.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   iv_helper_contra      6        14    Keep 1e-8, 1e-6, 10.0, both parameter-signature strings, and the positive-input 0.0. Wrong sentinels accept failed NT
+   ct_literal                           solves or reject valid IVs; wrong signatures reject valid configured policies or validate a mislabeled call contract.
+                                        See src/bolt_v3_iv/derive.rs:25 and derive_iv around lines 347–407. Drop the two NT-symbol provenance strings, field
+                                        labels, format string, and array arities; direct typed calls at lines 371/380 and Rust array types own those
+                                        structures.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   strategy_entry_r     10         4    Keep the seven malformed needles and insufficient balance/balance/allowance. Misclassification changes permanent
+   eject_reason_cla                     blocking into book-change-triggered retry. Drop fok, no match, unfillable, and fill or kill: they return Unfillable,
+   ssifier_needle                       but None currently falls back to the identical Unfillable { book } state. This is source-proven in src/strategies/
+                                        binary_oracle_edge_taker/mod.rs:8190 and record_entry_reject_state at line 4130.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   runtime_contract     10         0    All A. Every seconds/token member changes accepted cadence and derived Polymarket market slug; a wrong pair selects
+   _cadence_slug_ma                     the wrong or nonexistent rotating market. See src/bolt_v3_market_families/updown.rs:489 and
+   pping                                expected_cadence_slug_token.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   clob_v2_fee_beha     10         0    All A. These are external-source boundary predicates, not labels. A weak/wrong marker can accept an NT source lacking
+   vior_source_mark                     the intended fee path; a missing marker blocks readiness. See src/bolt_v3_providers/polymarket/
+   er                                   fee_behavior_source.rs:102 and require_fee_source_marker.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   provider_adapter      6         0    All A. The values select the provider binding and therefore the NT adapter. Wrong values reject configured clients or
+   _registry_key                        bind the wrong validator/adapter. See src/bolt_v3_providers/mod.rs:743 and binding_for_provider_key at line 992.
+  ──────────────────  ─────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   provider_dispatc      3         0    All A for the same reason: Polymarket, Binance, and Hyperliquid keys drive validation, secrets, adapter construction,
+   h_key                                fees, and venue-truth capabilities through PROVIDER_BINDINGS.
+
+  Result for this band: 79 A, 76 B/drop out of 155. GLM was materially too aggressive, but the conservative reviewers also over-kept almost half the band.
+
+  ## 2. Where value correctness should live
+
+  Do not create a (path, const_name, value) ledger. It duplicates every value, creates rename/path tax, and proves only textual equality—not correctness. Keep
+  the named constants in Rust and pin externally observable behavior:
+
+   Sub-class                             Cheapest effective catch
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Pricing/math coefficients             One table-driven behavioral golden: [(x, expected_cdf)] at -2,-1,0,1,2, asserting absolute error within the
+                                         documented approximation tolerance plus symmetry cdf(x)+cdf(-x)≈1. This catches the complete coefficient set,
+                                         including -0.356_563_8, without restating each coefficient. Anchor: src/bolt_v3_market_families/updown.rs:1308.
+  ────────────────────────────────────  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ABI/layout constants                  Decode one fixed, externally generated raw hex payload and assert feed ID, timestamps, and benchmark price; also
+                                         mutate offset/padding/length and assert rejection. Do not construct the golden fixture using production layout
+                                         constants. Existing src/bolt_v3_providers/chainlink/report.rs:500 already uses independently hardcoded 32-byte test
+                                         words; a committed raw external fixture would be stronger.
+  ────────────────────────────────────  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   HMAC ipad/opad                        A standard HMAC-SHA256 known-answer vector: fixed key/message → exact digest. Existing src/bolt_v3_providers/
+                                         chainlink/auth.rs:279 already catches wrong 0x36, 0x5c, block width, signing string, or digest composition. No
+                                         additional ledger needed.
+  ────────────────────────────────────  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   Domain separators/versioned hashes    Exact checksum golden for a minimal root plus two deliberately reordered strategy entries. Assert the exact SHA-256
+                                         and ordering invariance. This directly pins b"bolt-v3.config-bundle.v1\n" and its framing. Current tests only prove
+                                         checksum presence/propagation, so src/bolt_v3_config.rs:1365 needs this focused golden if compatibility matters.
+  ────────────────────────────────────  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   NT typed API symbols/signatures       Let compilation prove the functions and argument types through the direct calls. Separately assert the exact
+                                         provenance/config strings and one known-input result per helper. Existing tests/bolt_v3_iv_derive.rs:210 covers
+                                         strings, while complete_inputs_derive_iv_with_nt_helper_and_helper_provenance covers behavior.
+  ────────────────────────────────────  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   NT failure sentinels                  Boundary assertions in the owning module: imply rejects 1e-8 and accepts just above it; refine rejects 1e-6 and 10.0
+                                         and accepts interior values. These are genuinely value-sensitive. The pinned NT revision is 6be5a509…; its
+                                         imply_vol_and_greeks source clamps failed solves to 1e-8.
+
+  In short: behavioral golden per contract boundary; no central constant ledger.
+
+  ## 3. Minimal venue-name denylist
+
+  - Scan target: production text from every src/**/*.rs, using the existing production_text canonicalization to remove comments and #[cfg(test)] bodies.
+  - Allowlist: only normalized paths under src/bolt_v3_providers/**.
+  - Forbidden outside that prefix: ==/!=, .eq*, .contains/.starts_with/.ends_with, matches!, if let/while let, or literal match arms where one side/scrutinee
+    is a syntactic venue-identity read.
+
+  - Important rescope: match any string literal, not a copied list of polymarket, binance, etc. If code compares venue_id to a literal, it is venue-specific
+    behavior regardless of whether the fence knows that venue yet.
+
+  - Anti-staleness: no per-line allowlist and no source-context key. The stable key is simply (rule_id, normalized path); provider exemption is path-prefix
+    based. New venues require no fence edit. Any exceptional core branch must be replaced by a ProviderBinding capability, not registered as an exception.
+
+  - Verifier self-tests: one fixture for each forbidden syntax, raw/byte string variants, comments/non-venue matches as negatives, a provider-path exemption,
+    current-tree clean, and fail-closed empty discovery.
+
+  This is essentially the deleted fence’s lexical scanner with its copied _VENUES table removed. It mechanically guards the invariant without recreating line-
+  keyed registry tax.
+
+  Reconciled keep floor: about 360 rows if GLM’s 281 is the aggressive baseline plus these 79 restored invariants—closer to GLM than Kimi, while still showing
+  GLM dropped substantial real behavior.
+
+---
+
+what do you suggest
+
+---
+
+explain this in plain english and make this concise
+
+---
+
+yes
+
+---
+
+• Addressed all adversarial findings and updated draft PR #1334 (https://github.com/seungpyoson/bolt-v2/pull/1334).
+
+  Commit: a6ff43f00abb001b69aca1d63ac81794b5f7b46d
+
+  Changes in scripts/verify_bolt_v3_no_venue_name_branch.py:
+
+  - Balanced matches! parsing for (), [], and {}.
+  - Correct let-chain and unary-reference handling.
+  - Match-arm body tracking no longer mistakes if/else body literals for patterns.
+  - Nested Rust block-comment support.
+  - C and raw-C string literal support.
+  - Grouped operand handling without function/macro false positives.
+  - Balanced nested turbofish and const-generic operator handling.
+  - Linear handling of malformed/unclosed turbofish input.
+
+  Verification:
+
+  - 79/79 focused tests passed.
+  - Current src/ scan passed.
+  - scripts/run_fences.py passed.
+  - just fmt-check passed.
+  - just ci-lint-workflow: 33/33 suites passed.
+  - Final internal adversarial review: APPROVE, no substantive findings.
+  - Exact-head draft CI green, including source-fence-static: CI run 29072916955 (https://github.com/seungpyoson/bolt-v2/actions/runs/29072916955).
+
+  Worktree is clean and the required sp-reviewer request remains active. Compile-heavy checks remain skipped under draft-PR policy.
+
+─ Worked for 29m 14s ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+---
+
+so we don't need to get external model review on 1334?
+
+---
+
+generate a review prompt for the pr
+
+---
+
+Kimi: Used TodoList
+
+ ● Writing the final report now. Bottom line up front: I broke it. Then ranked findings with anchors + exact probes/outputs. End with git status --short
+   (clean). Disclose the HEAD-reconciliation note briefly.
+
+ ● Bottom line
+
+   I broke it. There are real, compilable, venue-prefixed comparisons the fence silently misses, plus a real false-positive class that contradicts the
+   docstring's "NEVER flag valid code (no false positives)" claim. The any-literal neutralization is solid; the holes are in the operator/method/scrutinee
+   coverage and the venue-prefix heuristic.
+
+   Worked in an isolated detached worktree at 5231d18; ran the fence in-process for the matrix and via the real entrypoint (python3.12
+   scripts/verify_bolt_v3_no_venue_name_branch.py) for end-to-end proof. PR's own suite: 79/79 green.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   HIGH — real, compilable, in-scope, silently missed
+
+   H1. Venue-scrutinee match with the literal in a guard via a binding. The scrutinee is unambiguously a venue read (the fence's own scope), but the
+   comparison v == "polymarket" is misclassified as a "non-venue operand guard" because the binding v isn't venue-prefixed. The arm-pattern scanner strips the
+   guard (_match_arm_positions, verify_bolt_v3_no_venue_name_branch.py:593-594), and the EQ rule (:102-111) can't see v. This is idiomatic Rust.
+
+   ```
+     A08 match guard binding     'match venue_id.as_str() { v if v == "polymarket" => a, _ => b }'  -> []
+     A09 match guard binding raw 'match venue_id { v if v == "polymarket" => a, _ => b }'           -> []
+   ```
+
+   Anchor: _match_arm_positions :535-604, documented boundary :37.
+
+   H2. Method allow-list gaps on a venue-prefixed receiver. FR080_METHOD (:113-121) only names contains|starts_with|ends_with|eq|eq_ignore_ascii_case.
+   starts_with is caught, but its semantic twin strip_prefix(...).is_some() is not; eq is caught, cmp(...).is_eq() is not. Receiver is venue-prefixed, literal
+   present, compiles (venue_id: &str).
+
+   ```
+     A05 .cmp().is_eq()           'if venue_id.cmp("polymarket").is_eq() {'           -> []
+     A11 strip_prefix == Some     'if venue_id.strip_prefix("poly") == Some("") {'     -> []
+     A12 strip_suffix.is_some()   'if venue_id.strip_suffix("market").is_some() {'     -> []
+   ```
+
+   End-to-end proof (real entrypoint) — H1+H2 together in src/probe_fence_1334.rs:
+
+   ```
+     ############ PROBE-FN (4 venue-prefixed evasions; expect 'passed' = silent miss)
+     OK: Bolt-v3 FR-080 venue-name branch fence passed.
+     EXIT=0
+   ```
+
+   (Control — same file with if venue_id == "polymarket" {} correctly FAILed, proving the entrypoint scans fn bodies.)
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   MEDIUM
+
+   M1. UFCS equality slips. == is caught, but its literal desugaring as a free function is invisible — the venue read sits in argument position, never an
+   operand of ==/!= or a receiver of a listed method. Compiles (venue_id: &str, PartialEq in prelude).
+
+   ```
+     A02 PartialEq::eq UFCS       'if PartialEq::eq(venue_id, "polymarket") {'             -> []
+     A03 fully-qualified UFCS     'if <str as PartialEq>::eq(venue_id, "polymarket") {'    -> []
+     A04 std::cmp::PartialEq::eq  'if std::cmp::PartialEq::eq(venue_id, "polymarket") {'   -> []
+     A15 Eq::eq UFCS              'if Eq::eq(venue_id, "polymarket") {'                    -> []
+   ```
+
+   Anchor: _NAME only matches operand/receiver position (:68-75); no rule scans call args.
+
+   M2. FALSE POSITIVE — venue-prefixed non-identity string fields. The _NAME heuristic (:68-75) treats any venue-prefix as identity, so
+   venue_status/venue_error compared to a string literal are flagged, contradicting the "no false positives" docstring. Numeric venue-prefixed fields are safe
+   (0/100 aren't _LIT). Not covered by the test negatives (they only test the non-prefixed status). Latent today (no such code in src), but blocks legitimate
+   future code.
+
+   ```
+     D01 venue_status == open     'if venue_status == "open" {'     -> ['FR080_EQ_NAME_LIT']   # FALSE POSITIVE
+     D02 venue_error == timeout   'if venue_error == "timeout" {'   -> ['FR080_EQ_NAME_LIT']   # FALSE POSITIVE
+     D03 venue_count == 0         'if venue_count == 0 {'           -> []   # correct (numeric)
+     D04 venue_fee_bps == 100     'if venue_fee_bps == 100 {'       -> []   # correct (numeric)
+   ```
+
+   End-to-end: PROBE-FP → FAIL: ... venue-name equality (name eq lit) at src/probe_fence_1334.rs:2: if venue_status == "open" {.
+
+   M3. Realistic invariant-coverage gap (documented, so not a defect). The most likely real-world spellings of the invariant are missed — but they're
+   explicitly accepted in :30-38 and tests, so this is a coverage boundary the reviewer should consciously sign off, not a bug in claimed behavior.
+
+   ```
+     B01 provider_key == lit      'if provider_key == "polymarket" {'   -> []
+     B02 self.exchange() == lit   'if self.exchange() == "binance" {'   -> []
+     B03 get_venue() == lit       'if get_venue() == "polymarket" {'    -> []
+     B04 obj.get_venue() == lit   'if obj.get_venue() == "polymarket" {'-> []
+   ```
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   LOW / exotic
+
+   • L1. Multi-line plain string literal mis-scan (real parser bug, rare trigger). _scan_plain treats \n inside a "..." literal as unterminated (:165-166),
+     but Rust allows literal newlines in plain strings. A multi-line operand literal vanishes (FN), and a preceding one desyncs quote-pairing downstream:
+   ```
+     M07 multiline plain-string operand  'if venue_id == "poly<NL>market" {}'   -> n=0   (literal evaporates)
+     M08 desync after multiline string   'let s = "unterminated<NL>if venue_id == "polymarket" {}' -> n=1 (spurious pairing)
+   ```
+
+   Raw strings/concat! are the idiomatic multi-line forms, so trigger is exotic — but it's a genuine correctness caveat.
+
+   • L2. assert_eq!(venue_id, "polymarket") (A07) and concat!("poly","market") (C02) slip — concat! is documented (:32); assert_eq! is borderline "branch"
+     scope.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Wiring / anti-staleness / additive — all verified clean
+
+   • Finding key = (rule_id, normalize_path(path)), no line/component — Violation.key :90-99, dedup on seen_keys :624-640;
+     test_finding_key_ignores_line_and_source_context asserts invariance. ✓
+   • Auto-discovery: run_fences.is_static_fence_path (run_fences.py:171-181) includes verify_*.py minus verify_ai_/verify_ci_/verify_runtime_capture_yaml;
+     this fence qualifies and is not an excluded prefix; paired test auto-added at :192. ✓
+   • Floor contract added at verifier_io.py:50-56 (helper-terminal, label "Rust source files under src", entrypoint main, proof matches
+     collect_violations_from_files); load-bearing — test_verifier_io.py:85-98 checks registered == actual from live call sites, :101-116 validates fields. ✓
+   • cheap_lane_labels twins byte-identical (identical: True), both contain test_ and verify_ entries. ✓
+   • justfile recipe verify-bolt-v3-no-venue-name-branch present. ✓
+   • Additive: git diff --name-only 8d0af87 HEAD = 6 files (2 toml, justfile, 2 scripts, 1 test); --stat = 1063 insertions, 2 deletions (the deletions are the
+     single cheap_lane_labels line in each toml, replaced by the augmented line). No src/, config/, contracts/; fence is read-only. Cannot change live
+     trading. ✓
+
+   On the 697-line parser (Q3)
+
+   It terminates and never crashes on malformed input (2 s alarm; 200 k unterminated /*, unterminated string, < turbofish spam, 50 k unmatched parens, 20 k
+   unmatched braces, 16 k &-let) — fail-safe. But the bulk of the complexity (match-arm depth tracking, transparent-group/turbofish flattening,
+   comma-less-block-body resume at :513-532/:581-592) is FP-avoidance machinery, not "any-literal" handling — and it did not buy the claimed soundness: M2
+   shows FPs still occur, H1 shows a venue-scrutinee comparison still slips. I found no clearly dead branch (the resume logic is load-bearing, per
+   test_arm_after_commaless_block_body_is_caught); I won't fabricate one.
+
+   Note on worktree state: during the review the main worktree HEAD was reconciled to a pr-1334-review branch at the PR head 5231d18 (an external reconciler
+   re-pinned it after a detach), so I stopped issuing git mutations and left it where the environment holds it. No probe files or stray changes remain; the
+   linked review worktree was removed cleanly.
+
+   ```
+     $ git status --short
+     $            # (empty — clean)
+   ```
+Grok: Adversarial Review — PR #1334 (venue-name denylist fence)
+
+Head: 5231d18cfab469b6164296f7a6ebc7136842f497
+Base/merge-base: 8d0af87fb65f20eb0f9a6713b21070b19f966037
+Method: inject real src/_adv_probe_*.rs files → python3.12 scripts/verify_bolt_v3_no_venue_name_branch.py → delete probes. Worktree restored clean.
+
+───
+
+Verdict
+
+The fence is not un-evadable. It is a solid syntactic tripwire for the idiomatic venue*-prefixed forms (==/!=, a fixed method denylist, matches!, if/while let, venue-scrutinee match arms), with careful literal normalization. It does not enforce FR-080 as a semantic invariant. Several real, compilable evasions sail through; the design doc’s “never flag valid code” claim is also false for legitimate venue_* non-identity compares.
+
+───
+
+Findings (severity order)
+
+1. HIGH — Rename-bind false negative (idiomatic, compilable)
+
+Anchor: find_violations_in_text / _NAME requires a venue-prefixed token on the compared expression.
+
+Probe:
+
+// src/_adv_probe_rename.rs
+fn probe(venue_id: &str) -> bool {
+    let name = venue_id.as_str();
+    name == "polymarket"
+}
+
+Full-fence result: not reported (only control / FP / known method hits failed).
+Class: real contributor pattern (extract local, then branch). Invariant silently unenforced after one rename.
+
+Same class: match-bind then compare body: match venue_id.as_str() { name => { if name == "polymarket" {} } } → miss.
+
+───
+
+2. HIGH — Free-function / UFCS PartialEq false negative
+
+Anchor: FORBIDDEN_RULES only match infix ==/!= or receiver methods on _NAME, not free-fn/UFCS.
+
+Probes that missed:
+
+str::eq(venue_id, "polymarket")
+PartialEq::eq(&venue_id, &"polymarket")
+::core::ops::PartialEq::eq(venue_id, "polymarket")
+
+Full-fence: src/_adv_probe_str_eq.rs / src/_adv_probe_partialeq.rs → PASS (evaded).
+Class: real, compiles; less common than ==, but a one-line intentional or “clever” bypass.
+
+───
+
+3. HIGH — assert_eq! / assert_ne! false negative
+
+Probe:
+
+assert_eq!(venue_id, "polymarket");
+
+Full-fence: not reported.
+Note: assert!(venue_id == "polymarket") is caught (infix still present).
+Class: extremely common in tests; also usable in debug/prod asserts.
+Compounding hole: collect_violations runs production_text(...), which strips #[cfg(test)], so even infix violations inside test modules never hit the full fence:
+
+┌──────────────────────────────────┬──────────┬───────────────────────┐
+│ form                             │ raw scan │ after production_text │
+├──────────────────────────────────┼──────────┼───────────────────────┤
+│ #[cfg(test)] ... venue_id == "x" │ hit      │ 0                     │
+├──────────────────────────────────┼──────────┼───────────────────────┤
+│ non-test same                    │ hit      │ hit                   │
+└──────────────────────────────────┴──────────┴───────────────────────┘
+
+───
+
+4. HIGH — Non-venue-prefixed identity reads (documented, still invariant-relevant)
+
+Doc already lists get_venue() and non-venue operands. Confirmed with full fence:
+
+┌─────────────────────────────────────────┬────────┐
+│ probe                                   │ result │
+├─────────────────────────────────────────┼────────┤
+│ provider_key == "polymarket"            │ evade  │
+├─────────────────────────────────────────┼────────┤
+│ self.exchange() == "binance"            │ evade  │
+├─────────────────────────────────────────┼────────┤
+│ self.get_venue() == "polymarket"        │ evade  │
+├─────────────────────────────────────────┼────────┤
+│ self.market_venue == "binance" (suffix) │ evade  │
+└─────────────────────────────────────────┴────────┘
+
+In-scope of FR-080? Yes if the value is venue identity.
+In-scope of this fence? No — by design, prefix-only.
+Rating: HIGH for invariant completeness; MEDIUM as a “fence bug” because it is explicit in the module docstring. A real controller can still branch on venue names forever without tripping CI.
+
+───
+
+5. MEDIUM-HIGH — Method denylist is closed; any other method/wrapper with args evades
+
+Anchor: FR080_METHOD only allows
+contains|starts_with|ends_with|eq|eq_ignore_ascii_case.
+
+Misses (confirmed):
+
+venue_id.is_venue("polymarket")
+venue_id.equals("polymarket")
+equal_venue(venue_id, "polymarket")
+venue_id.replace('-', "_") == "polymarket"   // argful method breaks _NAME chain
+venue_ids[0] == "polymarket"                 // indexing breaks _NAME
+venue_id.map(|s| s) == Some("polymarket")
+
+Hits (control): venue_id.eq_ignore_ascii_case("POLY") → full-fence FAIL.
+
+Also breaks zero-arg accessor chain:
+
+venue_id.as_str()? == "polymarket"      // ?
+venue_id.await == "polymarket"          // .await
+
+Class: custom helpers / slight API noise — plausible in a large codebase.
+
+───
+
+6. MEDIUM — let-else not covered (only if/while let)
+
+let "polymarket" = venue_id.as_str() else { return; };
+→ miss. Valid Rust; less common than if let, but real.
+
+───
+
+7. HIGH (FP risk) — venue_* non-identity compares are treated as venue-name branches
+
+Doc claim (lines 11–13): “NEVER flag valid code (no false positives).”
+Rule reality: any venue[A-Za-z0-9_]* vs any string literal fails.
+
+Probes that FAIL the full fence (false positives if landed in src/):
+
+venue_status == "open"
+venue_mode == "live"
+venue_side == "buy"
+venue_state == "connected"
+venue_error == "timeout"
+venue_count == "0"
+
+Current tree: clean (collect_violations() == [], unit test test_current_bolt_src_is_clean). Existing src compares are venue_id/venue to other venue ids/enums, not string lits — so no current FP.
+Tests do protect: comments, raw-string bodies, subvenue/revenue, non-venue scrutinees, arm bodies.
+Tests do NOT protect: venue_status / operational string fields.
+When someone adds venue_status == "open", CI fails for the wrong reason (or they rename to status to dodge).
+
+───
+
+8. MEDIUM — Complexity vs justification; parser edges
+
+┌────────────┬───────────────────────────┬───────────────────────────────────────────────┐
+│            │ Old (~393, pre-255aa1bf7) │ New (697)                                     │
+├────────────┼───────────────────────────┼───────────────────────────────────────────────┤
+│ Venue keys │ hardcoded _VENUES table   │ any literal (good)                            │
+├────────────┼───────────────────────────┼───────────────────────────────────────────────┤
+│ Literals   │ regex on spellings        │ hand lexer: plain/raw/byte/C, nested comments │
+├────────────┼───────────────────────────┼───────────────────────────────────────────────┤
+│ Match arms │ weaker                    │ depth + comma-less block recovery             │
+└────────────┴───────────────────────────┴───────────────────────────────────────────────┘
+
+Justified: any-literal + neutralizing strings (no copied venue table — test_scanner_has_no_copied_venue_table), nested turbofish flatten, match-arm false-positive control.
+Heavy for the delta: transparent-group keyword allowlist, let-chain && borrow heuristics, multi-delimiter matches! — needed for the forms they chose to cover, not for “any literal” alone.
+
+Minor deadness: _scan_string returns body content that _canonical_code only uses as value is not None (content discarded).
+
+Termination (executed): unclosed string/raw/comment, unbalanced turbofish, 5k-deep groups/comments, 5k literals — all finish <0.2s, no crash.
+
+Exotic FN: unclosed raw string blanks to EOF, swallowing later real compares:
+
+const S: &str = r##" "# " ## ; if venue_id == "x" {}
+→ canonical blanks rest → 0 hits
+Invalid Rust → low severity, but fail-open on garbage.
+
+production_text: test-gated violations invisible to the shipped entrypoint (see finding 3).
+
+───
+
+9. LOW — Documented / theoretical FNs (as advertised)
+
+• concat!("poly","market"), format!(...)
+• VenueId::from("polymarket") == other
+• Guard with non-venue operand: match venue_id { p if some_str == "binance" => ...}
+
+These match the module’s known-boundary list. Not surprises.
+
+───
+
+10. Wiring / anti-staleness / additive — PASS (no finding)
+
+┌────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Check              │ Result                                                                                                              │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Finding key        │ (rule_id, normalize_path(path)) — no line; line-shift preserves key                                                 │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ run_fences         │ verify_*.py, not verify_ai_/verify_ci_/verify_runtime_capture_yaml → discovered + paired test                       │
+│ discovery          │                                                                                                                     │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ verifier_io floor  │ same shape as verify_bolt_v3_no_exit_market_command.py (helper-terminal, collect_violations_from_files …)           │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ cheap_lane_labels  │ root ci/rust-verification.toml byte-identical to crates/backtesting-vertical-slice/ci/rust-verification.toml; both  │
+│ twins              │ list test_verify_... and verify_...                                                                                 │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ justfile           │ verify-bolt-v3-no-venue-name-branch + pulled in via run_fences.py on source-fence-static                            │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Additive           │ only 6 files vs merge-base: the two scripts, verifier_io.py, justfile, two rust-verification.toml — no src/, no     │
+│                    │ config/ → cannot change live trading behavior                                                                       │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Unit tests         │ 79/79 OK (PYTHONPATH=scripts)                                                                                       │
+├────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Baseline tree      │ OK: Bolt-v3 FR-080 venue-name branch fence passed.                                                                  │
+└────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+───
+
+What the fence does catch well (executed)
+
+Multiline ==, raw/byte/C/hashed literals, escapes, turbofish accessors, grouped (venue_id), matches! / path std::matches!, if/while-let (incl. let-chains), match arms with venue scrutinee (incl. after comma-less block arms), to_string()/trim() zero-arg chains, nested venue match inside non-venue match.
+
+Control probe always fails full fence:
+
+FAIL: ... at src/_adv_probe_control.rs:1: ... venue_id == "polymarket"
+
+───
+
+Severity summary
+
+┌──────┬──────────────────────────────────────────────────────┬────────────────────────────────────┐
+│ Sev  │ Finding                                              │ Plausibility                       │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ HIGH │ Rename-bind then compare                             │ Idiomatic                          │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ HIGH │ assert_eq! / assert_ne! (+ cfg(test) strip)          │ Idiomatic                          │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ HIGH │ str::eq / PartialEq::eq UFCS                         │ Real, less common                  │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ HIGH │ Non-venue* identity reads                            │ Real; documented hole in invariant │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ HIGH │ FP: venue_status == "open" etc.                      │ Real when such fields appear       │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ MED  │ Closed method denylist / argful methods / ? / .await │ Plausible                          │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ MED  │ 697-line parser weight; fail-open unclosed raw       │ Maintenance / exotic               │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ LOW  │ let-else; concat/format; documented FNs              │ Niche / accepted                   │
+├──────┼──────────────────────────────────────────────────────┼────────────────────────────────────┤
+│ —    │ Wiring, key shape, additive, termination             │ Clean                              │
+└──────┴──────────────────────────────────────────────────────┴────────────────────────────────────┘
+
+───
+
+Bottom line
+
+This is a useful preventive fence for the obvious venue_id == "…" / .starts_with("…") / matches!(venue, "…") cluster, resurrected without a hardcoded venue table — that part is an improvement over the deleted original.
+
+It is not a sound FR-080 enforcer. A contributor who wants to branch on venue name (or who does so via ordinary refactors: rename local, assert_eq!, free-fn eq, get_venue(), provider_key) will not be stopped. The design text over-promises on false positives.
+
+Recommendation (for authors, not implemented here): treat this as a lint for a narrow syntactic anti-pattern, not as proof of capability-contract compliance; either narrow the doc claim, or extend coverage for the HIGH idiomatic FNs (assert_eq!, rename is hard without flow analysis — at least document it as first-class residual risk alongside non-venue* reads). The FP class on venue_status/venue_mode should get explicit tests and a design decision (prefix denylist vs identity-name allowlist).
+GLM: Worktree clean. Here is the full adversarial review.
+Adversarial Review — PR #1334 (venue-name denylist fence)
+Summary
+The fence is well-engineered, comprehensively tested (79 tests), and correctly wired. It cannot alter runtime behavior (purely additive: only scripts/ + CI wiring changed). I found no evasions that a contributor would plausibly write in idiomatic Rust — the .eq/!=/==/.contains/.starts_with/.ends_with/matches!/match-arm surface is fully covered. The remaining gaps are documented or exotic.
+Findings (ranked by severity)
+FINDING 1 — LOW: .ne() method evades (asymmetric with .eq())
+Anchor: verify_bolt_v3_no_venue_name_branch.py:117 — method list (?:contains|starts_with|ends_with|eq|eq_ignore_ascii_case) omits ne.
+Probe:
+>>> V.find_violations_in_text('src/probe.rs', 'if venue_id.ne("polymarket") {}')
+[]   # MISSED
+>>> V.find_violations_in_text('src/probe.rs', 'if venue_id.eq("polymarket") {}')
+[Violation(...)]  # CAUGHT
+Injected into real src/:
+src/_probe_venue_fence.rs:4: venue_id.ne("polymarket")     → NOT FLAGGED
+src/_probe_venue_fence.rs:12: venue_id == "polymarket"      → FLAGGED
+src/_probe_venue_fence.rs:15: venue_id != "polymarket"      → FLAGGED
+src/_probe_venue_fence.rs:18: venue_id.eq("polymarket")     → FLAGGED
+Assessment: PartialEq::ne is a real stdlib method — the exact method-form twin of != (which IS caught). The fence catches .eq() but not .ne(), which is an unjustified asymmetry. However, .ne() is rarely written by Rust developers (idiom is !=), and the docstring explicitly states the fence covers ==/!= operators plus the .eq family of methods. Adding ne to the alternation at line 117 would close it trivially. Severity: LOW — real compilable evasion but exotic usage pattern; not the stated weakness vector.
+FINDING 2 — LOW: str::eq / UFCS free-function form evades
+Anchor: verify_bolt_v3_no_venue_name_branch.py:102-122 — FORBIDDEN_RULES only match infix operator and method-receiver forms.
+Probe:
+>>> V.find_violations_in_text('src/probe.rs', 'if str::eq(venue_id, "polymarket") {}')
+[]   # MISSED — venue_id IS syntactic but is a function argument, not an operand
+Assessment: str::eq is a real stdlib function. The docstring boundary (lines 30-38) says "wrapper/alias PartialEq where neither operand is a syntactic venue read" is deliberately uncaught. Here venue_id IS a syntactic venue read, but it's in function-argument position, not operand position — so this falls outside the documented boundary. Still, str::eq(a, b) is extremely uncommon in real code. Severity: LOW — compilable but exotic.
+FINDING 3 — LOW (documented): Non-venue-prefixed identity reads
+Anchor: verify_bolt_v3_no_venue_name_branch.py:68 — _NAME requires venue-prefixed token.
+Probe:
+>>> V.find_violations_in_text('src/probe.rs', 'if provider_key == "polymarket" {}')
+[]   # MISSED
+>>> V.find_violations_in_text('src/probe.rs', 'if self.exchange() == "binance" {}')
+[]   # MISSED
+>>> V.find_violations_in_text('src/probe.rs', 'if self.get_venue() == "binance" {}')
+[]   # MISSED (venue-suffixed getter)
+Assessment: Explicitly documented at lines 30-38 as deliberately uncaught. A syntactic fence cannot know that provider_key or exchange() is semantically a venue identity. The get_venue() suffix-getter case is also explicitly called out. The capability-contract design + code review are the backstop. Severity: LOW (accepted) — the boundary is correct and documented.
+FINDING 4 — INFO: Theoretical false-positive surface (venue-prefixed non-identity names)
+Anchor: verify_bolt_v3_no_venue_name_branch.py:68-75 — _NAME matches any venue-prefixed identifier.
+Probe:
+>>> V.find_violations_in_text('src/probe.rs', 'if venue_count == "open" {}')
+[Violation(...)]  # Would flag — venue_count is not venue identity
+>>> V.find_violations_in_text('src/probe.rs', 'if venue_value == "max" {}')
+[Violation(...)]  # Would flag
+Assessment: The _NAME regex deliberately over-approximates: any venue* identifier compared to a string literal is flagged, even if it's venue_count or venue_sink. This is sound-over-complete design. No such patterns exist in the current src/ tree (verified by scanning all 739+ venue-prefixed identifiers). The design decision is correct: it's better to over-flag a hypothetical venue_status == "open" (which a contributor can whitelist) than to miss a real venue-name branch.
+FINDING 5 — INFO: Dedup yields 1 finding per (rule_id, file) — correct anti-staleness
+Anchor: verify_bolt_v3_no_venue_name_branch.py:98 — key() returns (rule_id, normalize_path(path)).
+Multiple violations of the same rule in the same file collapse to 1 finding (no source-line component in the key). This is the correct anti-staleness design — line shifts don't churn finding keys. Different rule_ids in the same file produce separate findings (verified: FR080_EQ_NAME_LIT + FR080_METHOD = 2 findings).
+Parser Assessment (697 lines)
+The complexity is justified. Each function addresses a real syntactic form that would cause false positives if unhandled:
+Function    Lines    Purpose    Verdict
+_canonical_code    290-348    Blank comments, chars, strings; normalize to ""    Correct; handles nested block comments, all string forms
+_flatten_turbofish    206-241    Blank ::<...> contents to prevent > desync    Correct; handles Vec<Vec<str>>, const-generic >>
+_flatten_transparent_groups    270-287    Blank grouping parens but NOT call-argument parens    Correct; keyword-allowlist is sound
+_match_arm_positions    535-604    Track arm patterns vs bodies; comma-less block handling    Correct; the in_pattern state machine is sound
+_let_pattern_positions    495-510    if let/while let with &&/`     
+_condition_end    434-452    Find condition/body { boundary; macro !{ vs body {    Correct; last_nonspace == "!" only fires on macro tails
+Termination: All malformed-input probes terminate cleanly:
+- Unterminated turbofish (10k ::< repeats): 0.004s
+- Unterminated block comment (50k chars): 0.024s
+- Unterminated raw/plain string (50k chars): 0.020s / 0.026s
+- Deeply nested match (5k levels): 0.031s
+- 10k unbalanced parens: 1.3s (linear; not exponential — bounded by _NAME's {0,16} repetition caps)
+No dead branches found. Every branch in the parser handles a form covered by the test suite. The 697 → 393 line increase over the deleted original is justified by the any-literal change (old version matched a hardcoded list via regex; this needs structural understanding to avoid false positives on arbitrary literals).
+Wiring Verification (all confirmed)
+- run_fences.py auto-discovers verify_bolt_v3_no_venue_name_branch.py (not in NON_STATIC_VERIFY_PREFIXES)
+- Both cheap_lane_labels twins (ci/ + crates/backtesting-vertical-slice/ci/) are byte-identical (60 entries each, both contain the new entries)
+- verifier_io.py floor contract added with correct fields
+- justfile recipe verify-bolt-v3-no-venue-name-branch exists with paired test+verify pattern
+- Finding key is (rule_id, normalized_path) — no source-line component
+- Additive claim — zero changes outside scripts/ + CI wiring; no src/, config/, Cargo.toml, Cargo.lock
+Verdict
+The fence is sound. The only compilable evasions (.ne(), str::eq, dbg!(venue_id)) are exotic forms unlikely in production code, and .ne() is the only one with an asymmetry argument (.eq caught, .ne not). The documented completeness boundary is accurate. No false positives exist in the current tree. The parser terminates on all malformed inputs. I could not break it with a plausible evasion.
+
+---
+
+ok
+
+---
+
+generate a review request prompt for your plan with the context - I'll have other models review them
+
+---
+
+• ## Verdict: reject as written
+
+  Deleting the 2,604-row blanket registry remains a defensible destination. Deleting the registry and every scoped successor fence, based on only the four
+  proposed homes, is not sound.
+
+  The attack found both plan-killing cases the request identified: a fifth invariant class and persisted/cross-process schema rename holes.
+
+  ## Kills the plan
+
+  1. Critical — A1: there is a fifth class: open-world and external-source invariants.
+
+     Two concrete examples fit none of the proposed replacements:
+      - DIRECT_CREDENTIAL_FIELDS is a negative security policy, not ordinary schema. If "api_secret" is misspelled or removed, Bybit’s otherwise-valid
+        api_secret field passes into the upstream client instead of being rejected as a non-SSM credential. The current test exercises only api_key. See src/
+        bolt_v3_providers/market_data.rs:99 and the partial test at tests/config_parsing.rs:5922. A finite golden remains self-referential; this needs a closed
+        non-secret schema or a structural property check against upstream credential fields.
+
+      - Credential-log targets are correct only relative to upstream logger topology. A typo in "nautilus_bybit::common::credential" still compiles and can
+        bypass credential-log suppression. Module compile anchors prove the module exists, not its log target. Only Binance and Polymarket currently have
+        independent behavior coverage; the other targets need source/actual-log evidence. See src/bolt_v3_providers/market_data.rs:40.
+
+     This adds at least two required homes: closed-world negative-policy checks and upstream/source-topology evidence. Neither is a behavioral golden,
+     ProviderKey, nor the proposed env-var deny-list.
+
+     It also invalidates deleting the broad fence without replacement: repo governance explicitly says every runtime value comes from TOML and identifies this
+     verifier as its proof at AGENTS.md:26 and REASONIX.md:47. Tests/types over known constants cannot detect a newly introduced hardcoded timeout or
+     identifier. A narrower AST/semantic fence is still required.
+
+  2. High — A2: “schema identifier” includes hash framing and external schemas.
+
+     The blanket-delete classification is demonstrably wrong:
+      - There are 198 outcome-group “schema-label” rows; at least 59 occur directly in canonical/fingerprint contexts. Changing "group" or "source_id" changes
+        operator attestation and metadata hashes. The implementation is at src/bolt_v3_outcome_groups.rs:633. The existing “stable” test merely recomputes the
+        same implementation and has no fixed expected digest, so a coordinated rename passes: tests/bolt_v3_outcome_groups.rs:645. These need known-answer
+        digest goldens.
+
+      - Operator CLI JSON keys are cross-process contracts. Renaming manual_recovery_count, kill_switch_store_init_completed, or cache-sync completion fields
+        breaks jq/operator automation—potentially after the command has already mutated durable state. Serializers are at src/main.rs:786, src/main.rs:804, and
+        src/main.rs:1842. I found no exact stdout-schema tests.
+
+      - Ethereum JSON-RPC names are wire protocol, not code-owned schema. Renaming params or nested data produces an endpoint rejection; changing result/error
+        breaks valid response decoding. See src/bolt_v3_providers/polymarket/collateral_accounting_source.rs:310 and src/bolt_v3_providers/polymarket/
+        collateral_accounting_source.rs:512. Existing tests cover calldata/U256 parsing, not the exact request and response wire shape.
+
+      - LaunchIdentity is an unversioned persisted schema. Its current-current round trip still passes after a coordinated field rename, while an existing
+        launch-identity.json becomes unreadable. See src/bolt_v3_operator_artifacts.rs:109. It needs an old-byte fixture or schema version plus migration.
+
+      - Production ReferencePriceUpdate is #[custom_data], but its test only performs an in-memory downcast. The catalog integration test persists a test-only
+        VerificationDecisionEvent, not the production type. See src/bolt_v3_reference_price.rs:108 and tests/nt_custom_data_catalog_integration.rs:15.
+        Production catalog compatibility is therefore not pinned.
+
+     Decision evidence is the important counterexample: it already has schema versions, raw fixtures, and v13→v15 recovery goldens at tests/
+     bolt_v3_capital_admission_recovery_equivalence.rs:13. Those rows can safely leave the registry if that coverage remains.
+
+  3. High — A4: ProviderKey cannot deliver the claimed absolute compile-time guarantee.
+
+     The current code illustrates the escape:
+      - ClientBlock::venue is NT Venue, while src/bolt_v3_providers/mod.rs:574 and src/bolt_v3_providers/mod.rs:992 remain string-based.
+      - The existing src/bolt_v3_config.rs:752 newtype exposes from_serialized and as_str; therefore provider.as_str() == "chainlink_ws" remains legal.
+      - Uppercase client/venue keys and lowercase reference-provider aliases are separate identity domains. Artifacts, health records, capital-pool venue IDs,
+        NT Venue conversion, and boundary-registry IDs introduce further string seams.
+
+     The new types must have private inners and avoid PartialEq<str/String>, Deref, AsRef<str>, Borrow<str>, public From<&str/String>, as_str, and public
+     unchecked constructors. Use separate client-provider and reference-provider types.
+
+     Even then, Display, serde round-trips, parsing, or conversion to NT Venue can reconstruct a string. The defensible claim is narrower: typed dispatch APIs
+     do not accept literal strings. Enforcing “regardless of variable name” still requires a scoped static fence.
+
+     Additionally, typed constants currently blind provider-leak discovery: scripts/verify_bolt_v3_provider_leaks.py:234 recognizes only pub const ...: &str =
+     "...". That verifier must support the typed declaration before migration.
+
+  ## Adjust the plan
+
+  4. High — A6: the 79/76 adjudication is not auditable.
+
+     Exact commit counts are 2,604 rows, 589 classifications, 127 paths: 2,186 strings, 417 numbers, and one boolean. No checked-in row-level artifact
+     reconstructs the 79-keep/76-drop split or the claimed ~250/~110 destinations.
+
+     Therefore I cannot verify whether a particular row belongs to “the 76.” The examples above prove that likely drop categories contain hidden invariants:
+     hash framing labels, direct-credential field names, CLI output keys, JSON-RPC fields, and operator artifacts.
+
+     PR3 should be blocked on a machine-checkable temporary crosswalk:
+
+     old row → delete rationale | test symbol | typed owner | deny-list | source contract | compatibility fixture
+
+     The current verifier does not provide that proof: scripts/verify_bolt_v3_runtime_literals.py:110 discard classification and reason when checking
+     membership. It is a review tripwire, not semantic validation.
+
+  5. Medium-high — A3: “behavioral golden” is the wrong evidence class for a meaningful minority.
+
+     A conservative lower bound is 31 rows: 15 NT message-bus patterns, seven NT persistence type names, and nine credential-log targets—about 12% of 250.
+     Including 22 externally derived rejection-classifier needles raises the source/runtime-dependent set to roughly 53, or 21%. This range is provisional
+     because the claimed 250-row list is absent.
+      - Topic patterns require actual NT publish/capture integration; such tests already exist around tests/nt_runtime_capture.rs:438.
+      - Persistence names such as QuoteTick and OrderBookDepth10 are correct only against NT catalog metadata: src/lake_batch.rs:25.
+      - Log targets need actual upstream log/source evidence. Eight presently lack an independent target oracle.
+
+     These are feasible to protect, but not with cheap output goldens. The plan should distinguish unit known-answer tests, committed external fixtures,
+     upstream source checks, integration tests, and remote/live evidence.
+
+  6. Medium — A5: sequencing and deletion wiring are incomplete.
+
+     Characterization and compatibility evidence should precede the type refactor. Otherwise PR1 changes behavior before it is pinned.
+
+     Safer order:
+      1. Check in the disposition crosswalk, compatibility/hash characterization tests, negative-policy checks, and typed-key support in provider-leak
+         discovery.
+
+      2. Introduce and migrate the typed identities.
+      3. Add remaining integration/source evidence.
+      4. Delete the broad registry/verifier and all wiring atomically, after planted-mutation tests prove replacement coverage.
+
+     PR3 must reconcile justfile:67, the cheap-lane manifests, scripts/verifier_io.py:34, verifier-I/O tests, lane-governor requirements, and current
+     operational documentation.
+
+     scripts/run_fences.py:177 discovers whatever files still exist, so deleting a verifier silently shrinks coverage. Add a required-fence presence manifest.
+
+     Do not delete production_text; it belongs to the surviving provider-leak verifier at scripts/verify_bolt_v3_provider_leaks.py:900 and is imported by other
+     fences.
+
+     “Each PR reverts in one command” is true only in reverse dependency order; reverting PR1 beneath PR2/PR3 will not compile.
+
+  ## A7 recommendation
+
+  Rescoping to a permanent ~360-row literal ledger is safer than the proposed immediate deletion, but it is not the best final architecture. The ledger
+  duplicates code values, and updating a value plus its row still passes.
+
+  The stronger end state is:
+
+  - Delete the broad 2,604-row allowlist.
+  - Retain a small AST/semantic fence for new hardcodes, secret-bearing open maps, and raw provider-string dispatch.
+  - Add upstream/source-topology contracts for external logger targets and pinned NT APIs.
+  - Use exact wire, persisted-old-byte, and known-answer hash fixtures.
+  - Use sealed typed keys with compile-fail/API-surface tests.
+  - Keep a compact evidence manifest indexing invariants by owning test/type/fence, without duplicating their values.
+
+  So the registry-elimination goal survives the attack. The proposed four-home proof and “delete the fence entirely” execution do not.
+
+  Verification was run against an extracted tree of exact SHA 8d0af87: the runtime-verifier self-tests, merged-tree runtime audit, and shared verifier-I/O
+  tests all exited successfully. No compile-heavy Rust checks were run, and no repository files were edited.
+
+  Reviewer source/model: Codex, GPT-5.
+
+---
+
+that's the only review
+
+---
+
+why do we need 4 PRs?
+
+---
+
+lets get these reviewed and get feedback by GPT
+
+---
+
+## Verdict: still blocked
+
+  V2 incorporates the direction of every v1 finding, but it does not yet specify an implementable replacement for the blanket fence. The new “thin semantic
+  fence” cannot enforce “any new hardcode” with the repository’s current lexical Python tooling without either:
+
+  - becoming another exception ledger, or
+  - introducing compiler-enforced construction boundaries wider than the proposed ProviderKey refactor.
+
+  The registry-elimination goal remains sound. V2 is close, but not ready to execute.
+
+  ## Blocking findings
+
+  1. High — the thin fence cannot provide its claimed open-world guarantee as currently specified.
+
+     The existing verifier already demonstrates the limit of Python source inference: scripts/verify_bolt_v3_runtime_literals.py:311 lexes literals, scripts/
+     verify_bolt_v3_runtime_literals.py:517 guesses semantics from line/call context, and scripts/verify_bolt_v3_runtime_literals.py:118 falls back to a per-
+     site ledger. The shared scripts/rust_source_scanner.py:73 strips comments and literals; it is not a Rust AST or type checker.
+
+     A name/syntax rule is immediately evadable:
+
+     let timeout_ms = 5_000;              // suffix rule catches
+     let n = 5_000;                       // suffix rule misses
+     Foo { timeout_ms: n }                 // direct-field rule misses
+     Duration::from_millis(n)              // literal-argument rule misses
+
+     Tree-sitter or syn would parse this, but neither provides type provenance or interprocedural dataflow. A helper function, alias, UFCS call, arithmetic
+     expression, or associated constant still evades it. The repo currently has no Rust parser/lint dependency, while many runtime-sensitive config fields
+     remain raw u64, u32, and String, for example src/bolt_v3_config.rs:99.
+
+     Therefore:
+      - A Python fence can enforce a defined set of structural boundaries.
+      - It cannot honestly prove “every new runtime hardcode” independently of variable names.
+      - A custom HIR/Clippy lint could approach that, but maintaining a rustc-internal lint is disproportionate here.
+
+     This is the new v2 blocker.
+
+  2. High — the compatibility inventory remains underspecified and appears undercounted.
+
+     The six estimates total only about 2,360 rows, leaving roughly 244 of 2,604—9.4%—unaccounted for.
+
+     The proposed “~100 persisted/wire/hash” estimate is also low. A conservative exact-registry count gives:
+      - 93 obvious decision-evidence, operator-output, JSON-RPC, NT-persistence, sidecar-schema, and checksum rows.
+      - Plus 59 outcome-group rows appearing directly in fingerprint/canonical contexts.
+
+     That is already at least 152, before several other protocol and artifact classes.
+
+     Mandatory non-delete destinations include:
+      - Canonical hash framing at src/bolt_v3_outcome_groups.rs:633.
+      - Operator CLI JSON schemas at src/main.rs:804.
+      - JSON-RPC request/response shape at src/bolt_v3_providers/polymarket/collateral_accounting_source.rs:310.
+      - NT catalog metadata such as type_name at src/lake_batch.rs:36.
+      - Runtime-capture and execution-state sidecars.
+
+     More importantly, a row crosswalk cannot discover generated Serde schemas absent from the registry. src/bolt_v3_operator_artifacts.rs:109 has six
+     persisted field names, but the registry tracks only its filename and limits. Likewise src/main.rs:1170 exposes machine-readable fields not represented as
+     Rust literals.
+
+     The compatibility inventory must therefore be built from serialization/wire/catalog sinks as well as registry rows.
+
+     Decision evidence is correctly the model: it combines a versioned envelope validator at src/bolt_v3_decision_evidence.rs:3143 with old-byte migration
+     evidence at tests/bolt_v3_capital_admission_recovery_equivalence.rs:13.
+
+  3. High — A1’s three mechanisms remain collapsed into “deny-list + source-check.”
+
+     They need separate acceptance criteria:
+      - Finite upstream-derived deny-list: forbidden env names must be proven as a superset of the pinned upstream credential_env_vars() result. The market-
+        data test does this at src/bolt_v3_providers/market_data.rs:574. Binance and Polymarket currently only compare against duplicated expected arrays at
+        src/bolt_v3_secrets.rs:451.
+
+      - Open-world negative policy: src/bolt_v3_providers/market_data.rs:99 and arbitrary src/bolt_v3_reference_price.rs:289 cannot be made complete by calling
+        their lists “closed.” They need closed non-secret schemas/typed allowlists or a property derived from upstream credential fields.
+
+      - External source topology: each credential-log target must identify the pinned upstream source symbol/path or have an actual-log test. Same-constant
+        tests such as src/bolt_v3_live_node/tests/live_node_config.rs:719 do not prove target spelling.
+
+     V2 has the right vocabulary but not yet the independent oracles.
+
+  4. High — the sealed-key surface is still incomplete.
+
+     V2 correctly forbids the obvious string traits/accessors, but it omits:
+      - Display/ToString.
+      - Public FromStr, TryFrom<&str/String>, or named parse functions.
+      - Serde round-trip extraction.
+      - Conversion to NT Venue, followed by Venue::as_str().
+      - Persisted artifacts that still store provider_key: String.
+      - Capital-pool venue identity, currently venue_id: String.
+
+     These seams are visible at:
+      - src/bolt_v3_config.rs:752.
+      - src/bolt_v3_providers/mod.rs:574.
+      - src/bolt_v3_providers/hyperliquid_artifacts.rs:185.
+      - src/bolt_v3_config.rs:247.
+      - NT seam comparisons in src/bolt_v3_live_node/risk_admission_loss.rs:143.
+
+     Required domains should be explicit:
+      - ClientProviderKey.
+      - ReferencePriceProviderKey.
+      - A separate boundary/infrastructure adapter identity.
+      - A named, narrowly owned conversion to NT Venue.
+
+     Because config and artifacts must deserialize strings, absolute unextractability is impossible. Retain the narrower claim: raw literals cannot enter typed
+     dispatch APIs.## Verdict: still blocked
+
+  V2 correctly adopts the six-class architecture and preserves the goal of deleting the blanket registry. Most v1 objections are incorporated in principle.
+
+  It is not implementation-ready because the thin fence still promises more than the current tooling can deliver, the compatibility inventory cannot be derived
+  solely from registry rows, and the three-PR sequence does not fully preserve pin-before-change.
+
+  ## Blocking findings
+
+  1. High — Part 2: a Python “thin semantic fence” cannot enforce “any new hardcode” as stated.
+
+     The current verifier is lexical, not semantic: scripts/verify_bolt_v3_runtime_literals.py:311 extracts literals and scripts/
+     verify_bolt_v3_runtime_literals.py:517 applies line/call-context regexes. The shared scanner only strips comments and literals: scripts/
+     rust_source_scanner.py:73. There is no Rust AST/type-resolution dependency in the repository.
+
+     A field/name rule is immediately evadable:
+
+     let n = 5_000;
+     let delay = n;
+     tokio::time::sleep(Duration::from_millis(delay)).await;
+
+     A rule keyed on timeout_ms, assignment to a config field, or direct Duration::from_millis(5000) misses this after a variable/helper rename. tree-sitter or
+     syn would parse the syntax but still would not provide type-resolved dataflow.
+
+     This matters because many runtime values remain primitive u64, u32, and String fields, such as the timeout and interval fields at src/
+     bolt_v3_config.rs:99. The compiler cannot distinguish a config-derived u64 from a literal-derived one.
+
+     Therefore the proposed fence cannot simultaneously be:
+      - Sound for any new hardcoded runtime value.
+      - A small Python scanner.
+      - Free of per-site exceptions or a broad type migration.
+
+     A narrower, buildable structural fence is possible; specification follows below. But it is not equivalent to the current absolute claim.
+
+  2. High — A2 remains incomplete because the registry is not a persisted-schema inventory.
+
+     The registry only sees source literals. It does not see field names generated from Serde structs.
+
+     Concrete failure: rename LaunchIdentity.profile to profile_name. No registry row represents that field, current-current serialization tests still pass,
+     and an existing artifact becomes unreadable. See src/bolt_v3_operator_artifacts.rs:109, src/bolt_v3_operator_artifacts.rs:130, and src/
+     bolt_v3_operator_artifacts.rs:153.
+
+     The same issue exists for the machine-readable src/main.rs:1170 and production src/bolt_v3_reference_price.rs:109. The existing catalog integration
+     persists a test-only type, not ReferencePriceUpdate: tests/nt_custom_data_catalog_integration.rs:25.
+
+     Consequently:
+      - The crosswalk must cover all 2,604 old rows.
+      - A separate, sink-derived compatibility inventory must cover persisted structs, CLI JSON, wire builders, hash framing, and catalog data—including
+        schemas that never generated registry rows.
+
+     The ~100 estimate is also low. Ninety-three obvious registry rows cover decision evidence, operator output, JSON-RPC, persistence names, and sidecar
+     schemas; adding the 59 direct canonical/hash-label contexts already produces a conservative lower bound of 152.
+
+     Decision evidence is correctly selected as the model: it has schema version validation at src/bolt_v3_decision_evidence.rs:3143 and an old-version
+     migration fixture at tests/bolt_v3_capital_admission_recovery_equivalence.rs:13.
+
+  3. High — A1 is recognized but still collapses three different contracts.
+
+     “Thin fence + deny-list + source-check” is directionally correct only if implemented as three independently specified mechanisms:
+      - Finite upstream-derived deny-lists. Forbidden environment variables need an independent completeness oracle. The market-data implementation is the
+        correct pattern because it calls pinned NT credential_env_vars() functions: src/bolt_v3_providers/market_data.rs:550. Binance and Polymarket currently
+        only compare their constants against duplicated expected arrays at src/bolt_v3_secrets.rs:451.
+
+      - Open-world negative policy. DIRECT_CREDENTIAL_FIELDS cannot safely become merely a “closed deny-list.” Removing "api_secret" lets a valid upstream
+        field bypass the SSM-only policy. See src/bolt_v3_providers/market_data.rs:99 and src/bolt_v3_providers/market_data.rs:335. This needs a closed non-
+        secret schema or a set-disjointness property against upstream credential fields.
+
+      - External topology contracts. Credential-log strings must be proven against actual upstream logger targets or captured logging behavior. Iterating the
+        same constants through LoggerConfig.module_level is tautological: src/bolt_v3_live_node/tests/live_node_config.rs:719.
+
+     Likewise, arbitrary src/bolt_v3_reference_price.rs:289 cannot be made closed by adding more secret substrings. Prefer typed/allowlisted provenance fields.
+
+  4. High — A4’s forbidden API list is still incomplete.
+
+     V2 correctly bans the obvious accessors and string-comparison traits, but also needs to address:
+      - Display/ToString.
+      - Public FromStr, TryFrom<&str>, TryFrom<String>, parse, or into_inner.
+      - Serde construction and string serialization.
+      - Conversion to NT Venue, followed by Venue::as_str().
+      - Persisted artifact fields that remain String.
+
+     Current seams include:
+      - src/bolt_v3_config.rs:752.
+      - src/bolt_v3_providers/mod.rs:574.
+      - src/bolt_v3_providers/mod.rs:992.
+      - CapitalPoolBlock::venue_id: String at src/bolt_v3_config.rs:247.
+      - Hyperliquid artifacts with provider_key: String at src/bolt_v3_providers/hyperliquid_artifacts.rs:185.
+
+     V2 must explicitly name at least:
+      - ClientProviderKey.
+      - ReferencePriceProviderKey.
+      - A controlled conversion to NT Venue.
+      - Separate infrastructure/boundary IDs that are not provider identities.
+
+     Absolute string recovery cannot be prevented if serde/config parsing exists. The claim should remain: typed dispatch paths cannot accept or compare raw
+     strings, backed by a static ban on raw projections.
+
+  5. Medium-high — A6’s crosswalk is still an intention, not a gate specification.
+
+     The approximate classes total about 2,360 rows, leaving roughly 244 of 2,604 unexplained. The crosswalk is therefore essential, not administrative.
+
+     It should specify:
+      - An immutable source registry digest and commit.
+      - One stable row ID per old (path, kind, literal, context) tuple.
+      - Exactly one closed-enum disposition per row.
+      - Required fields per disposition.
+      - No duplicates, unknown rows, wildcards, or missing rows.
+      - Closed delete-rationale codes rather than arbitrary prose.
+      - Phase state: planned may exist in PR1, but PR3 requires zero pending destinations.
+      - Validation that referenced fixture paths, source contracts, types, tests, and commands exist.
+      - A separate non-row persisted-schema inventory.
+
+     Merely checking that a named test function exists is insufficient. High-risk destinations need planted mutations or known-answer fixtures proving the
+     evidence fails when the protected value changes.
+
+     Anchor the receipt to the old registry digest so PR2 migrations do not force line/context updates. It is a migration artifact, not a successor ledger.
+
+  ## Part 2 — concrete thin-fence answer
+
+  Can it be built without re-creating the churn? Yes, but only as a structural provenance fence—not as a general literal classifier.
+
+  A workable design has three layers.
+
+  1. Compiler-enforced boundaries
+
+     Runtime-sensitive values must cross named constructors or modules:
+      - Config-derived durations, IDs, quantities, prices, URLs, and provider identities.
+      - Protocol/ABI constants.
+      - Algorithm constants with evidence.
+
+     Use sealed types where proportionate. For external types, stock Clippy’s disallowed-methods, disallowed-types, and disallowed-fields can prohibit raw
+     constructors outside approved boundary modules. This is type/path-resolved, so imports, aliases, and UFCS do not reopen the simple rename hole.
+
+     cargo-deny cannot help; this repository’s deny.toml:1 governs dependencies, licenses, and advisories—not source expressions. A custom Clippy/HIR lint
+     would be powerful but disproportionate unless raw primitive values remain unwrapped.
+
+  2. Thin Python ownership fence
+
+     Scan all production src/**/*.rs through the surviving scripts/verify_bolt_v3_provider_leaks.py:900, then flag:
+      - Sensitive constructors outside approved config/protocol/algorithm boundary modules.
+      - Raw provider/reference-key declarations or string projections outside their serde/NT boundary.
+      - Runtime-sensitive constants outside an approved declaration macro/module.
+      - Config defaults or fallback literals outside the config-loading boundary.
+      - Evidence declarations whose referenced test/source/fixture no longer exists.
+      - Missing required fences or paired self-tests.
+
+     Its configuration should list types, constructors, owner modules, and evidence categories, never literal values or source lines.
+
+     Approved stable constants can use a local declaration form such as an invariant_const! macro referencing an evidence symbol. Changing the value does not
+     change the fence configuration; the KAT or fixture catches the semantic drift.
+
+  3. Mutation and false-positive fixtures
+
+     Required planted failures should include:
+      - Direct literal timeout.
+      - Literal moved through a renamed variable.
+      - Local const/helper indirection.
+      - Imported alias and UFCS constructor.
+      - Hardcoded provider identity after NT conversion.
+      - Quantity/price literal.
+      - Display/serde string round-trip comparison.
+
+     Also prove that diagnostics, tests, pure code-owned schema names, and approved protocol/KAT declarations remain accepted.
+
+  A Python rule based only on variable names, field suffixes, or direct literal arguments is not acceptable. If v2 insists that this one script alone proves
+  all of AGENTS.md rule 1, the blocker remains.
+
+  ## Part 3 — recommend four PRs
+
+  The current three-PR cut puts value tests and the new fence in the same PR as the sealed-type migration. That violates the spirit of pin-before-change and
+  makes the highest-risk new guard difficult to review independently.
+
+  Use four:
+
+  1. PIN / INVENTORY
+
+     Crosswalk schema and validator, non-row compatibility inventory, all compatibility/value/source evidence, independent deny-list completeness tests, and
+     typed-declaration fixtures. No runtime behavior changes.
+
+  2. GUARD
+
+     Thin structural fence, Clippy boundary configuration where useful, required-fence manifest, and planted-mutation/false-positive tests. Prove it against
+     the unchanged production tree.
+
+  3. TYPE
+
+     Migrate client-provider and reference-provider identities, NT conversion, artifacts, maps, and dispatch APIs. This PR is reviewable solely against
+     already-pinned behavior and already-active guards.
+
+  4. DELETE
+
+     Remove the blanket registry/verifier and all exact wiring/documentation references. The crosswalk completion gate must report zero pending destinations.
+
+  If constrained to three, merge PIN and GUARD—not GUARD and TYPE. PR2 should remain a type-only migration.
+
+  The presence manifest also needs defined ownership: scripts/run_fences.py:177 must load the manifest first and fail on a missing required fence, missing
+  paired test, or duplicate entry. production_text is correctly preserved because it is owned by the surviving provider-leak verifier.
+
+  ## A1–A7 disposition
+
+  - A1: partially addressed; mechanisms need separate completeness contracts.
+  - A2: mechanism corrected, inventory still incomplete and count understated.
+  - A3: addressed, provided every row has an independent—not self-referential—oracle.
+  - A4: partially addressed; domains, parsing/serialization, and NT seam remain unspecified.
+  - A5: deletion mechanics improved; sequencing should become four PRs.
+  - A6: concept accepted; validator schema and non-row inventory still required.
+  - A7: resolved. Retiring the blanket ledger in favor of typed boundaries, compatibility evidence, and small structural guards is the stronger target.
+
+  Exact-SHA lightweight verification passed: runtime-literal self-tests and verifier, provider-leak self-tests and verifier, and shared verifier-I/O tests all
+  exited 0. No Rust compilation was run.

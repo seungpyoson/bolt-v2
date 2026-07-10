@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "df2e6828a3ca",
+  "strategy": "manual-commit",
+  "branch": "fix/1179-trader-not-started-launch-abort",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_live_node.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/df/2e6828a3ca/0/metadata.json",
+      "transcript": "/df/2e6828a3ca/0/full.jsonl",
+      "compact_transcript": "/df/2e6828a3ca/0/transcript.jsonl",
+      "content_hash": "/df/2e6828a3ca/0/content_hash.txt",
+      "prompt": "/df/2e6828a3ca/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 68840,
+    "cache_creation_tokens": 6080020,
+    "cache_read_tokens": 267853728,
+    "output_tokens": 1013483,
+    "api_call_count": 678
+  }
+}

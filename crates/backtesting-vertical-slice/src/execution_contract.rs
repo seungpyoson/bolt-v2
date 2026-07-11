@@ -8,9 +8,11 @@ use anyhow::{Context, Result, ensure};
 use nautilus_model::{
     data::BookOrder,
     enums::OrderSide,
+    events::OrderFilled,
     identifiers::OrderId,
     instruments::InstrumentAny,
     orderbook::OrderBook,
+    position::Position,
     types::{Money, Price, Quantity},
 };
 
@@ -30,13 +32,14 @@ pub struct ExecutionContractTrace<'a> {
     pub quote_quantity: bool,
     pub effective_base_quantity: Quantity,
     pub fills: &'a [ExecutionFill],
+    pub position_fills: &'a [OrderFilled],
     pub settlement_price: Price,
     pub exit_price: Price,
     pub initial_cash: Money,
     pub terminal_cash: Money,
     pub realized_pnl: Money,
-    pub fill_commissions: &'a [Money],
     pub position_commission: Money,
+    pub expected_fill_commission: Money,
     pub canonical_resolved_config_bytes: &'a [u8],
     pub canonical_resolved_config_sha256: &'a str,
 }
@@ -107,20 +110,52 @@ pub fn validate_execution_contract(
         "terminal exit price does not equal the configured settlement price"
     );
 
+    let (opening_fill, closing_fills) = trace
+        .position_fills
+        .split_first()
+        .context("execution contract requires position fills")?;
+    let position_id = opening_fill
+        .position_id
+        .context("opening fill has no position ID")?;
+    ensure!(
+        trace.position_fills.iter().all(|fill| {
+            fill.instrument_id == trace.instrument.id() && fill.position_id == Some(position_id)
+        }),
+        "position replay fills do not share one instrument and position ID"
+    );
+    let mut replayed_position = Position::new(trace.instrument, *opening_fill);
+    for fill in closing_fills {
+        replayed_position.apply(fill);
+    }
+    let replayed_pnl = replayed_position
+        .realized_pnl
+        .context("replayed position did not realize PnL")?;
+    ensure!(
+        replayed_pnl == trace.realized_pnl,
+        "cached realized PnL does not equal PnL replayed from typed fills"
+    );
+
     let cash_change = trace
         .terminal_cash
         .checked_sub(trace.initial_cash)
         .context("terminal cash subtraction overflow or scale mismatch")?;
     ensure!(
-        cash_change == trace.realized_pnl,
-        "terminal cash change does not equal realized PnL"
+        cash_change == replayed_pnl,
+        "terminal cash change does not equal PnL replayed from typed fills"
     );
 
-    let total_fill_commission = trace.fill_commissions.iter().try_fold(
+    let total_fill_commission = trace.position_fills.iter().try_fold(
         Money::zero(trace.position_commission.currency),
-        |total, commission| {
+        |total, fill| {
+            let commission = fill
+                .commission
+                .unwrap_or_else(|| Money::zero(trace.position_commission.currency));
+            ensure!(
+                commission == trace.expected_fill_commission,
+                "fill commission does not equal the explicit fixture assumption"
+            );
             total
-                .checked_add(*commission)
+                .checked_add(commission)
                 .context("fill commission addition overflow or scale mismatch")
         },
     )?;
@@ -144,7 +179,7 @@ mod tests {
         instrument: InstrumentAny,
         book: OrderBook,
         fills: Vec<ExecutionFill>,
-        fill_commissions: Vec<Money>,
+        position_fills: Vec<OrderFilled>,
         config_bytes: Vec<u8>,
         config_hash: String,
     }
@@ -159,13 +194,14 @@ mod tests {
                 quote_quantity: true,
                 effective_base_quantity: Quantity::from("2.71"),
                 fills: &self.fills,
+                position_fills: &self.position_fills,
                 settlement_price: Price::from("1.000"),
                 exit_price: Price::from("1.000"),
                 initial_cash: Money::from("1000000.00 USDC"),
                 terminal_cash: Money::from("1000001.57 USDC"),
                 realized_pnl: Money::from("1.57 USDC"),
-                fill_commissions: &self.fill_commissions,
                 position_commission: Money::from("0.00 USDC"),
+                expected_fill_commission: Money::from("0.00 USDC"),
                 canonical_resolved_config_bytes: &self.config_bytes,
                 canonical_resolved_config_sha256: &self.config_hash,
             }
@@ -188,6 +224,21 @@ mod tests {
         );
         let config_bytes = br#"{"order_type":"MARKET","quote_quantity":true}"#.to_vec();
         let config_hash = sha256_hex(&config_bytes);
+        let position_id = nautilus_model::identifiers::PositionId::from("P-001");
+        let entry_fill = test_fill(
+            instrument.id(),
+            position_id,
+            OrderSide::Buy,
+            "entry",
+            "0.420",
+        );
+        let exit_fill = test_fill(
+            instrument.id(),
+            position_id,
+            OrderSide::Sell,
+            "exit",
+            "1.000",
+        );
         Fixture {
             instrument,
             book,
@@ -195,10 +246,46 @@ mod tests {
                 price: Price::from("0.420"),
                 quantity: Quantity::from("2.71"),
             }],
-            fill_commissions: vec![Money::from("0.00 USDC")],
+            position_fills: vec![entry_fill, exit_fill],
             config_bytes,
             config_hash,
         }
+    }
+
+    fn test_fill(
+        instrument_id: nautilus_model::identifiers::InstrumentId,
+        position_id: nautilus_model::identifiers::PositionId,
+        side: OrderSide,
+        trade_id: &str,
+        price: &str,
+    ) -> OrderFilled {
+        use nautilus_model::{
+            enums::{LiquiditySide, OrderType},
+            identifiers::{AccountId, ClientOrderId, StrategyId, TradeId, TraderId, VenueOrderId},
+            types::Currency,
+        };
+
+        OrderFilled::new(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("STRATEGY-001"),
+            instrument_id,
+            ClientOrderId::from(format!("O-{trade_id}").as_str()),
+            VenueOrderId::from(format!("V-{trade_id}").as_str()),
+            AccountId::from("POLYMARKET-001"),
+            TradeId::from(trade_id),
+            side,
+            OrderType::Market,
+            Quantity::from("2.71"),
+            Price::from(price),
+            Currency::USDC(),
+            LiquiditySide::Taker,
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(if side == OrderSide::Buy { 1 } else { 2 }),
+            UnixNanos::from(if side == OrderSide::Buy { 1 } else { 2 }),
+            false,
+            Some(position_id),
+            None,
+        )
     }
 
     #[test]
@@ -256,9 +343,11 @@ mod tests {
     #[test]
     fn rejects_correlated_wrong_fill_and_position_commission() {
         let mut fixture = fixture();
-        fixture.fill_commissions[0] = Money::from("0.01 USDC");
+        fixture.position_fills[0].commission = Some(Money::from("0.01 USDC"));
         let mut trace = fixture.trace();
         trace.position_commission = Money::from("0.01 USDC");
+        trace.realized_pnl = Money::from("1.56 USDC");
+        trace.terminal_cash = Money::from("1000001.56 USDC");
         assert!(validate_execution_contract(&trace).is_err());
     }
 

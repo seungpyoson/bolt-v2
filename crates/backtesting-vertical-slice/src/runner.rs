@@ -35,7 +35,7 @@ use bolt_v2::{
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
         BoltV3SubmitReservationMetadataEvidence,
     },
-    bolt_v3_operator_artifacts::{json_artifact_bytes, json_artifact_sha256},
+    bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -48,6 +48,8 @@ use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_core::UnixNanos;
+#[cfg(test)]
+use nautilus_model::orderbook::OrderBook;
 use nautilus_model::{
     data::{
         Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
@@ -65,6 +67,7 @@ use nautilus_model::{
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
+use serde::Serialize;
 
 use super::{
     canonical_trades::{
@@ -580,6 +583,29 @@ struct AddedManifestStrategy {
     resolved_config_bytes: Option<Vec<u8>>,
 }
 
+#[derive(Serialize)]
+struct ResolvedTakerConfigIdentity<'a> {
+    schema_version: &'static str,
+    production_config_bundle_checksum: Option<&'a str>,
+    applied_override: Option<&'a bolt_v2::bolt_v3_config::BacktestConfigOverride>,
+    raw_strategy_config: &'a toml::Value,
+}
+
+fn canonical_resolved_taker_config_bytes(
+    raw_strategy_config: &toml::Value,
+    production_config_bundle_checksum: Option<&str>,
+    applied_override: Option<&bolt_v2::bolt_v3_config::BacktestConfigOverride>,
+) -> Result<Vec<u8>> {
+    json_artifact_bytes(&ResolvedTakerConfigIdentity {
+        schema_version: "backtest-resolved-taker-config.v1",
+        production_config_bundle_checksum,
+        applied_override,
+        raw_strategy_config,
+    })
+    .map_err(|error| anyhow::anyhow!(error))
+    .context("serialize canonical production-resolved taker configuration")
+}
+
 fn register_backtest_data_clients(
     engine: &mut BacktestEngine,
     client_ids: impl IntoIterator<Item = ClientId>,
@@ -775,69 +801,78 @@ fn add_manifest_strategy(
                     "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
                 )
             })?;
-            let (raw_config, config_override_report, realized_volatility_runtime) =
-                if let Some(overlay) = &strategy.config_overlay {
-                    let production_root_config_path = resolve_existing_input_path(Path::new(
-                        &overlay.production_root_config_path,
-                    ));
-                    let loaded =
-                        load_bolt_v3_config(&production_root_config_path).with_context(|| {
-                            format!(
-                                "load production config root {}",
-                                overlay.production_root_config_path
-                            )
-                        })?;
-                    let override_spec = overlay.to_bolt_v3_override();
-                    let (loaded, report) = apply_backtest_config_override(loaded, &override_spec)
-                        .with_context(|| {
+            let (
+                raw_config,
+                config_override_report,
+                realized_volatility_runtime,
+                resolved_config_bytes,
+            ) = if let Some(overlay) = &strategy.config_overlay {
+                let production_root_config_path =
+                    resolve_existing_input_path(Path::new(&overlay.production_root_config_path));
+                let loaded =
+                    load_bolt_v3_config(&production_root_config_path).with_context(|| {
+                        format!(
+                            "load production config root {}",
+                            overlay.production_root_config_path
+                        )
+                    })?;
+                let override_spec = overlay.to_bolt_v3_override();
+                let (loaded, report) = apply_backtest_config_override(loaded, &override_spec)
+                    .with_context(|| {
                         format!(
                             "apply backtest config overlay {}",
                             overlay.override_delta.label
                         )
                     })?;
-                    let loaded_strategy = loaded
-                        .strategies
-                        .iter()
-                        .find(|loaded_strategy| {
-                            loaded_strategy.config.strategy_instance_id
-                                == overlay.override_delta.strategy_instance_id
-                        })
-                        .with_context(|| {
-                            format!(
-                                "overlay strategy_instance_id {} was not present after load",
-                                overlay.override_delta.strategy_instance_id
-                            )
-                        })?;
-                    let raw_config = raw_taker_config(loaded_strategy, &loaded)
-                        .context("build raw taker config from overlaid production config")?;
-                    let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
-                        .map_err(|error| anyhow::anyhow!("{error}"))
-                        .context("build realized-volatility runtime from overlaid config")?;
-                    register_backtest_data_clients(
-                        engine,
-                        effective_taker_subscription_data_client_ids(loaded_strategy, &runtime),
-                    );
-                    let runtime = Arc::new(Mutex::new(runtime));
-                    (raw_config, Some(report), Some(runtime))
-                } else {
-                    let raw_config =
-                        strategy
-                            .parameters
-                            .get(PARAM_CONFIG_TOML)
-                            .with_context(|| {
-                                format!("strategy parameter {PARAM_CONFIG_TOML} is required")
-                            })?;
-                    let raw_config = toml::from_str::<toml::Value>(raw_config)
-                        .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
-                    (raw_config, None, None)
-                };
+                let loaded_strategy = loaded
+                    .strategies
+                    .iter()
+                    .find(|loaded_strategy| {
+                        loaded_strategy.config.strategy_instance_id
+                            == overlay.override_delta.strategy_instance_id
+                    })
+                    .with_context(|| {
+                        format!(
+                            "overlay strategy_instance_id {} was not present after load",
+                            overlay.override_delta.strategy_instance_id
+                        )
+                    })?;
+                let raw_config = raw_taker_config(loaded_strategy, &loaded)
+                    .context("build raw taker config from overlaid production config")?;
+                let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+                    .context("build realized-volatility runtime from overlaid config")?;
+                register_backtest_data_clients(
+                    engine,
+                    effective_taker_subscription_data_client_ids(loaded_strategy, &runtime),
+                );
+                let runtime = Arc::new(Mutex::new(runtime));
+                let resolved_config_bytes = canonical_resolved_taker_config_bytes(
+                    &raw_config,
+                    Some(&loaded.config_bundle_checksum),
+                    Some(&override_spec),
+                )?;
+                (
+                    raw_config,
+                    Some(report),
+                    Some(runtime),
+                    resolved_config_bytes,
+                )
+            } else {
+                let raw_config = strategy
+                    .parameters
+                    .get(PARAM_CONFIG_TOML)
+                    .with_context(|| {
+                        format!("strategy parameter {PARAM_CONFIG_TOML} is required")
+                    })?;
+                let raw_config = toml::from_str::<toml::Value>(raw_config)
+                    .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
+                let resolved_config_bytes =
+                    canonical_resolved_taker_config_bytes(&raw_config, None, None)?;
+                (raw_config, None, None, resolved_config_bytes)
+            };
             let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
-            let resolved_config_hash = json_artifact_sha256(&raw_config)
-                .map_err(|error| anyhow::anyhow!(error))
-                .context("hash canonical production-resolved taker configuration")?;
-            let resolved_config_bytes = json_artifact_bytes(&raw_config)
-                .map_err(|error| anyhow::anyhow!(error))
-                .context("serialize canonical production-resolved taker configuration")?;
+            let resolved_config_hash = sha256_hex(&resolved_config_bytes);
             let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
             let submit_admission =
                 Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
@@ -1285,6 +1320,7 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> 
         .collect()
 }
 
+#[cfg(test)]
 fn run_nt_backtest_node_with_execution_contract<F>(
     manifest: &BacktestingRunManifest,
     validator: F,
@@ -1295,6 +1331,24 @@ where
     let mut output = run_nt_backtest_node(manifest)?;
     output.execution_contract_report = Some(validator(&output)?);
     Ok(output)
+}
+
+#[cfg(test)]
+fn replay_executable_book_at_submission(
+    instrument_id: InstrumentId,
+    deltas: &[OrderBookDelta],
+    submission_timestamp: UnixNanos,
+) -> Result<OrderBook> {
+    let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2Mbp);
+    for delta in deltas
+        .iter()
+        .filter(|delta| delta.ts_init <= submission_timestamp)
+    {
+        book.apply_delta(delta)
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("replay executable book with NautilusTrader")?;
+    }
+    Ok(book)
 }
 
 /// Run one minimal NautilusTrader `BacktestNode` backtest over accepted data and
@@ -2269,8 +2323,8 @@ mod tests {
     use anyhow::{Context, Result, ensure};
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
-        data::TradeTick,
-        enums::{AggressorSide, AssetClass, BookType, OrderSide},
+        data::{OrderBookDelta, TradeTick},
+        enums::{AggressorSide, AssetClass, BookAction, BookType, OrderSide},
         identifiers::{InstrumentId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
         orderbook::OrderBook,
@@ -2284,9 +2338,11 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        assert_read_back_matches, ensure_settlement_currency_funded, expected_iterations,
-        iterations_mismatch, run_nt_backtest_node, run_nt_backtest_node_with_execution_contract,
-        selector_provenance_hashes, time_window_excludes_all_data,
+        assert_read_back_matches, canonical_resolved_taker_config_bytes,
+        ensure_settlement_currency_funded, expected_iterations, iterations_mismatch,
+        replay_executable_book_at_submission, run_nt_backtest_node,
+        run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
+        time_window_excludes_all_data,
     };
     use crate::canonical_market_data::{
         CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalQuotesTable,
@@ -2309,8 +2365,9 @@ mod tests {
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
         RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
-        STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource,
-        StrategySource, StrategySourceKind,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_FEE_BPS,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
+        StrategySourceKind,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2751,6 +2808,37 @@ mod tests {
         Ok(())
     }
 
+    fn write_execution_contract_smoke_catalog(catalog_root: &Path) -> Result<()> {
+        let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
+        let instrument_id = instrument.id();
+        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        catalog
+            .write_instruments(vec![instrument])
+            .context("write execution-contract smoke instrument")?;
+        catalog
+            .write_to_parquet(
+                vec![
+                    maker_smoke_trade(
+                        instrument_id,
+                        "execution-contract-entry",
+                        AggressorSide::Buyer,
+                        MAKER_SMOKE_TS_NS,
+                    ),
+                    maker_smoke_trade(
+                        instrument_id,
+                        "execution-contract-exit",
+                        AggressorSide::Seller,
+                        MAKER_SMOKE_TS_NS + 1_000_000,
+                    ),
+                ],
+                None,
+                None,
+                None,
+            )
+            .context("write execution-contract smoke trade ticks")?;
+        Ok(())
+    }
+
     fn maker_smoke_config_toml() -> String {
         r#"
         strategy_id = "binary_oracle_maker-backtest-smoke"
@@ -2939,44 +3027,193 @@ mod tests {
 
     #[test]
     fn backtest_runner_invokes_execution_contract_validator() -> Result<()> {
-        let tempdir = tempfile::TempDir::new().context("create maker smoke catalog root")?;
-        write_maker_smoke_catalog(tempdir.path())?;
-        let manifest = maker_smoke_manifest(tempdir.path());
-        let instrument =
-            InstrumentAny::BinaryOption(nautilus_model::instruments::stubs::binary_option());
-        let book = OrderBook::new(instrument.id(), BookType::L2Mbp);
-        let fills = Vec::new();
-        let commissions = Vec::new();
-        let trace = crate::execution_contract::ExecutionContractTrace {
-            instrument: &instrument,
-            executable_book: &book,
-            order_side: OrderSide::Buy,
-            submitted_quantity: Quantity::from("1.00"),
-            quote_quantity: false,
-            effective_base_quantity: Quantity::from("1.00"),
-            fills: &fills,
-            settlement_price: Price::from("1.000"),
-            exit_price: Price::from("1.000"),
-            initial_cash: Money::from("100.00 USDC"),
-            terminal_cash: Money::from("100.00 USDC"),
-            realized_pnl: Money::from("0.00 USDC"),
-            fill_commissions: &commissions,
-            position_commission: Money::from("0.00 USDC"),
-            canonical_resolved_config_bytes: b"resolved-config",
-            canonical_resolved_config_sha256: &"0".repeat(64),
-        };
+        let tempdir = tempfile::TempDir::new().context("create execution smoke catalog root")?;
+        write_execution_contract_smoke_catalog(tempdir.path())?;
+        let mut manifest = maker_smoke_manifest(tempdir.path());
+        manifest.run_id = "execution-contract-runner-smoke".to_string();
+        manifest.strategy.registry_key = STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE.to_string();
+        manifest.strategy.parameters = BTreeMap::from([
+            ("trade_size".to_string(), "1.00".to_string()),
+            ("entry_after_trades".to_string(), "1".to_string()),
+            ("exit_after_trades".to_string(), "1".to_string()),
+            ("side".to_string(), "buy".to_string()),
+        ]);
+        manifest.catalog_inputs.truncate(1);
+        let config_bytes = b"execution-contract-runner-smoke";
+        manifest.strategy_config_hash = sha256_hex(config_bytes);
 
-        let error = run_nt_backtest_node_with_execution_contract(&manifest, |_| {
-            crate::execution_contract::validate_execution_contract(&trace)
-        })
-        .err()
-        .context("runner skipped the invalid execution contract")?;
+        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output| {
+            let position = output
+                .positions
+                .first()
+                .context("fast execution-contract run produced no position")?;
+            let entry_order = output
+                .order_terminals
+                .iter()
+                .find(|order| {
+                    order
+                        .fills
+                        .first()
+                        .is_some_and(|fill| fill.order_side == OrderSide::Buy)
+                })
+                .context("fast execution-contract run produced no entry fill")?;
+            let entry_fills: Vec<_> = entry_order
+                .fills
+                .iter()
+                .map(|fill| crate::execution_contract::ExecutionFill {
+                    price: fill.last_px,
+                    quantity: fill.last_qty,
+                })
+                .collect();
+            let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
+            let entry_price = entry_order.fills[0].last_px;
+            let mut book = OrderBook::new(instrument.id(), BookType::L2Mbp);
+            book.add(
+                nautilus_model::data::BookOrder::new(
+                    OrderSide::Sell,
+                    entry_price,
+                    entry_order.effective_quantity,
+                    1,
+                ),
+                0,
+                1,
+                entry_order.submission_timestamp.unwrap_or_default(),
+            );
+            let realized_pnl = position
+                .realized_pnl
+                .context("fast execution-contract position did not realize PnL")?;
+            let terminal_cash = output
+                .account_balances
+                .iter()
+                .find(|balance| balance.currency == realized_pnl.currency)
+                .map(|balance| balance.total)
+                .context("fast execution-contract run omitted terminal cash")?;
+            let position_commission = position
+                .commissions
+                .get(&realized_pnl.currency)
+                .copied()
+                .unwrap_or_else(|| Money::zero(realized_pnl.currency));
+            let exit_price = position
+                .events
+                .last()
+                .context("fast execution-contract position omitted its exit fill")?
+                .last_px;
+
+            crate::execution_contract::validate_execution_contract(
+                &crate::execution_contract::ExecutionContractTrace {
+                    instrument: &instrument,
+                    executable_book: &book,
+                    order_side: OrderSide::Buy,
+                    submitted_quantity: entry_order.initialized_quantity,
+                    quote_quantity: entry_order.initialized_quote_quantity,
+                    effective_base_quantity: entry_order.effective_quantity,
+                    fills: &entry_fills,
+                    position_fills: &position.events,
+                    settlement_price: exit_price,
+                    exit_price,
+                    initial_cash: Money::from("1000000.00 USDC"),
+                    terminal_cash,
+                    realized_pnl,
+                    position_commission,
+                    expected_fill_commission: Money::zero(realized_pnl.currency),
+                    canonical_resolved_config_bytes: config_bytes,
+                    canonical_resolved_config_sha256: &manifest.strategy_config_hash,
+                },
+            )
+        })?;
+        ensure!(
+            output.execution_contract_report.is_some(),
+            "runner omitted validation for its actual economic output"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn executable_book_replay_excludes_late_arriving_deltas() -> Result<()> {
+        let instrument_id = InstrumentId::from(MAKER_SMOKE_YES_INSTRUMENT);
+        let timely = OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            nautilus_model::data::BookOrder::new(
+                OrderSide::Sell,
+                Price::from("0.420"),
+                Quantity::from("21.52"),
+                1,
+            ),
+            0,
+            1,
+            UnixNanos::from(10),
+            UnixNanos::from(100),
+        );
+        let late = OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            nautilus_model::data::BookOrder::new(
+                OrderSide::Sell,
+                Price::from("0.410"),
+                Quantity::from("50.00"),
+                2,
+            ),
+            0,
+            2,
+            UnixNanos::from(9),
+            UnixNanos::from(101),
+        );
+
+        let book = replay_executable_book_at_submission(
+            instrument_id,
+            &[timely, late],
+            UnixNanos::from(100),
+        )?;
 
         ensure!(
-            error
-                .to_string()
-                .contains("canonical resolved configuration bytes"),
-            "runner returned an unrelated error: {error:#}"
+            book.best_ask_price() == Some(Price::from("0.420")),
+            "late-arriving delta leaked into the executable book"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolved_config_identity_covers_applied_rv_source_filter() -> Result<()> {
+        let raw_config = toml::from_str::<toml::Value>(maker_smoke_config_toml())?;
+        let mut override_spec = StrategyConfigOverlaySource {
+            production_root_config_path: "config/root.toml".to_string(),
+            override_delta: ManifestBacktestConfigOverride {
+                label: "test override".to_string(),
+                strategy_instance_id: "binary_oracle_btc".to_string(),
+                signal_role: "primary".to_string(),
+                signal_data_client_id: "okx_data".to_string(),
+                signal_instrument_id: "BTC-USDT.OKX".to_string(),
+                realized_volatility_surface_id: "btc_usdt_midpoint_rv".to_string(),
+                keep_realized_volatility_sources: vec![
+                    ManifestRealizedVolatilitySourceSelector {
+                        data_client_id: "okx_data".to_string(),
+                        instrument_id: "BTC-USDT.OKX".to_string(),
+                    },
+                    ManifestRealizedVolatilitySourceSelector {
+                        data_client_id: "bybit_data".to_string(),
+                        instrument_id: "BTCUSDT-SPOT.BYBIT".to_string(),
+                    },
+                ],
+            },
+        }
+        .to_bolt_v3_override();
+        let production_checksum = "a".repeat(64);
+        let both_sources = canonical_resolved_taker_config_bytes(
+            &raw_config,
+            Some(&production_checksum),
+            Some(&override_spec),
+        )?;
+        override_spec.keep_realized_volatility_sources.pop();
+        let okx_only = canonical_resolved_taker_config_bytes(
+            &raw_config,
+            Some(&production_checksum),
+            Some(&override_spec),
+        )?;
+
+        ensure!(
+            sha256_hex(&both_sources) != sha256_hex(&okx_only),
+            "RV source filter changed without changing resolved-config provenance"
         );
         Ok(())
     }
@@ -3280,11 +3517,17 @@ mod tests {
         down_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
     ) -> Result<crate::execution_contract::ExecutionContractReport> {
         let settlement_ts = UnixNanos::from(ISSUE_789_END_NS as u64);
-        let entry_order = output
+        let entry_orders: Vec<_> = output
             .order_terminals
             .iter()
-            .find(|order| order.fills.iter().any(|fill| fill.ts_event < settlement_ts))
-            .context("issue #789 produced no pre-settlement entry fill")?;
+            .filter(|order| order.fills.iter().any(|fill| fill.ts_event < settlement_ts))
+            .collect();
+        ensure!(
+            entry_orders.len() == 1,
+            "issue #789 requires exactly one pre-settlement entry order, got {}",
+            entry_orders.len()
+        );
+        let entry_order = entry_orders[0];
         let entry_fills: Vec<_> = entry_order
             .fills
             .iter()
@@ -3303,18 +3546,14 @@ mod tests {
         } else {
             anyhow::bail!("issue #789 fill instrument {instrument_id} has no PMXT projection")
         };
-        let fill_ts = entry_fills[0].ts_event;
-        let mut executable_book = OrderBook::new(instrument_id, BookType::L2Mbp);
-        for delta in projection
-            .order_book_deltas
-            .iter()
-            .filter(|delta| delta.ts_event <= fill_ts)
-        {
-            executable_book
-                .apply_delta(delta)
-                .map_err(|error| anyhow::anyhow!(error))
-                .context("replay PMXT executable book with NautilusTrader")?;
-        }
+        let submission_timestamp = entry_order
+            .submission_timestamp
+            .context("issue #789 entry order has no submission timestamp")?;
+        let executable_book = replay_executable_book_at_submission(
+            instrument_id,
+            &projection.order_book_deltas,
+            submission_timestamp,
+        )?;
         let observed_fills: Vec<_> = entry_fills
             .iter()
             .map(|fill| crate::execution_contract::ExecutionFill {
@@ -3322,20 +3561,32 @@ mod tests {
                 quantity: fill.last_qty,
             })
             .collect();
-        let position = output
+        let positions: Vec<_> = output
             .positions
             .iter()
-            .find(|position| position.instrument_id == instrument_id)
-            .context("issue #789 entry fill has no Nautilus position")?;
+            .filter(|position| position.instrument_id == instrument_id)
+            .collect();
+        ensure!(
+            positions.len() == 1,
+            "issue #789 requires exactly one position for {instrument_id}, got {}",
+            positions.len()
+        );
+        let position = positions[0];
         let realized_pnl = position
             .realized_pnl
             .context("issue #789 position has no realized PnL")?;
-        let terminal_cash = output
+        let matching_balances: Vec<_> = output
             .account_balances
             .iter()
-            .find(|balance| balance.currency == realized_pnl.currency)
-            .map(|balance| balance.total)
-            .context("issue #789 settlement account has no terminal cash balance")?;
+            .filter(|balance| balance.currency == realized_pnl.currency)
+            .collect();
+        ensure!(
+            matching_balances.len() == 1,
+            "issue #789 requires exactly one terminal {} balance, got {}",
+            realized_pnl.currency,
+            matching_balances.len()
+        );
+        let terminal_cash = matching_balances[0].total;
         let initial_cash_text = manifest
             .venue
             .starting_balances
@@ -3345,11 +3596,6 @@ mod tests {
             .replace('_', "");
         let initial_cash =
             Money::from_str(&initial_cash_text).context("parse issue #789 exact initial cash")?;
-        let fill_commissions: Vec<_> = position
-            .events
-            .iter()
-            .filter_map(|fill| fill.commission)
-            .collect();
         let position_commission = position
             .commissions
             .get(&realized_pnl.currency)
@@ -3382,13 +3628,14 @@ mod tests {
                 quote_quantity: entry_order.initialized_quote_quantity,
                 effective_base_quantity: entry_order.effective_quantity,
                 fills: &observed_fills,
+                position_fills: &position.events,
                 settlement_price,
                 exit_price,
                 initial_cash,
                 terminal_cash,
                 realized_pnl,
-                fill_commissions: &fill_commissions,
                 position_commission,
+                expected_fill_commission: Money::zero(realized_pnl.currency),
                 canonical_resolved_config_bytes: resolved_config_bytes,
                 canonical_resolved_config_sha256: &manifest.strategy_config_hash,
             },
@@ -3425,6 +3672,11 @@ mod tests {
             },
             "total_orders": output.result.total_orders,
             "total_positions": output.result.total_positions,
+            "resolved_config_sha256": output.resolved_config_hash,
+            "execution_contract_validated_fill_count": output
+                .execution_contract_report
+                .as_ref()
+                .map(|report| report.validated_fill_count),
             "stats_pnls_debug": format!("{:?}", output.result.stats_pnls),
             "stats_returns_debug": format!("{:?}", output.result.stats_returns),
             "guard": {
@@ -4167,7 +4419,8 @@ mod tests {
             resolve_existing_input_path(Path::new(&overlay.production_root_config_path));
         let loaded = load_bolt_v3_config(&production_root_config_path)
             .context("load issue #789 production config for canonical provenance")?;
-        let (loaded, _) = apply_backtest_config_override(loaded, &overlay.to_bolt_v3_override())
+        let override_spec = overlay.to_bolt_v3_override();
+        let (loaded, _) = apply_backtest_config_override(loaded, &override_spec)
             .context("apply issue #789 override for canonical provenance")?;
         let loaded_strategy = loaded
             .strategies
@@ -4178,9 +4431,12 @@ mod tests {
             .context("issue #789 overlaid strategy is missing")?;
         let raw = raw_taker_config(loaded_strategy, &loaded)
             .context("resolve issue #789 canonical taker config")?;
-        manifest.strategy_config_hash = json_artifact_sha256(&raw)
-            .map_err(|error| anyhow::anyhow!(error))
-            .context("hash issue #789 canonical resolved config bytes")?;
+        let resolved_config_bytes = canonical_resolved_taker_config_bytes(
+            &raw,
+            Some(&loaded.config_bundle_checksum),
+            Some(&override_spec),
+        )?;
+        manifest.strategy_config_hash = sha256_hex(&resolved_config_bytes);
         Ok(manifest)
     }
 

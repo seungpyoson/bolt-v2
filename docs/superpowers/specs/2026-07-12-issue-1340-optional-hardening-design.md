@@ -29,7 +29,10 @@ Example: a request for 10 units against 7 units of executable depth may validly 
 
 - Differential mutation for a non-market entry.
 - Mutation proving a fill that stops at the observed last price cannot hide deeper executable market liquidity.
-- Existing partial-depth and terminal-position mutations remain discriminating.
+- A deterministic partial-depth trace is accepted when settlement closes the
+  actual filled quantity. The redundant closed-position assertion is removed
+  because exact entry binding plus an equal opposite-side close already proves
+  closure.
 - Static search shows no stale BVS NautilusTrader revision literals remain.
 - Cheap local formatting and source-fence gates pass.
 - Rust compilation and test execution remain remote-first and must be reported separately from static eligibility.

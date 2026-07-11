@@ -3,6 +3,10 @@
 //! This module does not model execution. It compares the runner's observed
 //! economic trace with results produced by NautilusTrader's shared order-book,
 //! instrument sizing, position, and account primitives.
+//!
+//! Configuration provenance is an integrity agreement between canonical
+//! resolved bytes and their recorded hash. It is not a frozen configuration
+//! golden; applied-override sensitivity is verified by the configuration owner.
 
 use anyhow::{Context, Result, ensure};
 use nautilus_model::{
@@ -12,7 +16,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
     position::Position,
-    types::{Money, Price, Quantity},
+    types::{Money, Price, Quantity, fixed::FIXED_PRECISION},
 };
 
 use crate::hashing::sha256_hex;
@@ -90,14 +94,15 @@ pub fn validate_execution_contract(
         );
     }
 
-    let limit_price = trace
-        .fills
-        .last()
-        .context("execution contract requires at least one fill")?
-        .last_px;
+    let market_price = match trace.order_side {
+        OrderSide::Buy => Some(Price::max(FIXED_PRECISION)),
+        OrderSide::Sell => Some(Price::min(FIXED_PRECISION)),
+        OrderSide::NoOrderSide => None,
+    }
+    .context("market-order entry has no specified side")?;
     let expected_fills = trace.executable_book.simulate_fills(&BookOrder::new(
         trace.order_side,
-        limit_price,
+        market_price,
         trace.effective_base_quantity,
         0,
     ));
@@ -140,20 +145,24 @@ pub fn validate_execution_contract(
         OrderSide::Sell => OrderSide::Buy,
         OrderSide::NoOrderSide => OrderSide::NoOrderSide,
     };
+    let filled_quantity = trace.fills.iter().try_fold(
+        Quantity::zero(trace.instrument.size_precision()),
+        |total, fill| {
+            total
+                .checked_add(fill.last_qty)
+                .context("entry fill quantity addition overflow or scale mismatch")
+        },
+    )?;
     ensure!(
         closing_side != OrderSide::NoOrderSide
             && terminal_fill.order_side == closing_side
-            && terminal_fill.last_qty == trace.effective_base_quantity,
+            && terminal_fill.last_qty == filled_quantity,
         "terminal settlement fill does not exactly close the validated entry quantity"
     );
     let mut replayed_position = Position::new(trace.instrument, *opening_fill);
     for fill in closing_fills {
         replayed_position.apply(fill);
     }
-    ensure!(
-        replayed_position.is_closed(),
-        "replayed position is not closed after terminal settlement"
-    );
     let replayed_pnl = replayed_position
         .realized_pnl
         .context("replayed position did not realize PnL")?;
@@ -370,6 +379,45 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_market_entry_at_market_only_guard() {
+        let mut fixture = fixture();
+        fixture.fills[0].order_type = OrderType::Limit;
+        fixture.position_fills[0] = fixture.fills[0];
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("non-market entry must fail the market-only contract");
+        assert!(error.to_string().contains("market-order entry fills"));
+    }
+
+    #[test]
+    fn rejects_observed_last_fill_as_artificial_market_limit() {
+        let mut fixture = fixture();
+        fixture.book = OrderBook::new(fixture.instrument.id(), BookType::L2_MBP);
+        for (order_id, price, quantity) in [(1, "0.420", "1.00"), (2, "0.500", "1.71")] {
+            fixture.book.add(
+                BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from(price),
+                    Quantity::from(quantity),
+                    order_id,
+                ),
+                0,
+                order_id,
+                UnixNanos::from(1),
+            );
+        }
+        fixture.fills[0].last_qty = Quantity::from("1.00");
+        fixture.position_fills[0] = fixture.fills[0];
+        reconcile_position_accounting(&mut fixture);
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("market simulation must not stop at the observed last fill price");
+        assert!(
+            error
+                .to_string()
+                .contains("deterministic fills from the executable book")
+        );
+    }
+
+    #[test]
     fn rejects_dropped_or_duplicated_cash_leg() {
         let fixture = fixture();
         let mut trace = fixture.trace();
@@ -466,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_closed_position_at_position_state_guard() {
+    fn accepts_partial_market_fill_closed_at_observed_fill_quantity() {
         let mut fixture = fixture();
         fixture.book = OrderBook::new(fixture.instrument.id(), BookType::L2_MBP);
         fixture.book.add(
@@ -482,14 +530,10 @@ mod tests {
         );
         fixture.fills[0].last_qty = Quantity::from("2.00");
         fixture.position_fills[0] = fixture.fills[0];
+        fixture.position_fills[1].last_qty = Quantity::from("2.00");
         reconcile_position_accounting(&mut fixture);
-        let error = validate_execution_contract(&fixture.trace())
-            .expect_err("reversed residual position must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("replayed position is not closed")
-        );
+        validate_execution_contract(&fixture.trace())
+            .expect("deterministic partial fill closed at its filled quantity must pass");
     }
 
     #[test]
@@ -526,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_config_change_with_unchanged_provenance() {
+    fn rejects_canonical_config_bytes_hash_integrity_mismatch() {
         let mut fixture = fixture();
         fixture.config_bytes.push(b' ');
         assert!(validate_execution_contract(&fixture.trace()).is_err());

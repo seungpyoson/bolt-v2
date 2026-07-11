@@ -2940,7 +2940,9 @@ mod tests {
             run_id: MAKER_SMOKE_RUN_ID.to_string(),
             target_bolt_v2_branch: "codex/437-maker-backtest-allowlist".to_string(),
             target_bolt_v2_ref: "worktree".to_string(),
-            resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
+            resolved_nt_version:
+                crate::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+                    .expect("BVS NautilusTrader dependency provenance"),
             market_structure_fixture: MarketStructureFixture::BinaryOption,
             venue_binding_key: "maker-smoke-static-binary-event".to_string(),
             run_purpose: RunPurpose::Normal,
@@ -4224,9 +4226,8 @@ mod tests {
             target_bolt_v2_branch: "codex/789-first-faithful-taker-pl".to_string(),
             target_bolt_v2_ref: "worktree".to_string(),
             resolved_nt_version:
-                crate::nt_dependency_proof::nt_dependency_proof_from_embedded_manifests()
-                    .context("resolve BVS NautilusTrader dependency provenance")?
-                    .nautilus_revision,
+                crate::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+                    .context("resolve BVS NautilusTrader dependency provenance")?,
             market_structure_fixture: MarketStructureFixture::BinaryOption,
             venue_binding_key: "issue-789-pmxt-okx-bybit-chainlink".to_string(),
             run_purpose: RunPurpose::Normal,

@@ -27,8 +27,8 @@ fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
     let spec_path = temp_dir.path().join("source-universe-execution-pack.toml");
 
     let template = run_spec_template();
-    fs::write(&template_path, template).expect("write template");
-    let template_spec: RunSpec = toml::from_str(template).expect("template parses");
+    fs::write(&template_path, &template).expect("write template");
+    let template_spec: RunSpec = toml::from_str(&template).expect("template parses");
     let mut source_proof = template_spec.source_proof.clone();
     source_proof.accepted_by = Some("source-proof-operator".to_string());
     source_proof.accepted_at = Some("2026-06-10T00:00:00Z".to_string());
@@ -467,9 +467,9 @@ fn execution_pack_rejects_binary_option_instrument_spec() {
     let spec_path = temp_dir.path().join("source-universe-execution-pack.toml");
 
     let template = run_spec_template();
-    fs::write(&template_path, template).expect("write template");
+    fs::write(&template_path, &template).expect("write template");
     let template_spec: backtesting_vertical_slice::operator::RunSpec =
-        toml::from_str(template).expect("template parses");
+        toml::from_str(&template).expect("template parses");
     let mut source_proof = template_spec.source_proof.clone();
     source_proof.accepted_by = Some("source-proof-operator".to_string());
     source_proof.accepted_at = Some("2026-06-10T00:00:00Z".to_string());
@@ -734,7 +734,7 @@ fn crypto_perpetual_instrument_spec_json() -> serde_json::Value {
     })
 }
 
-fn run_spec_template() -> &'static str {
+fn run_spec_template() -> String {
     r#"
 capture_time_utc = "2026-06-02T04:27:02Z"
 created_at_utc = "2026-06-02T00:00:00Z"
@@ -890,7 +890,7 @@ manifest_schema_version = "backtesting-run-manifest.v1"
 run_id = "stale-run"
 target_bolt_v2_branch = "main"
 target_bolt_v2_ref = "refs/heads/main"
-resolved_nt_version = "6be5a5094716790a8ca2875445fde4fa2586107e"
+resolved_nt_version = "__NT_REVISION__"
 market_structure_fixture = "perps-spot"
 venue_binding_key = "binance-spot-native-trades"
 run_purpose = "normal"
@@ -949,4 +949,9 @@ allow_cash_borrowing = false
 queue_position = false
 oto_trigger_mode = "PARTIAL"
 "#
+    .replace(
+        "__NT_REVISION__",
+        &backtesting_vertical_slice::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+            .expect("BVS NautilusTrader dependency provenance"),
+    )
 }

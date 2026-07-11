@@ -7,7 +7,7 @@
 use anyhow::{Context, Result, ensure};
 use nautilus_model::{
     data::BookOrder,
-    enums::OrderSide,
+    enums::{OrderSide, OrderType},
     events::OrderFilled,
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
@@ -17,12 +17,6 @@ use nautilus_model::{
 
 use crate::hashing::sha256_hex;
 
-#[derive(Debug, Clone)]
-pub struct ExecutionFill {
-    pub price: Price,
-    pub quantity: Quantity,
-}
-
 pub struct ExecutionContractTrace<'a> {
     pub instrument: &'a InstrumentAny,
     pub executable_book: &'a OrderBook,
@@ -30,7 +24,7 @@ pub struct ExecutionContractTrace<'a> {
     pub submitted_quantity: Quantity,
     pub quote_quantity: bool,
     pub effective_base_quantity: Quantity,
-    pub fills: &'a [ExecutionFill],
+    pub fills: &'a [OrderFilled],
     pub position_fills: &'a [OrderFilled],
     pub settlement_price: Price,
     pub exit_price: Price,
@@ -56,6 +50,19 @@ pub fn validate_execution_contract(
     ensure!(
         sha256_hex(trace.canonical_resolved_config_bytes) == trace.canonical_resolved_config_sha256,
         "canonical resolved configuration bytes do not match recorded provenance"
+    );
+
+    ensure!(
+        !trace.fills.is_empty(),
+        "execution contract requires at least one fill"
+    );
+    ensure!(
+        trace.fills.iter().all(|fill| {
+            fill.instrument_id == trace.instrument.id()
+                && fill.order_side == trace.order_side
+                && fill.order_type == OrderType::Market
+        }),
+        "execution contract supports only one-instrument market-order entry fills"
     );
 
     let reference_price = match trace.order_side {
@@ -88,7 +95,7 @@ pub fn validate_execution_contract(
         .fills
         .last()
         .context("execution contract requires at least one fill")?
-        .price;
+        .last_px;
     let expected_fills = trace.executable_book.simulate_fills(&BookOrder::new(
         trace.order_side,
         limit_price,
@@ -99,7 +106,7 @@ pub fn validate_execution_contract(
         expected_fills.len() == trace.fills.len()
             && expected_fills.iter().zip(trace.fills).all(
                 |((expected_price, expected_quantity), observed)| {
-                    *expected_price == observed.price && *expected_quantity == observed.quantity
+                    *expected_price == observed.last_px && *expected_quantity == observed.last_qty
                 }
             ),
         "observed fills do not equal deterministic fills from the executable book"
@@ -121,6 +128,10 @@ pub fn validate_execution_contract(
             fill.instrument_id == trace.instrument.id() && fill.position_id == Some(position_id)
         }),
         "position replay fills do not share one instrument and position ID"
+    );
+    ensure!(
+        trace.position_fills.starts_with(trace.fills),
+        "order entry fills do not exactly match the position entry fills"
     );
     let mut replayed_position = Position::new(trace.instrument, *opening_fill);
     for fill in closing_fills {
@@ -177,7 +188,7 @@ mod tests {
     struct Fixture {
         instrument: InstrumentAny,
         book: OrderBook,
-        fills: Vec<ExecutionFill>,
+        fills: Vec<OrderFilled>,
         position_fills: Vec<OrderFilled>,
         initial_cash: Money,
         terminal_cash: Money,
@@ -253,10 +264,7 @@ mod tests {
         Fixture {
             instrument,
             book,
-            fills: vec![ExecutionFill {
-                price: Price::from("0.420"),
-                quantity: Quantity::from("2.71"),
-            }],
+            fills: vec![entry_fill],
             position_fills: vec![entry_fill, exit_fill],
             initial_cash,
             terminal_cash,
@@ -303,26 +311,26 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_accepts_exact_shared_primitive_trace() {
+    fn accepts_exact_shared_primitive_trace() {
         validate_execution_contract(&fixture().trace()).expect("valid trace should pass");
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_fill_price_improvement() {
+    fn rejects_fill_price_improvement() {
         let mut fixture = fixture();
-        fixture.fills[0].price = Price::from("0.410");
+        fixture.fills[0].last_px = Price::from("0.410");
         assert!(validate_execution_contract(&fixture.trace()).is_err());
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_depth_over_consumption() {
+    fn rejects_depth_over_consumption() {
         let mut fixture = fixture();
-        fixture.fills[0].quantity = Quantity::from("21.53");
+        fixture.fills[0].last_qty = Quantity::from("21.53");
         assert!(validate_execution_contract(&fixture.trace()).is_err());
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_broken_quote_base_conversion() {
+    fn rejects_broken_quote_base_conversion() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.effective_base_quantity = Quantity::from("2.72");
@@ -330,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_dropped_or_duplicated_cash_leg() {
+    fn rejects_dropped_or_duplicated_cash_leg() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.terminal_cash = trace
@@ -341,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_correlated_dropped_cash_and_pnl_legs() {
+    fn rejects_correlated_dropped_cash_and_pnl_legs() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.terminal_cash = trace.initial_cash;
@@ -350,7 +358,24 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_wrong_commission() {
+    fn rejects_order_position_fill_divergence() {
+        let mut fixture = fixture();
+        fixture.position_fills[0].last_qty = Quantity::from("1.71");
+        fixture.position_fills[1].last_qty = Quantity::from("1.71");
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        position.apply(&fixture.position_fills[1]);
+        fixture.realized_pnl = position
+            .realized_pnl
+            .expect("divergent fixture position should realize PnL");
+        fixture.terminal_cash = fixture
+            .initial_cash
+            .checked_add(fixture.realized_pnl)
+            .expect("divergent fixture cash should reconcile exactly");
+        assert!(validate_execution_contract(&fixture.trace()).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_commission() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.position_commission = Money::from("0.01 USDC");
@@ -358,8 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_correlated_wrong_fill_and_position_commission()
-     {
+    fn rejects_correlated_wrong_fill_and_position_commission() {
         let mut fixture = fixture();
         fixture.position_fills[0].commission = Some(Money::from("0.01 USDC"));
         let mut trace = fixture.trace();
@@ -377,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_rejects_config_change_with_unchanged_provenance() {
+    fn rejects_config_change_with_unchanged_provenance() {
         let mut fixture = fixture();
         fixture.config_bytes.push(b' ');
         assert!(validate_execution_contract(&fixture.trace()).is_err());

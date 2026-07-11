@@ -1255,7 +1255,11 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         for (name, value) in domain_statistics_from_analyzer(&domain_analyzer, &domain_statistics) {
             nt_result.stats_general.insert(name, value);
         }
-        (capture_order_terminals(engine), positions, account_balances)
+        (
+            capture_order_terminals(engine)?,
+            positions,
+            account_balances,
+        )
     };
     let run_guard_report = added_strategy
         .run_guard_writer
@@ -1276,12 +1280,12 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
 }
 
 /// Capture the terminal state of every order in the engine's post-run cache.
-fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> {
+fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalRecord>> {
     let cache = engine.kernel().cache.borrow();
     cache
         .orders(None, None, None, None, None)
         .into_iter()
-        .map(|order| {
+        .map(|order| -> Result<OrderTerminalRecord> {
             let initialized = order
                 .events()
                 .iter()
@@ -1289,8 +1293,8 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> 
                     OrderEventAny::Initialized(initialized) => Some(initialized),
                     _ => None,
                 })
-                .expect("every cached order must have an initialization event");
-            OrderTerminalRecord {
+                .context("cached order has no initialization event")?;
+            Ok(OrderTerminalRecord {
                 client_order_id: order.client_order_id().to_string(),
                 order_side: order.order_side().to_string(),
                 order_type: order.order_type().to_string(),
@@ -1317,7 +1321,7 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> 
                     .iter()
                     .map(|event| format!("{event:?}"))
                     .collect(),
-            }
+            })
         })
         .collect()
 }
@@ -2327,10 +2331,9 @@ mod tests {
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         data::{OrderBookDelta, TradeTick},
-        enums::{AggressorSide, AssetClass, BookAction, BookType, OrderSide},
+        enums::{AggressorSide, AssetClass, BookAction, OrderSide},
         identifiers::{InstrumentId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
-        orderbook::OrderBook,
         types::{Currency, Money, Price, Quantity},
     };
     use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -3030,8 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_runner_invokes_execution_contract_validator()
-    -> Result<()> {
+    fn runner_propagates_execution_contract_validator_failure() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create execution smoke catalog root")?;
         write_execution_contract_smoke_catalog(tempdir.path())?;
         let mut manifest = maker_smoke_manifest(tempdir.path());
@@ -3044,97 +3046,22 @@ mod tests {
             ("side".to_string(), "buy".to_string()),
         ]);
         manifest.catalog_inputs.truncate(1);
-        let config_bytes = b"execution-contract-runner-smoke";
-        manifest.strategy_config_hash = sha256_hex(config_bytes);
-
-        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output| {
-            let position = output
-                .positions
-                .first()
-                .context("fast execution-contract run produced no position")?;
-            let entry_order = output
-                .order_terminals
-                .iter()
-                .find(|order| {
-                    order
-                        .fills
-                        .first()
-                        .is_some_and(|fill| fill.order_side == OrderSide::Buy)
-                })
-                .context("fast execution-contract run produced no entry fill")?;
-            let entry_fills: Vec<_> = entry_order
-                .fills
-                .iter()
-                .map(|fill| crate::execution_contract::ExecutionFill {
-                    price: fill.last_px,
-                    quantity: fill.last_qty,
-                })
-                .collect();
-            let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
-            let entry_price = entry_order.fills[0].last_px;
-            let mut book = OrderBook::new(instrument.id(), BookType::L2_MBP);
-            book.add(
-                nautilus_model::data::BookOrder::new(
-                    OrderSide::Sell,
-                    entry_price,
-                    entry_order.effective_quantity,
-                    1,
-                ),
-                0,
-                1,
-                entry_order.submission_timestamp.unwrap_or_default(),
-            );
-            let realized_pnl = position
-                .realized_pnl
-                .context("fast execution-contract position did not realize PnL")?;
-            let terminal_cash = output
-                .account_balances
-                .iter()
-                .find(|balance| balance.currency == realized_pnl.currency)
-                .map(|balance| balance.total)
-                .context("fast execution-contract run omitted terminal cash")?;
-            let position_commission = position
-                .commissions
-                .get(&realized_pnl.currency)
-                .copied()
-                .unwrap_or_else(|| Money::zero(realized_pnl.currency));
-            let exit_price = position
-                .events
-                .last()
-                .context("fast execution-contract position omitted its exit fill")?
-                .last_px;
-
-            crate::execution_contract::validate_execution_contract(
-                &crate::execution_contract::ExecutionContractTrace {
-                    instrument: &instrument,
-                    executable_book: &book,
-                    order_side: OrderSide::Buy,
-                    submitted_quantity: entry_order.initialized_quantity,
-                    quote_quantity: entry_order.initialized_quote_quantity,
-                    effective_base_quantity: entry_order.effective_quantity,
-                    fills: &entry_fills,
-                    position_fills: &position.events,
-                    settlement_price: exit_price,
-                    exit_price,
-                    initial_cash: Money::from("1000000.00 USDC"),
-                    terminal_cash,
-                    realized_pnl,
-                    position_commission,
-                    expected_fill_commission: Money::zero(realized_pnl.currency),
-                    canonical_resolved_config_bytes: config_bytes,
-                    canonical_resolved_config_sha256: &manifest.strategy_config_hash,
-                },
-            )
-        })?;
+        let result = run_nt_backtest_node_with_execution_contract(&manifest, |_| {
+            anyhow::bail!("execution-contract-validator-sentinel")
+        });
+        let error = match result {
+            Ok(_) => anyhow::bail!("runner ignored the execution-contract validator failure"),
+            Err(error) => error,
+        };
         ensure!(
-            output.execution_contract_report.is_some(),
-            "runner omitted validation for its actual economic output"
+            format!("{error:#}").contains("execution-contract-validator-sentinel"),
+            "runner did not propagate the execution-contract validator failure: {error:#}"
         );
         Ok(())
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_excludes_late_arriving_book_deltas() -> Result<()> {
+    fn execution_contract_excludes_late_arriving_book_deltas() -> Result<()> {
         let instrument_id = InstrumentId::from(MAKER_SMOKE_YES_INSTRUMENT);
         let timely = OrderBookDelta::new(
             instrument_id,
@@ -3179,8 +3106,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_first_real_free_data_taker_pl_config_identity_covers_applied_rv_source_filter()
-    -> Result<()> {
+    fn execution_contract_config_identity_covers_applied_rv_source_filter() -> Result<()> {
         let raw_config = toml::from_str::<toml::Value>(&maker_smoke_config_toml())?;
         let mut override_spec = StrategyConfigOverlaySource {
             production_root_config_path: "config/root.toml".to_string(),
@@ -3560,13 +3486,6 @@ mod tests {
             &projection.order_book_deltas,
             submission_timestamp,
         )?;
-        let observed_fills: Vec<_> = entry_fills
-            .iter()
-            .map(|fill| crate::execution_contract::ExecutionFill {
-                price: fill.last_px,
-                quantity: fill.last_qty,
-            })
-            .collect();
         let positions: Vec<_> = output
             .positions
             .iter()
@@ -3593,16 +3512,27 @@ mod tests {
             matching_balances.len()
         );
         let terminal_cash = matching_balances[0].total;
-        let initial_cash_text = manifest
+        let initial_balances: Vec<Money> = manifest
             .venue
             .starting_balances
             .iter()
-            .find(|balance| balance.ends_with(realized_pnl.currency.code.as_str()))
-            .context("issue #789 settlement account has no matching initial balance")?
-            .replace('_', "");
-        let initial_cash = Money::from_str(&initial_cash_text)
-            .map_err(anyhow::Error::msg)
-            .context("parse issue #789 exact initial cash")?;
+            .map(|balance| {
+                Money::from_str(&balance.replace('_', ""))
+                    .map_err(anyhow::Error::msg)
+                    .context("parse issue #789 exact initial balance")
+            })
+            .collect::<Result<_>>()?;
+        let matching_initial_balances: Vec<_> = initial_balances
+            .iter()
+            .filter(|balance| balance.currency == realized_pnl.currency)
+            .collect();
+        ensure!(
+            matching_initial_balances.len() == 1,
+            "issue #789 requires exactly one initial {} balance, got {}",
+            realized_pnl.currency,
+            matching_initial_balances.len()
+        );
+        let initial_cash = *matching_initial_balances[0];
         let position_commission = position
             .commissions
             .get(&realized_pnl.currency)
@@ -3634,7 +3564,7 @@ mod tests {
                 submitted_quantity: entry_order.initialized_quantity,
                 quote_quantity: entry_order.initialized_quote_quantity,
                 effective_base_quantity: entry_order.effective_quantity,
-                fills: &observed_fills,
+                fills: &entry_fills,
                 position_fills: &position.events,
                 settlement_price,
                 exit_price,

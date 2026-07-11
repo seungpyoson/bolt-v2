@@ -4332,8 +4332,8 @@ pub fn read_settlement_booking_error_keys_for_recovery_scope(
     }
     for evidence in read_terminal_settlement_evidence(path, max_bytes)? {
         if recovery_scope_settlement_keys.contains(&evidence.settlement_key) {
-            // A restart may durably confirm the same terminal key again. Canonical
-            // terminal records are state transitions, so replay is idempotent.
+            // Canonical keys seed recovery eligibility while the dedicated
+            // canonical-key set prevents restart from appending the record again.
             recovered.insert(evidence.settlement_key);
         }
     }

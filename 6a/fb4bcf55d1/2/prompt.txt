@@ -1,0 +1,50 @@
+start from a worktree and branch 
+▎ Task: eliminate per-tick disk-write noise at the source — the class, not the instance. One new issue (reference #1275 and #1179), one PR.
+▎
+▎ Context: Live measurement (2026-07-10, box, mostly-idle session): the decision-evidence file grew 760MB in 24 minutes (~100 records/sec, multi-KB each). Restart recovery reads only the last recovery_evidence_max_bytes (1MiB) of that file, fail-closed — so a noise-flooded file blinds crash recovery regardless of disk size. This fix is a prerequisite for the 24h soak's kill/restart acceptance leg.
+▎
+▎ The class boundary (MECE requirement): the unit of enumeration is NOT the one flooding record kind — it is every disk-append path reachable from a per-tick handler (quote, book, timer, index-price) in the strategy and live-node modules. Produce a table in the PR body listing EVERY such path — every decision-evidence record kind (the full enum in bolt_v3_decision_evidence.rs) plus any non-evidence per-tick appender you find — and place each in exactly one bucket:
+▎ 1. EVENT-KEYED, stays per-event: kinds that recovery, reconciliation, or settlement read, or that record a real action (order intents, lifecycle transitions, settlement + booking-error records, reservations). Completeness untouchable.
+▎ 2. STATE-OBSERVATION, gets state-change keying: repeats of identical state carry zero information for every named reader → dedupe on a state key (patterns: #885 exit-outcome key; EntrySkipDedupeKey; #1351 log keying).
+▎ 3. ALREADY-DEDUPED, verify not vacuous: for each existing dedupe (entry-skip, exit-outcome), confirm the key contains NO per-tick-varying field (a price or timestamp in the key = dedupe that never fires). Fix any you find.
+▎ 4. NO NAMED READER: if a kind has no consumer at all, do not silently drop it — flag it in the table with your evidence for the owner's decision.
+▎ The classification criterion, applied per kind: "who reads this record, and does an identical repeat carry information for that reader?" Every path in exactly one bucket; no path unlisted.
+▎
+▎ Required tests: per bucket-2 kind, a differential — N identical evaluations produce exactly 1 record, a state change produces the 2nd — that FAILS on current code. Per bucket-3 fix, same shape. State in the PR body that in-memory dedupe keys reset on restart (one duplicate per key per process lifetime — accepted, same ruling as #1351's terminal evidence).
+▎
+▎ Constraints: do not touch the capture module, rotation, journald, or any uploader (deferred post-soak, out of scope). Do not change any record's schema — only whether an identical repeat is written.
+▎
+▎ Gates: full unfiltered suite at head (no scope filters), fmt, literal audit if strings change. Report: head SHA + the bucket table. The reviewer will cross-check your table against the box's actual record histogram at deploy time — the table must predict what the box shows.
+
+---
+
+▎ Ruling on strategy_input_snapshot: approved — two table rows, one per append path. The enumeration unit in the brief is the append path, not the record kind, precisely for this case. Submit-linked snapshots (non-empty client_order_id, read by recovery/shadow-PnL) → EVENT-KEYED, untouchable. Blocked-RV per-tick snapshots → STATE-OBSERVATION with state-change keying.
+▎ One addition: you state the blocked-path snapshots have readers that "cannot use" them. If your reader census finds they have no reader at all and no plausible forensic use, list that row as a bucket-4 candidate (drop entirely, owner decision) with your evidence — don't silently promote it to bucket 2. Default remains bucket 2 (state-change keyed) unless the owner rules to drop: deduped-but-present preserves the diagnostic trail at negligible volume.
+▎ Also confirm in the table how the two paths are discriminated at the write site (distinct call sites vs a field check), so the split is structural, not incidental.
+
+---
+
+Approved — proceed with this design and draft the issue. It's the right shape on every axis I'd have checked:
+
+- The source-local key at the blocked call site is the correct choice for exactly the reason you rejected option 2 — writer-level dedupe is the one variant that could silently eat recovery-critical submit evidence, and your structure makes that impossible by construction.
+- The key contents are properly non-vacuous (semantic state only, no prices/timestamps/ages/counts), and clear-on-unblock preserves transition semantics — consistent with the #1351 log-keying ruling.
+- The bucket-3 audit (proving existing dedupe keys contain no per-tick fields) and the negative claim (no non-evidence disk appenders in strategy/live-node handlers) are both in — those two are what make the table exhaustive rather than a list of things you happened to look at.
+- The blocked-snapshot row disposition matches my ruling: keep, keyed, flagged as forensic-only drop-candidate for the owner — nothing silently dropped.
+
+Two notes for the PR, not blockers:
+
+1. In the table, state how the negative claim was swept (the search pattern/method), so the review can re-run it rather than trust it — same standard as the reader census.
+2. Confirm the handler-reachability column covers all four tick sources from the brief (quote, book, timer, index-price) — timer paths are the ones these sweeps historically miss.
+
+Gates unchanged: full unfiltered suite at head, per-kind differentials failing on current code, fmt, literal audit. Report the head and the table when pushed.
+
+---
+
+Approved on both — the design and the issue draft. It answers every ruling and both review notes: the discriminator is structural (two named builder functions), the key exclusion list is even stronger than asked (coverage and volatility values added), the sweep must be reproducible and cover all four handler types, and the non-goals explicitly fence off the two tempting shortcuts (writer-level dedupe and touching the recovery byte limit). The verification section leads with the RED differential on current code. No closing keywords in the relations — correct.
+
+Two adjustments before you file it:
+
+1. Title: drop "decision-evidence" — say "Eliminate per-tick disk writes by append-path class." The scope you defined (correctly) covers every per-tick appender including any non-evidence ones the sweep finds; the title shouldn't be narrower than the MECE boundary the body promises. If the sweep proves the non-evidence set is empty, that's a finding the table records, not something the title should pre-decide.
+2. The design doc must not outlive the implementation. Standing repo rule: specs are deleted once implemented — code and tests are the record. Either keep the design doc out of the PR entirely, or include its deletion in the same PR that lands the implementation. Don't leave it as a committed artifact that will drift from the code.
+
+With those two: file the issue, build it, and report head + bucket table. Reminder of what happens on my side after your push: I cross-check your table against the box's actual record histogram at deploy time — the table must predict what the box shows, so if you're uncertain whether a path is reachable per-tick, resolve it in code terms rather than leaving it to the histogram to discover.

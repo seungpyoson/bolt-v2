@@ -3,7 +3,7 @@
   "checkpoint_id": "6afb4bcf55d1",
   "strategy": "manual-commit",
   "branch": "fix/1354-rv-gate-clock-domain",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": null,
   "sessions": [
     {
@@ -19,6 +19,13 @@
       "compact_transcript": "/6a/fb4bcf55d1/1/transcript.jsonl",
       "content_hash": "/6a/fb4bcf55d1/1/content_hash.txt",
       "prompt": "/6a/fb4bcf55d1/1/prompt.txt"
+    },
+    {
+      "metadata": "/6a/fb4bcf55d1/2/metadata.json",
+      "transcript": "/6a/fb4bcf55d1/2/full.jsonl",
+      "compact_transcript": "/6a/fb4bcf55d1/2/transcript.jsonl",
+      "content_hash": "/6a/fb4bcf55d1/2/content_hash.txt",
+      "prompt": "/6a/fb4bcf55d1/2/prompt.txt"
     }
   ],
   "token_usage": {

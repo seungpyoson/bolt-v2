@@ -146,8 +146,9 @@ ownership change, not a Bolt-side venue exception:
   and is reviewed and verified at its own immutable SHA. A dedicated Bolt pin-slice
   PR then updates every governed NT revision reference, preserves all fork-only
   commits, registers and source-fences the Binance SBE timestamp boundary, and proves
-  the dependency contract. RV consumer behavior remains in #1354 because its new
-  receive-watermark types are not present on the pin slice's base.
+  the dependency contract. RV consumer behavior remains in #1354 because the RV-
+  ingest differential's watermark types and the signal differential's receive-domain
+  gate semantics are not present on the pin slice's base.
 - The implementation already present at `2b83f512a` is provisional. Further #1354
   behavior work is frozen until the fork and pin prerequisites land; completed work
   is revalidated after merging the landed `main` pin into the branch rather than
@@ -186,8 +187,9 @@ all preserved action/lifecycle evidence, the captured session counterfactual is
 an observed amortized 182,236 bytes/hour; it is a per-position transition cost, not a
 continuing steady-state writer. A fresh file remains below 1 MiB for the planned first
 open-position restart. Repeated legitimate position lifecycles can still exceed the
-whole-file limit over a long unattended run, so #1275/#763 rotation and segmented
-recovery remain required long-term but are not bundled into this change.
+whole-file limit over a long unattended run, so #1275 item 13 segmented recovery
+remains a pre-soak requirement but is not bundled into this change. #763 S3 archival
+remains later and depends on #883 redaction; it is not a soak blocker.
 
 ## Verification Contract
 
@@ -199,8 +201,9 @@ recovery remain required long-term but are not bundled into this change.
   collapse to one evidence key afterward.
 - Alternating book, signal, and selection triggers share the receive clock and do not
   oscillate.
-- A signal trigger without NT `ts_init` remains fail-closed; no strategy-clock
-  fallback silently changes its evaluation instant.
+- Bolt's internal structurally absent receive-context diagnostic boundary remains
+  fail-closed; NT `QuoteTick.ts_init` itself is non-optional. No strategy-clock
+  fallback silently changes an evaluation instant.
 - Entry, exit, and maker pricing all consume the same ownership rule.
 - Independent near-stale entry differentials prove the trigger receive stamp owns
   initial uncertainty pricing, sized fee adjustment, resized fee adjustment,

@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "d2a7f5df691c",
+  "strategy": "manual-commit",
+  "branch": "fix/1354-rv-gate-clock-domain",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/d2/a7f5df691c/0/metadata.json",
+      "transcript": "/d2/a7f5df691c/0/full.jsonl",
+      "compact_transcript": "/d2/a7f5df691c/0/transcript.jsonl",
+      "content_hash": "/d2/a7f5df691c/0/content_hash.txt",
+      "prompt": "/d2/a7f5df691c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 672412,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 29555456,
+    "output_tokens": 79516,
+    "api_call_count": 259
+  }
+}

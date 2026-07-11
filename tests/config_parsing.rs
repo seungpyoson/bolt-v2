@@ -1949,11 +1949,25 @@ fn bolt_v3_archetype_keeps_default_provider_market_exit_shape_permissive() {
             .expect("root fixture should be readable"),
     )
     .expect("stable root should parse");
+    let synthetic_venue = Venue::from("HYPERLIQUID");
     stable_root
         .clients
         .get_mut("polymarket_main")
         .expect("fixture should include execution client")
-        .venue = Venue::from("HYPERLIQUID");
+        .venue = synthetic_venue;
+    let settlement_pool = stable_root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture should include settlement capital pools")
+        .iter_mut()
+        .find(|pool| pool.pool_id == "polymarket-prediction-live")
+        .expect("fixture should include the execution account settlement pool");
+    assert!(
+        !settlement_pool.enforce_submit_admission,
+        "provider-shape fixture must not arm submit admission"
+    );
+    settlement_pool.venue_id = synthetic_venue.as_str().to_string();
     let mut strategy: BoltV3StrategyConfig = toml::from_str(
         &fs::read_to_string(support::repo_path(
             "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",

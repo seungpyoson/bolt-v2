@@ -152,6 +152,25 @@ authorized_operator_ids = ["operator-primary"]
 account_ids = ["POLYMARKET-001"]
 instrument_ids = []
 
+# Settlement-currency identity for Polymarket execution account. Match keys for
+# settlement_currency_for_execution_account are (venue_id, account_id) against
+# the strategy execution client venue + execution.account_id. enforce_submit_admission
+# stays false so this supplies settlement collateral without arming capital admission.
+[[risk.capital_pools]]
+pool_id = "polymarket-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "pUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = false
+max_pool_liability = "25.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.capital_admission_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+
 [risk.nautilus]
 max_order_submit_rate = "33/00:01:00"
 max_order_modify_rate = "33/00:01:00"

@@ -1880,7 +1880,14 @@ mod tests {
             let logger = logger.clone();
             let emissions = emissions.clone();
             Arc::new(move |reason| {
-                let surface = live_operator_health_surface(None, &admission, true, 0, None);
+                let surface = live_operator_health_surface(
+                    None,
+                    &admission,
+                    true,
+                    0,
+                    None,
+                    BoltV3SettlementHealth::nominal(),
+                );
                 if logger.emit_surface(reason, surface)
                     == BoltV3OperatorHealthTransitionEmission::Emitted
                 {

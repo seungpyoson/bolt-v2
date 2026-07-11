@@ -19412,6 +19412,22 @@ reason = '''JSONL envelope discriminator for accepted fail-closed settlement boo
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''
 kind = '''string'''
+literal = '''"terminal_settlement"'''
+context = '''pub const BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND: &str = "terminal_settlement";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for canonical terminal-settlement transition records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"canonical terminal settlement cannot contain nested legacy lifecycle evidence"'''
+context = '''"canonical terminal settlement cannot contain nested legacy lifecycle evidence"'''
+classification = '''decision_evidence_validation_error'''
+reason = '''Fail-closed diagnostic for rejecting legacy nested lifecycle shape from the canonical terminal-settlement writer; it describes a schema invariant, not a configurable runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
 literal = '''"loss_governor"'''
 context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";'''
 classification = '''decision_evidence_subsystem_label'''
@@ -20197,6 +20213,14 @@ reason = "Stable source label for lifecycle evidence emitted when settlement evi
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"settlement_booking_terminal"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL: &str = "settlement_booking_terminal";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when settlement booking fails terminally and exposure is released; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"reconcile_pass"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: &str = "reconcile_pass";'''
 classification = "order_lifecycle_evidence_source_label"
@@ -20880,3 +20904,59 @@ literal = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}
 context = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",'''
 classification = "startup_subscription_derivation_diagnostic_template"
 reason = "Fail-loud startup diagnostic for a configured realized-volatility surface whose runtime context derives no subscribable feeds; surface selection remains TOML-owned and this template does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"'''
+context = '''"{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Load-time validation diagnostic when a settlement-booking strategy's execution client lacks account_id so settlement currency cannot be derived; match keys remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/live_node_config.rs"
+kind = "string"
+literal = '''"nautilus_model::orderbook::book"'''
+context = '''Ustr::from("nautilus_model::orderbook::book"),'''
+classification = "diagnostic_template"
+reason = "NT OrderBook rustc log-module path forced to Error so per-tick out-of-order sequence/ts WARN spam does not dominate operator logs; not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"settlement_booking_terminal eligibility={} {reason_detail}"'''
+context = '''"settlement_booking_terminal eligibility={} {reason_detail}",'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Lifecycle raw_reason_text template for the typed terminal-settlement transition; it reports the already-proven eligibility leg and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"terminal settlement is ineligible for live-manageable or nonterminal position {}"'''
+context = '''"terminal settlement is ineligible for live-manageable or nonterminal position {}",'''
+classification = "strategy_safety_diagnostic_template"
+reason = "Static fail-closed diagnostic emitted when a caller cannot construct typed terminal eligibility; expiry and recovery facts come from position state."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"recovered terminal settlement is ineligible before market expiry for position {}"'''
+context = '''"recovered terminal settlement is ineligible before market expiry for position {}",'''
+classification = "strategy_safety_diagnostic_template"
+reason = "Static fail-closed restart diagnostic; the market boundary comes from recovered position state rather than a runtime literal."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "0"
+context = '''terminal_transition_count: 0,'''
+classification = "operator_health_counter_identity"
+reason = "A fresh settlement-health surface has observed zero canonical terminal transitions; it is observability state, not a configured runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "1"
+context = '''self.terminal_transition_count = self.terminal_transition_count.saturating_add(1);'''
+classification = "operator_health_counter_increment"
+reason = "One typed health event represents one completed canonical terminal transition; this is a counter identity, not an operator-configurable runtime value."

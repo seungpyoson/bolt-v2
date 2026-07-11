@@ -18,7 +18,8 @@ use bolt_v2::{
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_operator_health::{
         BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3RejectObserverHealth,
-        BoltV3RuntimeFeedAnnouncementStatus, BoltV3VenueTruthHealth,
+        BoltV3RuntimeFeedAnnouncementStatus, BoltV3SettlementHealth,
+        BoltV3SettlementHealthTransition, BoltV3VenueTruthHealth,
         node_scoped_runtime_source_announcements, runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::BoltV3OrderRejectObserverHealthSnapshot,
@@ -30,6 +31,27 @@ use bolt_v2::{
 };
 use nautilus_model::identifiers::ClientId;
 use rust_decimal::Decimal;
+
+#[test]
+fn settlement_health_changes_only_when_a_terminal_transition_is_applied() {
+    let mut health = BoltV3SettlementHealth::nominal();
+    assert_eq!(health.status, BoltV3OperatorHealthStatus::Nominal);
+
+    health.apply_transition(BoltV3SettlementHealthTransition {
+        settlement_key: "settlement-key-1".to_string(),
+        position_id: "position-1".to_string(),
+        reason: "market_expired".to_string(),
+    });
+
+    assert_eq!(health.status, BoltV3OperatorHealthStatus::Degraded);
+    assert_eq!(health.terminal_transition_count, 1);
+    assert_eq!(
+        health.latest_settlement_key.as_deref(),
+        Some("settlement-key-1")
+    );
+    assert_eq!(health.latest_position_id.as_deref(), Some("position-1"));
+    assert_eq!(health.latest_reason.as_deref(), Some("market_expired"));
+}
 
 #[test]
 fn input_health_marks_unobserved_reference_source_as_missing_input() {

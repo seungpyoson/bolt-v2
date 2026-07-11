@@ -17,27 +17,30 @@ use bolt_v2::{
         BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
         BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND,
         BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipEvidence,
-        BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome,
-        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
-        BoltV3ExitTriggerSource, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
-        BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
-        BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
+        BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND, BoltV3AdmissionDecisionEvidence,
+        BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
+        BoltV3BasketAdmissionOutcome, BoltV3CapitalAdmissionRebuildAuditEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
+        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
+        BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
+        BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource, BoltV3ForcedFlatReason,
+        BoltV3LossGovernorHaltEvidence, BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3OrderLifecycleEvidence,
+        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition, BoltV3OrderRejectEvidence,
+        BoltV3OrderRejectReason, BoltV3OutcomeSide,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3SettlementBookingErrorEvidence,
         BoltV3SettlementBookingErrorReason, BoltV3SettlementEvidence, BoltV3StaleLossReason,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path, read_exit_evaluation_evidence,
+        BoltV3TerminalSettlementEvidence, JsonlBoltV3DecisionEvidenceWriter,
+        decision_evidence_path, read_exit_evaluation_evidence,
         read_latest_entry_decision_evidence_chain, read_loss_governor_halt_evidence,
         read_order_reject_evidence, read_settlement_booking_error_evidence,
         read_settlement_booking_error_keys_for_recovery_scope, read_settlement_evidence,
         read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
-        read_submit_reservation_recovery_evidence,
+        read_submit_reservation_recovery_evidence, read_terminal_settlement_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -1537,6 +1540,26 @@ fn sample_settlement_booking_error(settlement_key: &str) -> BoltV3SettlementBook
         reason: BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
         detail: "resolution feed missing at market end; settlement not booked".to_string(),
         observed_at_ns: 1_300_000_000,
+        terminal_lifecycle: None,
+    }
+}
+
+fn sample_terminal_settlement_lifecycle() -> BoltV3OrderLifecycleEvidence {
+    BoltV3OrderLifecycleEvidence {
+        strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
+        transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
+        outcome: BoltV3OrderLifecycleOutcome::Flat,
+        source: "settlement_booking_terminal".to_string(),
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: Some("condition-MKT-1-UP.POLYMARKET".to_string()),
+        position_id: Some("P-1".to_string()),
+        client_order_id: None,
+        prior_client_order_id: None,
+        raw_reason_text: Some("settlement booking terminal".to_string()),
+        order_side: Some("Buy".to_string()),
+        filled_quantity: None,
+        residual_quantity: Some("10.00".to_string()),
+        ts_event_ns: Some(1_300_000_000),
     }
 }
 
@@ -1705,6 +1728,71 @@ fn settlement_and_booking_error_evidence_round_trip_from_jsonl_writer() {
         .expect("settlement booking-error evidence should read back");
     assert_eq!(settlements, vec![settlement]);
     assert_eq!(errors, vec![booking_error]);
+}
+
+#[test]
+fn live_and_restart_terminal_settlement_share_one_canonical_schema() {
+    let (_temp, evidence_path, writer) =
+        temp_decision_evidence_writer("terminal-settlement-evidence");
+    let booking_error = sample_settlement_booking_error("MKT-1:P-TERMINAL");
+    let live = BoltV3TerminalSettlementEvidence {
+        settlement_key: booking_error.settlement_key.clone(),
+        booking_error: Some(booking_error),
+        lifecycle: sample_terminal_settlement_lifecycle(),
+    };
+    let restart = BoltV3TerminalSettlementEvidence {
+        settlement_key: "MKT-1:P-RESTART".to_string(),
+        booking_error: None,
+        lifecycle: sample_terminal_settlement_lifecycle(),
+    };
+
+    writer
+        .record_terminal_settlement(&live)
+        .expect("live terminal settlement evidence should write atomically");
+    writer
+        .record_terminal_settlement(&restart)
+        .expect("restart terminal settlement evidence should use the same writer");
+
+    let lines = read_decision_evidence_json_lines(&evidence_path);
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines
+            .iter()
+            .all(|line| line["kind"] == BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND)
+    );
+    assert_eq!(
+        lines[0]["terminal_settlement"]["lifecycle"]["transition"],
+        "settlement_booking_terminal"
+    );
+    assert_eq!(
+        read_terminal_settlement_evidence(&evidence_path, 100_000)
+            .expect("canonical terminal evidence should read back"),
+        vec![live, restart]
+    );
+    assert_eq!(
+        read_settlement_booking_error_keys_for_recovery_scope(
+            &evidence_path,
+            100_000,
+            &BTreeSet::from(["MKT-1:P-TERMINAL".to_string()]),
+        )
+        .expect("replayed canonical terminal records should recover idempotently"),
+        BTreeSet::from(["MKT-1:P-TERMINAL".to_string()])
+    );
+}
+
+#[test]
+fn legacy_nested_terminal_booking_error_remains_readable() {
+    let (_temp, evidence_path, writer) = temp_decision_evidence_writer("legacy-terminal-evidence");
+    let mut booking_error = sample_settlement_booking_error("MKT-1:P-LEGACY");
+    booking_error.terminal_lifecycle = Some(sample_terminal_settlement_lifecycle());
+    writer
+        .record_settlement_booking_error(&booking_error)
+        .expect("legacy terminal booking-error evidence should write");
+    assert_eq!(
+        read_settlement_booking_error_evidence(&evidence_path, 100_000)
+            .expect("legacy nested terminal evidence should read back"),
+        vec![booking_error]
+    );
 }
 
 #[test]

@@ -1121,6 +1121,129 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
 }
 
 #[test]
+fn rv_clock_domain_amendment_entry_log_uses_admitted_receipt_after_snapshot_replacement() {
+    let (mut strategy, _) = admitted_entry_strategy_for_rv_receipt();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must admit the entry"
+    );
+
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID_B.to_string()), 9.5, 1_300);
+
+    let fields = strategy.entry_evaluation_log_fields_at(1_300, &decision);
+    assert_eq!(fields.realized_vol, Some(1.5));
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some(TEST_SOURCE_ID)
+    );
+    assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
+}
+
+#[test]
+fn rv_clock_domain_amendment_entry_skip_uses_admitted_receipt_after_snapshot_replacement() {
+    let (mut strategy, evidence) = admitted_entry_strategy_for_rv_receipt();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must admit the entry"
+    );
+
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID_B.to_string()), 9.5, 1_300);
+    strategy
+        .record_entry_skip_once(
+            1_300,
+            &decision,
+            BoltV3EntrySkipReasonCategory::NoSideSelected,
+            None,
+        )
+        .expect("skip evidence should record from the admitted receipt");
+
+    let events = evidence.events();
+    let Some(RecordedDecisionEvidenceEvent::EntrySkip(skip)) = events.first() else {
+        panic!("expected entry-skip evidence; got {events:#?}");
+    };
+    assert_eq!(skip.realized_vol.as_deref(), Some("1.5"));
+    assert_eq!(
+        skip.realized_vol_source_venue.as_deref(),
+        Some(TEST_SOURCE_ID)
+    );
+    assert_eq!(skip.realized_vol_source_ts_ms, Some(1_200));
+}
+
+#[test]
+fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
+    let (mut strategy, _) = admitted_entry_strategy_for_rv_receipt();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must admit the entry"
+    );
+    let price = Price::new(
+        decision.price.expect("admitted decision must carry price"),
+        2,
+    );
+    let quantity = Quantity::new(
+        decision
+            .quantity_value
+            .expect("admitted decision must carry quantity"),
+        2,
+    );
+    let client_order_id = strategy.core.order_factory().generate_client_order_id();
+
+    strategy.pricing.clear_latest_realized_vol_snapshot();
+
+    let snapshot = strategy
+        .entry_strategy_input_evidence_snapshot_at(
+            1_300,
+            &decision,
+            client_order_id,
+            &price,
+            &quantity,
+        )
+        .expect("submit evidence must consume the admitted receipt without re-gating");
+    assert_eq!(snapshot.realized_volatility, "1.5");
+    assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
+    assert_eq!(
+        snapshot.realized_volatility_sources_used,
+        vec![TEST_SOURCE_ID.to_string()]
+    );
+}
+
+fn admitted_entry_strategy_for_rv_receipt() -> (
+    BinaryOracleEdgeTaker,
+    Arc<RecordingSequencedDecisionEvidenceWriter>,
+) {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    (strategy, evidence)
+}
+
+#[test]
 fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     let replay = strategy_input_quote_replay();
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());

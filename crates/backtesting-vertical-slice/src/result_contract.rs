@@ -27,12 +27,6 @@ use super::{
 pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v2";
 const RESULT_CONTRACT_V1: &str = "backtest-result-contract.v1";
 
-/// This crate's manifest, embedded at compile time so the recorded NautilusTrader
-/// revision is exactly the one this binary was built against. This crate's own
-/// `Cargo.toml` is the single source of truth for the pinned `nautilus-backtest`
-/// rev (the slice roots its own workspace + lockfile, isolated from `bolt-v2`).
-const WORKSPACE_CARGO_TOML: &str = include_str!("../Cargo.toml");
-
 /// Phrases that would make a result contract subjective. The contract is an
 /// objective artifact; promotion/escalation belongs to Research Analytics.
 const BANNED_PROMOTION_PHRASES: [&str; 8] = [
@@ -46,27 +40,13 @@ const BANNED_PROMOTION_PHRASES: [&str; 8] = [
     "best strategy",
 ];
 
-/// Resolve the NautilusTrader git revision this binary was built against, read
-/// from the embedded workspace `Cargo.toml` (single source of truth).
+/// Resolve the verified NautilusTrader git revision this binary was built against.
+///
+/// The shared BVS dependency proof requires every `nautilus-*` manifest pin and
+/// lockfile source to resolve to the same revision.
 #[must_use]
 pub fn resolved_nautilus_revision() -> Option<String> {
-    nautilus_revision_from_manifest(WORKSPACE_CARGO_TOML)
-}
-
-fn nautilus_revision_from_manifest(manifest: &str) -> Option<String> {
-    let parsed = toml::from_str::<toml::Table>(manifest).ok()?;
-    let rev = parsed
-        .get("dependencies")?
-        .as_table()?
-        .get("nautilus-backtest")?
-        .as_table()?
-        .get("rev")?
-        .as_str()?;
-    if rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(rev.to_string())
-    } else {
-        None
-    }
+    crate::nt_dependency_proof::verified_nt_revision_from_embedded_manifests().ok()
 }
 
 /// Lowercase SHA-256 hex over the canonical strategy config source.
@@ -664,19 +644,6 @@ mod tests {
         let rev = resolved_nautilus_revision().expect("revision");
         assert_eq!(rev.len(), 40);
         assert!(rev.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn parses_revision_from_multiline_dependency_table() {
-        let manifest = r#"[dependencies.nautilus-backtest]
-git = "https://github.com/nautechsystems/nautilus_trader.git"
-rev = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-features = ["streaming", "examples"]
-"#;
-        assert_eq!(
-            nautilus_revision_from_manifest(manifest).as_deref(),
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
         BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
@@ -266,6 +266,86 @@ pub(super) struct EntrySkipDedupeKey {
     pub(super) fast_venue_available: bool,
     pub(super) reference_current_price_available: bool,
     pub(super) fast_venue_incoherent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockedStrategyInputSourceStateKey {
+    source_id: String,
+    enabled: bool,
+    counts_toward_quorum: bool,
+    status: String,
+    block_reason: Option<String>,
+    last_rejected_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BlockedStrategyInputDedupeKey {
+    configured_target_id: String,
+    market_selection_ruleset_id: String,
+    market_selection_outcome: String,
+    market_id: Option<String>,
+    up_instrument_id: Option<String>,
+    down_instrument_id: Option<String>,
+    price_to_beat_source: String,
+    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    selected_side: Option<String>,
+    fast_venue_name: Option<String>,
+    fast_venue_available: bool,
+    reference_current_price_source_id: Option<String>,
+    reference_current_price_available: bool,
+    reference_current_price_failed_over: Option<bool>,
+    fast_venue_incoherent: bool,
+    realized_volatility_surface_id: String,
+    realized_volatility_blockers: Vec<String>,
+    realized_volatility_source_states: Vec<BlockedStrategyInputSourceStateKey>,
+    realized_volatility_unknown_source_ids: Vec<String>,
+}
+
+impl BlockedStrategyInputDedupeKey {
+    pub(super) fn from_snapshot(snapshot: &BoltV3StrategyInputEvidenceSnapshot) -> Self {
+        let mut realized_volatility_source_states = snapshot
+            .realized_volatility_source_diagnostics
+            .iter()
+            .map(|diagnostic| BlockedStrategyInputSourceStateKey {
+                source_id: diagnostic.source_id.clone(),
+                enabled: diagnostic.enabled,
+                counts_toward_quorum: diagnostic.counts_toward_quorum,
+                status: diagnostic.status.clone(),
+                block_reason: diagnostic.block_reason.clone(),
+                last_rejected_reason: diagnostic.last_rejected_reason.clone(),
+            })
+            .collect::<Vec<_>>();
+        realized_volatility_source_states
+            .sort_by(|left, right| left.source_id.cmp(&right.source_id));
+
+        Self {
+            configured_target_id: snapshot.configured_target_id.clone(),
+            market_selection_ruleset_id: snapshot.market_selection_ruleset_id.clone(),
+            market_selection_outcome: snapshot.market_selection_outcome.clone(),
+            market_id: snapshot.market_id.clone(),
+            up_instrument_id: snapshot.up_instrument_id.clone(),
+            down_instrument_id: snapshot.down_instrument_id.clone(),
+            price_to_beat_source: snapshot.price_to_beat_source.clone(),
+            gate_blocked_by: snapshot.gate_blocked_by.clone(),
+            pricing_blocked_by: snapshot.pricing_blocked_by.clone(),
+            selected_side: snapshot.selected_side.clone(),
+            fast_venue_name: snapshot.fast_venue_name.clone(),
+            fast_venue_available: snapshot.fast_venue_available,
+            reference_current_price_source_id: snapshot.reference_current_price_source_id.clone(),
+            reference_current_price_available: snapshot.reference_current_price_available,
+            reference_current_price_failed_over: snapshot.reference_current_price_failed_over,
+            fast_venue_incoherent: snapshot.fast_venue_incoherent,
+            realized_volatility_surface_id: snapshot.realized_volatility_surface_id.clone(),
+            realized_volatility_blockers: snapshot.realized_volatility_blockers.clone(),
+            realized_volatility_source_states,
+            realized_volatility_unknown_source_ids: snapshot
+                .realized_volatility_unknown_source_rejections
+                .keys()
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

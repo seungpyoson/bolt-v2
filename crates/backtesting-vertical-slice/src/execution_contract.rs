@@ -237,8 +237,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_correlated_dropped_cash_and_pnl_legs() {
+        let fixture = fixture();
+        let mut trace = fixture.trace();
+        trace.terminal_cash = trace.initial_cash;
+        trace.realized_pnl = Money::from("0.00 USDC");
+        assert!(validate_execution_contract(&trace).is_err());
+    }
+
+    #[test]
     fn rejects_wrong_commission() {
         let fixture = fixture();
+        let mut trace = fixture.trace();
+        trace.position_commission = Money::from("0.01 USDC");
+        assert!(validate_execution_contract(&trace).is_err());
+    }
+
+    #[test]
+    fn rejects_correlated_wrong_fill_and_position_commission() {
+        let mut fixture = fixture();
+        fixture.fill_commissions[0] = Money::from("0.01 USDC");
         let mut trace = fixture.trace();
         trace.position_commission = Money::from("0.01 USDC");
         assert!(validate_execution_contract(&trace).is_err());

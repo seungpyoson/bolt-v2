@@ -120,11 +120,12 @@ The live BTC signal path uses Binance Spot SBE. In pinned Nautilus Trader
 receive time. Consequently, the current BTC signal path can still compare an RV
 local-receive watermark with a Binance event clock and preserve the #1354 flap.
 
-No current Nautilus Trader release, upstream `develop`, or fork `develop` revision
-contains this correction. Bolt therefore uses an exact reviewed commit from
-`seungpyoson/nautilus_trader`; it does not wait for public-upstream acceptance or a
-release. This is a blocking prerequisite for the #1354 ownership change, not a
-Bolt-side venue exception:
+The July 11, 2026 review found no correction in the then-current Nautilus Trader
+release, upstream `develop`, or fork `develop`; Task 0A records the inspected SHAs
+and dates so this external observation remains reproducible. Bolt uses an exact
+reviewed commit from `seungpyoson/nautilus_trader`; it does not wait for public-
+upstream acceptance or a release. This is a blocking prerequisite for the #1354
+ownership change, not a Bolt-side venue exception:
 
 - `BinanceSpotDataClient::handle_ws_message` must call its existing
   `AtomicTime::get_time_ns()` once per decoded SBE message and pass that local
@@ -140,14 +141,17 @@ Bolt-side venue exception:
   all four parser families. Bolt differentials must separately prove that RV ingest
   derives `as_of_ms` from `ts_event` and `latest_accepted_receive_ms` from `ts_init`,
   and that signal-trigger classification/evidence follows `ts_init`.
-- The fork change is reviewed and verified at its own immutable SHA. A dedicated
-  Bolt pin-slice PR then updates every governed NT revision reference, preserves all
-  fork-only commits, registers the Binance SBE timestamp boundary, and proves the
-  consumer behavior at the Bolt SHA. The #1354 implementation is rebased onto that
-  landed pin.
+- The fork PR targets `pin/6be5a50-sbe-schema-3-5` at exact base
+  `9e71b2b1305a66945ba07f0aba2d1eb63208263d`, discloses its public parser API change,
+  and is reviewed and verified at its own immutable SHA. A dedicated Bolt pin-slice
+  PR then updates every governed NT revision reference, preserves all fork-only
+  commits, registers and source-fences the Binance SBE timestamp boundary, and proves
+  the dependency contract. RV consumer behavior remains in #1354 because its new
+  receive-watermark types are not present on the pin slice's base.
 - The implementation already present at `2b83f512a` is provisional. Further #1354
   behavior work is frozen until the fork and pin prerequisites land; completed work
-  is revalidated afterward rather than reverted or rewritten to manufacture RED.
+  is revalidated after merging the landed `main` pin into the branch rather than
+  reverted or rewritten to manufacture RED.
 
 ## Behavioral Blast Radius
 

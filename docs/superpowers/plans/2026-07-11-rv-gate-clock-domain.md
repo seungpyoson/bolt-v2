@@ -10,14 +10,27 @@
 
 ## Global Constraints
 
-- Work only under reopened issue #1354 on `fix/1354-rv-gate-clock-domain`.
+- Tasks 1–7 work only under reopened issue #1354 on
+  `fix/1354-rv-gate-clock-domain`. Task 0A uses a separately reviewed NT-fork PR;
+  Task 0B uses a dedicated Bolt pin-slice branch/PR named as a prerequisite slice of
+  #1354.
 - Do not add tolerance windows, rate caps, sampling, byte-limit changes, venue policy, or symbol policy.
 - Preserve all action, lifecycle, settlement, and recovery evidence.
 - Keep dedupe-key and `position_id=None` findings report-only.
 - Treat the root-fix tests and recovery-boundary tests delivered at `2b83f512a` as landed scope: verify them GREEN at the final head and cite their existing RED transcripts; do not revert production code to manufacture new RED output.
-- Capture RED only for review-amendment tests not present at `2b83f512a`. Automatic draft checks are not a RED vehicle because current iteration policy does not run nextest. Bolt RED/GREEN evidence uses reviewer-operated `just verify-remote` at the exact pushed SHA; fork RED/GREEN evidence uses the fork PR's own CI at its exact SHA. Retain both run URLs and immutable SHAs in the PR report.
+- Capture RED only for review-amendment tests not present at `2b83f512a`. Automatic
+  draft checks and draft-time `just verify-remote` are not RED vehicles because the
+  iteration policy does not run nextest. After the user/reviewer marks a
+  differentials-only Bolt PR ready, automatic full CI runs nextest; the reviewer
+  supplies the exact-head RED result, then returns the PR to draft before production
+  changes. GREEN and final proof use ready-state exact-head full CI. Fork RED/GREEN
+  evidence uses the fork PR's own CI. Retain all run URLs and immutable SHAs.
 - Use cheap local gates plus reviewer-operated exact-head remote Rust verification. Do not run the full local Rust suite, local clippy, Rust Probe, or ad hoc workflow dispatches.
-- Treat the implementation at `2b83f512a` as provisional landed branch history, not completed prerequisite proof. Freeze further #1354 behavior changes until the NT fork correction and dedicated Bolt pin slice land, then rebase and revalidate every affected path without rewriting history.
+- Treat the implementation at `2b83f512a` as provisional landed branch history, not
+  completed prerequisite proof. Freeze further #1354 behavior changes until the NT
+  fork correction and dedicated Bolt pin slice land. Then merge `main`, containing
+  the landed pin slice, into `fix/1354-rv-gate-clock-domain` and revalidate every
+  affected path at the merged head; do not rewrite the provisional commit history.
 
 ---
 
@@ -69,12 +82,16 @@ public-upstream release.
   adapter-initialization timestamp and assign it to every emitted datum's `ts_init`;
   Binance timestamps remain `ts_event`.
 - Review boundary: one fork PR based on the currently pinned fork lineage, with no
-  unrelated fork commits included.
+  unrelated fork commits included. Target fork branch
+  `pin/6be5a50-sbe-schema-3-5` at immutable base
+  `9e71b2b1305a66945ba07f0aba2d1eb63208263d`.
 
-- [ ] Create a fork test-only commit with deliberately unequal event and initialization timestamps for the production handler and all four parser families; retain the exact fork RED CI URL and SHA.
+- [ ] Record the checked upstream/fork develop heads and release state by SHA and date; these observations do not replace the immutable fork PR base.
+- [ ] Create a fork test-only commit with deliberately unequal event and initialization timestamps for the production handler and all four parser families; assert every emitted trade, every inner depth delta, each aggregate wrapper, and the BBO quote; retain the exact fork RED CI URL and SHA.
 - [ ] Capture `clock.get_time_ns()` once per decoded SBE message in `handle_ws_message` and pass it explicitly to every parser without adding raw-frame plumbing.
 - [ ] Verify fork exact-head CI GREEN: each emitted datum preserves provider event time as `ts_event` and the supplied local adapter-initialization time as `ts_init`.
-- [ ] Obtain independent review of the fork PR and record its base, exact reviewed head, CI run, and full commit range. Do not rely on public-upstream acceptance.
+- [ ] Disclose and review the source-breaking public Rust parser signature changes; enumerate every in-repository caller and state that unknown external Rust callers must pass the new initialization timestamp.
+- [ ] Obtain independent review of the fork PR and record base `9e71b2b1305a66945ba07f0aba2d1eb63208263d`, exact RED/GREEN heads, CI run/job URLs, and full commit range. Do not rely on public-upstream acceptance.
 
 ---
 
@@ -82,33 +99,38 @@ public-upstream release.
 
 Create a dedicated Bolt PR explicitly named as a prerequisite slice of #1354. It
 must contain only the reviewed NT revision migration, governed boundary evidence,
-and Bolt consumer differentials. It does not claim the broader #1354 implementation
-complete and uses no closing keywords.
+and a dependency-level test/source contract for the corrected public NT parser. RV
+watermark and signal-classification/evidence differentials remain on #1354 because
+their required types do not exist on base `9ac211fe`. The pin slice does not claim
+the broader #1354 implementation complete and uses no closing keywords.
 
 **Bolt files and governed surfaces:**
 - `Cargo.toml`
 - `Cargo.lock`
 - `crates/backtesting-vertical-slice/Cargo.toml`
+- `crates/backtesting-vertical-slice/Cargo.lock`
 - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md`
+- `docs/bolt-v3/research/naming/nt-owned-name-audit.yaml`
 - `scripts/verify_bolt_v3_boundary_evidence.py`
+- `scripts/test_verify_bolt_v3_boundary_evidence.py`
 - `src/bolt_v3_providers/boundary_registry.rs`
-- `src/bolt_v3_realized_volatility_runtime.rs`
-- `src/strategies/binary_oracle_edge_taker/mod.rs`
-- Relevant source-fence and strategy evidence tests
+- Relevant canonical pin-census, dependency-contract, and source-fence tests
 
 **Interfaces:**
 - Consumes: exact independently reviewed NT fork SHA from Task 0A.
-- Produces: one governed NT revision across every manifest/ledger/verifier, registered
-  Binance SBE timestamp provenance, and tested Bolt ingest/trigger behavior.
+- Produces: one governed NT revision across both manifests, both lockfiles, the
+  runtime contract, naming ledger, verifier constant/fixture, registered Binance SBE
+  timestamp provenance, and a dependency-level parser/source contract.
 
 - [ ] Audit every current NT revision reference and enumerate the fork-only commits between the pinned base and proposed head; reject unrelated or missing fork changes.
 - [ ] Update every governed NT pin and recorded revision atomically; prove no mixed revisions remain and preserve the existing Binance schema 3:5 fork correction.
-- [ ] Register Binance Spot SBE timestamp provenance in the authoritative boundary registry and extend source-fence/static evidence so future pin regressions fail governance checks.
-- [ ] Add an RV-ingest differential that routes a quote with `ts_event != ts_init`, then asserts surface `as_of_ms` follows `ts_event` and `latest_accepted_receive_ms` follows `ts_init`.
-- [ ] Add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
-- [ ] Publish a clean draft pin-slice PR and detach. The reviewer operates `just verify-remote` for exact-head Bolt RED/GREEN evidence; automatic draft checks alone are insufficient.
+- [ ] Add one negative-tested canonical pin census spanning both manifests, both lockfiles, the runtime contract, naming ledger, verifier constant, and verifier fixture; prove a mismatch in any one surface fails.
+- [ ] Register Binance Spot SBE timestamp provenance in the authoritative boundary registry, but do not claim the registry row alone proves SHA lineage or timestamp semantics. Bind the reviewed SHA and handler/parser symbols through source-fence/static evidence.
+- [ ] Add a dependency-level test of the corrected public NT parser when its exported API permits it; otherwise make the source-fence contract explicitly prove the reviewed handler/parser signatures and leave behavioral consumer proof to #1354.
+- [ ] Verify checked-in BTC configuration selects `binance_spot_data`, the SBE endpoint, and the corrected parser path; record the exact NT SHA.
+- [ ] Publish a clean draft pin-slice PR and detach. Draft checks provide static feedback only; the user/reviewer owns the ready-state exact-head full-CI proof.
 - [ ] Obtain the required exact-head review and land the pin slice before resuming this branch. Do not merge or queue from the implementation agent.
-- [ ] Rebase `fix/1354-rv-gate-clock-domain` onto the landed pin slice and revalidate every previously landed classifier, entry, exit, maker, evidence, and recovery-boundary differential.
+- [ ] Merge `main`, containing the landed pin slice, into `fix/1354-rv-gate-clock-domain`; then revalidate every previously landed classifier, entry, exit, maker, evidence, and recovery-boundary differential at the merged head.
 
 ---
 
@@ -139,6 +161,7 @@ complete and uses no closing keywords.
 
 - [x] Landed at `2b83f512a`: a rejected far-future observation advances neither event `as_of_ms` nor the accepted receive watermark.
 - [x] Landed at `2b83f512a`: the ready snapshot watermark follows accepted quorum-contributing sources.
+- [ ] After merging the landed NT pin, route an unequal-stamped Binance-shaped quote through RV observation; assert surface `as_of_ms` follows `ts_event` and `latest_accepted_receive_ms` follows `ts_init`.
 - [ ] Add a cutoff differential with an accepted observation after the final selected grid point; assert that eligible-but-unused input does not advance the watermark.
 - [ ] Add a contributing-set differential with ascending event times and a larger receive timestamp on an earlier selected observation; assert that the watermark is the maximum receive timestamp over every observation used by the base, coarse, and subsampled computation.
 - [ ] Add trimmed-mean and quantile multi-source differentials proving the watermark covers every ready quorum source that affects readiness or dispersion, including numerically unselected sources.
@@ -157,7 +180,8 @@ complete and uses no closing keywords.
 - [x] Landed at `2b83f512a`: the six-tick alternating-book differential retains one record after the original six-record RED.
 - [x] Landed at `2b83f512a`: the mixed book/signal/selection differential retains one record after the original four-record RED.
 - [x] Landed at `2b83f512a`: structurally missing receive context retains `MissingEvaluationEventTime → Hold`.
-- [ ] Add an amendment differential proving a signal trigger without NT `ts_init` remains fail-closed and never substitutes strategy wall time.
+- [ ] After merging the landed NT pin, add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
+- [ ] Add an amendment differential for Bolt's internal structurally absent receive-context diagnostic boundary; do not describe an NT `QuoteTick` without `ts_init`, because that field is non-optional.
 - [ ] Verify the landed six-tick, mixed-trigger, and missing-context tests remain GREEN at the final head and cite their existing RED transcripts; do not recreate RED.
 
 ### Task 4: Pin entry and maker blast radius
@@ -187,7 +211,7 @@ complete and uses no closing keywords.
 **Files:**
 - Modify all production files named in Tasks 1–4.
 
-- [ ] Commit all review-amendment tests from Tasks 2–4 without amendment production changes, publish that draft SHA, and detach. Resume only after the reviewer/orchestrator supplies the automatically triggered CI RED result and confirms the failures match the intended old behavior.
+- [ ] Commit all review-amendment tests from Tasks 2–4 without amendment production changes and publish the draft SHA. Detach while the user/reviewer marks the differentials-only PR ready, obtains automatic exact-head full-CI RED, confirms the failures match the intended old behavior, and returns the PR to draft. Resume only after that RED evidence is supplied.
 - [ ] Add the snapshot receive watermark and accepted-only surface-clock derivation.
 - [ ] Change production shared pricing requests to required `LocalReceiveMs`, keep only the diagnostic classifier's structurally absent input optional, and remove production dependence on cross-venue event ordering.
 - [ ] Thread receive context through every production entry and exit trigger and through the existing maker pricing route boundary; do not add maker production wiring.

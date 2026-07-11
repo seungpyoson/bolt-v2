@@ -345,6 +345,27 @@ fn persisted_state_round_trips_with_schema_version() {
 }
 
 #[test]
+fn kill_switch_state_v2_old_bytes_remain_readable() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(
+        &path,
+        include_bytes!("fixtures/bolt_v3/compatibility/kill_switch_state_v2.json"),
+    )
+    .expect("old-byte kill-switch fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("old-byte kill-switch state should parse"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Flat {
+            halt_id: "legacy-halt".to_string(),
+        })
+    );
+}
+
+#[test]
 fn loss_governor_trigger_reason_is_optional_for_legacy_states_and_round_trips_when_present() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let legacy_store = KillSwitchStore::new(temp.path().join("legacy-kill-switch.json"), 65_536);

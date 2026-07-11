@@ -1891,7 +1891,7 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
 }
 
 #[test]
-fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block() {
+fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -1903,49 +1903,84 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
     strategy
         .pricing
         .set_realized_volatility_surface_id(TEST_SURFACE_ID.to_string());
-    strategy.pricing.observe_realized_vol_snapshot(
-        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
-            surface_id: TEST_SURFACE_ID.to_string(),
-            as_of_ms: 1_200,
-            annualized_realized_vol_decimal: None,
-            measured_annualized_realized_vol_decimal: None,
-            noise_robust_annualized_realized_vol_decimal: None,
-            continuous_annualized_realized_vol_decimal: None,
-            jump_annualized_realized_vol_decimal: None,
-            forecast_annualized_realized_vol_decimal: None,
-            pricing_component:
-                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
-            ready: false,
-            sources_used: Vec::new(),
-            source_diagnostics: Vec::new(),
-            horizon_estimates: Vec::new(),
-            unknown_source_rejections: std::collections::BTreeMap::new(),
-            blocked_reasons: vec![
-                crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady,
-            ],
-            aggregate_method:
-                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
-                    quantile: 1.0,
-                },
-            seconds_per_annum: 31_536_000.0,
-            config_fingerprint: "<config_fingerprint>".to_string(),
-        },
-    );
+    let initial_snapshot = crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+        surface_id: TEST_SURFACE_ID.to_string(),
+        as_of_ms: 1_200,
+        annualized_realized_vol_decimal: None,
+        measured_annualized_realized_vol_decimal: None,
+        noise_robust_annualized_realized_vol_decimal: None,
+        continuous_annualized_realized_vol_decimal: None,
+        jump_annualized_realized_vol_decimal: None,
+        forecast_annualized_realized_vol_decimal: None,
+        pricing_component:
+            crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
+        ready: false,
+        sources_used: Vec::new(),
+        source_diagnostics: Vec::new(),
+        horizon_estimates: Vec::new(),
+        unknown_source_rejections: std::collections::BTreeMap::new(),
+        blocked_reasons: vec![
+            crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady,
+        ],
+        aggregate_method:
+            crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                quantile: 1.0,
+            },
+        seconds_per_annum: 31_536_000.0,
+        config_fingerprint: "<config_fingerprint>".to_string(),
+    };
+    strategy
+        .pricing
+        .observe_realized_vol_snapshot(initial_snapshot.clone());
 
+    for now_ms in 1_200..=1_204 {
+        assert_eq!(
+            strategy
+                .try_submit_entry_order(now_ms)
+                .expect("same RV-not-ready state should not attempt submit"),
+            None
+        );
+    }
+
+    let mut changed_snapshot = initial_snapshot;
+    changed_snapshot.as_of_ms = 1_205;
+    changed_snapshot.blocked_reasons =
+        vec![crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale];
+    strategy
+        .pricing
+        .observe_realized_vol_snapshot(changed_snapshot);
     assert_eq!(
         strategy
-            .try_submit_entry_order(1_200)
-            .expect("RV-not-ready pricing block should not attempt submit"),
-        None
-    );
-    assert_eq!(
-        strategy
-            .try_submit_entry_order(1_201)
-            .expect("same RV-not-ready pricing block should not attempt submit"),
+            .try_submit_entry_order(1_205)
+            .expect("changed RV blocker state should not attempt submit"),
         None
     );
 
     let events = evidence.events();
+    let blocked_snapshots = events
+        .iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot)
+                if snapshot.client_order_id.is_empty() =>
+            {
+                Some(snapshot)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        blocked_snapshots.len(),
+        2,
+        "identical blocked evaluations must emit once and the RV blocker transition must emit the second record"
+    );
+    assert_eq!(
+        blocked_snapshots[0].realized_volatility_blockers,
+        vec!["quorum_not_ready".to_string()]
+    );
+    assert_eq!(
+        blocked_snapshots[1].realized_volatility_blockers,
+        vec!["source_stale".to_string()]
+    );
     let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
         panic!("expected blocked strategy input evidence first; got {events:#?}");
     };

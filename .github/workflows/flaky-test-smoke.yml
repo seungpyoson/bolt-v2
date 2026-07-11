@@ -138,7 +138,7 @@ jobs:
       fail-fast: false
       matrix:
         run_number: [1]
-        shard: [1]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

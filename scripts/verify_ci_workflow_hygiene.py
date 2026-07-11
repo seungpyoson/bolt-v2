@@ -7586,7 +7586,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 "backtester smoke job",
                 (
                     "run_number: [1]",
-                    "shard: [1]",
+                    "shard: [1, 2, 3, 4]",
                     "set +e",
                     'rc="${PIPESTATUS[0]}"',
                     "set -e",
@@ -7706,8 +7706,12 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
                 errors.append("flaky-test-detection backtester full job partition denominator must match shard matrix length")
         if label == "backtester smoke job":
             shards = inline_integer_matrix_values(job_text, "shard")
-            if len(denominators) == 1 and shards is not None and denominators[0] <= len(shards):
-                errors.append("flaky-test-detection backtester smoke job partition denominator must exceed scheduled shard count")
+            if shards is None:
+                errors.append("flaky-test-detection backtester smoke job shard matrix must be an inline integer list")
+            elif not one_indexed_sequence(shards):
+                errors.append("flaky-test-detection backtester smoke job shard matrix must be one-indexed and contiguous")
+            if len(denominators) == 1 and shards is not None and denominators[0] != len(shards):
+                errors.append("flaky-test-detection backtester smoke job partition denominator must match shard matrix length")
     return errors
 
 

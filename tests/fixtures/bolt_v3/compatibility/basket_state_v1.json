@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "state": {
+    "basket_id": "legacy-basket",
+    "strategy_id": "legacy-strategy",
+    "execution_client_id": "legacy-client",
+    "status": "Candidate",
+    "legs": [
+      {
+        "leg_id": "yes",
+        "instrument_id": "YES.POLYMARKET",
+        "target_quantity": "1",
+        "filled_quantity": "0",
+        "filled_cost": "0",
+        "client_order_id": null,
+        "venue_order_id": null
+      }
+    ],
+    "payout_matrix": [["1"]],
+    "admitted_absolute_edge_floor": "0.01",
+    "admitted_edge_bps_floor": "100",
+    "config": {
+      "repair": {
+        "max_retries": 1,
+        "max_book_age_ms": 1000,
+        "max_slippage_bps": 25,
+        "max_depth_levels": 5,
+        "allow_unwind_when_repair_denied": true
+      },
+      "unwind": {
+        "max_retries": 1,
+        "max_book_age_ms": 1000,
+        "max_slippage_bps": 25,
+        "max_depth_levels": 5
+      }
+    },
+    "order_list_id": null,
+    "reservation_held": false,
+    "unresolved_real_exposure": false,
+    "settled": false,
+    "fill_sources": []
+  }
+}

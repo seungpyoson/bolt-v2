@@ -161,11 +161,12 @@ use crate::bolt_v3_feed_health::{
 mod entry_decision;
 
 use self::entry_decision::{
-    EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields, EntryGateDecision,
-    EntryPricingBlockReason, EntryPricingInputs, EntrySkipDedupeKey, EntrySubmissionDecision,
-    ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
-    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
-    entry_skip_reason_category_from_str, push_executable_edge_pricing_block,
+    BlockedStrategyInputDedupeKey, EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields,
+    EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs, EntrySkipDedupeKey,
+    EntrySubmissionDecision, ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields,
+    entry_block_reason_to_evidence, entry_pricing_block_reason_from_taker,
+    entry_pricing_block_reason_to_evidence, entry_skip_reason_category_from_str,
+    push_executable_edge_pricing_block,
 };
 
 mod exit_decision;
@@ -751,6 +752,7 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
+    last_recorded_blocked_strategy_input: Option<BlockedStrategyInputDedupeKey>,
     last_recorded_entry_skip: Option<EntrySkipDedupeKey>,
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
@@ -875,6 +877,7 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
+            last_recorded_blocked_strategy_input: None,
             last_recorded_entry_skip: None,
             last_recorded_exit_decision: None,
             pricing,
@@ -6303,6 +6306,23 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
+    fn record_blocked_entry_strategy_input_snapshot_once(
+        &mut self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+    ) -> Result<()> {
+        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
+        let key = BlockedStrategyInputDedupeKey::from_snapshot(&snapshot);
+        if self.last_recorded_blocked_strategy_input.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        self.context
+            .decision_evidence()
+            .record_strategy_input_snapshot(&snapshot)?;
+        self.last_recorded_blocked_strategy_input = Some(key);
+        Ok(())
+    }
+
     fn entry_strategy_input_evidence_snapshot_at(
         &self,
         now_ms: u64,
@@ -6953,7 +6973,8 @@ impl BinaryOracleEdgeTaker {
         let decision = self.entry_submission_decision_at(now_ms);
         self.log_entry_evaluation(now_ms, &decision);
 
-        if decision.blocked_reason == Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+        let realized_volatility_not_ready = decision.blocked_reason
+            == Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
             && decision
                 .evaluation
                 .pricing_blocked_by
@@ -6963,13 +6984,11 @@ impl BinaryOracleEdgeTaker {
                 .latest_realized_vol_snapshot_for_surface(
                     &self.config.realized_volatility_surface_id,
                 )
-                .is_some()
-        {
-            let strategy_input_snapshot =
-                self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, &decision)?;
-            self.context
-                .decision_evidence()
-                .record_strategy_input_snapshot(&strategy_input_snapshot)?;
+                .is_some();
+        if realized_volatility_not_ready {
+            self.record_blocked_entry_strategy_input_snapshot_once(now_ms, &decision)?;
+        } else {
+            self.last_recorded_blocked_strategy_input = None;
         }
 
         if let Some(reason) = decision.blocked_reason {

@@ -22,11 +22,115 @@ pub(super) fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
         let validation_client = client_with_root_chainlink_feed_catalog(root, client);
         let client = validation_client.as_ref().unwrap_or(client);
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
+        errors.extend(validate_reference_reconnect_timeout_exceeds_startup_bound(
+            root, key, client,
+        ));
         errors.extend(validate_client_readiness_probe(key, client));
     }
     errors.extend(validate_unique_client_readiness_probe_instruments(clients));
     errors
 }
+
+#[derive(Debug)]
+enum ReferenceReconnectStartupBudgetValidationError {
+    BudgetResolution(crate::bolt_v3_providers::NtReconnectBudgetResolutionError),
+    NautilusStartupBoundOverflow(crate::bolt_v3_config::NautilusStartupBoundOverflow),
+    NautilusStartupBoundMillisecondsOverflow {
+        startup_bound_secs: u64,
+    },
+    ReferenceReconnectTimeoutNotAboveStartupBound {
+        client_key: String,
+        provider_key: &'static str,
+        reconnect_timeout_ms: u64,
+        startup_bound_ms: u64,
+    },
+}
+
+impl std::fmt::Display for ReferenceReconnectStartupBudgetValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BudgetResolution(error) => write!(f, "{error}"),
+            Self::NautilusStartupBoundOverflow(error) => {
+                write!(f, "error_variant=NautilusStartupBoundOverflow {error}")
+            }
+            Self::NautilusStartupBoundMillisecondsOverflow { startup_bound_secs } => write!(
+                f,
+                "error_variant=NautilusStartupBoundMillisecondsOverflow nautilus startup bound does not fit reconnect_timeout_ms; startup_bound_secs={startup_bound_secs}"
+            ),
+            Self::ReferenceReconnectTimeoutNotAboveStartupBound {
+                client_key,
+                provider_key,
+                reconnect_timeout_ms,
+                startup_bound_ms,
+            } => write!(
+                f,
+                "error_variant=ReferenceReconnectTimeoutNotAboveStartupBound clients.{client_key}.data.reconnect_timeout_ms must be greater than nautilus startup bound because NT uses reconnect_timeout as the initial-connect budget; provider={provider_key} reconnect_timeout_ms={reconnect_timeout_ms} startup_bound_ms={startup_bound_ms}"
+            ),
+        }
+    }
+}
+
+fn validate_reference_reconnect_timeout_exceeds_startup_bound(
+    root: &BoltV3RootConfig,
+    key: &str,
+    client: &ClientBlock,
+) -> Vec<String> {
+    let (provider_key, reconnect_timeout_ms) = match crate::bolt_v3_providers::nt_reconnect_budget(
+        client.venue.as_str(),
+        client.data.as_ref(),
+    ) {
+        Ok(crate::bolt_v3_providers::NtReconnectBudget::NotApplicable) => return Vec::new(),
+        Ok(crate::bolt_v3_providers::NtReconnectBudget::Required {
+            provider_key,
+            reconnect_timeout_ms,
+        }) => (provider_key, reconnect_timeout_ms),
+        Err(error) => {
+            return vec![
+                ReferenceReconnectStartupBudgetValidationError::BudgetResolution(error).to_string(),
+            ];
+        }
+    };
+    let startup_bound_secs =
+        match crate::bolt_v3_config::nautilus_startup_bound_secs(&root.nautilus) {
+            Ok(startup_bound_secs) => startup_bound_secs,
+            Err(error) => {
+                return vec![
+                    ReferenceReconnectStartupBudgetValidationError::NautilusStartupBoundOverflow(
+                        error,
+                    )
+                    .to_string(),
+                ];
+            }
+        };
+    let startup_bound_ms = match u64::try_from(
+        std::time::Duration::from_secs(startup_bound_secs).as_millis(),
+    ) {
+        Ok(startup_bound_ms) => startup_bound_ms,
+        Err(_) => {
+            return vec![
+                    ReferenceReconnectStartupBudgetValidationError::NautilusStartupBoundMillisecondsOverflow {
+                        startup_bound_secs,
+                    }
+                    .to_string(),
+                ];
+        }
+    };
+
+    if reconnect_timeout_ms > startup_bound_ms {
+        return Vec::new();
+    }
+
+    vec![
+        ReferenceReconnectStartupBudgetValidationError::ReferenceReconnectTimeoutNotAboveStartupBound {
+            client_key: key.to_string(),
+            provider_key,
+            reconnect_timeout_ms,
+            startup_bound_ms,
+        }
+        .to_string(),
+    ]
+}
+
 fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     let Some(readiness_probe) = &client.readiness_probe else {

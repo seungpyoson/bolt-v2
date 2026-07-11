@@ -20,6 +20,8 @@ import ci_provenance
 import git_remote_utils
 from ci_workflow_hygiene_test_helpers import (
     clone_fixture_repo,
+    count_trace2_children,
+    count_trace2_maintenance_children,
     init_fixture_repo,
     load_provenance,
     load_verifier,
@@ -29,6 +31,7 @@ from ci_workflow_hygiene_test_helpers import (
     run_verifier_main_with_no_mistakes,
     yaml_scalar_literal,
 )
+from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1583,6 +1586,61 @@ def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote(
             assert_equal(configured_remotes, "", "private fetch must not configure temp remotes")
         finally:
             private_fetch.cleanup()
+
+
+def assert_private_fetch_repo_persists_auto_maintenance_suppression() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+        try:
+            for key, expected in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+                result = module.git(
+                    private_fetch.git_repo,
+                    "config",
+                    "--local",
+                    "--get",
+                    key,
+                    check=False,
+                    timeout_seconds=10,
+                )
+                assert_equal(result.returncode, 0, f"private fetch repo {key} status")
+                assert_equal(
+                    result.stdout.strip(), expected, f"private fetch repo {key} value"
+                )
+        finally:
+            private_fetch.cleanup()
+
+
+def assert_private_fetch_sha_spawns_no_background_maintenance() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        requested = fixture.make_pr(1, {"one.txt": "one\n"})
+        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+        trace = root / "private-fetch-trace.json"
+        previous_trace = os.environ.get("GIT_TRACE2_EVENT")
+        try:
+            os.environ["GIT_TRACE2_EVENT"] = str(trace)
+            fetched = private_fetch.fetch_sha(str(fixture.remote), requested, "probe")
+            trace_children = count_trace2_children(trace)
+            maintenance_children = count_trace2_maintenance_children(trace)
+        finally:
+            if previous_trace is None:
+                os.environ.pop("GIT_TRACE2_EVENT", None)
+            else:
+                os.environ["GIT_TRACE2_EVENT"] = previous_trace
+            private_fetch.cleanup()
+
+        assert_equal(fetched, requested, "private fetch SHA")
+        if trace_children == 0:
+            raise AssertionError("private fetch Trace2 log recorded no child events")
+        assert_equal(
+            maintenance_children,
+            0,
+            "private fetch maintenance children before cleanup",
+        )
 
 
 def assert_private_fetch_resolves_raw_relative_origin_path() -> None:
@@ -5003,6 +5061,8 @@ def main() -> int:
     assert_private_fetches_do_not_write_checkout_refs()
     assert_private_fetches_resolve_checkout_remote_names()
     assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
+    assert_private_fetch_repo_persists_auto_maintenance_suppression()
+    assert_private_fetch_sha_spawns_no_background_maintenance()
     assert_private_fetch_resolves_raw_relative_origin_path()
     assert_private_fetch_resolves_raw_bare_git_origin_path()
     assert_private_fetches_do_not_freshen_checkout_objects()

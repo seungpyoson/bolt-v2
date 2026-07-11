@@ -71,6 +71,27 @@ pub(super) struct ExitEvaluationTriggerContext {
 }
 
 impl ExitEvaluationTriggerContext {
+    pub(super) const fn from_market_data(
+        source: BoltV3ExitTriggerSource,
+        ts_event_ms: u64,
+        receive_ms: LocalReceiveMs,
+    ) -> Self {
+        Self {
+            source,
+            ts_event_ms,
+            ts_init_ms: Some(receive_ms.value()),
+        }
+    }
+
+    pub(super) const fn from_local_selection_handler(receive_ms: LocalReceiveMs) -> Self {
+        Self::from_market_data(
+            BoltV3ExitTriggerSource::SelectionUpdate,
+            receive_ms.value(),
+            receive_ms,
+        )
+    }
+
+    #[cfg(test)]
     pub(super) const fn new(
         source: BoltV3ExitTriggerSource,
         ts_event_ms: u64,
@@ -86,6 +107,14 @@ impl ExitEvaluationTriggerContext {
     #[cfg(test)]
     pub(super) const fn unknown(now_ms: u64) -> Self {
         Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, Some(now_ms))
+    }
+
+    #[cfg(test)]
+    pub(super) const fn diagnostic_missing(
+        source: BoltV3ExitTriggerSource,
+        ts_event_ms: u64,
+    ) -> Self {
+        Self::new(source, ts_event_ms, None)
     }
 
     /// Every runtime trigger is evaluated after it enters the process, so

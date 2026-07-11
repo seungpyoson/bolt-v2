@@ -152,6 +152,7 @@ the broader #1354 implementation complete and uses no closing keywords.
 
 - [x] Landed at `2b83f512a`: event `as_of_ms` leads and lags an unrelated venue trigger while snapshot receive time and evaluation receive time remain ordered; both evaluations are `Accepted`.
 - [x] Landed at `2b83f512a`: stale and missing-receive cases preserve `RejectedStale` and `MissingEvaluationEventTime` respectively.
+- [x] Production fair-value/taker requests and RV-consuming helpers require `LocalReceiveMs`; optionality remains only at the lower diagnostic classifier boundary.
 - [ ] Verify the landed classifier tests remain GREEN at the final head and cite the existing `2b83f512a` RED transcript; do not recreate RED.
 
 ### Task 2: Pin accepted-only RV watermarks
@@ -185,8 +186,9 @@ the broader #1354 implementation complete and uses no closing keywords.
 
 - [x] Landed at `2b83f512a`: the six-tick alternating-book differential retains one record after the original six-record RED.
 - [x] Landed at `2b83f512a`: the mixed book/signal/selection differential retains one record after the original four-record RED.
-- [x] Landed at `2b83f512a`: structurally missing receive context retains `MissingEvaluationEventTime → Hold`.
-- [ ] After merging the landed NT pin, add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
+- [x] Structurally missing receive context uses the test-only diagnostic constructor and retains `MissingEvaluationEventTime → Hold` without making production pricing stamps optional.
+- [x] After merging the landed NT pin, add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
+- [x] Production signal handling requires typed `QuoteTick.ts_init`; no strategy-clock fallback remains. Genuine local selection evaluation uses the distinct typed local-handler constructor.
 - [ ] Verify the landed six-tick, mixed-trigger, and missing-context tests remain GREEN at the final head and cite their existing RED transcripts; do not recreate RED.
 
 ### Task 4: Pin entry and maker blast radius

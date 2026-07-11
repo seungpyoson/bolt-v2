@@ -975,11 +975,9 @@ impl BinaryOracleEdgeTaker {
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
-                ExitEvaluationTriggerContext::new(
-                    BoltV3ExitTriggerSource::SelectionUpdate,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
                     now_ms,
-                    Some(now_ms),
-                ),
+                )),
             )
         {
             log::error!(
@@ -1531,38 +1529,44 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
+    fn observe_signal_quote(
+        &mut self,
+        quote: &FastSpotObservation,
+        evaluation_receive_ms: LocalReceiveMs,
+    ) {
         self.latest_signal_quote = Some(quote.clone());
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
-        self.after_signal_quote_observed(quote.observed_ts_ms, quote.received_ts_ms);
+        self.after_signal_quote_observed(quote.observed_ts_ms, evaluation_receive_ms);
     }
 
     fn observe_invalid_signal_quote(
         &mut self,
         venue: &str,
         observed_ts_ms: u64,
-        received_ts_ms: Option<u64>,
+        evaluation_receive_ms: LocalReceiveMs,
     ) {
         self.latest_signal_quote = None;
         self.pricing
             .observe_invalid_signal_quote(venue, observed_ts_ms);
-        self.after_signal_quote_observed(observed_ts_ms, received_ts_ms);
+        self.after_signal_quote_observed(observed_ts_ms, evaluation_receive_ms);
     }
 
-    fn after_signal_quote_observed(&mut self, observed_ts_ms: u64, received_ts_ms: Option<u64>) {
-        let evaluation_receive_ms = received_ts_ms
-            .unwrap_or_else(|| self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64);
+    fn after_signal_quote_observed(
+        &mut self,
+        observed_ts_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
+    ) {
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 observed_ts_ms,
-                ExitEvaluationTriggerContext::new(
+                ExitEvaluationTriggerContext::from_market_data(
                     BoltV3ExitTriggerSource::SignalQuote,
                     observed_ts_ms,
-                    Some(evaluation_receive_ms),
+                    evaluation_receive_ms,
                 ),
             )
         {
@@ -1590,10 +1594,10 @@ impl BinaryOracleEdgeTaker {
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 snapshot.ts_ms,
-                ExitEvaluationTriggerContext::new(
+                ExitEvaluationTriggerContext::from_market_data(
                     BoltV3ExitTriggerSource::ReferenceUpdate,
                     snapshot.ts_ms,
-                    Some(snapshot.ts_ms),
+                    LocalReceiveMs::new(snapshot.ts_ms),
                 ),
             )
         {
@@ -1607,7 +1611,11 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn signal_quote_from_tick(&self, quote: &QuoteTick) -> Option<FastSpotObservation> {
+    fn signal_quote_from_tick(
+        &self,
+        quote: &QuoteTick,
+        receive_ms: LocalReceiveMs,
+    ) -> Option<FastSpotObservation> {
         let bid = quote.bid_price.as_f64();
         let ask = quote.ask_price.as_f64();
         if !is_positive_finite(bid) || !is_positive_finite(ask) {
@@ -1623,7 +1631,7 @@ impl BinaryOracleEdgeTaker {
             venue: venue_name.clone(),
             price: midpoint,
             observed_ts_ms,
-            received_ts_ms: Some(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+            received_ts_ms: Some(receive_ms.value()),
         })
     }
 
@@ -3681,7 +3689,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_realized_vol_for_gate_at(
         &self,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> Option<f64> {
         self.pricing.current_realized_vol_at(
             realized_vol_gate_receive_ms,
@@ -3691,7 +3699,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_realized_vol_source_for_gate_at(
         &self,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> (Option<String>, Option<u64>) {
         self.pricing.current_realized_vol_source_at(
             realized_vol_gate_receive_ms,
@@ -3701,7 +3709,7 @@ impl BinaryOracleEdgeTaker {
 
     #[cfg(test)]
     fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
-        self.current_realized_vol_for_gate_at(Some(LocalReceiveMs::new(now_ms)))
+        self.current_realized_vol_for_gate_at(LocalReceiveMs::new(now_ms))
     }
 
     fn evidence_spot_price(&self) -> Option<f64> {
@@ -3779,7 +3787,7 @@ impl BinaryOracleEdgeTaker {
                 &self.runtime_taker_pricing_config(),
                 TakerPricingRequest {
                     now_ms,
-                    realized_vol_gate_receive_ms: Some(receive_context.receive_ms()),
+                    realized_vol_gate_receive_ms: receive_context.receive_ms(),
                     reference_gate_event_ms: self.current_reference_pricing_event_ms(),
                     strike_price: self.active.interval_open,
                     seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms),
@@ -3810,7 +3818,7 @@ impl BinaryOracleEdgeTaker {
                 &self.runtime_taker_pricing_config(),
                 TakerPricingRequest {
                     now_ms,
-                    realized_vol_gate_receive_ms: Some(receive_context.receive_ms()),
+                    realized_vol_gate_receive_ms: receive_context.receive_ms(),
                     reference_gate_event_ms: self.current_reference_pricing_event_ms(),
                     strike_price: self.active.interval_open,
                     seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms),
@@ -3849,8 +3857,7 @@ impl BinaryOracleEdgeTaker {
         down_fee_bps: f64,
     ) -> Option<Probability> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
-        let realized_vol =
-            self.current_realized_vol_for_gate_at(Some(receive_context.receive_ms()))?;
+        let realized_vol = self.current_realized_vol_for_gate_at(receive_context.receive_ms())?;
         self.uncertainty_band_probability_for_seconds(
             seconds_to_expiry,
             realized_vol,
@@ -4614,8 +4621,7 @@ impl BinaryOracleEdgeTaker {
         fee_uncertainty_bps: f64,
     ) -> Option<(Probability, Probability)> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
-        let realized_vol =
-            self.current_realized_vol_for_gate_at(Some(receive_context.receive_ms()))?;
+        let realized_vol = self.current_realized_vol_for_gate_at(receive_context.receive_ms())?;
         let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
             seconds_to_expiry,
             realized_vol,
@@ -5344,7 +5350,7 @@ impl BinaryOracleEdgeTaker {
     fn current_position_fair_probability_up_for_gate_at(
         &self,
         now_ms: u64,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> Option<Probability> {
         let open_position = &self.managed_position()?.position;
         let spot_price = self.current_position_spot_price()?;
@@ -5365,16 +5371,13 @@ impl BinaryOracleEdgeTaker {
 
     #[cfg(test)]
     fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<Probability> {
-        self.current_position_fair_probability_up_for_gate_at(
-            now_ms,
-            Some(LocalReceiveMs::new(now_ms)),
-        )
+        self.current_position_fair_probability_up_for_gate_at(now_ms, LocalReceiveMs::new(now_ms))
     }
 
     fn current_position_uncertainty_band_probability_for_gate_at(
         &self,
         now_ms: u64,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> Option<Probability> {
         let seconds_to_expiry = self
             .managed_position()?
@@ -5396,7 +5399,7 @@ impl BinaryOracleEdgeTaker {
         &self,
         now_ms: u64,
         side: OutcomeSide,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> Option<f64> {
         let fair_probability_up = self.current_position_fair_probability_up_for_gate_at(
             now_ms,
@@ -5420,7 +5423,7 @@ impl BinaryOracleEdgeTaker {
 
     #[cfg(test)]
     fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
-        self.current_hold_ev_bps_for_gate_at(now_ms, side, Some(LocalReceiveMs::new(now_ms)))
+        self.current_hold_ev_bps_for_gate_at(now_ms, side, LocalReceiveMs::new(now_ms))
     }
 
     fn current_exit_ev_bps_at(
@@ -5484,7 +5487,25 @@ impl BinaryOracleEdgeTaker {
     fn exit_evaluation_with_rv_gate_at(
         &self,
         now_ms: u64,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
+    ) -> ExitEvaluation {
+        self.exit_evaluation_with_hold_ev_at(now_ms, |position_outcome_side| {
+            self.current_hold_ev_bps_for_gate_at(
+                now_ms,
+                position_outcome_side,
+                realized_vol_gate_receive_ms,
+            )
+        })
+    }
+
+    fn exit_evaluation_without_rv_receive_context_at(&self, now_ms: u64) -> ExitEvaluation {
+        self.exit_evaluation_with_hold_ev_at(now_ms, |_| None)
+    }
+
+    fn exit_evaluation_with_hold_ev_at(
+        &self,
+        now_ms: u64,
+        current_hold_ev_bps: impl FnOnce(OutcomeSide) -> Option<f64>,
     ) -> ExitEvaluation {
         let mut evaluation = ExitEvaluation {
             position_outcome_side: self.open_position_outcome_side(),
@@ -5542,11 +5563,7 @@ impl BinaryOracleEdgeTaker {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
             return evaluation;
         };
-        evaluation.hold_ev_bps = self.current_hold_ev_bps_for_gate_at(
-            now_ms,
-            position_outcome_side,
-            realized_vol_gate_receive_ms,
-        );
+        evaluation.hold_ev_bps = current_hold_ev_bps(position_outcome_side);
         evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side, &order_config);
         evaluation.exit_decision = Some(evaluate_exit_decision(
             evaluation.hold_ev_bps,
@@ -5558,7 +5575,7 @@ impl BinaryOracleEdgeTaker {
 
     #[cfg(test)]
     fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
-        self.exit_evaluation_with_rv_gate_at(now_ms, Some(LocalReceiveMs::new(now_ms)))
+        self.exit_evaluation_with_rv_gate_at(now_ms, LocalReceiveMs::new(now_ms))
     }
 
     fn exit_evaluation_for_trigger_at(
@@ -5566,7 +5583,10 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         trigger_context: ExitEvaluationTriggerContext,
     ) -> ExitEvaluation {
-        self.exit_evaluation_with_rv_gate_at(now_ms, trigger_context.receive_ms())
+        match trigger_context.receive_ms() {
+            Some(receive_ms) => self.exit_evaluation_with_rv_gate_at(now_ms, receive_ms),
+            None => self.exit_evaluation_without_rv_receive_context_at(now_ms),
+        }
     }
 
     #[cfg(test)]
@@ -5744,8 +5764,10 @@ impl BinaryOracleEdgeTaker {
             self.historical_entry_fee_log_fields();
         let realized_vol_gate_receive_ms = trigger_context.receive_ms();
         let diagnostic_event_ms = trigger_context.venue_event_ms();
-        let (realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.current_realized_vol_source_for_gate_at(realized_vol_gate_receive_ms);
+        let (realized_vol_source_venue, realized_vol_source_ts_ms) = realized_vol_gate_receive_ms
+            .map_or((None, None), |receive_ms| {
+                self.current_realized_vol_source_for_gate_at(receive_ms)
+            });
         let (
             rv_snapshot_as_of_ms,
             rv_snapshot_ready,
@@ -5777,7 +5799,8 @@ impl BinaryOracleEdgeTaker {
                 .and_then(|position| position.lifecycle.settlement_strike()),
             seconds_to_expiry: open_position
                 .and_then(|position| position.lifecycle.seconds_to_expiry_at(now_ms)),
-            realized_vol: self.current_realized_vol_for_gate_at(realized_vol_gate_receive_ms),
+            realized_vol: realized_vol_gate_receive_ms
+                .and_then(|receive_ms| self.current_realized_vol_for_gate_at(receive_ms)),
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
             rv_surface_id: self.config.realized_volatility_surface_id.clone(),
@@ -6233,7 +6256,7 @@ impl BinaryOracleEdgeTaker {
     ) -> EntryRealizedVolatilityReceipt {
         let classification = self.pricing.classify_realized_vol_snapshot(
             &self.config.realized_volatility_surface_id,
-            Some(evaluation_receive_ms),
+            evaluation_receive_ms,
             self.realized_volatility_max_source_age_ms(),
         );
         match classification {
@@ -7759,13 +7782,14 @@ impl DataActor for BinaryOracleEdgeTaker {
             .signal_instrument_id()
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
         {
-            if let Some(signal_quote) = self.signal_quote_from_tick(quote) {
-                self.observe_signal_quote(&signal_quote);
+            let receive_ms = LocalReceiveMs::new(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64);
+            if let Some(signal_quote) = self.signal_quote_from_tick(quote, receive_ms) {
+                self.observe_signal_quote(&signal_quote, receive_ms);
             } else if let Some(signal_venue) = self.config.signal_venue.clone() {
                 self.observe_invalid_signal_quote(
                     &signal_venue,
                     quote.ts_event.as_u64() / NANOS_PER_MILLI_U64,
-                    Some(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+                    receive_ms,
                 );
             }
         }
@@ -7836,10 +7860,10 @@ impl DataActor for BinaryOracleEdgeTaker {
         if matches!(self.exposure, ExposureState::Managed(_))
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
-                ExitEvaluationTriggerContext::new(
+                ExitEvaluationTriggerContext::from_market_data(
                     BoltV3ExitTriggerSource::BookDelta,
                     deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64,
-                    Some(deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+                    LocalReceiveMs::new(deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64),
                 ),
             )
         {

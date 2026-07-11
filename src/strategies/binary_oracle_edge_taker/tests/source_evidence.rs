@@ -1828,14 +1828,14 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         BoltV3ExitTriggerSource::SelectionUpdate
     );
     assert_eq!(exit_decisions[0].trigger_ts_event_ms, 1_200);
-    assert_eq!(exit_decisions[0].trigger_ts_init_ms, None);
+    assert_eq!(exit_decisions[0].trigger_ts_init_ms, Some(1_200));
     assert_eq!(exit_decisions[0].rv_surface_id, TEST_SURFACE_ID);
     assert_eq!(exit_decisions[0].rv_snapshot_as_of_ms, Some(1_200));
     assert!(exit_decisions[0].rv_snapshot_ready);
     assert_eq!(exit_decisions[0].rv_snapshot_blockers, Vec::new());
     assert_eq!(
         exit_decisions[0].rv_gate_result,
-        BoltV3ExitRvGateResult::MissingEvaluationEventTime
+        BoltV3ExitRvGateResult::Accepted
     );
     assert_eq!(exit_decisions[0].rv_future_dating_delta_ms, None);
     assert_eq!(
@@ -2968,6 +2968,51 @@ fn recorded_exit_decisions(
 }
 
 #[test]
+fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    let signal_event_ms = 1_200;
+    let signal_receive_ms = 1_220;
+    strategy.pricing.seed_ready_realized_vol(
+        Some("<SOURCE_ID>".to_string()),
+        1.5,
+        signal_receive_ms,
+    );
+    let signal_instrument_id = strategy
+        .config
+        .signal_instrument_id
+        .as_deref()
+        .expect("exit fixture must configure a signal instrument")
+        .to_string();
+    let signal_price = strategy
+        .pricing
+        .spot_price()
+        .expect("exit fixture must expose a signal price");
+
+    strategy
+        .on_quote(&quote_tick_with_stamps(
+            &signal_instrument_id,
+            signal_price - 0.01,
+            signal_price + 0.01,
+            signal_event_ms,
+            signal_receive_ms,
+        ))
+        .expect("unequal-stamped signal quote must reach exit evaluation");
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].trigger_ts_event_ms, Some(signal_event_ms as i64));
+    assert_eq!(
+        records[0].trigger_ts_init_ms,
+        Some(signal_receive_ms as i64)
+    );
+    assert_eq!(
+        records[0].rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
+        "signal evaluation must use QuoteTick.ts_init, not its venue event stamp or strategy clock"
+    );
+}
+
+#[test]
 fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
     // FIX 3b: the exit-evaluation evidence sink is swallow-on-error. A writer that
     // errors only on record_exit_evaluation must leave the exit submission result
@@ -3297,7 +3342,7 @@ fn exit_evaluation_evidence_accepts_local_trigger_with_receive_time() {
 }
 
 #[test]
-fn exit_evaluation_evidence_holds_when_receive_time_is_structurally_absent() {
+fn diagnostic_exit_evaluation_holds_when_receive_time_is_structurally_absent() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     strategy.active.phase = SelectionPhase::Active;
     strategy
@@ -3307,10 +3352,9 @@ fn exit_evaluation_evidence_holds_when_receive_time_is_structurally_absent() {
     strategy
         .try_submit_exit_order_for_trigger(
             1_200,
-            ExitEvaluationTriggerContext::new(
+            ExitEvaluationTriggerContext::diagnostic_missing(
                 crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::Other,
                 1_200,
-                None,
             ),
         )
         .expect("missing receive context should fail closed without an error");

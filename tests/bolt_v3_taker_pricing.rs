@@ -139,7 +139,7 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
             &config,
             TakerPricingRequest {
                 now_ms: 1_000,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
                 reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
                 strike_price: Some(3_100.0),
                 seconds_to_market_end: Some(300),
@@ -173,7 +173,7 @@ fn taker_entry_pricing_does_not_compare_independent_venue_clocks() {
         &config,
         TakerPricingRequest {
             now_ms: 1_000,
-            realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+            realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
             reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
             strike_price: Some(3_100.0),
             seconds_to_market_end: Some(300),
@@ -232,7 +232,7 @@ fn taker_pricing_accepts_ready_surfaced_zero_realized_volatility_snapshot() {
             &config,
             TakerPricingRequest {
                 now_ms: 1_000,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
                 reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
                 strike_price: Some(3_100.0),
                 seconds_to_market_end: Some(300),
@@ -281,7 +281,7 @@ fn surfaced_realized_volatility_mode_blocks_instead_of_falling_back_to_legacy_es
             &config,
             TakerPricingRequest {
                 now_ms: 1_000,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
                 reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
                 strike_price: Some(3_100.0),
                 seconds_to_market_end: Some(300),
@@ -305,7 +305,7 @@ fn taker_pricing_returns_current_rv_source_theta_and_fair_probabilities() {
             &config,
             TakerPricingRequest {
                 now_ms: 4_000,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(4_000)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(4_000),
                 reference_gate_event_ms: Some(VenueEventMs::new(4_000)),
                 strike_price: Some(3_100.0),
                 seconds_to_market_end: Some(300),
@@ -341,7 +341,7 @@ fn taker_pricing_reports_current_readiness_blockers_without_strategy_order_state
             &config,
             TakerPricingRequest {
                 now_ms: 1_000,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
                 reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
                 strike_price: None,
                 seconds_to_market_end: None,
@@ -380,7 +380,7 @@ fn taker_pricing_reports_stale_signal_spot_with_other_fair_value_blockers() {
             &config,
             TakerPricingRequest {
                 now_ms: 3_001,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(3_001)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(3_001),
                 reference_gate_event_ms: Some(VenueEventMs::new(3_001)),
                 strike_price: None,
                 seconds_to_market_end: Some(300),
@@ -407,7 +407,7 @@ fn shared_fair_value_pricing_stays_available_when_taker_theta_is_unavailable() {
     seed_ready_realized_vol(&mut pricing, Some("bybit".to_string()), 0.50, 1_000);
     let request = TakerPricingRequest {
         now_ms: 1_000,
-        realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+        realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
         reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
         strike_price: Some(100.0),
         seconds_to_market_end: Some(300),
@@ -448,7 +448,7 @@ fn taker_pricing_reports_fair_probability_unavailable_after_inputs_are_ready() {
             &config,
             TakerPricingRequest {
                 now_ms: 4_000,
-                realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(4_000)),
+                realized_vol_gate_receive_ms: LocalReceiveMs::new(4_000),
                 reference_gate_event_ms: Some(VenueEventMs::new(4_000)),
                 strike_price: Some(3_100.0),
                 seconds_to_market_end: Some(300),
@@ -470,44 +470,44 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     seed_ready_realized_vol(&mut pricing, Some("reference".to_string()), 2.5, 1_000);
 
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(1_000)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(1_000), None),
         Some(2.5)
     );
     assert_eq!(
-        pricing.current_realized_vol_source_at(Some(LocalReceiveMs::new(1_000)), None),
+        pricing.current_realized_vol_source_at(LocalReceiveMs::new(1_000), None),
         (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, Some("older".to_string()), 3.0, 999);
 
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(1_000)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(1_000), None),
         Some(2.5)
     );
     assert_eq!(
-        pricing.current_realized_vol_source_at(Some(LocalReceiveMs::new(1_000)), None),
+        pricing.current_realized_vol_source_at(LocalReceiveMs::new(1_000), None),
         (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, None, 3.0, 1_001);
 
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(1_001)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(1_001), None),
         Some(3.0)
     );
     assert_eq!(
-        pricing.current_realized_vol_source_at(Some(LocalReceiveMs::new(1_001)), None),
+        pricing.current_realized_vol_source_at(LocalReceiveMs::new(1_001), None),
         (None, Some(1_001))
     );
 
     seed_ready_realized_vol(&mut pricing, Some("zero".to_string()), 0.0, 1_002);
 
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(1_002)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(1_002), None),
         Some(0.0)
     );
     assert_eq!(
-        pricing.current_realized_vol_source_at(Some(LocalReceiveMs::new(1_002)), None),
+        pricing.current_realized_vol_source_at(LocalReceiveMs::new(1_002), None),
         (Some("zero".to_string()), Some(1_002))
     );
 }
@@ -522,11 +522,11 @@ fn taker_pricing_rejects_invalid_source_owned_realized_vol_seed() {
     seed_ready_realized_vol(&mut pricing, Some("nan".to_string()), f64::NAN, 1_002);
 
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(1_002)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(1_002), None),
         Some(2.5)
     );
     assert_eq!(
-        pricing.current_realized_vol_source_at(Some(LocalReceiveMs::new(1_002)), None),
+        pricing.current_realized_vol_source_at(LocalReceiveMs::new(1_002), None),
         (Some("reference".to_string()), Some(1_000))
     );
 }
@@ -586,11 +586,11 @@ fn foreign_surface_snapshot_does_not_clobber_configured_surface_readiness() {
     // (A `pub(crate)` field probe isn't visible from this external integration test, so the
     // behavior is asserted via the public read API — which is the actual contract.)
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(201)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(201), None),
         Some(1.5)
     );
     assert_eq!(
-        pricing.current_realized_vol_source_at(Some(LocalReceiveMs::new(201)), None),
+        pricing.current_realized_vol_source_at(LocalReceiveMs::new(201), None),
         (None, Some(100))
     );
 }
@@ -614,7 +614,7 @@ fn equal_timestamp_snapshot_replaces_and_older_snapshot_is_rejected_per_surface(
         100,
     ));
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(100)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(100), None),
         Some(2.0)
     );
 
@@ -625,7 +625,7 @@ fn equal_timestamp_snapshot_replaces_and_older_snapshot_is_rejected_per_surface(
         50,
     ));
     assert_eq!(
-        pricing.current_realized_vol_at(Some(LocalReceiveMs::new(100)), None),
+        pricing.current_realized_vol_at(LocalReceiveMs::new(100), None),
         Some(2.0)
     );
 }
@@ -652,11 +652,11 @@ fn two_pricing_instances_with_distinct_configured_surfaces_do_not_interfere() {
     // Instance A reads its configured surface; instance B (configured for surface_b) is not
     // ready yet, and surface A's snapshot does NOT make B ready.
     assert_eq!(
-        pricing_a.current_realized_vol_at(Some(LocalReceiveMs::new(101)), None),
+        pricing_a.current_realized_vol_at(LocalReceiveMs::new(101), None),
         Some(1.5)
     );
     assert_eq!(
-        pricing_b.current_realized_vol_at(Some(LocalReceiveMs::new(101)), None),
+        pricing_b.current_realized_vol_at(LocalReceiveMs::new(101), None),
         None
     );
 
@@ -667,11 +667,11 @@ fn two_pricing_instances_with_distinct_configured_surfaces_do_not_interfere() {
 
     // Each instance reads only its own configured surface; no cross-surface interference.
     assert_eq!(
-        pricing_a.current_realized_vol_at(Some(LocalReceiveMs::new(201)), None),
+        pricing_a.current_realized_vol_at(LocalReceiveMs::new(201), None),
         Some(1.5)
     );
     assert_eq!(
-        pricing_b.current_realized_vol_at(Some(LocalReceiveMs::new(201)), None),
+        pricing_b.current_realized_vol_at(LocalReceiveMs::new(201), None),
         Some(2.5)
     );
 }

@@ -165,7 +165,7 @@ pub fn maker_reference_current_price_fair_value_decision(
     };
     let request = FairValuePricingRequest {
         now_ms,
-        realized_vol_gate_receive_ms: Some(input.evaluation_receive_ms),
+        realized_vol_gate_receive_ms: input.evaluation_receive_ms,
         strike_price: input.strike_price,
         seconds_to_market_end: input.seconds_to_market_end,
     };

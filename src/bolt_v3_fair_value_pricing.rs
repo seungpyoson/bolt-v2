@@ -35,7 +35,7 @@ pub struct FairValuePricingConfig<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FairValuePricingRequest {
     pub now_ms: u64,
-    pub realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+    pub realized_vol_gate_receive_ms: LocalReceiveMs,
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
 }
@@ -217,11 +217,12 @@ impl FairValuePricingState {
     pub fn classify_realized_vol_snapshot(
         &self,
         surface_id: &str,
-        evaluation_receive_ms: Option<LocalReceiveMs>,
+        evaluation_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> RealizedVolGateClassification {
         let snapshot = self.latest_realized_vol_snapshots.get(surface_id);
-        let gate_result = classify_rv_gate(snapshot, evaluation_receive_ms, max_source_age_ms);
+        let gate_result =
+            classify_rv_gate(snapshot, Some(evaluation_receive_ms), max_source_age_ms);
         if gate_result != BoltV3RvGateResult::Accepted {
             return RealizedVolGateClassification::Rejected {
                 gate_result,
@@ -257,7 +258,7 @@ impl FairValuePricingState {
 
     pub fn current_realized_vol_at(
         &self,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<f64> {
         self.current_surfaced_realized_vol_at(
@@ -269,7 +270,7 @@ impl FairValuePricingState {
 
     pub fn current_realized_vol_source_at(
         &self,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> (Option<String>, Option<u64>) {
         self.current_surfaced_realized_vol_snapshot_at(
@@ -334,7 +335,7 @@ impl FairValuePricingState {
     pub fn fair_value_pricing_from_inputs(
         &self,
         config: &FairValuePricingConfig<'_>,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         self.debug_assert_config_surface_matches_state(config);
@@ -371,7 +372,7 @@ impl FairValuePricingState {
     fn current_realized_vol_for_config_at(
         &self,
         config: &FairValuePricingConfig<'_>,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> Option<f64> {
         self.current_surfaced_realized_vol_at(
             config.realized_volatility_surface_id,
@@ -383,7 +384,7 @@ impl FairValuePricingState {
     fn current_realized_vol_evidence_for_config_at(
         &self,
         config: &FairValuePricingConfig<'_>,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> (Option<String>, Option<String>, Option<u64>) {
         let surface_id = config.realized_volatility_surface_id;
         self.current_surfaced_realized_vol_snapshot_at(
@@ -400,7 +401,7 @@ impl FairValuePricingState {
     fn current_surfaced_realized_vol_at(
         &self,
         surface_id: &str,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<f64> {
         self.current_surfaced_realized_vol_snapshot_at(
@@ -415,14 +416,18 @@ impl FairValuePricingState {
     fn current_surfaced_realized_vol_snapshot_at(
         &self,
         surface_id: &str,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<&RealizedVolSnapshot> {
         let snapshot = self.latest_realized_vol_snapshots.get(surface_id);
         // Single source of truth for the realized-vol staleness gate: the same
         // classification drives both the pricing gate (here) and the RCA exit
         // evidence (#885). The gate admits a snapshot only when `Accepted`.
-        match classify_rv_gate(snapshot, realized_vol_gate_receive_ms, max_source_age_ms) {
+        match classify_rv_gate(
+            snapshot,
+            Some(realized_vol_gate_receive_ms),
+            max_source_age_ms,
+        ) {
             BoltV3RvGateResult::Accepted => snapshot,
             BoltV3RvGateResult::MissingSnapshot
             | BoltV3RvGateResult::MissingEvaluationEventTime
@@ -490,9 +495,10 @@ fn realized_vol_source_evidence(snapshot: &RealizedVolSnapshot) -> (Option<Strin
 /// Single source of truth for the gate decision: `current_surfaced_realized_vol_snapshot_at`
 /// admits a snapshot only when this returns [`BoltV3RvGateResult::Accepted`], and the #885
 /// exit-evaluation evidence records the same classification so a rejected snapshot is
-/// explainable from disk. The production gate collapses missing event time, future-dated,
-/// stale, and not-ready into a single `None`; this split preserves which condition fired
-/// for RCA. The surface's venue-event `as_of_ms` is deliberately not comparable here:
+/// explainable from disk. Production pricing requests require `LocalReceiveMs`; only this
+/// lower diagnostic boundary accepts `None` so missing receive context remains classifiable
+/// for RCA without being constructible in pricing APIs. The surface's venue-event `as_of_ms`
+/// is deliberately not comparable here:
 /// it belongs to the RV source venue, not necessarily the consuming venue.
 pub fn classify_rv_gate(
     snapshot: Option<&RealizedVolSnapshot>,

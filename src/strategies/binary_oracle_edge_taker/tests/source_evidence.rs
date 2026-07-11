@@ -3403,6 +3403,67 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
 }
 
 #[test]
+fn rv_clock_domain_amendment_exit_decision_and_evidence_stay_stable_across_triggers() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+
+    let trigger_contexts = [
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            1_199,
+            Some(1_210),
+        ),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            1_201,
+            Some(1_220),
+        ),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            1_230,
+            Some(1_230),
+        ),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            1_201,
+            Some(1_240),
+        ),
+    ];
+
+    let mut expected_outcome = None;
+    for trigger_context in trigger_contexts {
+        let decision = strategy.exit_submission_decision_for_trigger_at(1_240, trigger_context);
+        let outcome = (
+            decision.evaluation.exit_decision,
+            decision.blocked_reason,
+            decision.evaluation.hold_ev_bps,
+        );
+        if let Some(expected) = expected_outcome {
+            assert_eq!(
+                outcome, expected,
+                "trigger clock/source changed the exit decision"
+            );
+        } else {
+            expected_outcome = Some(outcome);
+        }
+        strategy.record_exit_evaluation_evidence(1_240, &decision, trigger_context, false);
+    }
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "one unchanged receive-domain exit outcome must produce one evidence transition"
+    );
+    assert_eq!(
+        records[0].rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted
+    );
+}
+
+#[test]
 fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     strategy

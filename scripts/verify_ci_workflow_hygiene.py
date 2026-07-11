@@ -5299,14 +5299,7 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 
 
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
-GATE_FULL_CONDITION = '"$policy_path" == "full"'
-GATE_ITERATION_CONDITION = '"$policy_path" == "iteration"'
-GATE_NOOP_CONDITION = '"$policy_path" == "noop"'
-GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT = 'expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"'
-GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$expected_event_class" != "defer"'
-GATE_NOOP_CONTEXT_FAILURE_CONDITION = '"$expected_event_class" != "noop"'
-GATE_ITERATION_CONTEXT_FAILURE_CONDITION = '"$expected_event_class" != "iteration"'
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:

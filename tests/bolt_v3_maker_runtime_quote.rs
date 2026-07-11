@@ -183,6 +183,7 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             realized_volatility_snapshot: &realized_volatility_snapshot,
             realized_volatility_max_source_age_ms: None,
             pricing_kurtosis: f64::NAN,
+            evaluation_receive_ms: LocalReceiveMs::new(1_000),
         },
     )
     .expect("reference-current-price fair value should be available");
@@ -268,6 +269,7 @@ fn maker_pricing_does_not_compare_independent_venue_clocks() {
             realized_volatility_snapshot: &realized_volatility_snapshot,
             realized_volatility_max_source_age_ms: None,
             pricing_kurtosis: f64::NAN,
+            evaluation_receive_ms: LocalReceiveMs::new(1_000),
         },
     );
 
@@ -352,6 +354,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         realized_volatility_snapshot: &realized_volatility_snapshot,
         realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
+        evaluation_receive_ms: LocalReceiveMs::new(1_500),
     };
 
     let decision = maker_reference_current_price_fair_value_decision(&mut selector, 1_500, input);

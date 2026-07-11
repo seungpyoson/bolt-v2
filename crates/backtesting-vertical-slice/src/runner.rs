@@ -3546,11 +3546,6 @@ mod tests {
         let settlement_price = Price::from_str(&settlement.close_price)
             .map_err(|error| anyhow::anyhow!(error))
             .context("parse issue #789 exact settlement price")?;
-        let exit_price = position
-            .events
-            .last()
-            .context("issue #789 position has no terminal fill")?
-            .last_px;
         let resolved_config_bytes = output
             .resolved_config_bytes
             .as_deref()
@@ -3567,7 +3562,6 @@ mod tests {
                 fills: &entry_fills,
                 position_fills: &position.events,
                 settlement_price,
-                exit_price,
                 initial_cash,
                 terminal_cash,
                 realized_pnl,
@@ -4229,8 +4223,10 @@ mod tests {
             run_id: "issue-789-first-real-free-data-taker-pl".to_string(),
             target_bolt_v2_branch: "codex/789-first-faithful-taker-pl".to_string(),
             target_bolt_v2_ref: "worktree".to_string(),
-            resolved_nt_version: bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision()
-                .to_string(),
+            resolved_nt_version:
+                crate::nt_dependency_proof::nt_dependency_proof_from_embedded_manifests()
+                    .context("resolve BVS NautilusTrader dependency provenance")?
+                    .nautilus_revision,
             market_structure_fixture: MarketStructureFixture::BinaryOption,
             venue_binding_key: "issue-789-pmxt-okx-bybit-chainlink".to_string(),
             run_purpose: RunPurpose::Normal,

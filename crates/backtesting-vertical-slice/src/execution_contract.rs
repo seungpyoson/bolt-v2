@@ -27,7 +27,6 @@ pub struct ExecutionContractTrace<'a> {
     pub fills: &'a [OrderFilled],
     pub position_fills: &'a [OrderFilled],
     pub settlement_price: Price,
-    pub exit_price: Price,
     pub initial_cash: Money,
     pub terminal_cash: Money,
     pub realized_pnl: Money,
@@ -111,11 +110,6 @@ pub fn validate_execution_contract(
             ),
         "observed fills do not equal deterministic fills from the executable book"
     );
-    ensure!(
-        trace.exit_price == trace.settlement_price,
-        "terminal exit price does not equal the configured settlement price"
-    );
-
     let (opening_fill, closing_fills) = trace
         .position_fills
         .split_first()
@@ -136,6 +130,10 @@ pub fn validate_execution_contract(
     ensure!(
         position_entry_fills == trace.fills,
         "order entry fills do not exactly equal all position entry fills"
+    );
+    ensure!(
+        terminal_fill.last_px == trace.settlement_price,
+        "terminal fill price does not equal the configured settlement price"
     );
     let closing_side = match trace.order_side {
         OrderSide::Buy => OrderSide::Sell,
@@ -229,7 +227,6 @@ mod tests {
                 fills: &self.fills,
                 position_fills: &self.position_fills,
                 settlement_price: Price::from("1.000"),
-                exit_price: Price::from("1.000"),
                 initial_cash: self.initial_cash,
                 terminal_cash: self.terminal_cash,
                 realized_pnl: self.realized_pnl,
@@ -293,6 +290,20 @@ mod tests {
             config_bytes,
             config_hash,
         }
+    }
+
+    fn reconcile_position_accounting(fixture: &mut Fixture) {
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        for fill in &fixture.position_fills[1..] {
+            position.apply(fill);
+        }
+        fixture.realized_pnl = position
+            .realized_pnl
+            .expect("mutated fixture position should realize PnL");
+        fixture.terminal_cash = fixture
+            .initial_cash
+            .checked_add(fixture.realized_pnl)
+            .expect("mutated fixture cash should reconcile exactly");
     }
 
     fn test_fill(
@@ -414,6 +425,71 @@ mod tests {
             .checked_add(fixture.realized_pnl)
             .expect("duplicated-entry fixture cash should reconcile exactly");
         assert!(validate_execution_contract(&fixture.trace()).is_err());
+    }
+
+    #[test]
+    fn rejects_terminal_fill_price_divergent_from_settlement() {
+        let mut fixture = fixture();
+        fixture.position_fills[1].last_px = Price::from("0.500");
+        reconcile_position_accounting(&mut fixture);
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("terminal fill price must be bound to configured settlement");
+        assert!(error.to_string().contains("configured settlement price"));
+    }
+
+    #[test]
+    fn rejects_incomplete_terminal_close_at_terminal_quantity_guard() {
+        let mut fixture = fixture();
+        fixture.position_fills[1].last_qty = Quantity::from("1.71");
+        reconcile_position_accounting(&mut fixture);
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("incomplete terminal close must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("does not exactly close the validated entry quantity")
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_terminal_close_at_terminal_quantity_guard() {
+        let mut fixture = fixture();
+        fixture.position_fills[1].last_qty = Quantity::from("5.42");
+        reconcile_position_accounting(&mut fixture);
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("oversized terminal close must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("does not exactly close the validated entry quantity")
+        );
+    }
+
+    #[test]
+    fn rejects_non_closed_position_at_position_state_guard() {
+        let mut fixture = fixture();
+        fixture.book = OrderBook::new(fixture.instrument.id(), BookType::L2_MBP);
+        fixture.book.add(
+            BookOrder::new(
+                OrderSide::Sell,
+                Price::from("0.420"),
+                Quantity::from("2.00"),
+                1,
+            ),
+            0,
+            1,
+            UnixNanos::from(1),
+        );
+        fixture.fills[0].last_qty = Quantity::from("2.00");
+        fixture.position_fills[0] = fixture.fills[0];
+        reconcile_position_accounting(&mut fixture);
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("reversed residual position must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("replayed position is not closed")
+        );
     }
 
     #[test]

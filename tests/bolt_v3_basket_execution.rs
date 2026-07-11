@@ -870,14 +870,32 @@ fn basket_state_v1_old_bytes_remain_readable() {
         BoltV3BasketRecoveryState::Recovered(state) => state,
         other => panic!("expected Recovered, got {other:?}"),
     };
-    let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "fixtures/bolt_v3/compatibility/basket_state_v1.json"
-    ))
-    .expect("basket fixture parses");
-    assert_eq!(
-        serde_json::to_value(&state).expect("state serializes"),
-        fixture["state"]
-    );
+    let expected = BoltV3BasketExecutionState::candidate(
+        "legacy-basket",
+        "legacy-strategy",
+        "legacy-client",
+        vec![("yes", "YES.POLYMARKET", dec("1"))],
+        vec![vec![dec("1")]],
+        dec("0.01"),
+        dec("100"),
+        BoltV3BasketExecutionConfig {
+            repair: BoltV3BasketRepairPolicy {
+                max_retries: 1,
+                max_book_age_ms: 1_000,
+                max_slippage_bps: 25,
+                max_depth_levels: 5,
+                allow_unwind_when_repair_denied: true,
+            },
+            unwind: BoltV3BasketUnwindPolicy {
+                max_retries: 1,
+                max_book_age_ms: 1_000,
+                max_slippage_bps: 25,
+                max_depth_levels: 5,
+            },
+        },
+    )
+    .expect("expected legacy basket semantics should be valid");
+    assert_eq!(state, expected);
 }
 
 #[test]

@@ -1,0 +1,188 @@
+EXECUTION BRIEF — exit_evaluation evidence flood: rv-gate oscillation defeats the
+#885 flood guard (class parent: #1354 per-tick disk-noise). BLOCKS the 24h soak
+kill/restart leg. Repo: seungpyoson/bolt-v2, work from latest main (v0.1.12 tip or later).
+
+TWO PHASES. Phase 1 comes back to the reviewer for a design ruling BEFORE any
+implementation. Do NOT start Phase 2 without the ruling.
+
+== CONTEXT ==
+v0.1.12 (main @ 9ac211fe121b7b825a5f4da8e7590e00d2b3c90b) is installed on the prod
+box, service stopped, soak pending. The #1356 deploy-day histogram check ran against
+the real 2026-07-10 evidence file (760,791,685 bytes, 166,086 records, one session):
+(a) #1356 VALIDATED: replaying all 125,143 blocked strategy_input_snapshot records
+    through BlockedStrategyInputDedupeKey leaves 8 survivors (0.01%), zero oscillation.
+(b) RESIDUAL FLOOD FOUND: kind=exit_evaluation, 40,849 records = 63,366,964 bytes
+    over 939.4s = 43.49 records/sec, ONE position, sustained through both exit_hold
+    and position_interval_ended phases.
+
+== MEASURED SIGNATURE (real data) ==
+Archived file: s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz
+Raw copy on box: /srv/bolt-v2/var/bolt-v3-live/catalog/bolt-v3/decision-evidence/order-intents.jsonl.rotated-pre-v0112-20260711T074342Z
+- 40,442 of 40,849 records are A→B→A key flips: last-key dedupe defeated by oscillation.
+- Key histogram: ('hold','position_interval_ended','accepted') 16,949 vs
+  ('hold','position_interval_ended','rejected_future_dated') 16,858;
+  ('hold','exit_hold','accepted') 3,449 vs ('hold','exit_hold','rejected_future_dated') 3,405;
+  135/53 missing_evaluation_event_time. exit_decision NEVER changed (always 'hold').
+- The ONLY flapping key component is rv_gate_result: accepted <-> rejected_future_dated,
+  ~50/50 per tick. Sample accepted record: rv_as_of_minus_now_ms = -94.
+
+== ROOT CAUSE (verified at HEAD) ==
+classify_rv_gate (src/bolt_v3_fair_value_pricing.rs) returns RejectedFutureDated when
+snapshot.as_of_ms > realized_vol_gate_event_ms — strict comparison, zero tolerance.
+Exit evaluation triggers per book delta and passes the venue event timestamp; the RV
+snapshot as_of comes from the spot-midpoint RV pipeline (multiple sources). Two
+independent clock domains race per tick => per-tick coin flip. Per the function's own
+doc comment, current_surfaced_realized_vol_snapshot_at admits a snapshot ONLY when
+Accepted — so this is NOT merely evidence noise: RV admission for exit evaluation
+flickers at tick frequency. The evidence flood is the symptom.
+
+== WHY IT BLOCKS THE SOAK (physics, code-anchored) ==
+Recovery readers (read_kind_evidence, read_submit_reservation_recovery_evidence in
+src/bolt_v3_decision_evidence.rs) read the WHOLE decision-evidence file and hard-error
+past recovery_evidence_max_bytes = 1MiB (config/root.toml). Settlement-recovery
+failure => enter_blind_settlement_recovery => ExposureState::BlindRecovery =
+fail-closed park. At ~67KB/s while a position is open, a fresh file passes 1MiB
+~16 seconds into the first trade => any kill/restart after that parks the strategy.
+The soak's kill/restart-with-open-position leg cannot pass until fixed.
+
+== PHASE 1 — investigation + census + design proposal (report back for ruling) ==
+1. Behavioral impact: trace exactly what RejectedFutureDated does to the exit path
+   (and entry path) when it fires — degraded pricing, stale snapshot, skipped RV that
+   tick? Is tick-frequency flicker of RV admission behaviorally meaningful or masked
+   downstream? Cite every call site.
+2. Gate semantics: WHY does the gate compare against the trigger's venue event time
+   rather than receive/wall time (determinism? replay?). Check prior art before
+   proposing semantics: the live FOK-reject diagnosis found exit clock-skew issues;
+   check the #1179 ledger and any existing skew handling in the repo.
+3. Enumerate EVERY caller of classify_rv_gate and every consumer of its result —
+   entry, exit, pricing, evidence. The fix must land at the owning layer.
+4. Flood-guard audit (enumerate ALL paths before any safety claim):
+   record_exit_evaluation_evidence (strategies/binary_oracle_edge_taker/mod.rs) skips
+   dedupe entirely when log_fields.position_id is None. Is that path reachable? If
+   yes it is an ungated per-tick writer — include it in the class treatment.
+5. MECE class sweep — not just this instance: for EVERY dedupe key in the #1356
+   19-path table (ExitOutcomeKey, BlockedStrategyInputDedupeKey, EntrySkipDedupeKey,
+   ExitDecisionDedupeKey, RequoteThrottleDedupeKey, ...), classify each key field as
+   stable-categorical vs tick-flappable (clock races, threshold hovering, jitter).
+   rv_gate_result in ExitOutcomeKey is the proven flapper. Evidence per field, not
+   assertion — "a dedupe mechanism exists" is no longer sufficient; churn rate is
+   part of the classification.
+6. Design proposal with alternatives considered. Hard constraints:
+   - Root cause only. NO rate caps, NO size caps, NO sampling fences, NO raising
+     recovery_evidence_max_bytes — the mandate is stop writing noise, not widen pipes.
+   - If the right fix is gate semantics (how future-dated is classified), that is a
+     pricing-layer behavior change: say so explicitly with full blast radius.
+   - If the right fix is key/recording treatment, justify why the gate flap itself is
+     acceptable behavior (per item 1) — otherwise you are silencing a symptom.
+   - Venue-agnostic; no hardcoded venues/symbols/thresholds; behavior deciders live
+     in the owning layer.
+
+== PHASE 2 — after the ruling, implement with ==
+- Differential red-proof: new test(s) MUST FAIL on pre-fix code with the flood
+  signature; report the exact red output you observed. Do not ship tests you did not run.
+- Full UNFILTERED test suite at the exact head — no scope filters (validation-domain
+  lesson). Repo clippy enforces -D warnings on lib/bin code.
+- Update the #1356 19-path table rows whose classification changes.
+- Issue-first: search existing issues, then file one referencing #1354 as class
+  parent. NO closing keywords ("closes/fixes/resolves #N") anywhere — issue, commits,
+  or PR body. Branch: fix/NNNN-exit-evaluation-rv-gate-flood.
+- Report back: issue #, branch, exact head SHA, red-proof output, full-suite count,
+  and the updated table rows.
+
+---
+
+ADDENDUM to the exit_evaluation flood brief — supersedes where it conflicts.
+
+1. ISSUE: do NOT file a new issue. #1354 has been REOPENED (closure disproven by the
+   deploy-day histogram) — work under it and read its latest comment first: it carries
+   the full evidence chain. Branch: fix/1354-rv-gate-clock-domain.
+
+2. ROOT-CAUSE REFINEMENT: a prior fix already stopped comparing venue time against
+   local-machine time. The remaining defect is that classify_rv_gate still treats
+   event timestamps from DIFFERENT venues as directly comparable (RV snapshot as_of =
+   spot-source venue clock; gate event time = consuming venue's book clock; they lead
+   each other by milliseconds). Frame the investigation as a clock-domain ownership
+   problem, not a jitter/tolerance problem.
+
+3. PHASE 1, two additions:
+   a. REPLAY: reconstruct classify_rv_gate inputs from the archived session records and
+      confirm the flip reproduces through current v0.1.12 code from cross-venue
+      timestamp comparison alone.
+   b. RECOVERY-CAPACITY PROOF (mandatory): recompute the captured session's evidence
+      volume as it WOULD be with the fix applied (legitimate state transitions only);
+      derive legitimate growth per hour of open-position time. If legitimate evidence
+      still exceeds the 1MiB whole-file recovery limit before a planned restart in a
+      24h soak, state so explicitly — segmented recovery/rotation then becomes an
+      additional pre-soak requirement under #1275/#763. Show the arithmetic.
+
+4. RULING ENVELOPE (fixed in advance): the fix is timestamp ownership at the pricing
+   layer — comparisons only within one clock domain, enforced by the owning types, not
+   patched at a call site. NO tolerance windows, NO rate caps, NO sampling, NO raising
+   recovery_evidence_max_bytes. If your census says this envelope is wrong, argue it
+   in the Phase-1 proposal; do not implement outside it.
+
+5. PHASE 2 SCOPE: the proven root cause ONLY. The MECE dedupe-key sweep and the
+   position_id=None guard-bypass audit remain Phase-1 deliverables, but their findings
+   are REPORTED on #1354 — not fixed in this PR. No bundling.
+
+6. TESTS: in addition to the RED/GREEN differential, prove restart recovery with an
+   open position BOTH below and above the 1MiB boundary.
+
+7. PROCESS: exact-head remote full CI, external review, required approval, merge queue.
+   No manual CI dispatches.
+
+---
+
+Verification complete — Codex's report holds up everywhere I probed it: the two callers, the gate blocking real pricing (not just evidence), the maker sharing the same gate, the RV clock being polluted by rejected timestamps, and the prior art (#1275 items 10 and 20 recorded this exact mechanism as a design note; the production measurement is the evidence that upgrades it to a defect). The report is also honest about scope and made no changes. Good round.
+
+One material gap, and my own measurement fills it: Option A as written is not enough to restore restartability. I replayed the archived session simulating Option A — the cross-venue flap disappears (40,849 → 380 records), but 380 is still ~2.2MB per hour of holding a position, and the recovery limit dies after ~28 cumulative minutes. The residual is entirely selection_update triggers, which today carry no venue event time, so the gate stamps them "missing" and the key flips every time they interleave with book ticks. Under Option A's own logic this is fixable at the root: those triggers do have receive-domain timestamps — that's the entire point of moving to the receive domain.
+
+My ruling: approve Option A with one amendment. In plain English: yes to moving freshness to the receive clock, but every trigger type must ride that clock — no trigger left on "missing" unless it truly has no receive timestamp, and if any such trigger exists, Codex must show the disk arithmetic still fits under 1MiB before a planned restart, or rotation work becomes a pre-soak item.
+
+Paste-ready ruling for Codex:
+
+PHASE-1 RULING — Option A APPROVED WITH ONE MANDATORY AMENDMENT. Phase 2 may begin.
+
+Your census was independently verified at 9ac211fe1 (callers, admission semantics,
+maker gate, latest_event_ts poison inclusion, #1275 items 10/20) — all confirmed.
+
+AMENDMENT (blocking): Option A as written keeps local/selection triggers at
+MissingEvaluationEventTime → Hold. Reviewer replay of the archived session with the
+cross-venue flap collapsed shows the residual churn is EXACTLY that path:
+380 surviving records / 190 A→B→A flips, 100% attributable to exit_trigger_source=
+selection_update (188 records) interleaving with book_delta/signal_quote. That is
+~1,456 records ≈ 2.2MB per hour of open-position time → the 1MiB whole-file recovery
+limit dies after ~28 cumulative minutes of holding — the mandated recovery-capacity
+requirement (addendum item 3b, skipped in Phase 1) fails under Option A alone.
+Required: selection/local triggers must carry receive-domain evaluation context like
+every other trigger (they have ts_init; the receive clock is universal — that is the
+point of the domain change). MissingEvaluationEventTime → Hold remains ONLY for a
+trigger that structurally has no receive-domain timestamp; if any such trigger
+exists, name it and show the recovery-capacity arithmetic still fits under 1MiB
+before a planned mid-soak restart — otherwise segmented recovery/rotation under
+#1275/#763 escalates to pre-soak and the ruling returns to the owner.
+
+PHASE-2 DELIVERABLE ADDITIONS:
+- Recovery-capacity arithmetic in the PR body: legitimate evidence growth per hour
+  of open-position time post-fix, with the measured session as input. Reviewer
+  baseline to beat: 380 records/939s residual is a FAIL; genuine state transitions
+  only (single-digit per position phase) is the PASS shape.
+- Differential: alternating trigger sources (book_delta / signal_quote /
+  selection_update) around one unchanged ready RV snapshot must NOT oscillate
+  exit_evaluation records post-fix. This is in ADDITION to your proposed
+  alternating-book-clock differential (pre-fix six A→B ticks → six records; post-fix
+  one) and your seven listed differentials, all of which are accepted as specified.
+- Poison-watermark closure (rejected observations must not refresh the causal
+  watermark) stays IN scope — same root cause, and it retires #1275 item 10's
+  mechanism for this consumer. Note the partial-scope on #1275, do not close it.
+
+PROCESS CORRECTIONS (your report still reflects the pre-addendum brief):
+- NO new issue. #1354 is REOPENED with the evidence chain — work under it.
+- Branch: fix/1354-rv-gate-clock-domain.
+- No closing keywords anywhere. External review panel is required at PR time
+  (pricing-layer behavior change). Exact-head remote full CI; full UNFILTERED local
+  suite; merge queue; no manual dispatches.
+- Report back: branch, exact head SHA, red outputs for every differential, the
+  capacity arithmetic, suite count.
+
+While Codex implements, I'll hold the box as-is. When the PR lands I review at the pinned head as usual, then external panel, then v0.1.13 and the soak.

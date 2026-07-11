@@ -84,6 +84,24 @@ pub struct FairValuePricingState {
     latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptedRealizedVolSnapshot {
+    pub snapshot: RealizedVolSnapshot,
+    pub receive_watermark_ms: LocalReceiveMs,
+    pub ready_realized_vol: f64,
+    pub source_venue: Option<String>,
+    pub source_as_of_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RealizedVolGateClassification {
+    Accepted(AcceptedRealizedVolSnapshot),
+    Rejected {
+        gate_result: BoltV3RvGateResult,
+        snapshot: Option<RealizedVolSnapshot>,
+    },
+}
+
 impl FairValuePricingState {
     pub fn from_realized_volatility_surface_id(realized_volatility_surface_id: String) -> Self {
         Self {
@@ -194,6 +212,41 @@ impl FairValuePricingState {
         surface_id: &str,
     ) -> Option<&RealizedVolSnapshot> {
         self.latest_realized_vol_snapshots.get(surface_id)
+    }
+
+    pub fn classify_realized_vol_snapshot(
+        &self,
+        surface_id: &str,
+        evaluation_receive_ms: Option<LocalReceiveMs>,
+        max_source_age_ms: Option<u64>,
+    ) -> RealizedVolGateClassification {
+        let snapshot = self.latest_realized_vol_snapshots.get(surface_id);
+        let gate_result = classify_rv_gate(snapshot, evaluation_receive_ms, max_source_age_ms);
+        if gate_result != BoltV3RvGateResult::Accepted {
+            return RealizedVolGateClassification::Rejected {
+                gate_result,
+                snapshot: snapshot.cloned(),
+            };
+        }
+        let snapshot = snapshot
+            .expect("accepted RV classification mechanically requires a snapshot")
+            .clone();
+        let receive_watermark_ms = snapshot
+            .latest_accepted_receive_ms
+            .expect("accepted RV classification mechanically requires a receive watermark");
+        let ready_realized_vol = snapshot
+            .ready_realized_vol()
+            .expect("accepted RV classification mechanically requires a ready value")
+            .get();
+        let (source_venue, _) = realized_vol_source_evidence(&snapshot);
+        let source_as_of_ms = snapshot.as_of_ms;
+        RealizedVolGateClassification::Accepted(AcceptedRealizedVolSnapshot {
+            snapshot,
+            receive_watermark_ms,
+            ready_realized_vol,
+            source_venue,
+            source_as_of_ms,
+        })
     }
 
     #[cfg(test)]

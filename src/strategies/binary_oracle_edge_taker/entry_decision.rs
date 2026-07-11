@@ -99,7 +99,7 @@ pub(super) enum EntryPricingBlockReason {
     SizedNotionalUnsupported(OutcomeSide),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct RealizedVolatilityEvidenceFields {
     pub(super) surface_id: String,
     pub(super) as_of_ms: Option<u64>,
@@ -122,7 +122,7 @@ pub(super) struct RealizedVolatilityEvidenceFields {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct EntryRealizedVolatilityReceipt {
     pub(super) gate_result: BoltV3RvGateResult,
-    pub(super) receive_watermark_ms: Option<u64>,
+    pub(super) receive_watermark_ms: Option<crate::bolt_v3_timestamp_domain::LocalReceiveMs>,
     pub(super) realized_vol: Option<f64>,
     pub(super) source_venue: Option<String>,
     pub(super) source_ts_ms: Option<u64>,
@@ -224,6 +224,9 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) realized_vol: Option<f64>,
     pub(super) realized_vol_source_venue: Option<String>,
     pub(super) realized_vol_source_ts_ms: Option<u64>,
+    pub(super) realized_vol_gate_result: BoltV3RvGateResult,
+    pub(super) realized_vol_receive_watermark_ms:
+        Option<crate::bolt_v3_timestamp_domain::LocalReceiveMs>,
     pub(super) pricing_kurtosis: f64,
     pub(super) theta_decay_factor: f64,
     pub(super) theta_scaled_min_edge_bps: Option<f64>,
@@ -423,6 +426,8 @@ impl BoltV3EntrySkipEvidence {
             realized_vol: option_evidence_number(fields.realized_vol),
             realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
             realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
+            realized_vol_gate_result: fields.realized_vol_gate_result,
+            realized_vol_receive_watermark_ms: fields.realized_vol_receive_watermark_ms,
             fair_probability_up: option_evidence_number(fields.fair_probability_up),
             fair_probability_down: option_evidence_number(fields.fair_probability_down),
             selected_side: fields.selected_side.map(outcome_side_to_evidence),

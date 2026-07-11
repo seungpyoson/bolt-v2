@@ -20,9 +20,20 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceDiagnostic,
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
+use crate::bolt_v3_timestamp_domain::LocalReceiveMs;
 #[cfg(test)]
 use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
+
+fn serialize_optional_local_receive_ms<S>(
+    value: &Option<LocalReceiveMs>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    value.map(LocalReceiveMs::value).serialize(serializer)
+}
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -721,6 +732,9 @@ pub struct BoltV3EntrySkipEvidence {
     pub realized_vol: Option<String>,
     pub realized_vol_source_venue: Option<String>,
     pub realized_vol_source_ts_ms: Option<u64>,
+    pub realized_vol_gate_result: BoltV3RvGateResult,
+    #[serde(serialize_with = "serialize_optional_local_receive_ms")]
+    pub realized_vol_receive_watermark_ms: Option<LocalReceiveMs>,
     pub fair_probability_up: Option<String>,
     pub fair_probability_down: Option<String>,
     pub selected_side: Option<BoltV3OutcomeSide>,
@@ -758,6 +772,8 @@ struct BoltV3EntrySkipEvidenceWire {
     realized_vol: Option<String>,
     realized_vol_source_venue: Option<String>,
     realized_vol_source_ts_ms: Option<u64>,
+    realized_vol_gate_result: Option<BoltV3RvGateResult>,
+    realized_vol_receive_watermark_ms: Option<u64>,
     fair_probability_up: Option<String>,
     fair_probability_down: Option<String>,
     selected_side: Option<BoltV3OutcomeSide>,
@@ -802,6 +818,12 @@ impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
             realized_vol: wire.realized_vol,
             realized_vol_source_venue: wire.realized_vol_source_venue,
             realized_vol_source_ts_ms: wire.realized_vol_source_ts_ms,
+            realized_vol_gate_result: wire
+                .realized_vol_gate_result
+                .unwrap_or(BoltV3RvGateResult::MissingSnapshot),
+            realized_vol_receive_watermark_ms: wire
+                .realized_vol_receive_watermark_ms
+                .map(LocalReceiveMs::new),
             fair_probability_up: wire.fair_probability_up,
             fair_probability_down: wire.fair_probability_down,
             selected_side: wire.selected_side,
@@ -1290,6 +1312,9 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub realized_volatility: String,
     pub realized_volatility_surface_id: String,
     pub realized_volatility_as_of_ms: Option<u64>,
+    pub realized_volatility_gate_result: BoltV3RvGateResult,
+    #[serde(serialize_with = "serialize_optional_local_receive_ms")]
+    pub realized_volatility_receive_watermark_ms: Option<LocalReceiveMs>,
     pub realized_volatility_annualized_decimal: String,
     pub realized_volatility_measured_annualized_decimal: String,
     pub realized_volatility_noise_robust_annualized_decimal: String,
@@ -1359,6 +1384,8 @@ struct BoltV3StrategyInputEvidenceSnapshotWire {
     realized_volatility: String,
     realized_volatility_surface_id: String,
     realized_volatility_as_of_ms: Option<u64>,
+    realized_volatility_gate_result: Option<BoltV3RvGateResult>,
+    realized_volatility_receive_watermark_ms: Option<u64>,
     realized_volatility_annualized_decimal: String,
     realized_volatility_measured_annualized_decimal: String,
     realized_volatility_noise_robust_annualized_decimal: String,
@@ -1434,6 +1461,12 @@ impl<'de> Deserialize<'de> for BoltV3StrategyInputEvidenceSnapshot {
             realized_volatility: wire.realized_volatility,
             realized_volatility_surface_id: wire.realized_volatility_surface_id,
             realized_volatility_as_of_ms: wire.realized_volatility_as_of_ms,
+            realized_volatility_gate_result: wire
+                .realized_volatility_gate_result
+                .unwrap_or(BoltV3RvGateResult::MissingSnapshot),
+            realized_volatility_receive_watermark_ms: wire
+                .realized_volatility_receive_watermark_ms
+                .map(LocalReceiveMs::new),
             realized_volatility_annualized_decimal: wire.realized_volatility_annualized_decimal,
             realized_volatility_measured_annualized_decimal: wire
                 .realized_volatility_measured_annualized_decimal,
@@ -4821,6 +4854,8 @@ mod tests {
             realized_volatility: "1.5".to_string(),
             realized_volatility_surface_id: String::new(),
             realized_volatility_as_of_ms: None,
+            realized_volatility_gate_result: BoltV3RvGateResult::MissingSnapshot,
+            realized_volatility_receive_watermark_ms: None,
             realized_volatility_annualized_decimal: "1.5".to_string(),
             realized_volatility_measured_annualized_decimal: String::new(),
             realized_volatility_noise_robust_annualized_decimal: String::new(),

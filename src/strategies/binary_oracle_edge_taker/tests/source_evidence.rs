@@ -1261,7 +1261,11 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         "without-fast-venue marker should only track admitted reference state"
     );
     let ((), logs) = with_captured_strategy_logs(&strategy_id, || {
-        strategy.log_entry_evaluation(replay.evaluation_now_ms, &replay_decision);
+        strategy.log_entry_evaluation(
+            replay.evaluation_now_ms,
+            LocalReceiveMs::new(replay.evaluation_now_ms),
+            &replay_decision,
+        );
     });
     let entry_evaluation_logs = logs
         .iter()

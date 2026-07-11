@@ -3831,9 +3831,23 @@ impl BinaryOracleEdgeTaker {
         up_fee_bps: f64,
         down_fee_bps: f64,
     ) -> Option<Probability> {
+        self.current_uncertainty_band_probability_for_gate_at(
+            now_ms,
+            Some(LocalReceiveMs::new(now_ms)),
+            up_fee_bps,
+            down_fee_bps,
+        )
+    }
+
+    fn current_uncertainty_band_probability_for_gate_at(
+        &self,
+        now_ms: u64,
+        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        up_fee_bps: f64,
+        down_fee_bps: f64,
+    ) -> Option<Probability> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
-        let realized_vol =
-            self.current_realized_vol_for_gate_at(Some(LocalReceiveMs::new(now_ms)))?;
+        let realized_vol = self.current_realized_vol_for_gate_at(realized_vol_gate_receive_ms)?;
         self.uncertainty_band_probability_for_seconds(
             seconds_to_expiry,
             realized_vol,
@@ -3869,6 +3883,19 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         submission: &EntrySubmissionDecision,
     ) -> EntryEvaluationLogFields {
+        self.entry_evaluation_log_fields_for_receive_at(
+            now_ms,
+            LocalReceiveMs::new(now_ms),
+            submission,
+        )
+    }
+
+    fn entry_evaluation_log_fields_for_receive_at(
+        &self,
+        now_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
+        submission: &EntrySubmissionDecision,
+    ) -> EntryEvaluationLogFields {
         let evaluation = &submission.evaluation;
         let spot_venue_name = self.evidence_spot_venue_name();
         let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
@@ -3876,7 +3903,8 @@ impl BinaryOracleEdgeTaker {
         let reference_current_price_available =
             self.pricing.last_reference_current_price().is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.current_realized_vol_source_for_gate_at(Some(LocalReceiveMs::new(now_ms)));
+            self.current_realized_vol_source_for_gate_at(Some(evaluation_receive_ms));
+        let realized_vol = self.current_realized_vol_for_gate_at(Some(evaluation_receive_ms));
 
         EntryEvaluationLogFields {
             market_id: self.active.market_id.clone(),
@@ -3888,7 +3916,7 @@ impl BinaryOracleEdgeTaker {
             reference_current_price,
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
-            realized_vol: self.current_realized_vol_for_gate_at(Some(LocalReceiveMs::new(now_ms))),
+            realized_vol,
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
@@ -4013,8 +4041,17 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn log_entry_evaluation(&mut self, now_ms: u64, submission: &EntrySubmissionDecision) {
-        let fields = self.entry_evaluation_log_fields_at(now_ms, submission);
+    fn log_entry_evaluation(
+        &mut self,
+        now_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
+        submission: &EntrySubmissionDecision,
+    ) {
+        let fields = self.entry_evaluation_log_fields_for_receive_at(
+            now_ms,
+            evaluation_receive_ms,
+            submission,
+        );
         let blocked = !fields.gate_blocked_by.is_empty() || !fields.pricing_blocked_by.is_empty();
 
         if blocked {
@@ -4249,7 +4286,28 @@ impl BinaryOracleEdgeTaker {
         reason_category: BoltV3EntrySkipReasonCategory,
         unclassified_context: Option<String>,
     ) -> Result<bool> {
-        let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
+        self.record_entry_skip_once_for_receive_at(
+            now_ms,
+            LocalReceiveMs::new(now_ms),
+            decision,
+            reason_category,
+            unclassified_context,
+        )
+    }
+
+    fn record_entry_skip_once_for_receive_at(
+        &mut self,
+        now_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
+        decision: &EntrySubmissionDecision,
+        reason_category: BoltV3EntrySkipReasonCategory,
+        unclassified_context: Option<String>,
+    ) -> Result<bool> {
+        let fields = self.entry_evaluation_log_fields_for_receive_at(
+            now_ms,
+            evaluation_receive_ms,
+            decision,
+        );
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
         let key = EntrySkipDedupeKey {
             reason_category,
@@ -4302,6 +4360,7 @@ impl BinaryOracleEdgeTaker {
     fn record_and_log_entry_skip(
         &mut self,
         now_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
         decision: &EntrySubmissionDecision,
         reason: &'static str,
     ) -> Result<()> {
@@ -4310,7 +4369,13 @@ impl BinaryOracleEdgeTaker {
         let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
             .then(|| reason.to_string());
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
-        if self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)? {
+        if self.record_entry_skip_once_for_receive_at(
+            now_ms,
+            evaluation_receive_ms,
+            decision,
+            reason_category,
+            unclassified_context,
+        )? {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
                 self.config.strategy_id,
@@ -4580,12 +4645,16 @@ impl BinaryOracleEdgeTaker {
     fn adjusted_probability_up_for_fee_uncertainty(
         &self,
         now_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
         side: OutcomeSide,
         fair_probability_up: Probability,
         fee_uncertainty_bps: f64,
     ) -> Option<(Probability, Probability)> {
-        let uncertainty_band_probability = self.current_uncertainty_band_probability_at(
-            now_ms,
+        let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
+        let realized_vol = self.current_realized_vol_for_gate_at(Some(evaluation_receive_ms))?;
+        let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
+            seconds_to_expiry,
+            realized_vol,
             fee_uncertainty_bps,
             fee_uncertainty_bps,
         )?;
@@ -6376,6 +6445,25 @@ impl BinaryOracleEdgeTaker {
         price: &Price,
         quantity: &Quantity,
     ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
+        self.entry_strategy_input_evidence_snapshot_for_receive_at(
+            now_ms,
+            LocalReceiveMs::new(now_ms),
+            decision,
+            client_order_id,
+            price,
+            quantity,
+        )
+    }
+
+    fn entry_strategy_input_evidence_snapshot_for_receive_at(
+        &self,
+        now_ms: u64,
+        evaluation_receive_ms: LocalReceiveMs,
+        decision: &EntrySubmissionDecision,
+        client_order_id: ClientOrderId,
+        price: &Price,
+        quantity: &Quantity,
+    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
         let price_to_beat = self
             .active
             .price_to_beat
@@ -6404,7 +6492,7 @@ impl BinaryOracleEdgeTaker {
             .filter(|value| is_positive_finite(*value))
             .ok_or_else(|| anyhow::anyhow!("entry strategy input evidence requires spot price"))?;
         let realized_volatility = self
-            .current_realized_vol_for_gate_at(Some(LocalReceiveMs::new(now_ms)))
+            .current_realized_vol_for_gate_at(Some(evaluation_receive_ms))
             .ok_or_else(|| {
                 anyhow::anyhow!("entry strategy input evidence requires realized volatility")
             })?;
@@ -7025,7 +7113,7 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<Option<ClientOrderId>> {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         let decision = self.entry_submission_decision_for_receive_at(now_ms, evaluation_receive_ms);
-        self.log_entry_evaluation(now_ms, &decision);
+        self.log_entry_evaluation(now_ms, evaluation_receive_ms, &decision);
 
         let realized_volatility_not_ready = decision.blocked_reason
             == Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
@@ -7046,7 +7134,7 @@ impl BinaryOracleEdgeTaker {
         }
 
         if let Some(reason) = decision.blocked_reason {
-            self.record_and_log_entry_skip(now_ms, &decision, reason)?;
+            self.record_and_log_entry_skip(now_ms, evaluation_receive_ms, &decision, reason)?;
         }
 
         let Some(instrument_id) = decision.instrument_id else {
@@ -7068,6 +7156,7 @@ impl BinaryOracleEdgeTaker {
         else {
             self.record_and_log_entry_skip(
                 now_ms,
+                evaluation_receive_ms,
                 &decision,
                 ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE,
             )?;
@@ -7079,8 +7168,9 @@ impl BinaryOracleEdgeTaker {
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
 
         if self.exposure_occupancy().is_some() {
-            let newly_recorded = self.record_entry_skip_once(
+            let newly_recorded = self.record_entry_skip_once_for_receive_at(
                 now_ms,
+                evaluation_receive_ms,
                 &decision,
                 BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
                 None,
@@ -7109,8 +7199,9 @@ impl BinaryOracleEdgeTaker {
             price,
             client_order_id,
         )?;
-        let strategy_input_snapshot = self.entry_strategy_input_evidence_snapshot_at(
+        let strategy_input_snapshot = self.entry_strategy_input_evidence_snapshot_for_receive_at(
             now_ms,
+            evaluation_receive_ms,
             &decision,
             client_order_id,
             &price,
@@ -7304,11 +7395,13 @@ impl BinaryOracleEdgeTaker {
             );
             return evaluation;
         };
-        let uncertainty_band_probability = match self.current_uncertainty_band_probability_at(
-            now_ms,
-            fee_uncertainty_bps,
-            fee_uncertainty_bps,
-        ) {
+        let uncertainty_band_probability = match self
+            .current_uncertainty_band_probability_for_gate_at(
+                now_ms,
+                Some(evaluation_receive_ms),
+                fee_uncertainty_bps,
+                fee_uncertainty_bps,
+            ) {
             Some(value) => value,
             None => {
                 evaluation
@@ -7398,6 +7491,7 @@ impl BinaryOracleEdgeTaker {
                         let Some((selected_uncertainty_band, adjusted_probability_up)) = self
                             .adjusted_probability_up_for_fee_uncertainty(
                                 now_ms,
+                                evaluation_receive_ms,
                                 selected_side,
                                 fair_probability_up,
                                 sized_fee_uncertainty_bps,
@@ -7490,6 +7584,7 @@ impl BinaryOracleEdgeTaker {
                         let Some((resized_uncertainty_band, resized_adjusted_probability_up)) =
                             self.adjusted_probability_up_for_fee_uncertainty(
                                 now_ms,
+                                evaluation_receive_ms,
                                 selected_side,
                                 fair_probability_up,
                                 resized_fee_uncertainty_bps,

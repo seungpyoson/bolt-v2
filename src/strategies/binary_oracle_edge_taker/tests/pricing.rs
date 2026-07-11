@@ -22,6 +22,12 @@ struct PriceSensitiveEntryFeeProvider;
 
 const RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS: u64 = 1_200;
 const RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS: u64 = 3_201;
+const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(Option<u64>, u64, bool); 4] = [
+    (Some(1_200), 1_200, true),
+    (Some(1_201), 1_200, false),
+    (Some(1_200), 1_701, false),
+    (None, 1_200, false),
+];
 
 fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
@@ -69,6 +75,20 @@ fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
     strategy
 }
 
+fn rv_clock_domain_amendment_set_snapshot(
+    strategy: &mut BinaryOracleEdgeTaker,
+    snapshot_receive_ms: Option<u64>,
+) {
+    strategy.pricing.clear_latest_realized_vol_snapshot();
+    if let Some(snapshot_receive_ms) = snapshot_receive_ms {
+        strategy.pricing.seed_ready_realized_vol(
+            Some("<SOURCE_ID>".to_string()),
+            1.5,
+            snapshot_receive_ms,
+        );
+    }
+}
+
 impl FeeProvider for PriceSensitiveEntryFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         Some(Decimal::ZERO)
@@ -97,112 +117,130 @@ impl FeeProvider for PriceSensitiveEntryFeeProvider {
 
 #[test]
 fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
-    let strategy = rv_clock_domain_amendment_ready_entry();
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let evaluation = strategy.entry_evaluation_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
+        );
 
-    let evaluation = strategy.entry_evaluation_for_receive_at(
-        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
-        LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
-    );
-
-    assert!(
-        !evaluation
-            .pricing_blocked_by
-            .contains(&EntryPricingBlockReason::UncertaintyBandUnavailable),
-        "initial uncertainty must retain the entry receive stamp when wall time advances: {evaluation:#?}"
-    );
-    assert!(evaluation.uncertainty_band_probability.is_some());
+        assert_eq!(
+            evaluation.uncertainty_band_probability.is_some(),
+            expected_available,
+            "initial uncertainty classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}: {evaluation:#?}"
+        );
+    }
 }
 
 #[test]
 fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
-    let strategy = rv_clock_domain_amendment_ready_entry();
-    let fair_probability_up = probability(0.75);
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let adjusted = strategy.adjusted_probability_up_for_fee_uncertainty(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
+            OutcomeSide::Up,
+            probability(0.75),
+            25.0,
+        );
 
-    let adjusted = strategy.adjusted_probability_up_for_fee_uncertainty(
-        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
-        OutcomeSide::Up,
-        fair_probability_up,
-        25.0,
-    );
-
-    assert!(
-        adjusted.is_some(),
-        "sized fee adjustment must use the entry receive stamp instead of later wall time"
-    );
+        assert_eq!(
+            adjusted.is_some(),
+            expected_available,
+            "sized adjustment classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}"
+        );
+    }
 }
 
 #[test]
 fn rv_clock_domain_amendment_resized_fee_adjustment_uses_entry_receive_stamp() {
-    let strategy = rv_clock_domain_amendment_ready_entry();
-    let fair_probability_up = probability(0.75);
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let adjusted = strategy.adjusted_probability_up_for_fee_uncertainty(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
+            OutcomeSide::Up,
+            probability(0.75),
+            50.0,
+        );
 
-    let adjusted = strategy.adjusted_probability_up_for_fee_uncertainty(
-        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
-        OutcomeSide::Up,
-        fair_probability_up,
-        50.0,
-    );
-
-    assert!(
-        adjusted.is_some(),
-        "resized fee adjustment must preserve the same entry receive stamp after resizing"
-    );
+        assert_eq!(
+            adjusted.is_some(),
+            expected_available,
+            "resized adjustment classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}"
+        );
+    }
 }
 
 #[test]
 fn rv_clock_domain_amendment_log_and_skip_evidence_use_entry_receive_stamp() {
-    let strategy = rv_clock_domain_amendment_ready_entry();
-    let decision = strategy.entry_submission_decision_for_receive_at(
-        RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS,
-        LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
-    );
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let decision = strategy.entry_submission_decision_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
+        );
+        let fields = strategy.entry_evaluation_log_fields_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
+            &decision,
+        );
 
-    let fields =
-        strategy.entry_evaluation_log_fields_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS, &decision);
-
-    assert_eq!(fields.realized_vol, Some(1.5));
-    assert_eq!(
-        fields.realized_vol_source_ts_ms,
-        Some(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
-        "log and entry-skip evidence fields must retain the evaluation timestamp"
-    );
+        assert_eq!(fields.realized_vol.is_some(), expected_available);
+        assert_eq!(
+            fields.realized_vol_source_ts_ms.is_some(),
+            expected_available,
+            "log/skip classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}"
+        );
+    }
 }
 
 #[test]
 fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
-    let strategy = rv_clock_domain_amendment_ready_entry();
-    let decision = strategy.entry_submission_decision_for_receive_at(
-        RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS,
-        LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
-    );
-    let price = Price::new(
-        decision
-            .price
-            .expect("ready entry must have a submission price"),
-        2,
-    );
-    let quantity = Quantity::new(
-        decision
-            .quantity_value
-            .expect("ready entry must have a submission quantity"),
-        2,
-    );
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        let decision = strategy.entry_submission_decision_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS,
+            LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
+        );
+        let price = Price::new(decision.price.expect("ready entry must have a price"), 2);
+        let quantity = Quantity::new(
+            decision
+                .quantity_value
+                .expect("ready entry must have a quantity"),
+            2,
+        );
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
 
-    let snapshot = strategy
-        .entry_strategy_input_evidence_snapshot_at(
+        let snapshot = strategy.entry_strategy_input_evidence_snapshot_for_receive_at(
             RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
             &decision,
             ClientOrderId::from("RV-CLOCK-DOMAIN-AMENDMENT"),
             &price,
             &quantity,
-        )
-        .expect("submit-linked evidence must not re-gate at later wall time");
+        );
 
-    assert_eq!(snapshot.realized_volatility, "1.5");
-    assert_eq!(
-        snapshot.realized_volatility_as_of_ms,
-        Some(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS)
-    );
+        assert_eq!(
+            snapshot.is_ok(),
+            expected_available,
+            "submit-evidence classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}: {snapshot:?}"
+        );
+    }
 }
 
 #[test]

@@ -21,6 +21,8 @@ from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
 UNRESOLVABLE_SHA = "1" * 40
+EXPECTED_NT_REV = "fa3391d90c1aace4733fc73dae082b4cfee6b8fa"
+OLD_NT_REV = "0000000000000000000000000000000000000000"
 
 
 def load_verifier():
@@ -50,7 +52,47 @@ def clean_files(root: Path) -> None:
     write(
         root,
         "Cargo.toml",
-        'nautilus-network = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "9e71b2b1305a66945ba07f0aba2d1eb63208263d" }\n',
+        f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+    )
+    write(
+        root,
+        "Cargo.lock",
+        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+    )
+    write(
+        root,
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+        f"current value: `{EXPECTED_NT_REV}`\n"
+        f"The live Binance Spot SBE quote boundary is owned by NautilusTrader revision `{EXPECTED_NT_REV}`.\n"
+        f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}`.\n"
+        "`BinanceSpotDataClient::handle_ws_message`\n"
+        "`decode_market_data`\n"
+        "`parse_bbo_event`\n",
+    )
+    write(
+        root,
+        "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
+        f'nautilus_trader_revision: "{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "scripts/verify_bolt_v3_boundary_evidence.py",
+        f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "scripts/test_verify_bolt_v3_boundary_evidence.py",
+        f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
@@ -67,6 +109,8 @@ pub enum BoundaryEvidenceClass {
 pub enum BoundaryFeeder {
     ReferenceCurrentPriceHealth,
     ReferenceLiveProbe,
+    RealizedVolatilityObservation,
+    StrategySignalObservation,
     DeployTargetHostFacts,
     SecretResolution,
     PolymarketVenueTruthRuntime,
@@ -81,6 +125,8 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry { adapter_id: polyresearch::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceCurrentPriceHealth },
     BoundaryRegistryEntry { adapter_id: chainlink_reference::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceLiveProbe },
     BoundaryRegistryEntry { adapter_id: polyresearch::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceLiveProbe },
+    BoundaryRegistryEntry { adapter_id: BINANCE_SPOT_SBE_ADAPTER_ID, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::RealizedVolatilityObservation },
+    BoundaryRegistryEntry { adapter_id: BINANCE_SPOT_SBE_ADAPTER_ID, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::StrategySignalObservation },
     BoundaryRegistryEntry { adapter_id: IMDS_METADATA_ADAPTER_ID, class: BoundaryEvidenceClass::ImdsMetadata, feeder: BoundaryFeeder::DeployTargetHostFacts },
     BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },
     BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketVenueTruthRuntime },
@@ -491,6 +537,70 @@ def test_capture_config_without_workflows_passes_boundary_scan() -> None:
             raise AssertionError("capture provenance fixture must not grow a [workflows] table")
 
     assert scan_temp(assert_no_workflows_table) == []
+
+
+def test_pin_census_rejects_each_mismatched_surface() -> None:
+    surfaces = (
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+        "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
+        "scripts/verify_bolt_v3_boundary_evidence.py",
+        "scripts/test_verify_bolt_v3_boundary_evidence.py",
+    )
+    for surface in surfaces:
+        def mutate(root: Path, surface: str = surface) -> None:
+            path = root / surface
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(EXPECTED_NT_REV, OLD_NT_REV),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
+
+
+def test_binance_registry_row_alone_cannot_masquerade_as_sha_provenance() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("`parse_bbo_event`\n", ""),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "missing pinned Binance Spot SBE source symbol parse_bbo_event")
+
+
+def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}`.",
+                f"Current status: this branch pins NautilusTrader to `{OLD_NT_REV}`.",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "runtime-contracts.md: NautilusTrader pin census")
+
+
+def test_missing_binance_live_quote_feeder_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/boundary_registry.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            re.sub(
+                r"\s*BoundaryRegistryEntry \{ adapter_id: BINANCE_SPOT_SBE_ADAPTER_ID, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::StrategySignalObservation \},",
+                "",
+                text,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "StrategySignalObservation")
 
 
 def test_empty_wire_boundary_source_set_fails_closed() -> None:

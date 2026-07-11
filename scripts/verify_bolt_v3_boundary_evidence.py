@@ -22,7 +22,7 @@ from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_NT_REV = "9e71b2b1305a66945ba07f0aba2d1eb63208263d"
+EXPECTED_NT_REV = "fa3391d90c1aace4733fc73dae082b4cfee6b8fa"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
 EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")
@@ -39,6 +39,35 @@ REQUIRED_WS_FEEDERS = (
     "ReferenceCurrentPriceHealth",
     "ReferenceLiveProbe",
 )
+REQUIRED_BINANCE_WS_REGISTRY_ENTRIES = {
+    ("BINANCE_SPOT_SBE_ADAPTER_ID", "WebSocketFrame", "RealizedVolatilityObservation"),
+    ("BINANCE_SPOT_SBE_ADAPTER_ID", "WebSocketFrame", "StrategySignalObservation"),
+}
+PIN_SURFACES = (
+    Path("Cargo.toml"),
+    Path("Cargo.lock"),
+    Path("crates/backtesting-vertical-slice/Cargo.toml"),
+    Path("crates/backtesting-vertical-slice/Cargo.lock"),
+    Path("docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"),
+    Path("docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"),
+    Path("scripts/verify_bolt_v3_boundary_evidence.py"),
+    Path("scripts/test_verify_bolt_v3_boundary_evidence.py"),
+)
+BINANCE_SOURCE_SYMBOLS = (
+    "BinanceSpotDataClient::handle_ws_message",
+    "decode_market_data",
+    "parse_bbo_event",
+)
+PIN_TEXT_PATTERNS = {
+    PIN_SURFACES[4]: (
+        re.compile(r"current value: `([0-9a-f]{40})`"),
+        re.compile(r"live Binance Spot SBE quote boundary is owned by NautilusTrader revision\s+`([0-9a-f]{40})`"),
+        re.compile(r"Current status: this branch pins NautilusTrader to\s+`([0-9a-f]{40})`"),
+    ),
+    PIN_SURFACES[5]: (re.compile(r'nautilus_trader_revision:\s*"([0-9a-f]{40})"'),),
+    PIN_SURFACES[6]: (re.compile(r'EXPECTED_NT_REV\s*=\s*"([0-9a-f]{40})"'),),
+    PIN_SURFACES[7]: (re.compile(r'EXPECTED_NT_REV\s*=\s*"([0-9a-f]{40})"'),),
+}
 REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
@@ -253,9 +282,10 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
         findings.append(f"{REGISTRY}: registry class tags must use enum variants, not strings")
 
     entries = registry_entries(text)
-    required_entries = REQUIRED_NON_WS_REGISTRY_ENTRIES | required_ws_registry_entries(
-        provider_mod,
-        findings,
+    required_entries = (
+        REQUIRED_NON_WS_REGISTRY_ENTRIES
+        | REQUIRED_BINANCE_WS_REGISTRY_ENTRIES
+        | required_ws_registry_entries(provider_mod, findings)
     )
     missing = sorted(required_entries - entries)
     for entry in missing:
@@ -669,6 +699,40 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
             findings.append(f"{workflow_path}: missing {needle}")
 
 
+def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
+    manifest_pattern = re.compile(
+        r'git\s*=\s*"https://github\.com/seungpyoson/nautilus_trader\.git"[^\n]*?rev\s*=\s*"([0-9a-f]{40})"'
+    )
+    lock_pattern = re.compile(
+        r'git\+https://github\.com/seungpyoson/nautilus_trader\.git\?rev=([0-9a-f]{40})#([0-9a-f]{40})'
+    )
+    for surface in PIN_SURFACES:
+        text = read(root, surface)
+        revisions: list[str]
+        if surface.name == "Cargo.toml":
+            revisions = manifest_pattern.findall(text)
+        elif surface.name == "Cargo.lock":
+            lock_revisions = lock_pattern.findall(text)
+            revisions = [revision for pair in lock_revisions for revision in pair]
+        else:
+            revisions = [
+                match.group(1)
+                for pattern in PIN_TEXT_PATTERNS[surface]
+                for match in pattern.finditer(text)
+            ]
+        if not revisions or any(revision != EXPECTED_NT_REV for revision in revisions):
+            findings.append(
+                f"{surface}: NautilusTrader pin census must contain only {EXPECTED_NT_REV}"
+            )
+
+    runtime_contract = read(root, PIN_SURFACES[4])
+    for symbol in BINANCE_SOURCE_SYMBOLS:
+        if f"`{symbol}`" not in runtime_contract:
+            findings.append(
+                f"{PIN_SURFACES[4]}: missing pinned Binance Spot SBE source symbol {symbol}"
+            )
+
+
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:
         today = dt.date.today()
@@ -684,6 +748,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_chainlink_tests(root, findings)
     scan_fixture_origin(root, findings)
     scan_static_wiring(root, findings)
+    scan_nt_pin_census(root, findings)
     return findings
 
 

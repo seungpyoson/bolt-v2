@@ -177,6 +177,54 @@ fn rv_clock_domain_amendment_watermark_tracks_max_used_receive_across_every_grid
 }
 
 #[test]
+fn rv_clock_domain_amendment_subsampled_lane_adds_off_base_grid_sample_to_watermark() {
+    let mut cfg = config(&[SOURCE_A]);
+    cfg.max_source_age_ms = 1_000;
+    cfg.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::Subsampled {
+            subsamples: 2,
+            min_ready_subsamples: 2,
+        },
+    };
+    let mut base_engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    for (event_ts_ms, recv_ts_ms, price) in [
+        (1_000, 1_100, 100.0),
+        (1_400, 20_000, 110.0),
+        (1_900, 1_900, 101.0),
+        (2_400, 2_400, 102.0),
+        (2_900, 2_900, 103.0),
+        (3_400, 3_400, 104.0),
+        (3_900, 3_900, 105.0),
+    ] {
+        let observation = observation_with_receive(SOURCE_A, price, event_ts_ms, recv_ts_ms);
+        assert!(base_engine.observe(observation.clone()));
+        assert!(engine.observe(observation));
+    }
+
+    let base_snapshot = base_engine.snapshot_at(4_000);
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(base_snapshot.ready);
+    assert_eq!(
+        base_snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(3_900),
+        "the base grid must supersede the off-grid observation before its next sample point"
+    );
+    assert!(snapshot.ready);
+    assert_eq!(snapshot.source_diagnostics[0].grid_sample_count, 4);
+    assert_eq!(
+        snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(20_000),
+        "the successful offset lane must contribute its off-base-grid sample identity"
+    );
+}
+
+#[test]
 fn rv_clock_domain_amendment_trimmed_source_remains_a_causal_contributor() {
     let mut cfg = config(&[SOURCE_A, SOURCE_B, SOURCE_C, SOURCE_D]);
     cfg.aggregation = RealizedVolAggregation::TrimmedMean {

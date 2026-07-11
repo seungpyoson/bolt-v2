@@ -3825,20 +3825,6 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_uncertainty_band_probability_at(
-        &self,
-        now_ms: u64,
-        up_fee_bps: f64,
-        down_fee_bps: f64,
-    ) -> Option<Probability> {
-        self.current_uncertainty_band_probability_for_gate_at(
-            now_ms,
-            Some(LocalReceiveMs::new(now_ms)),
-            up_fee_bps,
-            down_fee_bps,
-        )
-    }
-
     fn current_uncertainty_band_probability_for_gate_at(
         &self,
         now_ms: u64,
@@ -3878,6 +3864,7 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
+    #[cfg(test)]
     fn entry_evaluation_log_fields_at(
         &self,
         now_ms: u64,
@@ -4279,6 +4266,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     /// Returns `true` when a new skip was recorded (not evidence-deduped).
+    #[cfg(test)]
     fn record_entry_skip_once(
         &mut self,
         now_ms: u64,
@@ -6435,24 +6423,6 @@ impl BinaryOracleEdgeTaker {
             .record_strategy_input_snapshot(&snapshot)?;
         self.last_recorded_blocked_strategy_input = Some(key);
         Ok(())
-    }
-
-    fn entry_strategy_input_evidence_snapshot_at(
-        &self,
-        now_ms: u64,
-        decision: &EntrySubmissionDecision,
-        client_order_id: ClientOrderId,
-        price: &Price,
-        quantity: &Quantity,
-    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
-        self.entry_strategy_input_evidence_snapshot_for_receive_at(
-            now_ms,
-            LocalReceiveMs::new(now_ms),
-            decision,
-            client_order_id,
-            price,
-            quantity,
-        )
     }
 
     fn entry_strategy_input_evidence_snapshot_for_receive_at(

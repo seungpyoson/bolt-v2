@@ -20,13 +20,22 @@ const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
 
 struct PriceSensitiveEntryFeeProvider;
 
-const RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS: u64 = 1_200;
 const RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS: u64 = 3_201;
-const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(Option<u64>, u64, bool); 4] = [
-    (Some(1_200), 1_200, true),
-    (Some(1_201), 1_200, false),
-    (Some(1_200), 1_701, false),
-    (None, 1_200, false),
+#[derive(Clone, Copy, Debug)]
+enum RvClockDomainAmendmentSnapshot {
+    Ready(u64),
+    NotReady(u64),
+}
+
+const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(RvClockDomainAmendmentSnapshot, u64, bool); 4] = [
+    (RvClockDomainAmendmentSnapshot::Ready(1_200), 1_200, true),
+    (RvClockDomainAmendmentSnapshot::Ready(1_201), 1_200, false),
+    (RvClockDomainAmendmentSnapshot::Ready(1_200), 1_701, false),
+    (
+        RvClockDomainAmendmentSnapshot::NotReady(1_200),
+        1_200,
+        false,
+    ),
 ];
 
 fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
@@ -77,16 +86,85 @@ fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
 
 fn rv_clock_domain_amendment_set_snapshot(
     strategy: &mut BinaryOracleEdgeTaker,
-    snapshot_receive_ms: Option<u64>,
+    snapshot: RvClockDomainAmendmentSnapshot,
 ) {
     strategy.pricing.clear_latest_realized_vol_snapshot();
-    if let Some(snapshot_receive_ms) = snapshot_receive_ms {
-        strategy.pricing.seed_ready_realized_vol(
-            Some("<SOURCE_ID>".to_string()),
-            1.5,
-            snapshot_receive_ms,
+    let snapshot_receive_ms = match snapshot {
+        RvClockDomainAmendmentSnapshot::Ready(receive_ms)
+        | RvClockDomainAmendmentSnapshot::NotReady(receive_ms) => receive_ms,
+    };
+    strategy.pricing.seed_ready_realized_vol(
+        Some("<SOURCE_ID>".to_string()),
+        1.5,
+        snapshot_receive_ms,
+    );
+    if matches!(snapshot, RvClockDomainAmendmentSnapshot::NotReady(_)) {
+        let mut not_ready = strategy
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(
+                &strategy.config.realized_volatility_surface_id,
+            )
+            .expect("seeded snapshot must be present before marking it not ready")
+            .clone();
+        not_ready.ready = false;
+        strategy.pricing.observe_realized_vol_snapshot(not_ready);
+        assert_eq!(
+            strategy.pricing.classify_realized_vol_gate(
+                &strategy.config.realized_volatility_surface_id,
+                Some(LocalReceiveMs::new(snapshot_receive_ms)),
+                strategy.realized_volatility_max_source_age_ms(),
+            ),
+            BoltV3RvGateResult::RejectedNotReady,
+            "the negative fixture must be a present RejectedNotReady snapshot"
         );
     }
+}
+
+fn production_callsite(source: &str, anchor: &str) -> String {
+    let start = source
+        .find(anchor)
+        .unwrap_or_else(|| panic!("production call-site anchor missing: {anchor}"));
+    source[start..]
+        .lines()
+        .take(18)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn rv_clock_domain_amendment_sized_production_callsite_forwards_evaluation_receive_ms() {
+    let source = include_str!("../mod.rs");
+    let callsite = production_callsite(source, "let sized_fee_uncertainty_bps =");
+    assert!(callsite.contains("now_ms,\n                                evaluation_receive_ms,"));
+}
+
+#[test]
+fn rv_clock_domain_amendment_resized_production_callsite_forwards_evaluation_receive_ms() {
+    let source = include_str!("../mod.rs");
+    let callsite = production_callsite(source, "let resized_fee_uncertainty_bps =");
+    assert!(callsite.contains("now_ms,\n                                evaluation_receive_ms,"));
+}
+
+#[test]
+fn rv_clock_domain_amendment_skip_log_production_callsites_forward_evaluation_receive_ms() {
+    let source = include_str!("../mod.rs");
+    let log_callsite = production_callsite(source, "self.log_entry_evaluation(");
+    assert!(
+        log_callsite
+            .contains("self.log_entry_evaluation(now_ms, evaluation_receive_ms, &decision)")
+    );
+    let skip_callsite =
+        production_callsite(source, "if let Some(reason) = decision.blocked_reason");
+    assert!(skip_callsite.contains(
+        "self.record_and_log_entry_skip(now_ms, evaluation_receive_ms, &decision, reason)"
+    ));
+}
+
+#[test]
+fn rv_clock_domain_amendment_submit_production_callsite_forwards_evaluation_receive_ms() {
+    let source = include_str!("../mod.rs");
+    let callsite = production_callsite(source, "let strategy_input_snapshot =");
+    assert!(callsite.contains("now_ms,\n            evaluation_receive_ms,"));
 }
 
 impl FeeProvider for PriceSensitiveEntryFeeProvider {
@@ -213,18 +291,13 @@ fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
         RV_CLOCK_DOMAIN_AMENDMENT_CASES
     {
         let mut strategy = rv_clock_domain_amendment_ready_entry();
-        let decision = strategy.entry_submission_decision_for_receive_at(
-            RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS,
-            LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
-        );
-        let price = Price::new(decision.price.expect("ready entry must have a price"), 2);
-        let quantity = Quantity::new(
-            decision
-                .quantity_value
-                .expect("ready entry must have a quantity"),
-            2,
-        );
         rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let decision = strategy.entry_submission_decision_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            LocalReceiveMs::new(evaluation_receive_ms),
+        );
+        let price = Price::new(0.50, 2);
+        let quantity = Quantity::new(strategy.config.order_notional_target, 2);
 
         let snapshot = strategy.entry_strategy_input_evidence_snapshot_for_receive_at(
             RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,

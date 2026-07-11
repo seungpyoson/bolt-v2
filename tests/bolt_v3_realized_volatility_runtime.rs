@@ -203,6 +203,53 @@ fn routed_quote_replay_uses_event_clock_for_rv_windows() {
 }
 
 #[test]
+fn routed_quote_preserves_event_and_receive_timestamp_domains() {
+    let instrument_id = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, instrument_id),
+    )]))
+    .expect("runtime should build");
+
+    for (index, (bid, ask)) in [
+        (99.0, 101.0),
+        (100.0, 102.0),
+        (101.0, 103.0),
+        (102.0, 104.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let event_ts_ms = (index as u64 + 1) * 1_000;
+        let receive_ts_ms = event_ts_ms - 750;
+        runtime.observe_quote(&quote_tick_with_receive_ms(
+            instrument_id,
+            *bid,
+            *ask,
+            event_ts_ms,
+            receive_ts_ms,
+        ));
+    }
+
+    let snapshot = runtime
+        .snapshot(SURFACE_A)
+        .expect("routed quotes should publish the surface");
+
+    assert!(snapshot.ready);
+    assert_eq!(
+        snapshot.as_of_ms, 4_000,
+        "surface event time must come from QuoteTick.ts_event"
+    );
+    assert_eq!(
+        snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(3_250),
+        "surface receive watermark must come from QuoteTick.ts_init"
+    );
+}
+
+#[test]
 fn strategy_clock_refresh_does_not_contaminate_event_domain_publication() {
     let instrument_id = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
     let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(

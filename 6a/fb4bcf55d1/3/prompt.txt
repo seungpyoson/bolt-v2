@@ -1,0 +1,727 @@
+### PR #1342 — close and redesign
+
+  Retire the current architecture of PR #1342. Do not append more rows, fixtures, conditions, or verifier branches.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/wave2-pr1-pin
+
+  Expected state:
+  - Clean worktree
+  - HEAD and PR head: fe7c1ccf34146c251c28ae386cc8440ec5e2487d
+
+  Read AGENTS.md. Treat the earlier “purely additive frozen design” as superseded by the owner’s no-debt/no-dual-path directive.
+
+  Verify and document these architectural failures:
+  - the checked-in 17,345-line crosswalk duplicates the registry
+  - every row is still planned
+  - generation resets progress
+  - `UNCERTAIN_KEEP` is a catch-all fallback
+  - planned evidence may point at nonexistent artifacts
+  - the inventory verifies only declared rows and therefore cannot prove completeness
+  - shape strings create parallel source/fixture/inventory maintenance
+  - #1215 is an incorrect parent link
+
+  Do not modify the implementation. Post the architectural rationale and close PR #1342 while preserving its branch.
+
+  Leave #1341 open only as the umbrella, but add an owner correction replacing its current design with two proposed slices:
+
+  1. Compatibility protection:
+     - only real old-byte/exact-wire/fixed-digest tests through production readers
+     - one compact manifest linking owner, production-reader test, and fixture
+     - no copied shape strings
+     - completeness must come from one deterministic sink census, not self-declared inventory rows
+
+  2. Registry retirement receipt:
+     - one canonical declarative ledger, preferably the existing registry
+     - mutually exclusive and exhaustive rule IDs plus explicit exceptions
+     - unresolved rows fail; no catch-all fallback
+     - the 2,604-row receipt is generated evidence, not a maintained checked-in mirror
+
+  Produce a salvage list of genuinely useful fixtures/tests from #1342, with evidence that each uses its production reader. Do not open replacement PRs yet.
+  Report the closure and proposed slice boundaries.
+
+---
+
+approve
+
+---
+
+Own this PR through draft review closure.
+
+  Use the external review output already available in this session. For every substantive finding:
+
+  - Verify it against the exact code.
+  - Fix the root cause within the PR’s declared scope, or rebut it with concrete evidence.
+  - Do not add fallback chains, denylist conditions, duplicate paths, new analyzers, or parallel sources of truth.
+  - Commit and publish fixes with `just sandbox-safe-push`.
+  - Re-run external review at the new exact head.
+  - Continue until the reviewer returns no substantive findings.
+
+  If no review exists yet, obtain one adversarial external review now.
+
+  Do not send raw transcripts to the global orchestrator. Return only:
+
+  PR / exact remote head:
+  Reviewer source and model:
+  Findings by severity:
+  Resolved findings:
+  Final re-review result:
+  Net diff and debt delta:
+  Verification completed:
+  Remaining blockers:
+  Worktree clean:
+  Requested next action:
+
+  Keep the PR draft. Do not run full CI, mark ready, request `sp-reviewer`, queue, merge, deploy, or trade. The global orchestrator will coordinate those steps
+  after review closure.
+
+---
+
+Kimi:  Head matches c992bf442901ff30483612008b9f3f8014f6b42e (GitHub headRefOid identical). Reviewed against main, AGENTS.md, and the
+   narrow #1341 salvage scope. Read-only throughout (no edits, comments, CI dispatch, or PR expansion).
+
+   Blocking findings
+
+   B1 — Basket reader assertion is a current→current round-trip, which #1341 explicitly rejects as evidence.
+   tests/bolt_v3_basket_execution.rs:873 re-parses the fixture into an untyped serde_json::Value, then :878-879 asserts
+   serde_json::to_value(&state) == fixture["state"]. The fixture's schema_version is 1, identical to the live writer constant
+   BASKET_STORE_SCHEMA_VERSION: u32 = 1 (src/bolt_v3_basket_store.rs:15), and the inner state keys exactly match
+   BoltV3BasketExecutionState (src/bolt_v3_basket_execution.rs:108-123, no deny_unknown_fields). So the fixture is reproducible by
+   the current serializer and the assertion compares current output to current output. Concrete impact: a coordinated rename of any
+   inner recovery field (basket_id, status, legs, fill_sources, …) plus regenerating the fixture passes silently, while real
+   on-disk old state would still FailClosed(CorruptEvidence) at src/bolt_v3_basket_store.rs:127-134. #1341 Deliverable C /
+   Acceptance: "commit an OLD-BYTE fixture … (not a current→current round trip, which passes after a coordinated rename) … A
+   current→current round-trip that passes after a rename is NOT acceptable evidence." The envelope state key is still pinned (via
+   fixture["state"] + deserialize failure), but the recovery payload's inner wire fields are not.
+
+   Non-blocking findings
+
+   N1 (medium) — None of the three fixtures is a fixed historical/old-byte artifact; all are current-format bytes. Basket
+   schema_version:1 == current (src/bolt_v3_basket_store.rs:15); kill-switch schema_version:2 == current
+   KILL_SWITCH_STORE_SCHEMA_VERSION (src/bolt_v3_kill_switch_store.rs:22); launch has no version field and its six keys exactly
+   equal the current LaunchIdentity (src/bolt_v3_operator_artifacts.rs:108-124). No version skew, no renamed/removed field
+   evidences a legacy format. Mitigated for launch (#[serde(deny_unknown_fields)] at :108 makes the old key an unknown-field error
+   on any un-aliased rename) and for kill-switch (typed expected value KillSwitchState::Flat { halt_id } forces a compile break on
+   variant/field rename), but not for basket — see B1.
+
+   N2 (medium) — The cited "mutation head" ed5c3571… did not change owning wire names. git show ed5c3571 touches only
+   tests/kill_switch_loss.rs (-1: removes mod bolt_v3_kill_switch_store;, a harness-ownership move). The commit that actually
+   changed wire names without touching fixtures is 75a35f5bfcc1 (#[serde(rename = "state_v2")] on the envelope in
+   src/bolt_v3_basket_store.rs and src/bolt_v3_kill_switch_store.rs; #[serde(rename = "profile_v2")] in
+   src/bolt_v3_operator_artifacts.rs; fixtures unchanged). Premise/attribution error; does not affect the shipped diff.
+
+   N3 (low) — RED evidence is structural/commit-level, not a recorded remote failing CI run. The rename in 75a35f5bfcc1
+   demonstrably breaks all three tests by construction (launch: deny_unknown_fields rejects the old profile key;
+   basket/kill-switch: required envelope key missing → FailClosed/non-Recovered), so each RED proves compatibility protection
+   rather than an unrelated failure. However, at 75a35f5bfcc1 the test / nextest archive / bvs-test archive lanes are SKIPPED (only
+   gate-iteration, detector, host-health, etc. ran), so no remote exact-head failing artifact exists for the mutation. Verifiable
+   by inspection of the reversible commit; flagged because AGENTS.md prefers remote-CI evidence.
+
+   N4 (low) — Basket fixture is read a second time outside the store. tests/bolt_v3_basket_execution.rs:873 parses the same bytes
+   with raw serde_json::from_slice to build the comparison Value, in addition to the sanctioned store.load_recovery_state() at
+   :867. So "basket state is read only through BoltV3BasketStore::load_recovery_state" is technically bent (the second parse is
+   untyped, for the assertion); this is the mechanism that enables B1.
+
+   Verified clean (no finding)
+
+   • Exactly six files, zero deletions — gh pr diff = 6 files, deletions: 0. Commit arithmetic confirms: 7ee859578947 (+134, the 6
+     files) → 75a35f5bfcc1 (+3 prod) → 0ac0fe75f73f (+1) → ed5c3571 (−1) → c992bf442901 revert (+1/−4); all mutation/harness
+     commits cancel, net = the 6 declared files only.
+   • Launch read only through read_launch_identity — src/bolt_v3_operator_artifacts.rs:365; addition sits inside mod tests (:190),
+     no production code touched.
+   • Kill-switch read only through KillSwitchStore::load_recovery_state — tests/bolt_v3_kill_switch_store.rs:360; expected value
+     constructed in code (:362), no second fixture parse.
+   • Assertions cover every recovered semantic field — launch: all 6 fields asserted; kill-switch: whole Flat value; basket:
+     whole-state equality (coverage complete, though circular — B1).
+   • Final GREEN executed the exact named tests, non-empty filter — exact-head nextest archive (run 29135842230, job 86500127510):
+     launch_identity_v1_old_bytes_remain_readable PASS [0.036s] (120/838); kill_switch_state_v2_old_bytes_remain_readable PASS
+     [0.008s] (540/830); basket_state_v1_old_bytes_remain_readable PASS [0.012s] (362/826). Each name occurs exactly once across
+     the run; partitions execute 826–838 tests (filter not empty). gate = success at exact head.
+   • No production behavior / manifest / scanner / inventory / shape ledger / parallel source of truth introduced — diff is test
+     code + 3 JSON fixtures only.
+   • PR text does not claim completeness or close #1341 — body states "Partial compatibility salvage … Completeness census … remain
+     unresolved"; no Closes/Fixes/Resolves #1341 keyword.
+
+   Verdict: cannot issue the clean statement. One blocking finding (B1) — the basket reader's round-trip assertion fails the #1341
+   evidentiary bar that defines this slice — plus the premise correction in N2.
+
+   Reviewer source: Kimi Code CLI (interactive/ad-hoc review, not the dispatched CI review lane — the PR also carries a separate
+   Kimi CLI review | success lane, run 29135842270, which is distinct from this assessment).
+   Exact configured model: kimi-k2.7-code — ci/ai-review.toml [kimi].model, source_label_template = "Kimi Code CLI ({model})".
+GLM: Reviewer source: opencode agent (adversarial review-only assessment)
+Exact model: zai-coding-plan/glm-5.2
+Head verified: c992bf442901ff30483612008b9f3f8014f6b42e matches GitHub PR #1357 headRefOid.
+Verification Evidence
+1. Final diff: exactly six files, zero deletions ✅
+File
+src/bolt_v3_operator_artifacts.rs
+tests/bolt_v3_basket_execution.rs
+tests/bolt_v3_kill_switch_store.rs
+tests/fixtures/bolt_v3/compatibility/basket_state_v1.json
+tests/fixtures/bolt_v3/compatibility/kill_switch_state_v2.json
+tests/fixtures/bolt_v3/compatibility/launch_identity_v1.json
+Total: 134 additions, 0 deletions. The only src/ change is a #[test] fn inside mod tests at src/bolt_v3_operator_artifacts.rs:356.
+2. Fixtures contain fixed historical bytes, not regenerated by current serializers ✅
+All three serializers append a trailing \n:
+- write_launch_identity (src/bolt_v3_operator_artifacts.rs:137): bytes.push(b'\n')
+- BoltV3BasketStore::write_state (src/bolt_v3_basket_store.rs:70): bytes.push(b'\n')
+- serialize_state_with_loss_snapshot (src/bolt_v3_kill_switch_store.rs:426): bytes.push(b'\n')
+None of the three fixture files have a trailing newline (confirmed in diff). Fixtures are loaded via include_bytes! (committed, not runtime-generated). Values are hand-crafted ("legacy-profile", 4242, "legacy-halt", etc.).
+3. Launch identity read only through read_launch_identity ✅
+src/bolt_v3_operator_artifacts.rs:366: read_launch_identity(temp.path()) — the public reader that calls read_file_bounded then serde_json::from_slice.
+4. Basket state read only through BoltV3BasketStore::load_recovery_state ✅
+tests/bolt_v3_basket_execution.rs:868: store.load_recovery_state() — constructs BoltV3BasketStore::new(path, 65_536) then calls load_recovery_state().
+5. Kill-switch state read only through KillSwitchStore::load_recovery_state ✅
+tests/bolt_v3_kill_switch_store.rs:360: store.load_recovery_state() — constructs KillSwitchStore::new(path, 65_536) then calls load_recovery_state().
+6. Assertions cover every recovered semantic field ✅
+Launch identity — all 6 LaunchIdentity fields asserted:
+- profile, pid, launched_at_unix_secs, build_head_sha, config_bundle_checksum, target_host_facts (.is_none())
+Basket — deep comparison serde_json::to_value(&state) == fixture["state"] covers all 14 BoltV3BasketExecutionState fields. BoltV3BasketExecutionState has zero skip_serializing_if attributes (confirmed via grep). Fixture includes all 14 fields plus nested leg (7 fields) and config (repair: 5 fields, unwind: 4 fields).
+Kill switch — assert_eq!(..., Recovered(Flat { halt_id: "legacy-halt" })) covers Flat's only field. loss_protection is not part of KillSwitchRecoveryState (only KillSwitchRecoveryRecord), so it is not a recovered semantic field for this reader.
+7. Mutation head ed5c3571b changed owning wire names without changing fixtures ✅
+Ancestor commit 75a35f5bf added serde renames to 3 source files:
+- src/bolt_v3_basket_store.rs: #[serde(rename = "state_v2")] on PersistedBasketState.state
+- src/bolt_v3_kill_switch_store.rs: #[serde(rename = "state_v2")] on PersistedKillSwitchState.state
+- src/bolt_v3_operator_artifacts.rs: #[serde(rename = "profile_v2")] on LaunchIdentity.profile
+No fixture files were touched in 75a35f5bf, 0ac0fe75f, or ed5c3571b. Commits 0ac0fe75f and ed5c3571b only moved the bolt_v3_kill_switch_store test module between harnesses. Final head c992bf442 reverted all mutations; git diff 7ee859578..c992bf442 is empty.
+8. Each RED failure proves compatibility protection ✅
+Run ID	SHA	Test	Failure
+29108527714	ed5c3571b0f8	launch_identity_v1_old_bytes_remain_readable	Parse { source: Error("unknown field \profile`, expected one of `build_head_sha`, `profile_v2`, ...") }—deny_unknown_fields` rejected old wire name
+29108100525	ed5c3571b0f8	kill_switch_state_v2_old_bytes_remain_readable	assertion left == right failed: left: FailClosed { reason: CorruptEvidence, state: None }, right: Recovered(Flat { halt_id: "legacy-halt" }) — deserialization failed, missing state_v2
+29107736179	ed5c3571b0f8	basket_state_v1_old_bytes_remain_readable	expected Recovered, got FailClosed { reason: CorruptEvidence, state: None } — same pattern
+All three failures are serde deserialization errors caused by the wire-name mutation. No unrelated failures.
+9. Final GREEN runs executed the exact named tests ✅
+Run ID	SHA	Test
+29109789243	c992bf442901	launch_identity_v1_old_bytes_remain_readable
+29109477505	c992bf442901	kill_switch_state_v2_old_bytes_remain_readable
+29109127165	c992bf442901	basket_state_v1_old_bytes_remain_readable
+Each run executed exactly 1 test — not an empty filter.
+10. No production behavior, manifest, scanner, inventory, shape ledger, or parallel source of truth ✅
+- Only src/ change: #[test] fn inside mod tests (no production code path touched)
+- No Cargo.toml changes
+- No scanner/inventory/ledger/registry files
+- No new type definitions or schema declarations (fixtures use existing types)
+- No parallel source of truth introduced
+11. PR text does not claim completeness or close #1341 ✅
+- Title: test: salvage three persisted reader fixtures (#1341) — reference only, not a close directive
+- Body: Partial compatibility salvage under #1341: protects three known persisted readers only. Completeness census, remaining wire/operator/hash sinks, and registry-retirement evidence remain unresolved.
+- Issue #1341 state: OPEN
+Findings
+Blocking: None.
+Non-blocking: None.
+NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at c992bf442901ff30483612008b9f3f8014f6b42e; completeness and exact-head full CI remain pending.
+Grok: Adversarial review — PR #1357
+
+Head check: GitHub headRefOid = c992bf442901ff30483612008b9f3f8014f6b42e — matches. Review continued.
+
+Scope base: origin/main (7095c6f5f…) … c992bf442…
+Issue framing: partial salvage under #1341 (three persisted readers only)
+
+───
+
+Blocking findings
+None.
+
+Non-blocking findings
+None.
+
+───
+
+NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at c992bf442901ff30483612008b9f3f8014f6b42e; completeness and exact-head full CI remain pending.
+
+───
+
+Verification evidence (checklist)
+
+┌────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│ Check                                      │ Result                                                           │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Exactly 6 files, zero deletions (final vs  │ Pass — 3 modified tests/src-test + 3 fixture adds; +134 / -0     │
+│ main)                                      │                                                                  │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Fixed historical fixture bytes             │ Pass — blobs immutable across 7ee859578 → ed5c3571 → c992bf442;  │
+│                                            │ include_bytes!; legacy/aaaa…/bbbb… payloads, not live re-        │
+│                                            │ serialize                                                        │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Launch via read_launch_identity only       │ Pass — src/bolt_v3_operator_artifacts.rs ~357–365                │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Basket via                                 │ Pass — tests/bolt_v3_basket_execution.rs ~866–870                │
+│ BoltV3BasketStore::load_recovery_state     │                                                                  │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Kill-switch via                            │ Pass — tests/bolt_v3_kill_switch_store.rs ~358–361               │
+│ KillSwitchStore::load_recovery_state       │                                                                  │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Assertions cover recovered semantic fields │ Pass — launch: all LaunchIdentity fields; basket: full to_value( │
+│                                            │ state) == fixture["state"]; kill: Flat { halt_id }               │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Mutation tip ed5c3571 keeps wire renames,  │ Pass — profile_v2 / state_v2 present; fixture SHAs identical;    │
+│ fixtures unchanged                         │ renames fully reverted at final head                             │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ RED proves compatibility (not unrelated)   │ Pass — launch: unknown field profile vs profile_v2 (run          │
+│                                            │ 29108527714); kill: FailClosed{CorruptEvidence} vs Recovered(    │
+│                                            │ Flat{…}) (29108100525); basket: expected Recovered, got          │
+│                                            │ FailClosed{CorruptEvidence} (29107736179)                        │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ GREEN exact named tests (non-empty         │ Pass — launch (29109789243), basket (29109127165), kill          │
+│ filters)                                   │ (29109477505): each 1 test run: 1 passed                         │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ No production / inventory / parallel SoT   │ Pass — production body of operator_artifacts identical to main;  │
+│                                            │ only #[cfg(test)] + integration tests + fixtures                 │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ PR does not claim completeness / close     │ Pass — body states partial salvage; unresolved completeness;     │
+│ #1341                                      │ closingIssuesReferences: []                                      │
+└────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+
+Note (not a finding): basket RED probe used empty RUST_PROBE_TEST_NAME (whole admission_orders target) but the sole failed test was the compatibility one with CorruptEvidence. GREEN basket used the exact named filter.
+
+───
+
+Reviewer source / model
+• Reviewer source: Grok Build (xAI), review-only adversarial assessment
+• Exact model: Grok 4.5
+
+---
+
+Grok: Adversarial review — PR #1357
+
+Head check: GitHub headRefOid = c992bf442901ff30483612008b9f3f8014f6b42e — matches. Review continued.
+
+Scope base: origin/main (7095c6f5f…) … c992bf442…
+Issue framing: partial salvage under #1341 (three persisted readers only)
+
+───
+
+Blocking findings
+None.
+
+Non-blocking findings
+None.
+
+───
+
+NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at c992bf442901ff30483612008b9f3f8014f6b42e; completeness and exact-head full CI remain pending.
+
+───
+
+Verification evidence (checklist)
+
+┌────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+│ Check                                      │ Result                                                           │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Exactly 6 files, zero deletions (final vs  │ Pass — 3 modified tests/src-test + 3 fixture adds; +134 / -0     │
+│ main)                                      │                                                                  │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Fixed historical fixture bytes             │ Pass — blobs immutable across 7ee859578 → ed5c3571 → c992bf442;  │
+│                                            │ include_bytes!; legacy/aaaa…/bbbb… payloads, not live re-        │
+│                                            │ serialize                                                        │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Launch via read_launch_identity only       │ Pass — src/bolt_v3_operator_artifacts.rs ~357–365                │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Basket via                                 │ Pass — tests/bolt_v3_basket_execution.rs ~866–870                │
+│ BoltV3BasketStore::load_recovery_state     │                                                                  │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Kill-switch via                            │ Pass — tests/bolt_v3_kill_switch_store.rs ~358–361               │
+│ KillSwitchStore::load_recovery_state       │                                                                  │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Assertions cover recovered semantic fields │ Pass — launch: all LaunchIdentity fields; basket: full to_value( │
+│                                            │ state) == fixture["state"]; kill: Flat { halt_id }               │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Mutation tip ed5c3571 keeps wire renames,  │ Pass — profile_v2 / state_v2 present; fixture SHAs identical;    │
+│ fixtures unchanged                         │ renames fully reverted at final head                             │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ RED proves compatibility (not unrelated)   │ Pass — launch: unknown field profile vs profile_v2 (run          │
+│                                            │ 29108527714); kill: FailClosed{CorruptEvidence} vs Recovered(    │
+│                                            │ Flat{…}) (29108100525); basket: expected Recovered, got          │
+│                                            │ FailClosed{CorruptEvidence} (29107736179)                        │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ GREEN exact named tests (non-empty         │ Pass — launch (29109789243), basket (29109127165), kill          │
+│ filters)                                   │ (29109477505): each 1 test run: 1 passed                         │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ No production / inventory / parallel SoT   │ Pass — production body of operator_artifacts identical to main;  │
+│                                            │ only #[cfg(test)] + integration tests + fixtures                 │
+├────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ PR does not claim completeness / close     │ Pass — body states partial salvage; unresolved completeness;     │
+│ #1341                                      │ closingIssuesReferences: []                                      │
+└────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+
+Note (not a finding): basket RED probe used empty RUST_PROBE_TEST_NAME (whole admission_orders target) but the sole failed test was the compatibility one with CorruptEvidence. GREEN basket used the exact named filter.
+
+───
+
+Reviewer source / model
+• Reviewer source: Grok Build (xAI), review-only adversarial assessment
+• Exact model: Grok 4.5
+GLM: Reviewer source: opencode agent (adversarial review-only assessment)
+Exact model: zai-coding-plan/glm-5.2
+Head verified: c992bf442901ff30483612008b9f3f8014f6b42e matches GitHub PR #1357 headRefOid.
+Verification Evidence
+1. Final diff: exactly six files, zero deletions ✅
+File
+src/bolt_v3_operator_artifacts.rs
+tests/bolt_v3_basket_execution.rs
+tests/bolt_v3_kill_switch_store.rs
+tests/fixtures/bolt_v3/compatibility/basket_state_v1.json
+tests/fixtures/bolt_v3/compatibility/kill_switch_state_v2.json
+tests/fixtures/bolt_v3/compatibility/launch_identity_v1.json
+Total: 134 additions, 0 deletions. The only src/ change is a #[test] fn inside mod tests at src/bolt_v3_operator_artifacts.rs:356.
+2. Fixtures contain fixed historical bytes, not regenerated by current serializers ✅
+All three serializers append a trailing \n:
+- write_launch_identity (src/bolt_v3_operator_artifacts.rs:137): bytes.push(b'\n')
+- BoltV3BasketStore::write_state (src/bolt_v3_basket_store.rs:70): bytes.push(b'\n')
+- serialize_state_with_loss_snapshot (src/bolt_v3_kill_switch_store.rs:426): bytes.push(b'\n')
+None of the three fixture files have a trailing newline (confirmed in diff). Fixtures are loaded via include_bytes! (committed, not runtime-generated). Values are hand-crafted ("legacy-profile", 4242, "legacy-halt", etc.).
+3. Launch identity read only through read_launch_identity ✅
+src/bolt_v3_operator_artifacts.rs:366: read_launch_identity(temp.path()) — the public reader that calls read_file_bounded then serde_json::from_slice.
+4. Basket state read only through BoltV3BasketStore::load_recovery_state ✅
+tests/bolt_v3_basket_execution.rs:868: store.load_recovery_state() — constructs BoltV3BasketStore::new(path, 65_536) then calls load_recovery_state().
+5. Kill-switch state read only through KillSwitchStore::load_recovery_state ✅
+tests/bolt_v3_kill_switch_store.rs:360: store.load_recovery_state() — constructs KillSwitchStore::new(path, 65_536) then calls load_recovery_state().
+6. Assertions cover every recovered semantic field ✅
+Launch identity — all 6 LaunchIdentity fields asserted:
+- profile, pid, launched_at_unix_secs, build_head_sha, config_bundle_checksum, target_host_facts (.is_none())
+Basket — deep comparison serde_json::to_value(&state) == fixture["state"] covers all 14 BoltV3BasketExecutionState fields. BoltV3BasketExecutionState has zero skip_serializing_if attributes (confirmed via grep). Fixture includes all 14 fields plus nested leg (7 fields) and config (repair: 5 fields, unwind: 4 fields).
+Kill switch — assert_eq!(..., Recovered(Flat { halt_id: "legacy-halt" })) covers Flat's only field. loss_protection is not part of KillSwitchRecoveryState (only KillSwitchRecoveryRecord), so it is not a recovered semantic field for this reader.
+7. Mutation head ed5c3571b changed owning wire names without changing fixtures ✅
+Ancestor commit 75a35f5bf added serde renames to 3 source files:
+- src/bolt_v3_basket_store.rs: #[serde(rename = "state_v2")] on PersistedBasketState.state
+- src/bolt_v3_kill_switch_store.rs: #[serde(rename = "state_v2")] on PersistedKillSwitchState.state
+- src/bolt_v3_operator_artifacts.rs: #[serde(rename = "profile_v2")] on LaunchIdentity.profile
+No fixture files were touched in 75a35f5bf, 0ac0fe75f, or ed5c3571b. Commits 0ac0fe75f and ed5c3571b only moved the bolt_v3_kill_switch_store test module between harnesses. Final head c992bf442 reverted all mutations; git diff 7ee859578..c992bf442 is empty.
+8. Each RED failure proves compatibility protection ✅
+Run ID	SHA	Test	Failure
+29108527714	ed5c3571b0f8	launch_identity_v1_old_bytes_remain_readable	Parse { source: Error("unknown field \profile`, expected one of `build_head_sha`, `profile_v2`, ...") }—deny_unknown_fields` rejected old wire name
+29108100525	ed5c3571b0f8	kill_switch_state_v2_old_bytes_remain_readable	assertion left == right failed: left: FailClosed { reason: CorruptEvidence, state: None }, right: Recovered(Flat { halt_id: "legacy-halt" }) — deserialization failed, missing state_v2
+29107736179	ed5c3571b0f8	basket_state_v1_old_bytes_remain_readable	expected Recovered, got FailClosed { reason: CorruptEvidence, state: None } — same pattern
+All three failures are serde deserialization errors caused by the wire-name mutation. No unrelated failures.
+9. Final GREEN runs executed the exact named tests ✅
+Run ID	SHA	Test
+29109789243	c992bf442901	launch_identity_v1_old_bytes_remain_readable
+29109477505	c992bf442901	kill_switch_state_v2_old_bytes_remain_readable
+29109127165	c992bf442901	basket_state_v1_old_bytes_remain_readable
+Each run executed exactly 1 test — not an empty filter.
+10. No production behavior, manifest, scanner, inventory, shape ledger, or parallel source of truth ✅
+- Only src/ change: #[test] fn inside mod tests (no production code path touched)
+- No Cargo.toml changes
+- No scanner/inventory/ledger/registry files
+- No new type definitions or schema declarations (fixtures use existing types)
+- No parallel source of truth introduced
+11. PR text does not claim completeness or close #1341 ✅
+- Title: test: salvage three persisted reader fixtures (#1341) — reference only, not a close directive
+- Body: Partial compatibility salvage under #1341: protects three known persisted readers only. Completeness census, remaining wire/operator/hash sinks, and registry-retirement evidence remain unresolved.
+- Issue #1341 state: OPEN
+Findings
+Blocking: None.
+Non-blocking: None.
+NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at c992bf442901ff30483612008b9f3f8014f6b42e; completeness and exact-head full CI remain pending.
+Kimi:  Head matches c992bf442901ff30483612008b9f3f8014f6b42e (GitHub headRefOid identical). Reviewed against main, AGENTS.md, and the
+   narrow #1341 salvage scope. Read-only throughout (no edits, comments, CI dispatch, or PR expansion).
+
+   Blocking findings
+
+   B1 — Basket reader assertion is a current→current round-trip, which #1341 explicitly rejects as evidence.
+   tests/bolt_v3_basket_execution.rs:873 re-parses the fixture into an untyped serde_json::Value, then :878-879 asserts
+   serde_json::to_value(&state) == fixture["state"]. The fixture's schema_version is 1, identical to the live writer constant
+   BASKET_STORE_SCHEMA_VERSION: u32 = 1 (src/bolt_v3_basket_store.rs:15), and the inner state keys exactly match
+   BoltV3BasketExecutionState (src/bolt_v3_basket_execution.rs:108-123, no deny_unknown_fields). So the fixture is reproducible by
+   the current serializer and the assertion compares current output to current output. Concrete impact: a coordinated rename of any
+   inner recovery field (basket_id, status, legs, fill_sources, …) plus regenerating the fixture passes silently, while real
+   on-disk old state would still FailClosed(CorruptEvidence) at src/bolt_v3_basket_store.rs:127-134. #1341 Deliverable C /
+   Acceptance: "commit an OLD-BYTE fixture … (not a current→current round trip, which passes after a coordinated rename) … A
+   current→current round-trip that passes after a rename is NOT acceptable evidence." The envelope state key is still pinned (via
+   fixture["state"] + deserialize failure), but the recovery payload's inner wire fields are not.
+
+   Non-blocking findings
+
+   N1 (medium) — None of the three fixtures is a fixed historical/old-byte artifact; all are current-format bytes. Basket
+   schema_version:1 == current (src/bolt_v3_basket_store.rs:15); kill-switch schema_version:2 == current
+   KILL_SWITCH_STORE_SCHEMA_VERSION (src/bolt_v3_kill_switch_store.rs:22); launch has no version field and its six keys exactly
+   equal the current LaunchIdentity (src/bolt_v3_operator_artifacts.rs:108-124). No version skew, no renamed/removed field
+   evidences a legacy format. Mitigated for launch (#[serde(deny_unknown_fields)] at :108 makes the old key an unknown-field error
+   on any un-aliased rename) and for kill-switch (typed expected value KillSwitchState::Flat { halt_id } forces a compile break on
+   variant/field rename), but not for basket — see B1.
+
+   N2 (medium) — The cited "mutation head" ed5c3571… did not change owning wire names. git show ed5c3571 touches only
+   tests/kill_switch_loss.rs (-1: removes mod bolt_v3_kill_switch_store;, a harness-ownership move). The commit that actually
+   changed wire names without touching fixtures is 75a35f5bfcc1 (#[serde(rename = "state_v2")] on the envelope in
+   src/bolt_v3_basket_store.rs and src/bolt_v3_kill_switch_store.rs; #[serde(rename = "profile_v2")] in
+   src/bolt_v3_operator_artifacts.rs; fixtures unchanged). Premise/attribution error; does not affect the shipped diff.
+
+   N3 (low) — RED evidence is structural/commit-level, not a recorded remote failing CI run. The rename in 75a35f5bfcc1
+   demonstrably breaks all three tests by construction (launch: deny_unknown_fields rejects the old profile key;
+   basket/kill-switch: required envelope key missing → FailClosed/non-Recovered), so each RED proves compatibility protection
+   rather than an unrelated failure. However, at 75a35f5bfcc1 the test / nextest archive / bvs-test archive lanes are SKIPPED (only
+   gate-iteration, detector, host-health, etc. ran), so no remote exact-head failing artifact exists for the mutation. Verifiable
+   by inspection of the reversible commit; flagged because AGENTS.md prefers remote-CI evidence.
+
+   N4 (low) — Basket fixture is read a second time outside the store. tests/bolt_v3_basket_execution.rs:873 parses the same bytes
+   with raw serde_json::from_slice to build the comparison Value, in addition to the sanctioned store.load_recovery_state() at
+   :867. So "basket state is read only through BoltV3BasketStore::load_recovery_state" is technically bent (the second parse is
+   untyped, for the assertion); this is the mechanism that enables B1.
+
+   Verified clean (no finding)
+
+   • Exactly six files, zero deletions — gh pr diff = 6 files, deletions: 0. Commit arithmetic confirms: 7ee859578947 (+134, the 6
+     files) → 75a35f5bfcc1 (+3 prod) → 0ac0fe75f73f (+1) → ed5c3571 (−1) → c992bf442901 revert (+1/−4); all mutation/harness
+     commits cancel, net = the 6 declared files only.
+   • Launch read only through read_launch_identity — src/bolt_v3_operator_artifacts.rs:365; addition sits inside mod tests (:190),
+     no production code touched.
+   • Kill-switch read only through KillSwitchStore::load_recovery_state — tests/bolt_v3_kill_switch_store.rs:360; expected value
+     constructed in code (:362), no second fixture parse.
+   • Assertions cover every recovered semantic field — launch: all 6 fields asserted; kill-switch: whole Flat value; basket:
+     whole-state equality (coverage complete, though circular — B1).
+   • Final GREEN executed the exact named tests, non-empty filter — exact-head nextest archive (run 29135842230, job 86500127510):
+     launch_identity_v1_old_bytes_remain_readable PASS [0.036s] (120/838); kill_switch_state_v2_old_bytes_remain_readable PASS
+     [0.008s] (540/830); basket_state_v1_old_bytes_remain_readable PASS [0.012s] (362/826). Each name occurs exactly once across
+     the run; partitions execute 826–838 tests (filter not empty). gate = success at exact head.
+   • No production behavior / manifest / scanner / inventory / shape ledger / parallel source of truth introduced — diff is test
+     code + 3 JSON fixtures only.
+   • PR text does not claim completeness or close #1341 — body states "Partial compatibility salvage … Completeness census … remain
+     unresolved"; no Closes/Fixes/Resolves #1341 keyword.
+
+   Verdict: cannot issue the clean statement. One blocking finding (B1) — the basket reader's round-trip assertion fails the #1341
+   evidentiary bar that defines this slice — plus the premise correction in N2.
+
+   Reviewer source: Kimi Code CLI (interactive/ad-hoc review, not the dispatched CI review lane — the PR also carries a separate
+   Kimi CLI review | success lane, run 29135842270, which is distinct from this assessment).
+   Exact configured model: kimi-k2.7-code — ci/ai-review.toml [kimi].model, source_label_template = "Kimi Code CLI ({model})".
+
+---
+
+generate a review request prompt
+
+---
+
+Kimi:  Head verified: GitHub headRefOid = 697ad587b013239ef7966c15ba9459052cb91351 — exact match. PR is draft/OPEN. Reviewed
+   origin/main...HEAD; read-only throughout (no edits, comments, CI dispatch, ready, or scope change).
+
+   Reviewer source / exact model
+
+   Kimi Code CLI; kimi-k2.7-code (ci/ai-review.toml [kimi].model, source_label_template = "Kimi Code CLI ({model})"). Interactive
+   ad-hoc review; distinct from the dispatched Kimi CLI review lane.
+
+   Blocking findings
+
+   None.
+
+   Non-blocking substantive findings
+
+   None.
+
+   Verification against the ten checks
+
+   1. Each fixture read through its production reader — launch via read_launch_identity (src/bolt_v3_operator_artifacts.rs:365);
+      basket via BoltV3BasketStore::load_recovery_state (tests/bolt_v3_basket_execution.rs:867); kill-switch via
+      KillSwitchStore::load_recovery_state (tests/bolt_v3_kill_switch_store.rs:360).
+
+   2. Assertions pin every recovered semantic field — launch: value-asserts all 6 fields; kill-switch: whole KillSwitchState::Flat
+      { halt_id } equality (tests/bolt_v3_kill_switch_store.rs:362); basket: assert_eq!(state, expected)
+      (tests/bolt_v3_basket_execution.rs:898) compares the entire BoltV3BasketExecutionState (PartialEq), and the typed expected
+      built via candidate() (src/bolt_v3_basket_execution.rs:138-183) sets all 13 fields (ids, status: Candidate :158, legs with
+      filled_quantity/filled_cost: ZERO + client_order_id/venue_order_id: None :166-169, payout_matrix, both edge floors, full
+      config, order_list_id: None :177, reservation_held/unresolved_real_exposure/settled: false :178-180, fill_sources: Vec::new()
+       :181).
+
+   3. Basket independently constructs typed expected state — tests/bolt_v3_basket_execution.rs:873-896 builds expected from literal
+      typed args via BoltV3BasketExecutionState::candidate(...), not from the fixture.
+
+   4. Basket test does not parse fixture bytes a second time — from_slice( count = 0 in the new basket test (the only from_slice in
+      the two other files is the production reader src/bolt_v3_operator_artifacts.rs:162 and a pre-existing round-trip test
+      tests/bolt_v3_kill_switch_store.rs:339; neither is in a new compat test).
+
+   5. No test compares current serializer output with fixture-derived values — to_value( and fixture["state"] counts = 0 in the new
+      basket test. (The two to_value at tests/bolt_v3_basket_execution.rs:609,679 are pre-existing on main, serialize local
+      hip4/basket, and do not reference the compatibility fixtures — not introduced by this slice.)
+
+   6. No fallback chain / denylist / duplicate reader / new analyzer / manifest / scanner / inventory / shape ledger / parallel
+      source of truth — diff is exactly the 6 files (M 3 test files + A 3 fixtures); no added pub fn/struct/enum/const/mod in
+      src/tests; no TOML/manifest/registry files. The sole src addition is a #[test] fn inside mod tests.
+
+   7. No production behavior changed — only production-file change is the launch test inside mod tests
+      (src/bolt_v3_operator_artifacts.rs:190); the fix commit touched tests/bolt_v3_basket_execution.rs only.
+
+   8. Partial salvage, no completeness claim, no close of #1341 — body unchanged ("Partial compatibility salvage … Completeness
+      census … remain unresolved"); no Closes/Fixes/Resolves #1341; PR is draft.
+
+   9. Prior Kimi blocker (c992bf44) resolved — YES. Fix commit 697ad587 ("test: assert recovered basket semantics directly",
+      tests/bolt_v3_basket_execution.rs +26/-8):
+       • removed let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(...)) (old :873-877);
+       • removed assert_eq!(serde_json::to_value(&state)..., fixture["state"]) (old :878-880);
+       • replaced with independently constructed typed expected via candidate() (:873-896) and assert_eq!(state, expected) (:898).
+         The change is surgical: between c992bf44 and 697ad587 only tests/bolt_v3_basket_execution.rs changed; the launch test,
+         kill-switch test, and all three fixtures are byte-identical.
+
+   10. Immutable checked-in snapshots qualify as old-byte fixtures — accepted as instructed; the three fixtures are immutable
+       (unchanged across the fix commit), and rename-detection is established by the RED runs below, so no version-skew penalty is
+       applied.
+
+   Evidence (remote, exact-head / exact-test)
+
+   • Targeted basket GREEN — run 29136753414, job probe-heavy, scoped RUST_PROBE_TEST_NAME =
+     bolt_v3_basket_execution::basket_state_v1_old_bytes_remain_readable: PASS [0.043s] (1/1) — the exact named test, non-empty,
+     passing at the fix head. Confirms the typed expected matches the recovered state (assertion genuinely exercised).
+   • Historical RED (remote probes, all completed/failure) — each fails the exact named test for the exact wire-rename reason:
+       • Basket 29107736179: panic at tests/bolt_v3_basket_execution.rs match arm — expected Recovered, got FailClosed { reason:
+         CorruptEvidence, state: None } (envelope state→state_v2).
+       • Kill switch 29108100525 (RUST_PROBE_TEST_NAME = …kill_switch_state_v2_old_bytes_remain_readable): left: FailClosed {
+         reason: CorruptEvidence, state: None } ≠ Recovered(Flat{halt_id}).
+       • Launch 29108527714 (RUST_PROBE_TEST_NAME = …launch_identity_v1_old_bytes_remain_readable): parse error unknown field
+         \profile`, expected one of … `profile_v2` … (deny_unknown_fieldscatchesprofile→profile_v2`).
+   • Note (not a finding): the basket RED was captured against the prior assertion form; its failure point (FailClosed at the match
+     arm, HEAD :871) precedes and is invariant to the typed-assertion change, so it remains valid for the new form.
+
+   Final verdict
+
+   NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at 697ad587b013239ef7966c15ba9459052cb91351;
+   completeness and exact-head full CI remain pending.
+
+GLM: Reviewer source: opencode agent (adversarial review-only assessment)
+Exact model: zai-coding-plan/glm-5.2
+Verified head: 697ad587b013239ef7966c15ba9459052cb91351 — matches GitHub PR #1357 headRefOid.
+Diff Summary
+6 files, 152 additions, 0 deletions:
+File	Change
+src/bolt_v3_operator_artifacts.rs	MODIFIED (test fn in mod tests)
+tests/bolt_v3_basket_execution.rs	MODIFIED (test fn)
+tests/bolt_v3_kill_switch_store.rs	MODIFIED (test fn)
+tests/fixtures/bolt_v3/compatibility/basket_state_v1.json	ADDED
+tests/fixtures/bolt_v3/compatibility/kill_switch_state_v2.json	ADDED
+tests/fixtures/bolt_v3/compatibility/launch_identity_v1.json	ADDED
+Fix commit 697ad587b ("test: assert recovered basket semantics directly") supersedes prior head c992bf442. Fixture files are byte-identical to the prior head (same blob hashes: 23bf64b68, 35a1b6f91, 0986750ad).
+Verification
+1. Each fixture is read through its production reader ✅
+- Launch identity: read_launch_identity(temp.path()) — src/bolt_v3_operator_artifacts.rs:366
+- Basket: store.load_recovery_state() — tests/bolt_v3_basket_execution.rs:867
+- Kill switch: store.load_recovery_state() — tests/bolt_v3_kill_switch_store.rs:360
+2. Assertions pin every recovered semantic field ✅
+Launch identity — all 6 LaunchIdentity fields explicitly asserted (src/bolt_v3_operator_artifacts.rs:369-380): profile, pid, launched_at_unix_secs, build_head_sha, config_bundle_checksum, target_host_facts.
+Basket — assert_eq!(state, expected) at tests/bolt_v3_basket_execution.rs:898. The expected state is constructed via BoltV3BasketExecutionState::candidate(...) (lines 873-897), which sets all 14 BoltV3BasketExecutionState fields:
+- Argument-supplied: basket_id, strategy_id, execution_client_id, legs (7 sub-fields each), payout_matrix, admitted_absolute_edge_floor, admitted_edge_bps_floor, config (repair: 5 fields, unwind: 4 fields)
+- Constructor-hardcoded (matching fixture): status=Candidate, filled_quantity=ZERO, filled_cost=ZERO, client_order_id=None, venue_order_id=None, order_list_id=None, reservation_held=false, unresolved_real_exposure=false, settled=false, fill_sources=[]
+BoltV3BasketExecutionState and all nested types derive PartialEq (confirmed at src/bolt_v3_basket_execution.rs:107,125).
+Kill switch — assert_eq!(..., Recovered(Flat { halt_id: "legacy-halt".to_string() })) at tests/bolt_v3_kill_switch_store.rs:358-365 covers Flat's only field.
+3. The basket test independently constructs typed expected state ✅
+BoltV3BasketExecutionState::candidate(...) at tests/bolt_v3_basket_execution.rs:873-897 — a typed constructor on the production type, not a fixture-derived value.
+4. The basket test does not parse fixture bytes a second time ✅
+Fixture bytes are loaded once via include_bytes! at line 861, written to the temp file, and read back through load_recovery_state(). The expected state is constructed via the typed candidate(...) constructor. No serde_json::from_slice or serde_json::to_value appears within the test (lines 855-899). The two serde_json references elsewhere in the file (lines 609, 679) belong to unrelated pre-existing tests.
+5. No test compares current serializer output with fixture-derived values ✅
+The prior serde_json::to_value(&state) == fixture["state"] comparison is fully removed. The new comparison is assert_eq!(state, expected) where expected is independently constructed via typed Rust values.
+6. No fallback chain, denylist condition, duplicate reader path, new analyzer, manifest, scanner, inventory, shape ledger, or parallel source of truth ✅
+Diff contains only: 3 #[test] functions and 3 JSON fixture files. No new types, no new config sections, no new modules, no Cargo.toml changes, no scanner/inventory/ledger files.
+7. No production behavior changed ✅
+The only src/ change is a #[test] function inside mod tests at src/bolt_v3_operator_artifacts.rs:356. No production code path is touched.
+8. PR remains partial salvage, does not claim completeness or close #1341 ✅
+- Title: test: salvage three persisted reader fixtures (#1341) — reference only
+- Body: Partial compatibility salvage under #1341: protects three known persisted readers only. Completeness census, remaining wire/operator/hash sinks, and registry-retirement evidence remain unresolved.
+- Issue #1341 state: OPEN
+9. Prior Kimi blocker resolved ✅
+All three required changes confirmed at head 697ad587b:
+Requirement	Status	Evidence
+Remove serde_json::from_slice of basket fixture for expected-value construction	DONE	Not present in basket_state_v1_old_bytes_remain_readable (lines 855-899)
+Remove serde_json::to_value(&state) == fixture["state"]	DONE	Not present; replaced by assert_eq!(state, expected) at line 898
+Compare recovered state with independently constructed typed expected state	DONE	BoltV3BasketExecutionState::candidate(...) at lines 873-897; assert_eq!(state, expected) at line 898
+10. Immutable checked-in snapshots qualify as old-byte fixtures ✅
+Fixtures are committed files loaded via include_bytes!. All three production serializers append \n (src/bolt_v3_operator_artifacts.rs:137, src/bolt_v3_basket_store.rs:70, src/bolt_v3_kill_switch_store.rs:426); none of the fixtures have trailing newlines — not producible by current serializers.
+Evidence
+GREEN run (exact head, targeted basket)
+Run 29136753414 at 697ad587b013239ef7966c15ba9459052cb91351:
+- Test: bolt_v3_basket_execution::basket_state_v1_old_bytes_remain_readable
+- Result: PASS — 1 test run, 1 passed, 204 skipped
+Historical mutation RED runs (at ed5c3571b0f8, ancestor of current head)
+Fixtures are byte-identical between ed5c3571b0f8 and 697ad587b. The deserialization checkpoint (load_recovery_state() → match → panic! on FailClosed) is unchanged, so RED evidence remains valid.
+Run ID	Test	Failure reason
+29107736179	basket_state_v1_old_bytes_remain_readable	expected Recovered, got FailClosed { reason: CorruptEvidence, state: None } — mutation renamed state→state_v2, deserialization failed
+29108100525	kill_switch_state_v2_old_bytes_remain_readable	assertion left == right failed: left: FailClosed { reason: CorruptEvidence, state: None }, right: Recovered(Flat { halt_id: "legacy-halt" }) — same mutation pattern
+29108527714	launch_identity_v1_old_bytes_remain_readable	Parse { source: Error("unknown field \profile`, expected one of `build_head_sha`, `profile_v2`, ...") }—deny_unknown_fields` rejected old wire name
+All three RED failures are serde deserialization failures caused by the wire-name mutation — compatibility protection, not unrelated failures.
+Local non-compile gates
+just fmt-check and just source-fence-static passed (per provided evidence).
+Findings
+Blocking: None.
+Non-blocking substantive: None.
+Prior Kimi blocker: Resolved. The basket test no longer parses fixture bytes for expected-value construction, no longer compares serde_json::to_value(&state) against fixture["state"], and compares recovered state against independently constructed typed expected state via assert_eq!(state, expected).
+NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at 697ad587b013239ef7966c15ba9459052cb91351; completeness and exact-head full CI remain pending.
+Grok: Adversarial review — draft PR #1357
+
+┌─────────────────┬──────────────────────────────────────────────────────────────────────────┐
+│ Field           │ Value                                                                    │
+├─────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ Reviewer source │ Grok Build (xAI), review-only adversarial assessment                     │
+├─────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ Exact model     │ Grok 4.5                                                                 │
+├─────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ Verified head   │ 697ad587b013239ef7966c15ba9459052cb91351 (GitHub headRefOid exact match) │
+├─────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ Base            │ origin/main (7095c6f5f…)                                                 │
+└─────────────────┴──────────────────────────────────────────────────────────────────────────┘
+
+───
+
+Blocking findings
+None.
+
+Non-blocking substantive findings
+None.
+
+───
+
+Prior Kimi blocker (head c992bf442…) — RESOLVED
+
+Fix commit 697ad587b013239ef7966c15ba9459052cb91351 replaces the dual-parse / serializer-equality path with typed construction:
+
+┌────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────┐
+│ Prior blocker                  │ Status at 697ad587                                                           │
+├────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────┤
+│ serde_json::from_slice of      │ Removed                                                                      │
+│ basket fixture for expected    │                                                                              │
+│ values                         │                                                                              │
+├────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────┤
+│ serde_json::to_value(&state)   │ Removed                                                                      │
+│ == fixture["state"]            │                                                                              │
+├────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────┤
+│ Independently constructed      │ Present — BoltV3BasketExecutionState::candidate(...) then assert_eq!(state,  │
+│ typed expected state           │ expected) at tests/bolt_v3_basket_execution.rs:873–898                       │
+└────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────┘
+
+Exact-head basket probe 29136753414 at 697ad587…: named filter bolt_v3_basket_execution::basket_state_v1_old_bytes_remain_readable, 1/1 PASS.
+
+───
+
+Checklist (criteria 1–10)
+
+1. Production readers only
+   • Launch: read_launch_identity — src/bolt_v3_operator_artifacts.rs:365
+   • Basket: BoltV3BasketStore::load_recovery_state — tests/bolt_v3_basket_execution.rs:866–868
+   • Kill: KillSwitchStore::load_recovery_state — tests/bolt_v3_kill_switch_store.rs:359–361
+
+2. Assertions pin recovered semantic fields
+   • Launch: all LaunchIdentity fields (:368–379)
+   • Basket: full PartialEq via assert_eq!(state, expected) (:898); candidate fills status/legs defaults/order_list_id/reservation_held/unresolved_real_exposure/settled/fill_sources
+   • Kill: Recovered(Flat { halt_id }) (:362–364)
+
+3. Basket typed expected state — BoltV3BasketExecutionState::candidate(...) (:873–897)
+
+4. No second parse of basket fixture bytes — only include_bytes! → fs::write; no from_slice of fixture
+
+5. No serializer-vs-fixture comparison — no to_value / fixture JSON equality in the PR diff
+
+6. No parallel SoT / analyzer / inventory / denylist / duplicate reader — 6-file additive test+fixture surface only
+
+7. No production behavior change — production body of operator_artifacts identical to main; only #[cfg(test)] + integration tests + fixtures (+152 / -0)
+
+8. Partial salvage; does not close #1341 — PR body states partial/unresolved completeness; closingIssuesReferences: []
+
+9. Kimi blocker resolved — see above
+
+10. Same schema version as current is acceptable — fixtures use schema_version 1/2 matching current accepted versions; immutable checked-in bytes
+
+Historical RED (wire-rename mutation tip): basket 29107736179, kill 29108100525, launch 29108527714 — each failed on the compatibility path (CorruptEvidence / unknown field), not unrelated noise.
+
+───
+
+Final verdict
+
+NO SUBSTANTIVE FINDINGS — code-complete for the three-reader compatibility slice at 697ad587b013239ef7966c15ba9459052cb91351; completeness and exact-head full CI remain pending.
+
+---
+
+so what do you suggest

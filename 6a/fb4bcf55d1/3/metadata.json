@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6afb4bcf55d1",
+  "session_id": "019f4cb6-ef6c-7af0-8fe1-9933dd283e31",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-11T09:18:24.931472Z",
+  "branch": "fix/1354-rv-gate-clock-domain",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "28bfbd54a8ee",
+  "checkpoint_transcript_start": 1687,
+  "transcript_lines_at_start": 1687,
+  "compact_transcript_start": 352
+}

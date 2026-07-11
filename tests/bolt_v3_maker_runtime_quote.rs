@@ -421,6 +421,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
             realized_volatility_snapshot: input.realized_volatility_snapshot,
             realized_volatility_max_source_age_ms: input.realized_volatility_max_source_age_ms,
             pricing_kurtosis: input.pricing_kurtosis,
+            evaluation_receive_ms: input.evaluation_receive_ms,
         },
     );
 

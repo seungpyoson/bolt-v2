@@ -9,8 +9,7 @@ use nautilus_model::{
     data::BookOrder,
     enums::OrderSide,
     events::OrderFilled,
-    identifiers::OrderId,
-    instruments::InstrumentAny,
+    instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
     position::Position,
     types::{Money, Price, Quantity},
@@ -94,7 +93,7 @@ pub fn validate_execution_contract(
         trace.order_side,
         limit_price,
         trace.effective_base_quantity,
-        OrderId::from(0),
+        0,
     ));
     ensure!(
         expected_fills.len() == trace.fills.len()
@@ -173,7 +172,7 @@ pub fn validate_execution_contract(
 mod tests {
     use super::*;
     use nautilus_core::UnixNanos;
-    use nautilus_model::{enums::BookType, identifiers::OrderId, instruments::stubs};
+    use nautilus_model::{enums::BookType, instruments::stubs};
 
     struct Fixture {
         instrument: InstrumentAny,
@@ -210,13 +209,13 @@ mod tests {
 
     fn fixture() -> Fixture {
         let instrument = InstrumentAny::BinaryOption(stubs::binary_option());
-        let mut book = OrderBook::new(instrument.id(), BookType::L2Mbp);
+        let mut book = OrderBook::new(instrument.id(), BookType::L2_MBP);
         book.add(
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("0.420"),
                 Quantity::from("21.52"),
-                OrderId::from(1),
+                1,
             ),
             0,
             1,

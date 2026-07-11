@@ -69,6 +69,8 @@ use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDire
 use rust_decimal::Decimal;
 use serde::Serialize;
 
+use crate::hashing::sha256_hex;
+
 use super::{
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, ConverterConfig,
@@ -1339,7 +1341,7 @@ fn replay_executable_book_at_submission(
     deltas: &[OrderBookDelta],
     submission_timestamp: UnixNanos,
 ) -> Result<OrderBook> {
-    let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2Mbp);
+    let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2_MBP);
     for delta in deltas
         .iter()
         .filter(|delta| delta.ts_init <= submission_timestamp)
@@ -1444,6 +1446,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         order_terminals,
         config_override_report,
         run_guard_report,
+        ..
     } = run_nt_backtest_node(inputs.manifest)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
@@ -2338,9 +2341,10 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        assert_read_back_matches, canonical_resolved_taker_config_bytes,
-        ensure_settlement_currency_funded, expected_iterations, iterations_mismatch,
-        replay_executable_book_at_submission, run_nt_backtest_node,
+        apply_backtest_config_override, assert_read_back_matches,
+        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
+        expected_iterations, iterations_mismatch, load_bolt_v3_config, raw_taker_config,
+        replay_executable_book_at_submission, resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -3067,7 +3071,7 @@ mod tests {
                 .collect();
             let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
             let entry_price = entry_order.fills[0].last_px;
-            let mut book = OrderBook::new(instrument.id(), BookType::L2Mbp);
+            let mut book = OrderBook::new(instrument.id(), BookType::L2_MBP);
             book.add(
                 nautilus_model::data::BookOrder::new(
                     OrderSide::Sell,
@@ -3175,7 +3179,7 @@ mod tests {
 
     #[test]
     fn resolved_config_identity_covers_applied_rv_source_filter() -> Result<()> {
-        let raw_config = toml::from_str::<toml::Value>(maker_smoke_config_toml())?;
+        let raw_config = toml::from_str::<toml::Value>(&maker_smoke_config_toml())?;
         let mut override_spec = StrategyConfigOverlaySource {
             production_root_config_path: "config/root.toml".to_string(),
             override_delta: ManifestBacktestConfigOverride {
@@ -3594,8 +3598,9 @@ mod tests {
             .find(|balance| balance.ends_with(realized_pnl.currency.code.as_str()))
             .context("issue #789 settlement account has no matching initial balance")?
             .replace('_', "");
-        let initial_cash =
-            Money::from_str(&initial_cash_text).context("parse issue #789 exact initial cash")?;
+        let initial_cash = Money::from_str(&initial_cash_text)
+            .map_err(anyhow::Error::msg)
+            .context("parse issue #789 exact initial cash")?;
         let position_commission = position
             .commissions
             .get(&realized_pnl.currency)
@@ -4025,7 +4030,6 @@ mod tests {
         use std::collections::BTreeMap;
 
         use nautilus_model::{
-            data::OrderBookDelta,
             enums::{BookAction, OrderSide, RecordFlag},
             types::Price,
         };

@@ -3,7 +3,7 @@
   "checkpoint_id": "d2a7f5df691c",
   "strategy": "manual-commit",
   "branch": "fix/1354-rv-gate-clock-domain",
-  "checkpoints_count": 4,
+  "checkpoints_count": 5,
   "files_touched": null,
   "sessions": [
     {
@@ -33,13 +33,20 @@
       "compact_transcript": "/d2/a7f5df691c/3/transcript.jsonl",
       "content_hash": "/d2/a7f5df691c/3/content_hash.txt",
       "prompt": "/d2/a7f5df691c/3/prompt.txt"
+    },
+    {
+      "metadata": "/d2/a7f5df691c/4/metadata.json",
+      "transcript": "/d2/a7f5df691c/4/full.jsonl",
+      "compact_transcript": "/d2/a7f5df691c/4/transcript.jsonl",
+      "content_hash": "/d2/a7f5df691c/4/content_hash.txt",
+      "prompt": "/d2/a7f5df691c/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1643716,
+    "input_tokens": 2542733,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 125566976,
-    "output_tokens": 146823,
-    "api_call_count": 728
+    "cache_read_tokens": 182000896,
+    "output_tokens": 210692,
+    "api_call_count": 1125
   }
 }

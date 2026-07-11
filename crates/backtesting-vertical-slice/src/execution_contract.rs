@@ -68,7 +68,7 @@ pub fn validate_execution_contract(
         "execution contract supports only one-instrument market-order entry fills"
     );
 
-    let reference_price = match trace.order_side {
+    let opposing_best_price = match trace.order_side {
         OrderSide::Buy => trace.executable_book.best_ask_price(),
         OrderSide::Sell => trace.executable_book.best_bid_price(),
         OrderSide::NoOrderSide => None,
@@ -78,12 +78,12 @@ pub fn validate_execution_contract(
     if trace.quote_quantity {
         let expected_base_quantity = trace
             .instrument
-            .get_base_quantity(trace.submitted_quantity, reference_price);
+            .get_base_quantity(trace.submitted_quantity, opposing_best_price);
         ensure!(
             trace.effective_base_quantity == expected_base_quantity,
             "quote/base conversion mismatch: submitted {} at {} resolves to {}, observed {}",
             trace.submitted_quantity,
-            reference_price,
+            opposing_best_price,
             expected_base_quantity,
             trace.effective_base_quantity,
         );

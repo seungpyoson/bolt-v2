@@ -46,6 +46,7 @@ STANDALONE_TEST_FILENAMES = (
     "test_run_fences.py",
     "test_verifier_io.py",
 )
+PIN_CENSUS_FENCE_FILENAME = "verify_bolt_v3_boundary_evidence.py"
 
 
 @dataclasses.dataclass
@@ -178,7 +179,14 @@ def is_static_fence_path(path: pathlib.Path) -> bool:
 
 
 def discover_fence_paths(scripts_dir: pathlib.Path = SCRIPTS_DIR) -> list[pathlib.Path]:
-    return sorted(path for path in scripts_dir.glob("verify_*.py") if is_static_fence_path(path))
+    paths = sorted(path for path in scripts_dir.glob("verify_*.py") if is_static_fence_path(path))
+    if scripts_dir.resolve() == SCRIPTS_DIR.resolve() and not any(
+        path.name == PIN_CENSUS_FENCE_FILENAME for path in paths
+    ):
+        raise RuntimeError(
+            f"required static pin census fence is missing: {PIN_CENSUS_FENCE_FILENAME}"
+        )
+    return paths
 
 
 def discover_test_paths(

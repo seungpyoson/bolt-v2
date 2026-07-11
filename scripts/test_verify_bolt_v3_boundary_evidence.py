@@ -21,6 +21,8 @@ from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
 UNRESOLVABLE_SHA = "1" * 40
+EXPECTED_NT_REV = "fa3391d90c1aace4733fc73dae082b4cfee6b8fa"
+OLD_NT_REV = "0000000000000000000000000000000000000000"
 
 
 def load_verifier():
@@ -50,7 +52,62 @@ def clean_files(root: Path) -> None:
     write(
         root,
         "Cargo.toml",
-        'nautilus-network = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "9e71b2b1305a66945ba07f0aba2d1eb63208263d" }\n',
+        "[dependencies]\n"
+        f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+    )
+    write(
+        root,
+        "Cargo.lock",
+        "version = 4\n"
+        "[[package]]\n"
+        'name = "nautilus-network"\n'
+        'version = "0.59.0"\n'
+        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        "[dependencies]\n"
+        f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+    )
+    write(
+        root,
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        "version = 4\n"
+        "[[package]]\n"
+        'name = "nautilus-model"\n'
+        'version = "0.59.0"\n'
+        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+        "### 9.3 Common required fields\n"
+        f"  - current value: `{EXPECTED_NT_REV}`\n"
+        "### 11.5 NautilusTrader pin governance\n"
+        f"The live Binance Spot SBE quote boundary is owned by NautilusTrader revision `{EXPECTED_NT_REV}`.\n"
+        "`BinanceSpotDataClient::handle_ws_message`\n"
+        "`decode_market_data`\n"
+        "`parse_bbo_event`\n"
+        "`RealizedVolatilityObservation`\n"
+        "`StrategySignalObservation`\n"
+        "## 13. CLOB V2 Readiness Gate\n"
+        f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork\n",
+    )
+    write(
+        root,
+        "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
+        f'nautilus_trader_revision: "{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "scripts/verify_bolt_v3_boundary_evidence.py",
+        f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "scripts/test_verify_bolt_v3_boundary_evidence.py",
+        f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
@@ -67,6 +124,8 @@ pub enum BoundaryEvidenceClass {
 pub enum BoundaryFeeder {
     ReferenceCurrentPriceHealth,
     ReferenceLiveProbe,
+    RealizedVolatilityObservation,
+    StrategySignalObservation,
     DeployTargetHostFacts,
     SecretResolution,
     PolymarketVenueTruthRuntime,
@@ -81,6 +140,8 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry { adapter_id: polyresearch::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceCurrentPriceHealth },
     BoundaryRegistryEntry { adapter_id: chainlink_reference::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceLiveProbe },
     BoundaryRegistryEntry { adapter_id: polyresearch::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceLiveProbe },
+    BoundaryRegistryEntry { adapter_id: BINANCE_SPOT_SBE_ADAPTER_ID, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::RealizedVolatilityObservation },
+    BoundaryRegistryEntry { adapter_id: BINANCE_SPOT_SBE_ADAPTER_ID, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::StrategySignalObservation },
     BoundaryRegistryEntry { adapter_id: IMDS_METADATA_ADAPTER_ID, class: BoundaryEvidenceClass::ImdsMetadata, feeder: BoundaryFeeder::DeployTargetHostFacts },
     BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },
     BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketVenueTruthRuntime },
@@ -491,6 +552,343 @@ def test_capture_config_without_workflows_passes_boundary_scan() -> None:
             raise AssertionError("capture provenance fixture must not grow a [workflows] table")
 
     assert scan_temp(assert_no_workflows_table) == []
+
+
+def test_pin_census_rejects_each_mismatched_surface() -> None:
+    surfaces = (
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+        "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
+        "scripts/verify_bolt_v3_boundary_evidence.py",
+        "scripts/test_verify_bolt_v3_boundary_evidence.py",
+    )
+    for surface in surfaces:
+        def mutate(root: Path, surface: str = surface) -> None:
+            path = root / surface
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(EXPECTED_NT_REV, OLD_NT_REV),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
+
+
+def test_manifest_pin_census_accepts_order_multiline_and_dependency_scopes() -> None:
+    manifest = f'''
+[dependencies]
+nautilus-common = {{ rev = "{EXPECTED_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}
+
+[dev-dependencies.nautilus-core]
+rev = "{EXPECTED_NT_REV}"
+git = "https://github.com/seungpyoson/nautilus_trader.git"
+
+[build-dependencies]
+nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+
+[target.'cfg(unix)'.dependencies.nautilus-network]
+git = "https://github.com/seungpyoson/nautilus_trader.git"
+rev = "{EXPECTED_NT_REV}"
+'''
+
+    def mutate(root: Path) -> None:
+        write(root, "Cargo.toml", manifest)
+        write(root, "crates/backtesting-vertical-slice/Cargo.toml", manifest)
+
+    assert scan_temp(mutate) == []
+
+
+def test_manifest_pin_census_rejects_hidden_mixed_and_malformed_sources() -> None:
+    cases = {
+        "reordered inline old pin": f'{{ rev = "{OLD_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}',
+        "alternate source": f'{{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+        "unpinned source": '{ git = "https://github.com/seungpyoson/nautilus_trader.git" }',
+        "branch source": '{ git = "https://github.com/seungpyoson/nautilus_trader.git", branch = "develop" }',
+    }
+    for label, bad_dependency in cases.items():
+        manifest = (
+            "[dependencies]\n"
+            f'nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+            f"nautilus-core = {bad_dependency}\n"
+        )
+
+        def mutate(root: Path, manifest: str = manifest) -> None:
+            write(root, "Cargo.toml", manifest)
+
+        findings = scan_temp(mutate)
+        assert_finding(findings, "Cargo.toml: NautilusTrader pin census")
+        if label not in str(findings) and "nautilus-core" not in str(findings):
+            raise AssertionError((label, findings))
+
+
+def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:
+    scopes = (
+        "[dev-dependencies]",
+        "[build-dependencies]",
+        "[target.'cfg(unix)'.dependencies]",
+        "[target.'cfg(unix)'.dev-dependencies]",
+        "[target.'cfg(unix)'.build-dependencies]",
+    )
+    for scope in scopes:
+        manifest = (
+            "[dependencies]\n"
+            f'nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n\n'
+            f"{scope}\n"
+            f'nautilus-core = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n'
+        )
+
+        def mutate(root: Path, manifest: str = manifest) -> None:
+            write(root, "Cargo.toml", manifest)
+
+        assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
+
+
+def test_manifest_pin_census_rejects_multiline_old_pin_with_valid_decoy() -> None:
+    manifest = f'''
+[dependencies]
+nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+
+[dependencies.nautilus-core]
+git = "https://github.com/seungpyoson/nautilus_trader.git"
+rev = "{OLD_NT_REV}"
+'''
+
+    def mutate(root: Path) -> None:
+        write(root, "Cargo.toml", manifest)
+
+    assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
+
+
+def test_manifest_pin_census_rejects_aliased_nautilus_package_mismatch() -> None:
+    manifest = f'''
+[dependencies]
+nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nt-core = {{ package = "nautilus-core", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+'''
+
+    def mutate(root: Path) -> None:
+        write(root, "Cargo.toml", manifest)
+
+    assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
+
+
+def test_lock_pin_census_accepts_reordered_package_fields() -> None:
+    source = (
+        "git+https://github.com/seungpyoson/nautilus_trader.git"
+        f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
+    )
+    lock = f'''
+version = 4
+[[package]]
+source = "{source}"
+version = "0.59.0"
+name = "nautilus-common"
+'''
+
+    def mutate(root: Path) -> None:
+        write(root, "Cargo.lock", lock)
+        write(root, "crates/backtesting-vertical-slice/Cargo.lock", lock)
+
+    assert scan_temp(mutate) == []
+
+
+def test_lock_pin_census_rejects_hidden_mixed_and_malformed_sources() -> None:
+    canonical = (
+        "git+https://github.com/seungpyoson/nautilus_trader.git"
+        f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
+    )
+    cases = {
+        "alternate source": (
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
+            f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
+        ),
+        "missing rev": (
+            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            f"#{EXPECTED_NT_REV}"
+        ),
+        "old rev": (
+            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            f"?rev={OLD_NT_REV}#{OLD_NT_REV}"
+        ),
+        "wrong commit": (
+            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            f"?rev={EXPECTED_NT_REV}#{OLD_NT_REV}"
+        ),
+    }
+    for label, bad_source in cases.items():
+        lock = f'''
+version = 4
+[[package]]
+name = "nautilus-common"
+version = "0.59.0"
+source = "{canonical}"
+[[package]]
+name = "nautilus-core"
+version = "0.59.0"
+source = "{bad_source}"
+'''
+
+        def mutate(root: Path, lock: str = lock) -> None:
+            write(root, "Cargo.lock", lock)
+
+        findings = scan_temp(mutate)
+        assert_finding(findings, "Cargo.lock: NautilusTrader pin census")
+        if label not in str(findings) and "nautilus-core" not in str(findings):
+            raise AssertionError((label, findings))
+
+
+def test_binance_registry_row_alone_cannot_masquerade_as_sha_provenance() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("`parse_bbo_event`\n", ""),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "### 11.5 NautilusTrader pin governance missing parse_bbo_event",
+    )
+
+
+def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork",
+                f"Current status: this branch pins NautilusTrader to `{OLD_NT_REV}` on the bolt pin-fork",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "runtime-contracts.md: NautilusTrader pin census")
+
+
+def test_text_pin_census_rejects_comment_and_expression_decoys() -> None:
+    def mutate(root: Path) -> None:
+        naming = root / "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"
+        naming.write_text(
+            f'# nautilus_trader_revision: "{EXPECTED_NT_REV}"\n'
+            f'nautilus_trader_revision: "{OLD_NT_REV}"\n',
+            encoding="utf-8",
+        )
+        verifier = root / "scripts/verify_bolt_v3_boundary_evidence.py"
+        verifier.write_text(
+            f'# EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n'
+            f'EXPECTED_NT_REV = "{OLD_NT_REV}"\n',
+            encoding="utf-8",
+        )
+
+    findings = scan_temp(mutate)
+    assert_finding(findings, "nt-owned-name-audit.yaml: NautilusTrader pin census")
+    assert_finding(findings, "verify_bolt_v3_boundary_evidence.py: NautilusTrader pin census")
+
+
+def test_runtime_contract_pin_census_rejects_wrong_section_decoy() -> None:
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8")
+        text = text.replace(f"  - current value: `{EXPECTED_NT_REV}`\n", "")
+        contract.write_text(
+            text + f"\n## Decoy\n\n  - current value: `{EXPECTED_NT_REV}`\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "runtime-contracts.md: NautilusTrader pin census")
+
+
+def test_runtime_contract_requires_one_pin_per_owner_section() -> None:
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8")
+        text = text.replace(f"  - current value: `{EXPECTED_NT_REV}`\n", "")
+        owner_pin = (
+            "The live Binance Spot SBE quote boundary is owned by NautilusTrader revision "
+            f"`{EXPECTED_NT_REV}`."
+        )
+        contract.write_text(
+            text.replace(owner_pin, f"{owner_pin}\n{owner_pin}"),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "### 9.3 Common required fields")
+    assert_finding(scan_temp(mutate), "### 11.5 NautilusTrader pin governance")
+
+
+def test_runtime_contract_requires_binance_lineage_inside_owner_section() -> None:
+    required = (
+        "BinanceSpotDataClient::handle_ws_message",
+        "decode_market_data",
+        "parse_bbo_event",
+        "RealizedVolatilityObservation",
+        "StrategySignalObservation",
+    )
+
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8")
+        for index, symbol in enumerate(required):
+            text = text.replace(f"`{symbol}`", f"`moved_symbol_{index}`")
+        decoy = "\n".join(f"`{symbol}`" for symbol in required)
+        contract.write_text(f"{text}\n## Decoy\n\n{decoy}\n", encoding="utf-8")
+
+    findings = scan_temp(mutate)
+    for symbol in required:
+        assert_finding(findings, f"### 11.5 NautilusTrader pin governance missing {symbol}")
+
+
+def test_runtime_contract_rejects_duplicate_or_misnamed_owner_heading() -> None:
+    mutations = (
+        lambda text: text + "\n### 11.5 NautilusTrader pin governance\n",
+        lambda text: text.replace(
+            "### 11.5 NautilusTrader pin governance",
+            "### 11.5 NautilusTrader pins governance",
+        ),
+    )
+    for mutate_text in mutations:
+        def mutate(root: Path, mutate_text=mutate_text) -> None:
+            contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+            contract.write_text(
+                mutate_text(contract.read_text(encoding="utf-8")),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), "### 11.5 NautilusTrader pin governance")
+
+
+def test_runtime_contract_rejects_expected_decoy_with_wrong_owner_value() -> None:
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8").replace(
+            f"  - current value: `{EXPECTED_NT_REV}`",
+            f"  - current value: `{OLD_NT_REV}`",
+        )
+        contract.write_text(
+            text + f"\n## Decoy\n\n  - current value: `{EXPECTED_NT_REV}`\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "### 9.3 Common required fields")
+
+
+def test_missing_binance_live_quote_feeder_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/boundary_registry.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            re.sub(
+                r"\s*BoundaryRegistryEntry \{ adapter_id: BINANCE_SPOT_SBE_ADAPTER_ID, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::StrategySignalObservation \},",
+                "",
+                text,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "StrategySignalObservation")
 
 
 def test_empty_wire_boundary_source_set_fails_closed() -> None:

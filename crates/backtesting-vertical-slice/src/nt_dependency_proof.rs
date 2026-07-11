@@ -24,6 +24,23 @@ pub fn nt_dependency_proof_from_embedded_manifests()
     nt_dependency_proof_from_manifests(WORKSPACE_CARGO_TOML, WORKSPACE_CARGO_LOCK)
 }
 
+pub fn verified_nt_revision_from_embedded_manifests() -> Result<String, NtDependencyProofError> {
+    verified_nt_revision_from_manifests(WORKSPACE_CARGO_TOML, WORKSPACE_CARGO_LOCK)
+}
+
+pub fn verified_nt_revision_from_manifests(
+    cargo_toml: &str,
+    cargo_lock: &str,
+) -> Result<String, NtDependencyProofError> {
+    let proof = nt_dependency_proof_from_manifests(cargo_toml, cargo_lock)?;
+    if !proof.lock_sources_all_resolve_to_revision {
+        return Err(NtDependencyProofError::LockRevisionMismatch {
+            revision: proof.nautilus_revision,
+        });
+    }
+    Ok(proof.nautilus_revision)
+}
+
 pub fn nt_dependency_proof_from_manifests(
     cargo_toml: &str,
     cargo_lock: &str,
@@ -227,6 +244,9 @@ pub enum NtDependencyProofError {
         name: String,
         feature: String,
     },
+    LockRevisionMismatch {
+        revision: String,
+    },
 }
 
 impl fmt::Display for NtDependencyProofError {
@@ -267,6 +287,10 @@ impl fmt::Display for NtDependencyProofError {
                     "Cargo.toml dependency {name} is missing required feature {feature}"
                 )
             }
+            Self::LockRevisionMismatch { revision } => write!(
+                f,
+                "Cargo.lock does not resolve NautilusTrader sources to declared revision {revision}"
+            ),
         }
     }
 }

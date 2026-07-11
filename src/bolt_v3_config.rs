@@ -991,7 +991,7 @@ pub struct LoadedBoltV3Config {
 /// describing the exact delta. It is deliberately narrow: a signal data role can
 /// be replaced, and one realized-volatility surface can be filtered to a set of
 /// already configured live sources.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BacktestConfigOverride {
     pub label: String,
@@ -1005,7 +1005,7 @@ pub struct BacktestConfigOverride {
 
 /// Selector for keeping an existing realized-volatility source from the loaded
 /// production surface.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct RealizedVolatilitySourceSelector {
     pub data_client_id: ClientId,

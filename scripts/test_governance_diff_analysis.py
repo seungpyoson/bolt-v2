@@ -11,7 +11,6 @@ import tempfile
 import time
 
 import ci_workflow_hygiene_test_helpers as hygiene_helpers
-from git_maintenance import count_trace2_maintenance_children
 from ci_workflow_hygiene_test_helpers import (
     BASE_WORKFLOW,
     DEBUG_TEST_WORKFLOW_PATH,
@@ -103,6 +102,33 @@ def assert_suppression_args_match_suppression_config() -> None:
         )
 
 
+def assert_trace2_maintenance_counter_fails_closed_on_unusable_trace() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        cases = (
+            ("missing", None),
+            ("empty", ""),
+            ("malformed", "{not-json}\n"),
+        )
+        for label, contents in cases:
+            trace = root / f"{label.replace(' ', '-')}.json"
+            if contents is not None:
+                trace.write_text(contents, encoding="utf-8")
+            try:
+                hygiene_helpers.count_trace2_maintenance_children(trace)
+            except AssertionError:
+                continue
+            raise AssertionError(f"Trace2 counter accepted {label} trace as usable")
+
+        usable = root / "usable.json"
+        usable.write_text(
+            '{"event":"version"}\n',
+            encoding="utf-8",
+        )
+        if hygiene_helpers.count_trace2_maintenance_children(usable) != 0:
+            raise AssertionError("non-child Trace2 event was counted as maintenance")
+
+
 def assert_init_fixture_repo_persists_suppression() -> None:
     """A fixture remote must carry the suppression in its own config.
 
@@ -185,7 +211,9 @@ def assert_push_to_fixture_remote_spawns_no_background_maintenance() -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            maintenance_children[remote] = count_trace2_maintenance_children(trace)
+            maintenance_children[remote] = hygiene_helpers.count_trace2_maintenance_children(
+                trace
+            )
 
         if maintenance_children["unsuppressed"] == 0:
             raise AssertionError(
@@ -219,7 +247,7 @@ def assert_routed_fixture_module_spawns_no_background_maintenance() -> None:
         )
         if completed.returncode != 0:
             raise AssertionError(f"{module} failed: {completed.stderr[-2000:]}")
-        spawned = count_trace2_maintenance_children(trace)
+        spawned = hygiene_helpers.count_trace2_maintenance_children(trace)
         if spawned:
             raise AssertionError(f"{module} spawned {spawned} background maintenance children")
 
@@ -1119,6 +1147,7 @@ def assert_debug_test_workflow_contract() -> None:
 def main() -> int:
     assert_run_repo_git_suppresses_background_maintenance()
     assert_suppression_args_match_suppression_config()
+    assert_trace2_maintenance_counter_fails_closed_on_unusable_trace()
     assert_init_fixture_repo_persists_suppression()
     assert_self_authorizing_fixture_repo_persists_suppression()
     assert_clone_fixture_repo_persists_suppression()

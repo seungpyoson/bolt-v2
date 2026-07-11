@@ -20,6 +20,8 @@ import ci_provenance
 import git_remote_utils
 from ci_workflow_hygiene_test_helpers import (
     clone_fixture_repo,
+    count_trace2_children,
+    count_trace2_maintenance_children,
     init_fixture_repo,
     load_provenance,
     load_verifier,
@@ -29,10 +31,7 @@ from ci_workflow_hygiene_test_helpers import (
     run_verifier_main_with_no_mistakes,
     yaml_scalar_literal,
 )
-from git_maintenance import (
-    GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG,
-    count_trace2_maintenance_children,
-)
+from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1625,6 +1624,7 @@ def assert_private_fetch_sha_spawns_no_background_maintenance() -> None:
         try:
             os.environ["GIT_TRACE2_EVENT"] = str(trace)
             fetched = private_fetch.fetch_sha(str(fixture.remote), requested, "probe")
+            trace_children = count_trace2_children(trace)
             maintenance_children = count_trace2_maintenance_children(trace)
         finally:
             if previous_trace is None:
@@ -1634,6 +1634,8 @@ def assert_private_fetch_sha_spawns_no_background_maintenance() -> None:
             private_fetch.cleanup()
 
         assert_equal(fetched, requested, "private fetch SHA")
+        if trace_children == 0:
+            raise AssertionError("private fetch Trace2 log recorded no child events")
         assert_equal(
             maintenance_children,
             0,

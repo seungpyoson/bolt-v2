@@ -7,6 +7,7 @@ import ast
 import contextlib
 import importlib.util
 import io
+import json
 import pathlib
 import re
 import shutil
@@ -30,6 +31,58 @@ GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = tuple(
 DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
 GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = "name: ${{ needs.ci-policy.outputs.gate_name }}"
+
+
+def _read_trace2_events(trace_path: pathlib.Path) -> list[dict[str, object]]:
+    if not trace_path.exists():
+        raise AssertionError(f"Trace2 event log was not produced: {trace_path}")
+    lines = trace_path.read_text(encoding="utf-8", errors="strict").splitlines()
+    if not lines:
+        raise AssertionError(f"Trace2 event log is empty: {trace_path}")
+
+    events: list[dict[str, object]] = []
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            event = json.loads(line)
+        except ValueError as exc:
+            raise AssertionError(
+                f"Trace2 event log has invalid JSON at line {line_number}: {trace_path}"
+            ) from exc
+        if not isinstance(event, dict):
+            raise AssertionError(
+                f"Trace2 event log line {line_number} is not an object: {trace_path}"
+            )
+        events.append(event)
+    return events
+
+
+def count_trace2_children(trace_path: pathlib.Path) -> int:
+    """Count child events in a usable Trace2 event log."""
+    return sum(
+        event.get("event") == "child_start" for event in _read_trace2_events(trace_path)
+    )
+
+
+def count_trace2_maintenance_children(trace_path: pathlib.Path) -> int:
+    """Count maintenance children in a usable Trace2 event log."""
+    child_argv: list[list[str]] = []
+    for line_number, event in enumerate(_read_trace2_events(trace_path), start=1):
+        if event.get("event") == "child_start":
+            argv = event.get("argv")
+            if not isinstance(argv, list) or not all(
+                isinstance(arg, str) for arg in argv
+            ):
+                raise AssertionError(
+                    f"Trace2 child event line {line_number} has invalid argv: {trace_path}"
+                )
+            child_argv.append(argv)
+
+    return sum(
+        1
+        for argv in child_argv
+        if "maintenance" in " ".join(argv) or " ".join(argv).startswith("git gc")
+    )
+
 
 def load_verifier(
     path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"

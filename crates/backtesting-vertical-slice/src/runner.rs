@@ -4229,7 +4229,8 @@ mod tests {
             run_id: "issue-789-first-real-free-data-taker-pl".to_string(),
             target_bolt_v2_branch: "codex/789-first-faithful-taker-pl".to_string(),
             target_bolt_v2_ref: "worktree".to_string(),
-            resolved_nt_version: "9e71b2b1305a66945ba07f0aba2d1eb63208263d".to_string(),
+            resolved_nt_version: bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision()
+                .to_string(),
             market_structure_fixture: MarketStructureFixture::BinaryOption,
             venue_binding_key: "issue-789-pmxt-okx-bybit-chainlink".to_string(),
             run_purpose: RunPurpose::Normal,

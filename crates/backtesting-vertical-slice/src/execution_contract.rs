@@ -129,14 +129,27 @@ pub fn validate_execution_contract(
         }),
         "position replay fills do not share one instrument and position ID"
     );
+    let (terminal_fill, position_entry_fills) = trace
+        .position_fills
+        .split_last()
+        .context("position replay requires a terminal settlement fill")?;
     ensure!(
-        trace.position_fills.starts_with(trace.fills),
-        "order entry fills do not exactly match the position entry fills"
+        position_entry_fills == trace.fills,
+        "order entry fills do not exactly equal all position entry fills"
+    );
+    ensure!(
+        terminal_fill.order_side == trace.order_side.opposite()
+            && terminal_fill.last_qty == trace.effective_base_quantity,
+        "terminal settlement fill does not exactly close the validated entry quantity"
     );
     let mut replayed_position = Position::new(trace.instrument, *opening_fill);
     for fill in closing_fills {
         replayed_position.apply(fill);
     }
+    ensure!(
+        replayed_position.is_closed(),
+        "replayed position is not closed after terminal settlement"
+    );
     let replayed_pnl = replayed_position
         .realized_pnl
         .context("replayed position did not realize PnL")?;
@@ -193,6 +206,7 @@ mod tests {
         initial_cash: Money,
         terminal_cash: Money,
         realized_pnl: Money,
+        position_commission: Money,
         config_bytes: Vec<u8>,
         config_hash: String,
     }
@@ -213,7 +227,7 @@ mod tests {
                 initial_cash: self.initial_cash,
                 terminal_cash: self.terminal_cash,
                 realized_pnl: self.realized_pnl,
-                position_commission: Money::from("0.00 USDC"),
+                position_commission: self.position_commission,
                 expected_fill_commission: Money::from("0.00 USDC"),
                 canonical_resolved_config_bytes: &self.config_bytes,
                 canonical_resolved_config_sha256: &self.config_hash,
@@ -269,6 +283,7 @@ mod tests {
             initial_cash,
             terminal_cash,
             realized_pnl,
+            position_commission: Money::from("0.00 USDC"),
             config_bytes,
             config_hash,
         }
@@ -375,6 +390,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_extra_position_entry_leg_with_consistent_cash_and_pnl() {
+        let mut fixture = fixture();
+        let mut extra_entry = fixture.position_fills[0];
+        extra_entry.trade_id = nautilus_model::identifiers::TradeId::from("extra-entry");
+        fixture.position_fills.insert(1, extra_entry);
+        fixture.position_fills[2].last_qty = Quantity::from("5.42");
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        for fill in &fixture.position_fills[1..] {
+            position.apply(fill);
+        }
+        fixture.realized_pnl = position
+            .realized_pnl
+            .expect("duplicated-entry fixture should realize PnL");
+        fixture.terminal_cash = fixture
+            .initial_cash
+            .checked_add(fixture.realized_pnl)
+            .expect("duplicated-entry fixture cash should reconcile exactly");
+        assert!(validate_execution_contract(&fixture.trace()).is_err());
+    }
+
+    #[test]
     fn rejects_wrong_commission() {
         let fixture = fixture();
         let mut trace = fixture.trace();
@@ -385,19 +421,26 @@ mod tests {
     #[test]
     fn rejects_correlated_wrong_fill_and_position_commission() {
         let mut fixture = fixture();
-        fixture.position_fills[0].commission = Some(Money::from("0.01 USDC"));
-        let mut trace = fixture.trace();
         let commission = Money::from("0.01 USDC");
-        trace.position_commission = commission;
-        trace.realized_pnl = trace
+        fixture.fills[0].commission = Some(commission);
+        fixture.position_fills[0] = fixture.fills[0];
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        position.apply(&fixture.position_fills[1]);
+        fixture.realized_pnl = position
             .realized_pnl
-            .checked_sub(commission)
-            .expect("fixture commission subtraction should be exact");
-        trace.terminal_cash = trace
+            .expect("commission fixture should realize PnL");
+        fixture.terminal_cash = fixture
             .initial_cash
-            .checked_add(trace.realized_pnl)
+            .checked_add(fixture.realized_pnl)
             .expect("fixture terminal cash should be exact");
-        assert!(validate_execution_contract(&trace).is_err());
+        fixture.position_commission = position
+            .commissions
+            .get(&commission.currency)
+            .copied()
+            .expect("commission fixture should accumulate commission");
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("correlated non-zero commission must violate the zero-fee assumption");
+        assert!(error.to_string().contains("explicit fixture assumption"));
     }
 
     #[test]

@@ -568,6 +568,7 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     /// settlement oracle, not a separately rounded recomputation.
     Settlement(RecordedSettlementEvidenceEvent),
     SettlementBookingError(RecordedSettlementBookingErrorEvidenceEvent),
+    TerminalSettlement(crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -781,20 +782,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
-        let mut events = self
-            .events
+        self.events
             .lock()
-            .expect("recording evidence writer mutex poisoned");
-        events.push(RecordedDecisionEvidenceEvent::SettlementBookingError(
-            RecordedSettlementBookingErrorEvidenceEvent {
-                reason: evidence.reason,
-            },
-        ));
-        if let Some(lifecycle) = evidence.terminal_lifecycle.as_ref() {
-            events.push(RecordedDecisionEvidenceEvent::OrderLifecycle(
-                lifecycle.clone(),
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
+                RecordedSettlementBookingErrorEvidenceEvent {
+                    reason: evidence.reason,
+                },
             ));
-        }
+        Ok(())
+    }
+
+    fn record_terminal_settlement(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::TerminalSettlement(
+                evidence.clone(),
+            ));
         Ok(())
     }
 
@@ -887,7 +895,7 @@ pub(super) fn fixture_settlement_currency() -> Currency {
 
 pub(super) fn noop_settlement_health_transition_emitter()
 -> crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter {
-    Arc::new(|_| {})
+    Arc::new(|_| Ok(()))
 }
 
 pub(super) fn attach_recording_settlement_health_transitions(
@@ -903,6 +911,7 @@ pub(super) fn attach_recording_settlement_health_transitions(
                 .lock()
                 .expect("recording settlement health transition mutex poisoned")
                 .push(transition);
+            Ok(())
         })));
     transitions
 }

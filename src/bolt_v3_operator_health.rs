@@ -21,7 +21,7 @@ pub type BoltV3OperatorHealthTransitionEmitter = Arc<dyn Fn(&'static str) + Send
 pub type BoltV3InputHealthTransitionEmitter =
     Arc<dyn Fn(&'static str, BoltV3InputHealthSourceTransition) + Send + Sync + 'static>;
 pub type BoltV3SettlementHealthTransitionEmitter =
-    Arc<dyn Fn(BoltV3SettlementHealthTransition) + Send + Sync + 'static>;
+    Arc<dyn Fn(BoltV3SettlementHealthTransition) -> anyhow::Result<()> + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

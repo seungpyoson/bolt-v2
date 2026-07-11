@@ -1911,7 +1911,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
 }
 
 #[test]
-fn terminal_settlement_does_not_depend_on_a_second_lifecycle_append() {
+fn terminal_settlement_uses_one_canonical_durable_event() {
     assert_reality_fixtures();
 
     let evidence = Arc::new(
@@ -1962,6 +1962,60 @@ fn terminal_settlement_does_not_depend_on_a_second_lifecycle_append() {
         1
     );
     assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn health_emitter_failure_cannot_park_exposure_or_duplicate_terminal_evidence() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let health_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recorded_attempts = health_attempts.clone();
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_health_transition_emitter(Some(Arc::new(move |_| {
+            recorded_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("injected settlement health emitter failure")
+        })));
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-HEALTH-EMITTER-FAILURE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let settlement_key = settlement_key_for_position(&position)
+        .expect("fixture position should derive settlement key");
+    let terminal_ns = position
+        .lifecycle
+        .interval_end_ms()
+        .expect("live fixture position must retain an interval end")
+        .saturating_mul(NANOS_PER_MILLI_U64);
+
+    for _ in 0..2 {
+        strategy
+            .record_settlement_booking_error(
+                &position,
+                settlement_key.clone(),
+                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                "health failure must follow durable release".to_string(),
+                terminal_ns,
+            )
+            .expect("health reporting failure must not fail terminal release");
+    }
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert_eq!(settlement_booking_error_count(&evidence.events()), 1);
+    assert_eq!(health_attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -2674,6 +2728,10 @@ fn settlement_booking_error_count(events: &[RecordedDecisionEvidenceEvent]) -> u
             matches!(
                 event,
                 RecordedDecisionEvidenceEvent::SettlementBookingError(_)
+            ) || matches!(
+                event,
+                RecordedDecisionEvidenceEvent::TerminalSettlement(evidence)
+                    if evidence.booking_error.is_some()
             )
         })
         .count()
@@ -2688,6 +2746,11 @@ fn terminal_settlement_lifecycle_count(events: &[RecordedDecisionEvidenceEvent])
                 RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
                     if evidence.transition
                         == BoltV3OrderLifecycleTransition::SettlementBookingTerminal
+            ) || matches!(
+                event,
+                RecordedDecisionEvidenceEvent::TerminalSettlement(evidence)
+                    if evidence.lifecycle.transition
+                        == BoltV3OrderLifecycleTransition::SettlementBookingTerminal
             )
         })
         .count()
@@ -2701,6 +2764,9 @@ fn settlement_booking_error_reasons(
         .filter_map(|event| match event {
             RecordedDecisionEvidenceEvent::SettlementBookingError(evidence) => {
                 Some(evidence.reason)
+            }
+            RecordedDecisionEvidenceEvent::TerminalSettlement(evidence) => {
+                evidence.booking_error.as_ref().map(|error| error.reason)
             }
             _ => None,
         })

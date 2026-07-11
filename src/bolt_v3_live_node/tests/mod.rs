@@ -291,17 +291,19 @@ fn production_settlement_health_emitter_updates_state_before_reporting_surface()
     ));
     let recorded = reported.clone();
     let reported_health = settlement_health.clone();
-    let emit_surface: Arc<dyn Fn(&'static str, Option<BoltV3InputHealth>) + Send + Sync + 'static> =
-        Arc::new(move |reason, _| {
-            let health = reported_health
-                .lock()
-                .expect("settlement health mutex poisoned")
-                .clone();
-            recorded
-                .lock()
-                .expect("settlement health report mutex poisoned")
-                .push((reason, health));
-        });
+    let emit_surface: Arc<
+        dyn Fn(&'static str, Option<BoltV3InputHealth>) -> Result<()> + Send + Sync + 'static,
+    > = Arc::new(move |reason, _| {
+        let health = reported_health
+            .lock()
+            .expect("settlement health mutex poisoned")
+            .clone();
+        recorded
+            .lock()
+            .expect("settlement health report mutex poisoned")
+            .push((reason, health));
+        Ok(())
+    });
     let emitter = build_settlement_health_transition_emitter(
         settlement_health.clone(),
         input_health_accumulator,
@@ -312,7 +314,8 @@ fn production_settlement_health_emitter_updates_state_before_reporting_surface()
         settlement_key: "settlement-key-1".to_string(),
         position_id: "position-1".to_string(),
         reason: "settlement_booking_terminal".to_string(),
-    });
+    })
+    .expect("production settlement health emission should succeed");
 
     let health = settlement_health
         .lock()
@@ -327,6 +330,41 @@ fn production_settlement_health_emitter_updates_state_before_reporting_surface()
     assert_eq!(reports[0].0, stringify!(settlement_booking_terminal));
     assert_eq!(reports[0].1.status, BoltV3OperatorHealthStatus::Degraded);
     assert_eq!(reports[0].1.terminal_transition_count, 1);
+}
+
+#[test]
+fn production_settlement_health_emitter_returns_context_for_poisoned_lock() {
+    let settlement_health = Arc::new(Mutex::new(BoltV3SettlementHealth::nominal()));
+    let poison_target = settlement_health.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = poison_target
+            .lock()
+            .expect("settlement health lock should initially be available");
+        panic!("poison settlement health lock for differential");
+    })
+    .join();
+    let input_health_accumulator = Arc::new(Mutex::new(BoltV3LiveInputHealthAccumulator::new(
+        0,
+        &BTreeMap::new(),
+    )));
+    let emitter = build_settlement_health_transition_emitter(
+        settlement_health,
+        input_health_accumulator,
+        Arc::new(|_, _| Ok(())),
+    );
+
+    let error = emitter(BoltV3SettlementHealthTransition {
+        settlement_key: "settlement-key-poisoned".to_string(),
+        position_id: "position-poisoned".to_string(),
+        reason: "settlement_booking_terminal".to_string(),
+    })
+    .expect_err("poisoned settlement health lock must be explicit");
+
+    assert!(
+        error
+            .to_string()
+            .contains("settlement health lock poisoned")
+    );
 }
 
 #[test]

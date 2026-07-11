@@ -19412,6 +19412,22 @@ reason = '''JSONL envelope discriminator for accepted fail-closed settlement boo
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''
 kind = '''string'''
+literal = '''"terminal_settlement"'''
+context = '''pub const BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND: &str = "terminal_settlement";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for canonical terminal-settlement transition records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"canonical terminal settlement cannot contain nested legacy lifecycle evidence"'''
+context = '''"canonical terminal settlement cannot contain nested legacy lifecycle evidence"'''
+classification = '''decision_evidence_validation_error'''
+reason = '''Fail-closed diagnostic for rejecting legacy nested lifecycle shape from the canonical terminal-settlement writer; it describes a schema invariant, not a configurable runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
 literal = '''"loss_governor"'''
 context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";'''
 classification = '''decision_evidence_subsystem_label'''

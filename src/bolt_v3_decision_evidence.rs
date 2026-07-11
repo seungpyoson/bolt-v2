@@ -46,6 +46,7 @@ pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
 pub const BOLT_V3_SETTLEMENT_RECORD_KIND: &str = "settlement";
 pub const BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND: &str = "settlement_booking_error";
+pub const BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND: &str = "terminal_settlement";
 pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND: &str = "venue_truth_capture_failure";
 pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND: &str = "venue_truth_divergence";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
@@ -143,6 +144,12 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         &self,
         evidence: &BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()>;
+    fn record_terminal_settlement(
+        &self,
+        _evidence: &BoltV3TerminalSettlementEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("terminal settlement evidence writer is not configured")
+    }
     fn record_venue_truth_capture_failure(
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,
@@ -1222,11 +1229,37 @@ pub struct BoltV3SettlementBookingErrorEvidence {
     pub reason: BoltV3SettlementBookingErrorReason,
     pub detail: String,
     pub observed_at_ns: u64,
-    /// Present only for the canonical terminal-settlement transition. Keeping
-    /// lifecycle evidence inside this record makes booking failure and terminal
-    /// release one durable append rather than two independently committed lines.
+    /// Backward-compatible reader field for records written before the canonical
+    /// `terminal_settlement` schema. New writers leave this unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_lifecycle: Option<BoltV3OrderLifecycleEvidence>,
+}
+
+/// The canonical durable result of either valid terminal-eligibility leg.
+/// Legacy booking-error records remain readable, but all new terminal releases
+/// write this schema regardless of whether they occur live or during recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3TerminalSettlementEvidence {
+    pub settlement_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
+    pub lifecycle: BoltV3OrderLifecycleEvidence,
+}
+
+impl BoltV3TerminalSettlementEvidence {
+    fn validate(&self) -> Result<()> {
+        if let Some(booking_error) = self.booking_error.as_ref() {
+            anyhow::ensure!(
+                booking_error.settlement_key == self.settlement_key,
+                "terminal settlement booking-error key does not match canonical key"
+            );
+            anyhow::ensure!(
+                booking_error.terminal_lifecycle.is_none(),
+                "canonical terminal settlement cannot contain nested legacy lifecycle evidence"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2010,6 +2043,14 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         self.append_line(&line)
     }
 
+    fn record_terminal_settlement(
+        &self,
+        evidence: &BoltV3TerminalSettlementEvidence,
+    ) -> Result<()> {
+        let line = encode_terminal_settlement_line(evidence)?;
+        self.append_line(&line)
+    }
+
     fn record_venue_truth_capture_failure(
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,
@@ -2363,6 +2404,18 @@ pub fn read_latest_entry_decision_evidence_chain(
                     BOLT_V3_SETTLEMENT_GATE_ID,
                     index,
                 )?;
+            }
+            BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: TerminalSettlementLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!("failed to parse bolt-v3 terminal settlement line at index {index}")
+                    })?;
+                decoded.validate_header(index)?;
             }
             BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
                 header.validate(
@@ -2739,6 +2792,18 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
+            BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: TerminalSettlementLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!("failed to parse bolt-v3 terminal settlement line at index {index}")
+                    })?;
+                decoded.validate_header(index)?;
+            }
             BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
@@ -2873,6 +2938,7 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_ORDER_REJECT_RECORD_KIND
                 | BOLT_V3_SETTLEMENT_RECORD_KIND
                 | BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND
+                | BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND
                 | BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
                 | BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
                 | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
@@ -3866,6 +3932,54 @@ fn encode_settlement_booking_error_line(
     Ok(line)
 }
 
+#[derive(Serialize)]
+struct TerminalSettlementLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    terminal_settlement: &'a BoltV3TerminalSettlementEvidence,
+}
+
+#[derive(Deserialize)]
+struct TerminalSettlementLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    terminal_settlement: BoltV3TerminalSettlementEvidence,
+}
+
+impl TerminalSettlementLineOwned {
+    fn validate_header(&self, index: usize) -> Result<()> {
+        self.header.validate(
+            BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+            BOLT_V3_SETTLEMENT_GATE_ID,
+            index,
+        )?;
+        self.terminal_settlement
+            .validate()
+            .with_context(|| format!("invalid terminal settlement evidence at index {index}"))
+    }
+}
+
+fn encode_terminal_settlement_line(evidence: &BoltV3TerminalSettlementEvidence) -> Result<Vec<u8>> {
+    evidence
+        .validate()
+        .context("invalid terminal settlement evidence")?;
+    let envelope = TerminalSettlementLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+        terminal_settlement: evidence,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize terminal settlement evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
 fn encode_venue_truth_capture_failure_line(
     evidence: &VenueTruthCaptureFailureEvidence,
 ) -> Result<Vec<u8>> {
@@ -4130,6 +4244,27 @@ pub fn read_settlement_booking_error_evidence(
     )
 }
 
+/// Reads the single production schema written by every terminal release.
+pub fn read_terminal_settlement_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3TerminalSettlementEvidence>> {
+    read_kind_evidence(
+        path,
+        max_bytes,
+        BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+        BOLT_V3_SETTLEMENT_GATE_ID,
+        |line, index| {
+            let decoded: TerminalSettlementLineOwned =
+                serde_json::from_slice(line).with_context(|| {
+                    format!("failed to parse bolt-v3 terminal settlement line at index {index}")
+                })?;
+            decoded.validate_header(index)?;
+            Ok(decoded.terminal_settlement)
+        },
+    )
+}
+
 /// Seeds startup settlement idempotency from durable settlement keys relevant to
 /// positions currently within recovery scope. The bound is structural: the caller
 /// supplies the position-derived keys; this reader never truncates by count or age.
@@ -4156,6 +4291,7 @@ pub fn read_settlement_booking_error_keys_for_recovery_scope(
     max_bytes: u64,
     recovery_scope_settlement_keys: &BTreeSet<String>,
 ) -> Result<BTreeSet<String>> {
+    let path = path.as_ref();
     let booking_errors = read_settlement_booking_error_evidence(path, max_bytes)?;
     let mut recovered = BTreeSet::new();
     for evidence in booking_errors {
@@ -4164,6 +4300,13 @@ pub fn read_settlement_booking_error_keys_for_recovery_scope(
         }
         if !recovered.insert(evidence.settlement_key.clone()) {
             return Err(duplicate_settlement_key_error(&evidence.settlement_key));
+        }
+    }
+    for evidence in read_terminal_settlement_evidence(path, max_bytes)? {
+        if recovery_scope_settlement_keys.contains(&evidence.settlement_key) {
+            // A restart may durably confirm the same terminal key again. Canonical
+            // terminal records are state transitions, so replay is idempotent.
+            recovered.insert(evidence.settlement_key);
         }
     }
     Ok(recovered)

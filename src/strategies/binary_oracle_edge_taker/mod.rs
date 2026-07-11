@@ -44,7 +44,8 @@ use crate::{
         BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
         BoltV3SettlementBookingErrorEvidence, BoltV3SettlementBookingErrorReason,
         BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        number_evidence as evidence_number, option_number_evidence as option_evidence_number,
+        BoltV3TerminalSettlementEvidence, number_evidence as evidence_number,
+        option_number_evidence as option_evidence_number,
         option_probability_evidence as option_evidence_probability, probability_evidence,
         read_settlement_booking_error_keys_for_recovery_scope,
         read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
@@ -1345,16 +1346,12 @@ impl BinaryOracleEdgeTaker {
     fn apply_terminal_settlement_transition(
         &mut self,
         eligibility: TerminalSettlementEligibility,
-        mut booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
+        booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
         reason_detail: String,
     ) -> Result<()> {
         let position = eligibility.position();
         let settlement_key = eligibility.settlement_key().to_string();
-        let health_emitter = self
-            .context
-            .settlement_health_transition_emitter()
-            .context("terminal settlement health emitter is not configured")?
-            .clone();
+        let health_emitter = self.context.settlement_health_transition_emitter().cloned();
         let lifecycle = self.order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
             outcome: BoltV3OrderLifecycleOutcome::Flat,
@@ -1373,20 +1370,15 @@ impl BinaryOracleEdgeTaker {
             residual_quantity: Some(position.quantity),
             ts_event_ns: Some(eligibility.observed_at_ns()),
         });
-        if let Some(evidence) = booking_error.as_mut() {
-            evidence.terminal_lifecycle = Some(lifecycle);
-            self.context
-                .decision_evidence()
-                .record_settlement_booking_error(evidence)
-                .context("failed to persist atomic terminal settlement evidence")?;
-        } else {
-            self.persist_order_lifecycle_record(&lifecycle)?;
-        }
-        health_emitter(BoltV3SettlementHealthTransition {
+        let terminal_evidence = BoltV3TerminalSettlementEvidence {
             settlement_key: settlement_key.clone(),
-            position_id: position.position_id.to_string(),
-            reason: eligibility.reason_label().to_string(),
-        });
+            booking_error,
+            lifecycle,
+        };
+        self.context
+            .decision_evidence()
+            .record_terminal_settlement(&terminal_evidence)
+            .context("failed to persist canonical terminal settlement evidence")?;
         self.settlement_booking_error_keys
             .insert(settlement_key.clone());
         self.settlement_close_fetch_attempts.remove(&settlement_key);
@@ -1400,6 +1392,24 @@ impl BinaryOracleEdgeTaker {
         self.exposure = ExposureState::Flat;
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
+        let health_transition = BoltV3SettlementHealthTransition {
+            settlement_key: settlement_key.clone(),
+            position_id: position.position_id.to_string(),
+            reason: eligibility.reason_label().to_string(),
+        };
+        let health_result = health_emitter
+            .context("terminal settlement health emitter is not configured")
+            .and_then(|emitter| {
+                emitter(health_transition).context("terminal settlement health emission failed")
+            });
+        if let Err(error) = health_result {
+            log::error!(
+                "binary_oracle_edge_taker terminal health reporting failed after durable release: strategy_id={} settlement_key={} position_id={} error={error:#}",
+                self.config.strategy_id,
+                settlement_key,
+                position.position_id,
+            );
+        }
         Ok(())
     }
 

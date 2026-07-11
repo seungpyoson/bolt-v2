@@ -827,19 +827,20 @@ fn build_settlement_health_transition_emitter(
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
     input_health_accumulator: Arc<Mutex<BoltV3LiveInputHealthAccumulator>>,
     emit_operator_health_surface: Arc<
-        dyn Fn(&'static str, Option<BoltV3InputHealth>) + Send + Sync + 'static,
+        dyn Fn(&'static str, Option<BoltV3InputHealth>) -> Result<()> + Send + Sync + 'static,
     >,
 ) -> BoltV3SettlementHealthTransitionEmitter {
     Arc::new(move |transition: BoltV3SettlementHealthTransition| {
         settlement_health
             .lock()
-            .expect("settlement health lock poisoned")
+            .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))?
             .apply_transition(transition);
         let input_health = input_health_accumulator
             .lock()
             .ok()
             .map(|accumulator| accumulator.snapshot());
-        emit_operator_health_surface(stringify!(settlement_booking_terminal), input_health);
+        emit_operator_health_surface(stringify!(settlement_booking_terminal), input_health)?;
+        Ok(())
     })
 }
 
@@ -3122,7 +3123,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         &input_health_sources_by_client,
     )));
     let emit_operator_health_surface: Arc<
-        dyn Fn(&'static str, Option<BoltV3InputHealth>) + Send + Sync + 'static,
+        dyn Fn(&'static str, Option<BoltV3InputHealth>) -> Result<()> + Send + Sync + 'static,
     > = {
         let order_reject_observer_feed = order_reject_observer_feed.clone();
         let submit_admission = submit_admission.clone();
@@ -3130,18 +3131,20 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let settlement_health = settlement_health.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
+            let settlement_health = settlement_health
+                .lock()
+                .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))?
+                .clone();
             let surface = live_operator_health_surface(
                 order_reject_observer_feed.as_ref(),
                 &submit_admission,
                 venue_truth_configured,
                 input_health_configured_source_count,
                 input_health,
-                settlement_health
-                    .lock()
-                    .expect("settlement health lock poisoned")
-                    .clone(),
+                settlement_health,
             );
             logger.emit_surface(reason, surface);
+            Ok(())
         })
     };
     let operator_health_transition_emitter: BoltV3OperatorHealthTransitionEmitter = {
@@ -3152,7 +3155,11 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 .lock()
                 .ok()
                 .map(|accumulator| accumulator.snapshot());
-            emit_operator_health_surface(reason, input_health);
+            if let Err(error) = emit_operator_health_surface(reason, input_health) {
+                log::error!(
+                    "operator health surface transition failed: reason={reason} error={error:#}"
+                );
+            }
         })
     };
     let input_health_transition_emitter: BoltV3InputHealthTransitionEmitter = {
@@ -3163,7 +3170,11 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 Ok(mut accumulator) => accumulator.apply_transition(transition),
                 Err(_) => BoltV3InputHealth::unobserved(input_health_configured_source_count),
             };
-            emit_operator_health_surface(reason, Some(input_health));
+            if let Err(error) = emit_operator_health_surface(reason, Some(input_health)) {
+                log::error!(
+                    "input health surface transition failed: reason={reason} error={error:#}"
+                );
+            }
         })
     };
     let settlement_health_transition_emitter = build_settlement_health_transition_emitter(

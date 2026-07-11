@@ -2142,7 +2142,6 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
         "terminal-restart-market",
         "Up",
         1_000,
-        1_000,
         2_000,
     );
     let position_id = PositionId::from("P-TERMINAL-RESTART");

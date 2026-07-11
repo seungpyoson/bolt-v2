@@ -179,6 +179,9 @@ mod tests {
         book: OrderBook,
         fills: Vec<ExecutionFill>,
         position_fills: Vec<OrderFilled>,
+        initial_cash: Money,
+        terminal_cash: Money,
+        realized_pnl: Money,
         config_bytes: Vec<u8>,
         config_hash: String,
     }
@@ -196,9 +199,9 @@ mod tests {
                 position_fills: &self.position_fills,
                 settlement_price: Price::from("1.000"),
                 exit_price: Price::from("1.000"),
-                initial_cash: Money::from("1000000.00 USDC"),
-                terminal_cash: Money::from("1000001.57 USDC"),
-                realized_pnl: Money::from("1.57 USDC"),
+                initial_cash: self.initial_cash,
+                terminal_cash: self.terminal_cash,
+                realized_pnl: self.realized_pnl,
                 position_commission: Money::from("0.00 USDC"),
                 expected_fill_commission: Money::from("0.00 USDC"),
                 canonical_resolved_config_bytes: &self.config_bytes,
@@ -238,6 +241,15 @@ mod tests {
             "exit",
             "1.000",
         );
+        let mut position = Position::new(&instrument, entry_fill);
+        position.apply(&exit_fill);
+        let realized_pnl = position
+            .realized_pnl
+            .expect("fixture position should realize PnL");
+        let initial_cash = Money::from("1000000.00 USDC");
+        let terminal_cash = initial_cash
+            .checked_add(realized_pnl)
+            .expect("fixture cash addition should be exact");
         Fixture {
             instrument,
             book,
@@ -246,6 +258,9 @@ mod tests {
                 quantity: Quantity::from("2.71"),
             }],
             position_fills: vec![entry_fill, exit_fill],
+            initial_cash,
+            terminal_cash,
+            realized_pnl,
             config_bytes,
             config_hash,
         }
@@ -318,7 +333,10 @@ mod tests {
     fn issue_789_first_real_free_data_taker_pl_rejects_dropped_or_duplicated_cash_leg() {
         let fixture = fixture();
         let mut trace = fixture.trace();
-        trace.terminal_cash = Money::from("1000003.14 USDC");
+        trace.terminal_cash = trace
+            .terminal_cash
+            .checked_add(trace.realized_pnl)
+            .expect("duplicated fixture cash leg should add exactly");
         assert!(validate_execution_contract(&trace).is_err());
     }
 
@@ -345,9 +363,16 @@ mod tests {
         let mut fixture = fixture();
         fixture.position_fills[0].commission = Some(Money::from("0.01 USDC"));
         let mut trace = fixture.trace();
-        trace.position_commission = Money::from("0.01 USDC");
-        trace.realized_pnl = Money::from("1.56 USDC");
-        trace.terminal_cash = Money::from("1000001.56 USDC");
+        let commission = Money::from("0.01 USDC");
+        trace.position_commission = commission;
+        trace.realized_pnl = trace
+            .realized_pnl
+            .checked_sub(commission)
+            .expect("fixture commission subtraction should be exact");
+        trace.terminal_cash = trace
+            .initial_cash
+            .checked_add(trace.realized_pnl)
+            .expect("fixture terminal cash should be exact");
         assert!(validate_execution_contract(&trace).is_err());
     }
 

@@ -695,6 +695,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             settlement_runtime_sink: None,
             settlement_recovery: None,
+            settlement_health_transition_emitter: None,
         };
     let adapters =
         map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
@@ -752,6 +753,7 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             settlement_runtime_sink: None,
             settlement_recovery: None,
+            settlement_health_transition_emitter: None,
         };
 
     let error =

@@ -198,9 +198,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("list", "hash"):
-        subparser = subparsers.add_parser(command)
-        subparser.add_argument("set_name")
+    hash_parser = subparsers.add_parser("hash")
+    hash_parser.add_argument("set_name")
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("set_names", nargs="+")
@@ -220,10 +219,7 @@ def main() -> int:
     if not config_path.is_absolute():
         config_path = repo / config_path
     config = load_config(config_path)
-    if args.command == "list":
-        pathspecs = resolve_set(config, args.set_name)
-        print_lines(pathspecs)
-    elif args.command == "hash":
+    if args.command == "hash":
         pathspecs = resolve_set(config, args.set_name)
         print(digest_input_set(repo, pathspecs))
     elif args.command == "validate":

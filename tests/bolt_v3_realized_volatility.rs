@@ -58,6 +58,18 @@ fn observation(source_id: &str, price: f64, ts_ms: u64) -> RealizedVolObservatio
     }
 }
 
+fn observation_with_receive(
+    source_id: &str,
+    price: f64,
+    event_ts_ms: u64,
+    recv_ts_ms: u64,
+) -> RealizedVolObservation {
+    RealizedVolObservation {
+        recv_ts_ms,
+        ..observation(source_id, price, event_ts_ms)
+    }
+}
+
 fn observe_path(engine: &mut RealizedVolEngine, source_id: &str, prices: &[f64]) {
     for (index, price) in prices.iter().enumerate() {
         let ts_ms = (index as u64 + 1) * 1_000;
@@ -78,6 +90,190 @@ fn assert_close(actual: f64, expected: f64, tolerance: f64) {
     assert!(
         (actual - expected).abs() <= tolerance,
         "expected {expected}, got {actual}"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_cutoff_excludes_accepted_observation_not_used_by_snapshot() {
+    let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
+    for (event_ts_ms, recv_ts_ms, price) in [
+        (1_000, 1_100, 100.0),
+        (2_000, 2_100, 101.0),
+        (3_000, 3_100, 102.0),
+        (4_000, 4_100, 103.0),
+        (5_000, 50_000, 104.0),
+    ] {
+        assert!(engine.observe(observation_with_receive(
+            SOURCE_A,
+            price,
+            event_ts_ms,
+            recv_ts_ms,
+        )));
+    }
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_eq!(
+        snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(4_100),
+        "an accepted observation beyond the snapshot cutoff is retained but not causal"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_watermark_tracks_max_used_receive_across_every_grid() {
+    let mut configurations = Vec::new();
+    configurations.push(config(&[SOURCE_A]));
+
+    let mut coarse = config(&[SOURCE_A]);
+    coarse.max_source_age_ms = 1_000;
+    coarse.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms: 2_000,
+            policy: RealizedVolCoarserGridPolicy::CoarseOnly,
+        },
+    };
+    configurations.push(coarse);
+
+    let mut subsampled = config(&[SOURCE_A]);
+    subsampled.max_source_age_ms = 1_000;
+    subsampled.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::Subsampled {
+            subsamples: 2,
+            min_ready_subsamples: 2,
+        },
+    };
+    configurations.push(subsampled);
+
+    for cfg in configurations {
+        let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+        for (event_ts_ms, recv_ts_ms, price) in [
+            (1_000, 10_000, 100.0),
+            (2_000, 2_100, 101.0),
+            (3_000, 3_100, 102.0),
+            (4_000, 4_100, 103.0),
+        ] {
+            assert!(engine.observe(observation_with_receive(
+                SOURCE_A,
+                price,
+                event_ts_ms,
+                recv_ts_ms,
+            )));
+        }
+
+        let snapshot = engine.snapshot_at(4_000);
+        assert!(snapshot.ready);
+        assert_eq!(
+            snapshot
+                .latest_accepted_receive_ms
+                .map(|stamp| stamp.value()),
+            Some(10_000),
+            "base, coarse, and subsampled estimators must retain the identity of every used sample"
+        );
+    }
+}
+
+#[test]
+fn rv_clock_domain_amendment_trimmed_source_remains_a_causal_contributor() {
+    let mut cfg = config(&[SOURCE_A, SOURCE_B, SOURCE_C, SOURCE_D]);
+    cfg.aggregation = RealizedVolAggregation::TrimmedMean {
+        trim_fraction: 0.25,
+    };
+    cfg.max_cross_source_dispersion = 10_000.0;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    for (source_id, receive_offset, prices) in [
+        (SOURCE_A, 20_000, [100.0, 100.0, 100.0, 100.0]),
+        (SOURCE_B, 0, [100.0, 101.0, 102.0, 103.0]),
+        (SOURCE_C, 0, [100.0, 102.0, 104.0, 106.0]),
+        (SOURCE_D, 0, [100.0, 125.0, 75.0, 150.0]),
+    ] {
+        for (index, price) in prices.into_iter().enumerate() {
+            let event_ts_ms = (index as u64 + 1) * 1_000;
+            assert!(engine.observe(observation_with_receive(
+                source_id,
+                price,
+                event_ts_ms,
+                event_ts_ms + receive_offset,
+            )));
+        }
+    }
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_eq!(
+        snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(24_000),
+        "a numerically trimmed ready source still affects quorum, dispersion, and selection"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_quantile_unselected_source_remains_a_causal_contributor() {
+    let mut cfg = config(&[SOURCE_A, SOURCE_B, SOURCE_C]);
+    cfg.aggregation = RealizedVolAggregation::UpperQuantile { quantile: 1.0 };
+    cfg.max_cross_source_dispersion = 10_000.0;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    for (source_id, receive_offset, prices) in [
+        (SOURCE_A, 20_000, [100.0, 100.1, 100.2, 100.3]),
+        (SOURCE_B, 0, [100.0, 101.0, 102.0, 103.0]),
+        (SOURCE_C, 0, [100.0, 125.0, 75.0, 150.0]),
+    ] {
+        for (index, price) in prices.into_iter().enumerate() {
+            let event_ts_ms = (index as u64 + 1) * 1_000;
+            assert!(engine.observe(observation_with_receive(
+                source_id,
+                price,
+                event_ts_ms,
+                event_ts_ms + receive_offset,
+            )));
+        }
+    }
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_eq!(
+        snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(24_000),
+        "a quantile-unselected ready source remains causal through quorum and dispersion"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_rejected_observation_never_enters_causal_set() {
+    let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
+    for (event_ts_ms, recv_ts_ms, price) in [
+        (1_000, 1_100, 100.0),
+        (2_000, 2_100, 101.0),
+        (3_000, 3_100, 102.0),
+        (4_000, 4_100, 103.0),
+    ] {
+        assert!(engine.observe(observation_with_receive(
+            SOURCE_A,
+            price,
+            event_ts_ms,
+            recv_ts_ms,
+        )));
+    }
+    assert!(!engine.observe(observation_with_receive(SOURCE_A, 999.0, 3_500, 50_000,)));
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_eq!(
+        snapshot
+            .latest_accepted_receive_ms
+            .map(|stamp| stamp.value()),
+        Some(4_100),
+        "rejected observations may update diagnostics but never the causal watermark"
     );
 }
 

@@ -10,7 +10,8 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
         BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
+        BoltV3StrategyInputEvidenceSnapshot,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
@@ -118,6 +119,16 @@ pub(super) struct RealizedVolatilityEvidenceFields {
     pub(super) config_fingerprint: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct EntryRealizedVolatilityReceipt {
+    pub(super) gate_result: BoltV3RvGateResult,
+    pub(super) receive_watermark_ms: Option<u64>,
+    pub(super) realized_vol: Option<f64>,
+    pub(super) source_venue: Option<String>,
+    pub(super) source_ts_ms: Option<u64>,
+    pub(super) evidence: RealizedVolatilityEvidenceFields,
+}
+
 pub(super) fn entry_pricing_block_reason_from_taker(
     reason: TakerPricingBlockReason,
 ) -> EntryPricingBlockReason {
@@ -171,6 +182,7 @@ pub(super) fn push_executable_edge_pricing_block(
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct EntryEvaluation {
     pub(super) gate: EntryGateDecision,
+    pub(super) realized_volatility_receipt: EntryRealizedVolatilityReceipt,
     pub(super) pricing_blocked_by: Vec<EntryPricingBlockReason>,
     pub(super) fair_probability_up: Option<Probability>,
     pub(super) uncertainty_band_probability: Option<Probability>,

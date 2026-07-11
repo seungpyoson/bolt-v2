@@ -163,6 +163,7 @@ mod entry_decision;
 use self::entry_decision::{
     BlockedStrategyInputDedupeKey, EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields,
     EntryEvaluationReceiveContext, EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs,
+    EntryRealizedVolatilityReceipt,
     EntrySkipDedupeKey, EntrySubmissionDecision, ForcedFlatEvidenceInputs,
     RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
     entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
@@ -3905,10 +3906,7 @@ impl BinaryOracleEdgeTaker {
         let reference_current_price = self.evidence_reference_current_price();
         let reference_current_price_available =
             self.pricing.last_reference_current_price().is_some();
-        let (realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.current_realized_vol_source_for_gate_at(Some(receive_context.receive_ms()));
-        let realized_vol =
-            self.current_realized_vol_for_gate_at(Some(receive_context.receive_ms()));
+        let realized_volatility_receipt = &evaluation.realized_volatility_receipt;
 
         EntryEvaluationLogFields {
             market_id: self.active.market_id.clone(),
@@ -3920,9 +3918,9 @@ impl BinaryOracleEdgeTaker {
             reference_current_price,
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
-            realized_vol,
-            realized_vol_source_venue,
-            realized_vol_source_ts_ms,
+            realized_vol: realized_volatility_receipt.realized_vol,
+            realized_vol_source_venue: realized_volatility_receipt.source_venue.clone(),
+            realized_vol_source_ts_ms: realized_volatility_receipt.source_ts_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
             theta_decay_factor: self.config.theta_decay_factor,
             theta_scaled_min_edge_bps: evaluation
@@ -6253,12 +6251,48 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn entry_realized_volatility_receipt_at(
+        &self,
+        evaluation_receive_ms: LocalReceiveMs,
+    ) -> EntryRealizedVolatilityReceipt {
+        let gate_result = self.pricing.classify_realized_vol_gate(
+            &self.config.realized_volatility_surface_id,
+            Some(evaluation_receive_ms),
+            self.realized_volatility_max_source_age_ms(),
+        );
+        let snapshot = self
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id);
+        let (realized_vol, source_venue, source_ts_ms) =
+            if gate_result == BoltV3RvGateResult::Accepted {
+                let (source_venue, source_ts_ms) =
+                    self.current_realized_vol_source_for_gate_at(Some(evaluation_receive_ms));
+                (
+                    self.current_realized_vol_for_gate_at(Some(evaluation_receive_ms)),
+                    source_venue,
+                    source_ts_ms,
+                )
+            } else {
+                (None, None, None)
+            };
+        EntryRealizedVolatilityReceipt {
+            gate_result,
+            receive_watermark_ms: snapshot
+                .and_then(|snapshot| snapshot.latest_accepted_receive_ms)
+                .map(LocalReceiveMs::value),
+            realized_vol,
+            source_venue,
+            source_ts_ms,
+            evidence: self.realized_volatility_evidence_fields(),
+        }
+    }
+
     fn blocked_entry_strategy_input_evidence_snapshot_at(
         &self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
-        let realized_volatility = self.realized_volatility_evidence_fields();
+        let realized_volatility = &decision.evaluation.realized_volatility_receipt.evidence;
         let market_selection_outcome =
             strategy_input_market_selection_outcome(self.active.market_selection_outcome);
         let reference_quote_ts_event = self.active.last_reference_ts_ms.ok_or_else(|| {
@@ -6338,28 +6372,34 @@ impl BinaryOracleEdgeTaker {
             reference_current_price_failed_over: self
                 .evidence_reference_current_price_failed_over(),
             realized_volatility: String::new(),
-            realized_volatility_surface_id: realized_volatility.surface_id,
+            realized_volatility_surface_id: realized_volatility.surface_id.clone(),
             realized_volatility_as_of_ms: realized_volatility.as_of_ms,
-            realized_volatility_annualized_decimal: realized_volatility.annualized_decimal,
+            realized_volatility_annualized_decimal: realized_volatility.annualized_decimal.clone(),
             realized_volatility_measured_annualized_decimal: realized_volatility
-                .measured_annualized_decimal,
+                .measured_annualized_decimal
+                .clone(),
             realized_volatility_noise_robust_annualized_decimal: realized_volatility
-                .noise_robust_annualized_decimal,
+                .noise_robust_annualized_decimal
+                .clone(),
             realized_volatility_continuous_annualized_decimal: realized_volatility
-                .continuous_annualized_decimal,
+                .continuous_annualized_decimal
+                .clone(),
             realized_volatility_jump_annualized_decimal: realized_volatility
-                .jump_annualized_decimal,
+                .jump_annualized_decimal
+                .clone(),
             realized_volatility_forecast_annualized_decimal: realized_volatility
-                .forecast_annualized_decimal,
-            realized_volatility_pricing_component: realized_volatility.pricing_component,
-            realized_volatility_seconds_per_annum: realized_volatility.seconds_per_annum,
-            realized_volatility_aggregation: realized_volatility.aggregation,
-            realized_volatility_sources_used: realized_volatility.sources_used,
-            realized_volatility_source_diagnostics: realized_volatility.source_diagnostics,
+                .forecast_annualized_decimal
+                .clone(),
+            realized_volatility_pricing_component: realized_volatility.pricing_component.clone(),
+            realized_volatility_seconds_per_annum: realized_volatility.seconds_per_annum.clone(),
+            realized_volatility_aggregation: realized_volatility.aggregation.clone(),
+            realized_volatility_sources_used: realized_volatility.sources_used.clone(),
+            realized_volatility_source_diagnostics: realized_volatility.source_diagnostics.clone(),
             realized_volatility_unknown_source_rejections: realized_volatility
-                .unknown_source_rejections,
-            realized_volatility_blockers: realized_volatility.blockers,
-            realized_volatility_config_fingerprint: realized_volatility.config_fingerprint,
+                .unknown_source_rejections
+                .clone(),
+            realized_volatility_blockers: realized_volatility.blockers.clone(),
+            realized_volatility_config_fingerprint: realized_volatility.config_fingerprint.clone(),
             seconds_to_market_end,
             pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
             theta_decay_factor: evidence_number(self.config.theta_decay_factor),
@@ -6473,8 +6513,10 @@ impl BinaryOracleEdgeTaker {
             .spot_price()
             .filter(|value| is_positive_finite(*value))
             .ok_or_else(|| anyhow::anyhow!("entry strategy input evidence requires spot price"))?;
-        let realized_volatility = self
-            .current_realized_vol_for_gate_at(Some(receive_context.receive_ms()))
+        let realized_volatility = decision
+            .evaluation
+            .realized_volatility_receipt
+            .realized_vol
             .ok_or_else(|| {
                 anyhow::anyhow!("entry strategy input evidence requires realized volatility")
             })?;
@@ -6534,7 +6576,7 @@ impl BinaryOracleEdgeTaker {
         })?;
         let market_selection_outcome =
             strategy_input_market_selection_outcome(self.active.market_selection_outcome);
-        let realized_volatility_fields = self.realized_volatility_evidence_fields();
+        let realized_volatility_fields = &decision.evaluation.realized_volatility_receipt.evidence;
         let instrument_id = decision.instrument_id.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission instrument id")
         })?;
@@ -6593,28 +6635,44 @@ impl BinaryOracleEdgeTaker {
             reference_current_price_failed_over: self
                 .evidence_reference_current_price_failed_over(),
             realized_volatility: evidence_number(realized_volatility),
-            realized_volatility_surface_id: realized_volatility_fields.surface_id,
+            realized_volatility_surface_id: realized_volatility_fields.surface_id.clone(),
             realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,
-            realized_volatility_annualized_decimal: realized_volatility_fields.annualized_decimal,
+            realized_volatility_annualized_decimal: realized_volatility_fields
+                .annualized_decimal
+                .clone(),
             realized_volatility_measured_annualized_decimal: realized_volatility_fields
-                .measured_annualized_decimal,
+                .measured_annualized_decimal
+                .clone(),
             realized_volatility_noise_robust_annualized_decimal: realized_volatility_fields
-                .noise_robust_annualized_decimal,
+                .noise_robust_annualized_decimal
+                .clone(),
             realized_volatility_continuous_annualized_decimal: realized_volatility_fields
-                .continuous_annualized_decimal,
+                .continuous_annualized_decimal
+                .clone(),
             realized_volatility_jump_annualized_decimal: realized_volatility_fields
-                .jump_annualized_decimal,
+                .jump_annualized_decimal
+                .clone(),
             realized_volatility_forecast_annualized_decimal: realized_volatility_fields
-                .forecast_annualized_decimal,
-            realized_volatility_pricing_component: realized_volatility_fields.pricing_component,
-            realized_volatility_seconds_per_annum: realized_volatility_fields.seconds_per_annum,
-            realized_volatility_aggregation: realized_volatility_fields.aggregation,
-            realized_volatility_sources_used: realized_volatility_fields.sources_used,
-            realized_volatility_source_diagnostics: realized_volatility_fields.source_diagnostics,
+                .forecast_annualized_decimal
+                .clone(),
+            realized_volatility_pricing_component: realized_volatility_fields
+                .pricing_component
+                .clone(),
+            realized_volatility_seconds_per_annum: realized_volatility_fields
+                .seconds_per_annum
+                .clone(),
+            realized_volatility_aggregation: realized_volatility_fields.aggregation.clone(),
+            realized_volatility_sources_used: realized_volatility_fields.sources_used.clone(),
+            realized_volatility_source_diagnostics: realized_volatility_fields
+                .source_diagnostics
+                .clone(),
             realized_volatility_unknown_source_rejections: realized_volatility_fields
-                .unknown_source_rejections,
-            realized_volatility_blockers: realized_volatility_fields.blockers,
-            realized_volatility_config_fingerprint: realized_volatility_fields.config_fingerprint,
+                .unknown_source_rejections
+                .clone(),
+            realized_volatility_blockers: realized_volatility_fields.blockers.clone(),
+            realized_volatility_config_fingerprint: realized_volatility_fields
+                .config_fingerprint
+                .clone(),
             seconds_to_market_end,
             pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
             theta_decay_factor: evidence_number(self.config.theta_decay_factor),
@@ -7103,12 +7161,12 @@ impl BinaryOracleEdgeTaker {
                 .evaluation
                 .pricing_blocked_by
                 .contains(&EntryPricingBlockReason::RealizedVolNotReady)
-            && self
-                .pricing
-                .latest_realized_vol_snapshot_for_surface(
-                    &self.config.realized_volatility_surface_id,
-                )
-                .is_some();
+            && !decision
+                .evaluation
+                .realized_volatility_receipt
+                .evidence
+                .surface_id
+                .is_empty();
         if realized_volatility_not_ready {
             self.record_blocked_entry_strategy_input_snapshot_once(now_ms, &decision)?;
         } else {
@@ -7268,8 +7326,11 @@ impl BinaryOracleEdgeTaker {
         receive_context: EntryEvaluationReceiveContext,
     ) -> EntryEvaluation {
         let gate = self.entry_gate_decision_at(now_ms);
+        let realized_volatility_receipt =
+            self.entry_realized_volatility_receipt_at(receive_context.receive_ms());
         let mut evaluation = EntryEvaluation {
             gate,
+            realized_volatility_receipt,
             pricing_blocked_by: Vec::new(),
             fair_probability_up: None,
             uncertainty_band_probability: None,

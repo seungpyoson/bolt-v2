@@ -137,8 +137,14 @@ pub fn validate_execution_contract(
         position_entry_fills == trace.fills,
         "order entry fills do not exactly equal all position entry fills"
     );
+    let closing_side = match trace.order_side {
+        OrderSide::Buy => OrderSide::Sell,
+        OrderSide::Sell => OrderSide::Buy,
+        OrderSide::NoOrderSide => OrderSide::NoOrderSide,
+    };
     ensure!(
-        terminal_fill.order_side == trace.order_side.opposite()
+        closing_side != OrderSide::NoOrderSide
+            && terminal_fill.order_side == closing_side
             && terminal_fill.last_qty == trace.effective_base_quantity,
         "terminal settlement fill does not exactly close the validated entry quantity"
     );

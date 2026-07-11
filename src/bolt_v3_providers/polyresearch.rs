@@ -99,6 +99,14 @@ pub struct PolyResearchReferencePriceDataConfig {
     pub idle_timeout_ms: u64,
 }
 
+pub(crate) fn reconnect_timeout_ms_for_nt_connect_budget(
+    data: &toml::Value,
+) -> Result<u64, toml::de::Error> {
+    data.clone()
+        .try_into::<PolyResearchReferencePriceDataConfig>()
+        .map(|data| data.reconnect_timeout_ms)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolyResearchReconnectMaxAttempts {
     Unlimited,

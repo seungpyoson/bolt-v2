@@ -18,8 +18,7 @@ use nautilus_model::{
 use serde::Serialize;
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_config::ReferencePriceSourceBlock,
+    bolt_v3_config::{LoadedBoltV3Config, ReferencePriceSourceBlock, nautilus_startup_bound_secs},
     bolt_v3_live_node::{
         BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node_for_data_clients,
         build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
@@ -604,15 +603,9 @@ fn reference_current_price_health_run_timeout(
     loaded: &LoadedBoltV3Config,
     plan: &ReferenceCurrentPriceHealthPlan,
 ) -> Result<Duration> {
-    let startup_secs = loaded
-        .root
-        .nautilus
-        .timeout_connection_secs
-        .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
-        .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
-        .ok_or_else(|| {
-            anyhow::anyhow!("reference_current_price health startup timeout overflow")
-        })?;
+    let startup_secs = nautilus_startup_bound_secs(&loaded.root.nautilus).map_err(|error| {
+        anyhow::anyhow!("reference_current_price health startup timeout overflow: {error}")
+    })?;
     Duration::from_secs(startup_secs)
         .checked_add(Duration::from_millis(plan.observation_timeout_ms))
         .ok_or_else(|| anyhow::anyhow!("reference_current_price health run timeout overflow"))
@@ -1517,6 +1510,7 @@ configured_source_param = "configured-value"
             .get_mut("chainlink_primary")
             .expect("fixture should carry chainlink_primary source");
         source.required = true;
+        let reconnect_timeout_ms = chainlink_loopback_reconnect_timeout_ms(loaded);
 
         let data = loaded
             .root
@@ -1536,13 +1530,39 @@ configured_source_param = "configured-value"
         data.insert("heartbeat_secs".to_string(), toml::Value::Integer(1));
         data.insert(
             "reconnect_timeout_ms".to_string(),
-            toml::Value::Integer(100),
+            toml::Value::Integer(reconnect_timeout_ms),
         );
         data.insert(
             "reconnect_max_attempts".to_string(),
             toml::Value::String("unlimited".to_string()),
         );
         data.insert("idle_timeout_ms".to_string(), toml::Value::Integer(2000));
+    }
+
+    fn chainlink_loopback_reconnect_timeout_ms(loaded: &LoadedBoltV3Config) -> i64 {
+        let startup_bound = Duration::from_secs(
+            nautilus_startup_bound_secs(&loaded.root.nautilus)
+                .expect("loopback startup bound should fit"),
+        );
+        let reconnect_timeout = startup_bound
+            .checked_add(Duration::from_millis(1))
+            .expect("loopback reconnect timeout should fit");
+        i64::try_from(reconnect_timeout.as_millis())
+            .expect("loopback reconnect timeout should fit TOML integer")
+    }
+
+    #[test]
+    fn chainlink_loopback_reconnect_budget_derives_from_startup_bound() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        loaded.root.nautilus.timeout_connection_secs = 2;
+        loaded.root.nautilus.timeout_reconciliation_secs = 3;
+        loaded.root.nautilus.timeout_portfolio_secs = 5;
+
+        assert_eq!(chainlink_loopback_reconnect_timeout_ms(&loaded), 10_001);
+
+        loaded.root.nautilus.timeout_portfolio_secs = 7;
+        assert_eq!(chainlink_loopback_reconnect_timeout_ms(&loaded), 12_001);
     }
 
     fn chainlink_health_report_frame(loaded: &LoadedBoltV3Config) -> Vec<u8> {

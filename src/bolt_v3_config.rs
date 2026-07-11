@@ -133,6 +133,29 @@ pub struct NautilusBlock {
     pub timeout_shutdown_secs: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NautilusStartupBoundOverflow;
+
+impl std::fmt::Display for NautilusStartupBoundOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "nautilus startup bound overflow error while summing nautilus.timeout_connection_secs, nautilus.timeout_reconciliation_secs, and nautilus.timeout_portfolio_secs",
+        )
+    }
+}
+
+impl std::error::Error for NautilusStartupBoundOverflow {}
+
+pub fn nautilus_startup_bound_secs(
+    nautilus: &NautilusBlock,
+) -> Result<u64, NautilusStartupBoundOverflow> {
+    nautilus
+        .timeout_connection_secs
+        .checked_add(nautilus.timeout_reconciliation_secs)
+        .and_then(|sum| sum.checked_add(nautilus.timeout_portfolio_secs))
+        .ok_or(NautilusStartupBoundOverflow)
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusDataEngineBlock {

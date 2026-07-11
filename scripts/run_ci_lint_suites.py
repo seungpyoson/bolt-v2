@@ -56,6 +56,7 @@ CI_LINT_SUITES = (
     CiLintSuite("ci-storage-audit", ("python3", "scripts/test_ci_storage_audit.py")),
     CiLintSuite("ci-storage-tripwire", ("python3", "scripts/test_ci_storage_tripwire.py")),
     CiLintSuite("same-sha-main-evidence", ("python3", "scripts/test_find_same_sha_main_evidence.py")),
+    CiLintSuite("ubicloud-runner-minutes", ("python3", "scripts/test_ubicloud_runner_minutes.py")),
     CiLintSuite("verify-ci-path-filters-tests", ("python3", "scripts/test_verify_ci_path_filters.py")),
     CiLintSuite("rust-verification", ("python3", "scripts/test_rust_verification.py")),
     CiLintSuite("sandbox-safe-push", ("python3", "scripts/test_sandbox_safe_push.py")),

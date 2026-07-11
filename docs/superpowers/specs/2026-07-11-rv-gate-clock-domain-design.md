@@ -59,11 +59,13 @@ evaluation event time. Future deltas are 1–347 ms, median 20 ms and p95 28 ms.
   explicit evaluation stamp from its caller. Selection/local triggers explicitly
   convert their strategy-clock evaluation instant at the timestamp-domain boundary
   and therefore do not fall into `MissingEvaluationEventTime`.
-- Production signal `QuoteTick` handling requires a non-optional, adapter-proven
-  local-receive `ts_init`; it never substitutes strategy-clock time. Structurally
-  missing or event-clock-derived signal receive context remains fail-closed. A
-  genuinely local trigger uses a distinct typed constructor that captures strategy
-  time once at handler entry.
+- Production signal `QuoteTick` handling requires a non-optional local adapter-
+  initialization `ts_init` governed by the pinned adapter contract; it never
+  substitutes strategy-clock time. Bolt cannot infer provenance from a numeric
+  timestamp or from `ts_event != ts_init`, so adapter provenance is enforced by the
+  reviewed pin, boundary registry, source fence, and differentials. Structurally
+  missing signal receive context remains fail-closed. A genuinely local trigger uses
+  a distinct typed constructor that captures strategy time once at handler entry.
 - `MissingEvaluationEventTime` remains fail-closed only for a structurally absent
   receive stamp. No production trigger is allowed to construct that shape.
 
@@ -110,7 +112,7 @@ state.
 This closes the ownership boundary in function signatures instead of relying on
 call-site convention. No tolerance window or fallback comparison is introduced.
 
-### Binance SBE Receive-Timestamp Prerequisite
+### Binance Spot SBE Timestamp-Ownership Prerequisite
 
 The live BTC signal path uses Binance Spot SBE. In pinned Nautilus Trader
 `9e71b2b`, `parse_bbo_event` assigns the Binance event timestamp to both
@@ -118,20 +120,34 @@ The live BTC signal path uses Binance Spot SBE. In pinned Nautilus Trader
 receive time. Consequently, the current BTC signal path can still compare an RV
 local-receive watermark with a Binance event clock and preserve the #1354 flap.
 
-This is a blocking prerequisite for the #1354 ownership change, not a Bolt-side
-venue exception:
+No current Nautilus Trader release, upstream `develop`, or fork `develop` revision
+contains this correction. Bolt therefore uses an exact reviewed commit from
+`seungpyoson/nautilus_trader`; it does not wait for public-upstream acceptance or a
+release. This is a blocking prerequisite for the #1354 ownership change, not a
+Bolt-side venue exception:
 
-- The pinned NT Binance SBE message-handling boundary must capture local receive
-  time once and pass it into `parse_bbo_event` as `ts_init`, following the adapter
-  ownership pattern used by other live market-data adapters.
+- `BinanceSpotDataClient::handle_ws_message` must call its existing
+  `AtomicTime::get_time_ns()` once per decoded SBE message and pass that local
+  adapter-initialization timestamp to every data parser reached from the boundary:
+  trades, BBO, depth snapshot, and depth diff. This is the adapter's established
+  post-decode initialization convention; the change does not claim physical socket-
+  frame receipt time or add raw-stream plumbing.
 - `ts_event` remains the Binance event timestamp. `ts_init` becomes the actual local
-  receive timestamp; the two values must be independently testable.
+  adapter-initialization timestamp; the two values must be independently testable.
 - Bolt consumes the corrected typed `ts_init` without re-stamping, fallback, venue
   branching, or tolerance logic.
-- A differential with `ts_event != ts_init` must prove the adapter preserves both
-  domains and that the Bolt signal-trigger path classifies RV using `ts_init`.
-- #1354 implementation beyond this prerequisite cannot begin while the pinned NT
-  dependency still fabricates Binance SBE `ts_init` from `ts_event`.
+- Fork tests with deliberately unequal stamps must cover the production handler and
+  all four parser families. Bolt differentials must separately prove that RV ingest
+  derives `as_of_ms` from `ts_event` and `latest_accepted_receive_ms` from `ts_init`,
+  and that signal-trigger classification/evidence follows `ts_init`.
+- The fork change is reviewed and verified at its own immutable SHA. A dedicated
+  Bolt pin-slice PR then updates every governed NT revision reference, preserves all
+  fork-only commits, registers the Binance SBE timestamp boundary, and proves the
+  consumer behavior at the Bolt SHA. The #1354 implementation is rebased onto that
+  landed pin.
+- The implementation already present at `2b83f512a` is provisional. Further #1354
+  behavior work is frozen until the fork and pin prerequisites land; completed work
+  is revalidated afterward rather than reverted or rewritten to manufacture RED.
 
 ## Behavioral Blast Radius
 

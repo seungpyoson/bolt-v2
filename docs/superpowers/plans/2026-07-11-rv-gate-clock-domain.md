@@ -15,8 +15,9 @@
 - Preserve all action, lifecycle, settlement, and recovery evidence.
 - Keep dedupe-key and `position_id=None` findings report-only.
 - Treat the root-fix tests and recovery-boundary tests delivered at `2b83f512a` as landed scope: verify them GREEN at the final head and cite their existing RED transcripts; do not revert production code to manufacture new RED output.
-- Capture RED only for the review-amendment tests not present at `2b83f512a`. Commit those tests without amendment production changes, publish the draft branch, and use the automatically triggered draft-PR Rust checks as the RED vehicle. The implementer detaches after publishing; the reviewer/orchestrator confirms the RED result before implementation resumes.
-- Use cheap local gates plus automatic exact-head remote Rust verification. Do not run the full local Rust suite, local clippy, Rust Probe, or manually dispatched CI.
+- Capture RED only for review-amendment tests not present at `2b83f512a`. Automatic draft checks are not a RED vehicle because current iteration policy does not run nextest. Bolt RED/GREEN evidence uses reviewer-operated `just verify-remote` at the exact pushed SHA; fork RED/GREEN evidence uses the fork PR's own CI at its exact SHA. Retain both run URLs and immutable SHAs in the PR report.
+- Use cheap local gates plus reviewer-operated exact-head remote Rust verification. Do not run the full local Rust suite, local clippy, Rust Probe, or ad hoc workflow dispatches.
+- Treat the implementation at `2b83f512a` as provisional landed branch history, not completed prerequisite proof. Freeze further #1354 behavior changes until the NT fork correction and dedicated Bolt pin slice land, then rebase and revalidate every affected path without rewriting history.
 
 ---
 
@@ -47,37 +48,67 @@ behavior in #1354.
 
 ---
 
-### Task 0A: Correct the Binance SBE receive timestamp before #1354 implementation
+### Task 0A: Land the Binance Spot SBE timestamp contract in the NT fork
 
-This is a blocking #1354 prerequisite and must be completed before Task 1. BTC
-production uses Binance Spot SBE, and pinned NT `9e71b2b` currently assigns the
-Binance event time to both `ts_event` and `ts_init`. Do not treat that `ts_init` as
-receive-domain evidence.
+This is a blocking #1354 prerequisite. BTC production uses Binance Spot SBE, and
+pinned NT `9e71b2b` currently assigns the Binance event time to both `ts_event` and
+`ts_init`. Current public-upstream and fork `develop` do not contain a correction.
+Implement and review the change in `seungpyoson/nautilus_trader`; do not wait for a
+public-upstream release.
 
-**Upstream files to inspect and change in the pinned NT dependency source:**
+**Fork files to inspect and change:**
 - `crates/adapters/binance/src/spot/websocket/streams/parse.rs`
-- The Binance Spot SBE WebSocket message handler that invokes `parse_bbo_event`
-- Its adapter tests covering BBO parsing and handler timestamp capture
-
-**Bolt files to verify:**
-- `Cargo.toml`
-- `Cargo.lock`
-- `src/strategies/binary_oracle_edge_taker/mod.rs`
-- `config/root.toml`
-- `config/strategies/binary_oracle_btc.toml`
+- `crates/adapters/binance/src/spot/data.rs`
+- Adapter tests covering the production handler plus trades, BBO, depth snapshot,
+  and depth diff parsing
 
 **Interfaces:**
-- Producer: Binance SBE handler captures one local receive timestamp at message handling.
-- Parser: `parse_bbo_event` receives both provider event time and local receive time and assigns them to `QuoteTick.ts_event` and `QuoteTick.ts_init` respectively.
-- Consumer: Bolt's signal observation and exit trigger use corrected `QuoteTick.ts_init` as `LocalReceiveMs` without restamping.
+- Producer: `BinanceSpotDataClient::handle_ws_message` calls its existing
+  `AtomicTime::get_time_ns()` once per decoded SBE message.
+- Parsers: trades, BBO, depth snapshot, and depth diff receive the explicit local
+  adapter-initialization timestamp and assign it to every emitted datum's `ts_init`;
+  Binance timestamps remain `ts_event`.
+- Review boundary: one fork PR based on the currently pinned fork lineage, with no
+  unrelated fork commits included.
 
-- [ ] Add an NT adapter differential with deliberately unequal event and receive timestamps; on pinned `9e71b2b`, record the RED showing `ts_init == ts_event` instead of the supplied receive time.
-- [ ] Change the Binance SBE handler/parser ownership boundary so local receive time is captured once by the handler and passed explicitly into BBO parsing.
-- [ ] Verify the NT differential GREEN: `ts_event` preserves Binance event time and `ts_init` preserves the supplied local receive time.
-- [ ] Update Bolt's pinned NT revision through the repository's existing dependency update path; do not patch the Cargo checkout or introduce a Bolt-side venue branch.
-- [ ] Add or strengthen a Bolt differential where `ts_event != ts_init` and an RV watermark is receive-fresh only under `ts_init`; prove signal-trigger classification and evidence follow `ts_init`.
-- [ ] Verify BTC configuration reaches the corrected Binance SBE path and record the exact NT revision as evidence.
-- [ ] Keep #1354 blocked until automatic exact-head remote Rust verification covers both the adapter-domain differential and the Bolt consumer differential.
+- [ ] Create a fork test-only commit with deliberately unequal event and initialization timestamps for the production handler and all four parser families; retain the exact fork RED CI URL and SHA.
+- [ ] Capture `clock.get_time_ns()` once per decoded SBE message in `handle_ws_message` and pass it explicitly to every parser without adding raw-frame plumbing.
+- [ ] Verify fork exact-head CI GREEN: each emitted datum preserves provider event time as `ts_event` and the supplied local adapter-initialization time as `ts_init`.
+- [ ] Obtain independent review of the fork PR and record its base, exact reviewed head, CI run, and full commit range. Do not rely on public-upstream acceptance.
+
+---
+
+### Task 0B: Land the governed Bolt NT pin slice
+
+Create a dedicated Bolt PR explicitly named as a prerequisite slice of #1354. It
+must contain only the reviewed NT revision migration, governed boundary evidence,
+and Bolt consumer differentials. It does not claim the broader #1354 implementation
+complete and uses no closing keywords.
+
+**Bolt files and governed surfaces:**
+- `Cargo.toml`
+- `Cargo.lock`
+- `crates/backtesting-vertical-slice/Cargo.toml`
+- `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md`
+- `scripts/verify_bolt_v3_boundary_evidence.py`
+- `src/bolt_v3_providers/boundary_registry.rs`
+- `src/bolt_v3_realized_volatility_runtime.rs`
+- `src/strategies/binary_oracle_edge_taker/mod.rs`
+- Relevant source-fence and strategy evidence tests
+
+**Interfaces:**
+- Consumes: exact independently reviewed NT fork SHA from Task 0A.
+- Produces: one governed NT revision across every manifest/ledger/verifier, registered
+  Binance SBE timestamp provenance, and tested Bolt ingest/trigger behavior.
+
+- [ ] Audit every current NT revision reference and enumerate the fork-only commits between the pinned base and proposed head; reject unrelated or missing fork changes.
+- [ ] Update every governed NT pin and recorded revision atomically; prove no mixed revisions remain and preserve the existing Binance schema 3:5 fork correction.
+- [ ] Register Binance Spot SBE timestamp provenance in the authoritative boundary registry and extend source-fence/static evidence so future pin regressions fail governance checks.
+- [ ] Add an RV-ingest differential that routes a quote with `ts_event != ts_init`, then asserts surface `as_of_ms` follows `ts_event` and `latest_accepted_receive_ms` follows `ts_init`.
+- [ ] Add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
+- [ ] Publish a clean draft pin-slice PR and detach. The reviewer operates `just verify-remote` for exact-head Bolt RED/GREEN evidence; automatic draft checks alone are insufficient.
+- [ ] Obtain the required exact-head review and land the pin slice before resuming this branch. Do not merge or queue from the implementation agent.
+- [ ] Rebase `fix/1354-rv-gate-clock-domain` onto the landed pin slice and revalidate every previously landed classifier, entry, exit, maker, evidence, and recovery-boundary differential.
 
 ---
 
@@ -186,6 +217,6 @@ receive-domain evidence.
 - [ ] Re-run the archived replay from `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz` using the final semantics; report the replay command, exact code head, original/retained records, and bytes.
 - [ ] Report open-position bytes/hour, bytes per genuine phase transition, projected bytes at the planned restart, and whether #1275/#763 becomes pre-soak.
 - [ ] Run cheap local formatting, deny, workflow-lint, and source-fence-static gates.
-- [ ] Publish the exact head and report the automatically triggered remote Rust test/clippy results when supplied by the reviewer/orchestrator; do not wait on or manually dispatch CI.
-- [ ] Commit and publish with `just sandbox-safe-push`, open a draft PR without closing keywords, and mark ready only when local findings are resolved.
+- [ ] Publish the exact head and report reviewer-operated `just verify-remote` Rust test/clippy results when supplied; do not wait on or dispatch ad hoc CI.
+- [ ] Commit and publish with `just sandbox-safe-push`, and open or update the draft PR without closing keywords. Do not mark it ready.
 - [ ] Detach after publishing the draft head. The user/reviewer owns ready-state exact-head CI, external review, required approval, and merge queue.

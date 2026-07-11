@@ -3,8 +3,26 @@
   "checkpoint_id": "6afb4bcf55d1",
   "strategy": "manual-commit",
   "branch": "fix/1354-rv-gate-clock-domain",
-  "checkpoints_count": 5,
-  "files_touched": null,
+  "checkpoints_count": 6,
+  "files_touched": [
+    "src/bolt_v3_fair_value_pricing.rs",
+    "src/bolt_v3_maker_runtime_quote.rs",
+    "src/bolt_v3_realized_volatility.rs",
+    "src/bolt_v3_realized_volatility_runtime.rs",
+    "src/bolt_v3_taker_pricing.rs",
+    "src/strategies/binary_oracle_edge_taker/exit_decision.rs",
+    "src/strategies/binary_oracle_edge_taker/mod.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/exposure.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/pricing.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/selection.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs",
+    "tests/bolt_v3_binary_oracle_maker_runtime.rs",
+    "tests/bolt_v3_fair_value_pricing.rs",
+    "tests/bolt_v3_maker_runtime_quote.rs",
+    "tests/bolt_v3_realized_volatility_runtime.rs",
+    "tests/bolt_v3_taker_pricing.rs"
+  ],
   "sessions": [
     {
       "metadata": "/6a/fb4bcf55d1/0/metadata.json",
@@ -40,13 +58,20 @@
       "compact_transcript": "/6a/fb4bcf55d1/4/transcript.jsonl",
       "content_hash": "/6a/fb4bcf55d1/4/content_hash.txt",
       "prompt": "/6a/fb4bcf55d1/4/prompt.txt"
+    },
+    {
+      "metadata": "/6a/fb4bcf55d1/5/metadata.json",
+      "transcript": "/6a/fb4bcf55d1/5/full.jsonl",
+      "compact_transcript": "/6a/fb4bcf55d1/5/transcript.jsonl",
+      "content_hash": "/6a/fb4bcf55d1/5/content_hash.txt",
+      "prompt": ""
     }
   ],
   "token_usage": {
-    "input_tokens": 672412,
+    "input_tokens": 1087756,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 29555456,
-    "output_tokens": 79516,
-    "api_call_count": 259
+    "cache_read_tokens": 59501056,
+    "output_tokens": 131391,
+    "api_call_count": 457
   }
 }

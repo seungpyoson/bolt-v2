@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6afb4bcf55d1",
+  "session_id": "019f5032-250b-7130-a921-f43302c31fa2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-11T09:18:29.221016Z",
+  "branch": "fix/1354-rv-gate-clock-domain",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_fair_value_pricing.rs",
+    "src/bolt_v3_maker_runtime_quote.rs",
+    "src/bolt_v3_realized_volatility.rs",
+    "src/bolt_v3_realized_volatility_runtime.rs",
+    "src/bolt_v3_taker_pricing.rs",
+    "src/strategies/binary_oracle_edge_taker/exit_decision.rs",
+    "src/strategies/binary_oracle_edge_taker/mod.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/exposure.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/pricing.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/selection.rs",
+    "src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs",
+    "tests/bolt_v3_binary_oracle_maker_runtime.rs",
+    "tests/bolt_v3_fair_value_pricing.rs",
+    "tests/bolt_v3_maker_runtime_quote.rs",
+    "tests/bolt_v3_realized_volatility_runtime.rs",
+    "tests/bolt_v3_taker_pricing.rs"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "351c19575a06",
+  "checkpoint_transcript_start": 389,
+  "transcript_lines_at_start": 389,
+  "compact_transcript_start": 78,
+  "token_usage": {
+    "input_tokens": 415344,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 29945600,
+    "output_tokens": 51875,
+    "api_call_count": 198
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-11T09:18:29.078967Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 492,
+    "human_modified": 204,
+    "human_removed": 0,
+    "total_committed": 492,
+    "total_lines_changed": 696,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}

@@ -245,7 +245,8 @@ the broader #1354 implementation complete and uses no closing keywords.
 **Files:**
 - Modify: PR body only for arithmetic and evidence; no repository runtime change.
 
-- [ ] Re-run the archived replay from `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz` using the final semantics; report the replay command, exact code head, original/retained records, and bytes.
+- [ ] Run the saved read-only dedupe-and-capacity recipe against `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz` (or its byte-identical local copy); report the recipe digest, audited code head, explicit receive-fresh assumption, and the deterministic 166,086 records / 760,791,685 bytes to 106 records / 199,023 bytes result.
+- [ ] State the replay limit exactly: the archive cannot reproduce final receive-domain `classify_rv_gate` results because it lacks `latest_accepted_receive_ms`, and the historical Binance adapter never produced genuine local receive stamps. Use production-shaped differentials as classifier proof; do not relabel the capacity counterfactual as a final-classifier replay.
 - [ ] Report open-position bytes/hour, bytes per genuine phase transition, projected bytes at the planned restart, and whether #1275 item 13 remains a pre-soak requirement. #763 remains later and depends on #883; do not promote S3 archival into the soak blockers.
 - [ ] Run cheap local formatting, deny, workflow-lint, and source-fence-static gates.
 - [ ] Commit and publish with `just sandbox-safe-push`, and open or update the draft PR without closing keywords. Do not mark it ready.

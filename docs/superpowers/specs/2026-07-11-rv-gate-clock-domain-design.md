@@ -30,9 +30,11 @@ maximum of independently clocked spot-source venues while exit book triggers use
 execution venue's clock. The shared wrapper proves only "venue event" versus "local";
 it does not prove that two different venues share an ordering domain.
 
-The archived session reproduces the defect through the v0.1.12 classifier with zero
-mismatches: 20,398 accepted, 20,263 rejected as future-dated, and 188 missing an
-evaluation event time. Future deltas are 1–347 ms, median 20 ms and p95 28 ms.
+The archived session records the v0.1.12 defect: 20,398 accepted, 20,263 rejected
+as future-dated, and 188 missing an evaluation event time. Future deltas are
+1–347 ms, median 20 ms and p95 28 ms. Those records preserve the old event-domain
+inputs and result; they do not preserve every input required by the final
+receive-domain classifier.
 
 ## Owning Types and Data Flow
 
@@ -179,8 +181,10 @@ interleave `MissingEvaluationEventTime` with accepted book/signal evaluations. T
 is a failed design: approximately 2.2–2.4 MB per open-position hour and 1 MiB in about
 26–28 minutes.
 
-Giving every production trigger receive-domain context leaves four archived
-exit-evaluation transitions: two `exit_hold` entries and two
+For capacity estimation, the deterministic counterfactual assumes that every ready
+production trigger is receive-fresh under the corrected pipeline, normalizes its RV
+gate result to `accepted`, and then replays the exact last-key dedupe guards. That
+leaves four archived exit-evaluation transitions: two `exit_hold` entries and two
 `position_interval_ended` entries. Together with v0.1.12 blocked-snapshot dedupe and
 all preserved action/lifecycle evidence, the captured session counterfactual is
 199,023 bytes. The open-position window contains 47,551 bytes over 939.354 seconds,
@@ -193,10 +197,18 @@ remains later and depends on #883 redaction; it is not a soak blocker.
 
 ## Verification Contract
 
-- Archived inputs reproduce every current classifier result. The reproducible input
-  is the archived session at
-  `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz`;
-  the PR report records the replay command, exact code head, counts, and byte totals.
+- The archived session at
+  `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz`
+  deterministically supports the dedupe-and-capacity counterfactual:
+  166,086 records / 760,791,685 bytes become 106 records / 199,023 bytes under the
+  explicit receive-fresh assumption above. The PR report records the read-only recipe,
+  recipe digest, audited code head, counts, and byte totals.
+- The archive cannot reproduce the final receive-domain `classify_rv_gate` result for
+  every historical record. Durable exit evidence omits
+  `RealizedVolSnapshot.latest_accepted_receive_ms`, and the faulty historical Binance
+  adapter never produced the genuine local receive stamps later required by the fixed
+  classifier. Final classifier behavior is proved by production-shaped differentials,
+  not retroactively inferred from missing historical data.
 - Alternating cross-venue book clocks fail red before the production change and
   collapse to one evidence key afterward.
 - Alternating book, signal, and selection triggers share the receive clock and do not

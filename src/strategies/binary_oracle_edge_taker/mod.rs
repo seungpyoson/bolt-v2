@@ -3910,6 +3910,7 @@ impl BinaryOracleEdgeTaker {
             realized_vol_source_ts_ms: realized_volatility_receipt.source_ts_ms,
             realized_vol_gate_result: realized_volatility_receipt.gate_result,
             realized_vol_receive_watermark_ms: realized_volatility_receipt.receive_watermark_ms,
+            realized_volatility_evidence: realized_volatility_receipt.evidence.clone(),
             pricing_kurtosis: self.config.pricing_kurtosis,
             theta_decay_factor: self.config.theta_decay_factor,
             theta_scaled_min_edge_bps: evaluation
@@ -4035,6 +4036,11 @@ impl BinaryOracleEdgeTaker {
     fn log_entry_evaluation(&mut self, now_ms: u64, submission: &EntrySubmissionDecision) {
         let fields = self.entry_evaluation_log_fields_at(now_ms, submission);
         let blocked = !fields.gate_blocked_by.is_empty() || !fields.pricing_blocked_by.is_empty();
+        log::debug!(
+            "binary_oracle_edge_taker entry realized-volatility receipt: strategy_id={} snapshot={:?}",
+            self.config.strategy_id,
+            fields.realized_volatility_evidence
+        );
 
         if blocked {
             let reason_sets = (
@@ -6357,10 +6363,9 @@ impl BinaryOracleEdgeTaker {
             realized_volatility: String::new(),
             realized_volatility_surface_id: realized_volatility.surface_id.clone(),
             realized_volatility_as_of_ms: realized_volatility.as_of_ms,
-            realized_volatility_gate_result: decision
-                .evaluation
-                .realized_volatility_receipt
-                .gate_result,
+            realized_volatility_gate_result: Some(
+                decision.evaluation.realized_volatility_receipt.gate_result,
+            ),
             realized_volatility_receive_watermark_ms: decision
                 .evaluation
                 .realized_volatility_receipt
@@ -6627,10 +6632,9 @@ impl BinaryOracleEdgeTaker {
             realized_volatility: evidence_number(realized_volatility),
             realized_volatility_surface_id: realized_volatility_fields.surface_id.clone(),
             realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,
-            realized_volatility_gate_result: decision
-                .evaluation
-                .realized_volatility_receipt
-                .gate_result,
+            realized_volatility_gate_result: Some(
+                decision.evaluation.realized_volatility_receipt.gate_result,
+            ),
             realized_volatility_receive_watermark_ms: decision
                 .evaluation
                 .realized_volatility_receipt

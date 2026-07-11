@@ -1150,6 +1150,7 @@ fn rv_clock_domain_amendment_entry_log_uses_admitted_receipt_after_snapshot_repl
         fields.realized_vol_receive_watermark_ms,
         Some(LocalReceiveMs::new(1_200))
     );
+    assert_admitted_a_snapshot_fields(&fields.realized_volatility_evidence);
 }
 
 #[test]
@@ -1185,11 +1186,34 @@ fn rv_clock_domain_amendment_entry_skip_uses_admitted_receipt_after_snapshot_rep
         Some(TEST_SOURCE_ID)
     );
     assert_eq!(skip.realized_vol_source_ts_ms, Some(1_200));
-    assert_eq!(skip.realized_vol_gate_result, BoltV3RvGateResult::Accepted);
+    assert_eq!(
+        skip.realized_vol_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
     assert_eq!(
         skip.realized_vol_receive_watermark_ms,
         Some(LocalReceiveMs::new(1_200))
     );
+    let snapshot = skip
+        .realized_vol_snapshot
+        .as_ref()
+        .expect("durable skip must independently identify admitted snapshot A");
+    assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.as_of_ms, Some(1_200));
+    assert_eq!(snapshot.annualized_decimal, "1.5");
+    assert_eq!(snapshot.measured_annualized_decimal, "1.5");
+    assert_eq!(snapshot.noise_robust_annualized_decimal, "1.5");
+    assert_eq!(snapshot.continuous_annualized_decimal, "1.5");
+    assert_eq!(snapshot.jump_annualized_decimal, "0");
+    assert_eq!(snapshot.forecast_annualized_decimal, "");
+    assert_eq!(snapshot.pricing_component, "measured");
+    assert_eq!(snapshot.seconds_per_annum, "31536000");
+    assert_eq!(snapshot.aggregation, "upper_quantile");
+    assert_eq!(snapshot.sources_used, vec![TEST_SOURCE_ID.to_string()]);
+    assert!(snapshot.source_diagnostics.is_empty());
+    assert!(snapshot.unknown_source_rejections.is_empty());
+    assert!(snapshot.blockers.is_empty());
+    assert!(snapshot.config_fingerprint.is_empty());
 }
 
 #[test]
@@ -1213,8 +1237,27 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
         submitted.is_some(),
         "the admitted order must reach submit routing"
     );
-    let snapshot = evidence
-        .events()
+    assert!(
+        matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
+        "submitted routing must retain pending entry exposure"
+    );
+    let events = evidence.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_))),
+        "actual submit routing must persist an order intent"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission)
+                if admission.outcome
+                    == crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted
+        )),
+        "actual submit routing must persist accepted submit admission"
+    );
+    let snapshot = events
         .into_iter()
         .find_map(|event| match event {
             RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
@@ -1230,7 +1273,7 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
     );
     assert_eq!(
         snapshot.realized_volatility_gate_result,
-        BoltV3RvGateResult::Accepted
+        Some(BoltV3RvGateResult::Accepted)
     );
     assert_eq!(
         snapshot.realized_volatility_receive_watermark_ms,
@@ -1264,6 +1307,25 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
     assert!(snapshot.realized_volatility_config_fingerprint.is_empty());
 }
 
+fn assert_admitted_a_snapshot_fields(fields: &RealizedVolatilityEvidenceFields) {
+    assert_eq!(fields.surface_id, TEST_SURFACE_ID);
+    assert_eq!(fields.as_of_ms, Some(1_200));
+    assert_eq!(fields.annualized_decimal, "1.5");
+    assert_eq!(fields.measured_annualized_decimal, "1.5");
+    assert_eq!(fields.noise_robust_annualized_decimal, "1.5");
+    assert_eq!(fields.continuous_annualized_decimal, "1.5");
+    assert_eq!(fields.jump_annualized_decimal, "0");
+    assert_eq!(fields.forecast_annualized_decimal, "");
+    assert_eq!(fields.pricing_component, "measured");
+    assert_eq!(fields.seconds_per_annum, "31536000");
+    assert_eq!(fields.aggregation, "upper_quantile");
+    assert_eq!(fields.sources_used, vec![TEST_SOURCE_ID.to_string()]);
+    assert!(fields.source_diagnostics.is_empty());
+    assert!(fields.unknown_source_rejections.is_empty());
+    assert!(fields.blockers.is_empty());
+    assert!(fields.config_fingerprint.is_empty());
+}
+
 fn replace_rv_with_distinguishable_snapshot(strategy: &mut BinaryOracleEdgeTaker) {
     let mut replacement = strategy
         .pricing
@@ -1286,6 +1348,41 @@ fn replace_rv_with_distinguishable_snapshot(strategy: &mut BinaryOracleEdgeTaker
             trim_fraction: 0.1,
         };
     replacement.sources_used = vec![TEST_SOURCE_ID_B.to_string()];
+    replacement.source_diagnostics = vec![
+        crate::bolt_v3_realized_volatility::RealizedVolSourceDiagnostic {
+            source_id: TEST_SOURCE_ID_B.to_string(),
+            source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::Trade,
+            sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Trade,
+            enabled: false,
+            counts_toward_quorum: false,
+            status: crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::Blocked,
+            annualized_realized_vol_decimal: Some(8.9),
+            measured_annualized_realized_vol_decimal: Some(8.8),
+            noise_robust_annualized_realized_vol_decimal: Some(8.7),
+            continuous_annualized_realized_vol_decimal: Some(8.6),
+            jump_annualized_realized_vol_decimal: Some(8.5),
+            first_sample_ts_ms: Some(1_250),
+            last_sample_ts_ms: Some(1_300),
+            raw_sample_count: 7,
+            grid_sample_count: 6,
+            coverage_ratio: 0.75,
+            max_inter_sample_gap_ms: Some(50),
+            last_rejected_reason: Some(
+                crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::InvalidPrice,
+            ),
+            last_rejected_event_ts_ms: Some(1_299),
+            last_rejected_recv_ts_ms: Some(1_301),
+            rejection_counters: [(
+                crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::InvalidPrice,
+                3,
+            )]
+            .into_iter()
+            .collect(),
+            block_reason: Some(
+                crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale,
+            ),
+        },
+    ];
     replacement
         .unknown_source_rejections
         .insert(TEST_SOURCE_ID_B.to_string(), 7);

@@ -9,9 +9,9 @@ use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
     bolt_v3_decision_evidence::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
-        BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3EntryRealizedVolatilitySnapshotEvidence, BoltV3EntrySkipEvidence,
+        BoltV3EntrySkipReasonCategory, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
@@ -117,6 +117,29 @@ pub(super) struct RealizedVolatilityEvidenceFields {
     pub(super) unknown_source_rejections: BTreeMap<String, u64>,
     pub(super) blockers: Vec<String>,
     pub(super) config_fingerprint: String,
+}
+
+impl RealizedVolatilityEvidenceFields {
+    fn to_durable_snapshot(&self) -> BoltV3EntryRealizedVolatilitySnapshotEvidence {
+        BoltV3EntryRealizedVolatilitySnapshotEvidence {
+            surface_id: self.surface_id.clone(),
+            as_of_ms: self.as_of_ms,
+            annualized_decimal: self.annualized_decimal.clone(),
+            measured_annualized_decimal: self.measured_annualized_decimal.clone(),
+            noise_robust_annualized_decimal: self.noise_robust_annualized_decimal.clone(),
+            continuous_annualized_decimal: self.continuous_annualized_decimal.clone(),
+            jump_annualized_decimal: self.jump_annualized_decimal.clone(),
+            forecast_annualized_decimal: self.forecast_annualized_decimal.clone(),
+            pricing_component: self.pricing_component.clone(),
+            seconds_per_annum: self.seconds_per_annum.clone(),
+            aggregation: self.aggregation.clone(),
+            sources_used: self.sources_used.clone(),
+            source_diagnostics: self.source_diagnostics.clone(),
+            unknown_source_rejections: self.unknown_source_rejections.clone(),
+            blockers: self.blockers.clone(),
+            config_fingerprint: self.config_fingerprint.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -227,6 +250,7 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) realized_vol_gate_result: BoltV3RvGateResult,
     pub(super) realized_vol_receive_watermark_ms:
         Option<crate::bolt_v3_timestamp_domain::LocalReceiveMs>,
+    pub(super) realized_volatility_evidence: RealizedVolatilityEvidenceFields,
     pub(super) pricing_kurtosis: f64,
     pub(super) theta_decay_factor: f64,
     pub(super) theta_scaled_min_edge_bps: Option<f64>,
@@ -426,8 +450,10 @@ impl BoltV3EntrySkipEvidence {
             realized_vol: option_evidence_number(fields.realized_vol),
             realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
             realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
-            realized_vol_gate_result: fields.realized_vol_gate_result,
+            realized_vol_gate_result: Some(fields.realized_vol_gate_result),
             realized_vol_receive_watermark_ms: fields.realized_vol_receive_watermark_ms,
+            realized_vol_snapshot: (!fields.realized_volatility_evidence.surface_id.is_empty())
+                .then(|| fields.realized_volatility_evidence.to_durable_snapshot()),
             fair_probability_up: option_evidence_number(fields.fair_probability_up),
             fair_probability_down: option_evidence_number(fields.fair_probability_down),
             selected_side: fields.selected_side.map(outcome_side_to_evidence),

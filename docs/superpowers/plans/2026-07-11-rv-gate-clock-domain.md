@@ -20,6 +20,34 @@
 
 ---
 
+### Task 0: Obtain a ruling on the adjacent reference-price clock domain
+
+Complete this read-only review gate before amendment implementation. Do not change
+reference-price behavior in #1354 without an explicit ruling that the pricing API
+cannot be made coherent otherwise.
+
+**Files to inspect:**
+- `src/strategies/binary_oracle_edge_taker/mod.rs`
+- `src/bolt_v3_taker_pricing.rs`
+- `src/bolt_v3_reference_price.rs`
+- Relevant strategy TOML freshness configuration and reference/failover tests
+
+**Interfaces:**
+- Producer: reference and pricing-spot observations with event and receive timestamps.
+- Evaluation owner: entry trigger receive timestamp and the existing `reference_gate_event_ms` path.
+- Consumer: `reference_current_price_stale_at` and its entry block reasons/evidence.
+
+- [ ] Trace every producer of the three values combined by `current_reference_pricing_event_ms`; identify the physical clock and venue for each.
+- [ ] Enumerate every live caller of `reference_current_price_stale_at`, including primary and failover reference sources, and state the admission/evidence consequence of rejection.
+- [ ] Prove or refute that independently clocked venue event timestamps are directly ordered on the live path.
+- [ ] Compare configured freshness limits with measured and plausible venue skew; identify the exact skew required to change behavior without treating a large limit as semantic correctness.
+- [ ] Determine whether every producer already carries a trustworthy local receive timestamp and whether any structurally missing receive context exists.
+- [ ] Construct a synthetic differential or archived replay showing whether event-clock skew alone can change the stale result while receive freshness remains valid. This investigation may specify the test; do not add it to #1354 unless reviewers rule that atomic ownership is required.
+- [ ] Rule on scope: not a defect, confirmed separate issue/PR, or inseparable pricing-layer correction required before #1354 implementation.
+- [ ] If confirmed as separate work, obtain user approval before filing its issue; use no closing keywords and do not bundle it into the four already approved PRs.
+
+---
+
 ### Task 1: Pin the receive-domain classifier contract
 
 **Files:**

@@ -183,11 +183,44 @@ recovery remain required long-term but are not bundled into this change.
   no new archive upload. Classification and handling of that pre-#883 artifact remain
   with #883/#763.
 
+## Adjacent Reference-Price Clock-Domain Review Gate
+
 Reference-current-price freshness remains on its existing event-time contract and is
-not changed by #1354. Its multi-venue ordering deserves a separate ownership census;
-it must not be silently folded into this RV-specific PR. Maker production wiring is
-also outside this change: this PR closes the shared maker pricing interface contract
-and its route-level tests without adding a new runtime caller.
+not changed by #1354. A separate review must determine whether that contract contains
+the same clock-domain ownership defect:
+
+- `current_reference_pricing_event_ms` selects the maximum event timestamp across the
+  selected pricing spot, the reference-current-price observation, and active
+  reference state. Those values may originate from independently clocked venues.
+- `reference_current_price_stale_at` subtracts each observation's venue event time
+  from that combined evaluation value. If the clocks are independent, a fresh input
+  can appear old and fail closed as `SpotPriceMissing` or reference-price stale.
+- The known configured age window is much larger than the incident's measured
+  millisecond skew, so this may be a structurally invalid comparison with little or
+  no current production impact. That must be established from call sites, timestamp
+  provenance, configuration, and replay evidence rather than assumed.
+
+The review must answer four questions before any implementation is proposed:
+
+1. Are two independently clocked venue event timestamps directly compared on a live
+   entry path, or are the values normalized into one domain upstream?
+2. Can realistic observed or configured skew change admission, evidence, or dedupe
+   behavior, and what fail-closed reason results?
+3. Is receive-domain context available for every reference-price evaluation and
+   input, including fallback/failover sources?
+4. Would correcting the comparison require the same pricing-layer types touched by
+   #1354, making separation unsafe, or can it remain a clean follow-up issue and PR?
+
+If confirmed, the expected ownership rule is evaluation receive time compared only
+with input receive time. Venue event timestamps remain available for diagnostics and
+provider-specific computation. No tolerance window, venue exception, or enlarged
+freshness limit is acceptable. The confirmed defect must receive its own issue,
+branch, design, and PR unless reviewers prove that #1354 cannot establish a coherent
+pricing API without changing both gates atomically.
+
+Maker production wiring is also outside this change: #1354 closes the shared maker
+pricing interface contract and its route-level tests without adding a new runtime
+caller.
 
 ## Sequenced Follow-On Work
 

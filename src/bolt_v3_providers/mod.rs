@@ -571,8 +571,17 @@ const IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConst
         reduce_only_supported: false,
     };
 
+pub(crate) type NtReconnectBudgetLoader = fn(&toml::Value) -> Result<u64, toml::de::Error>;
+
+#[derive(Clone, Copy)]
+pub(crate) enum NtReconnectBudgetCapability {
+    NotApplicable,
+    Required(NtReconnectBudgetLoader),
+}
+
 pub struct ProviderBinding {
     pub key: &'static str,
+    pub(crate) nt_reconnect_budget: NtReconnectBudgetCapability,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
@@ -743,6 +752,7 @@ fn validate_reference_live_probe_client(
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -763,6 +773,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: binance::KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -783,6 +794,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: hyperliquid::KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: hyperliquid::validate_client,
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -805,6 +817,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bitmex_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -825,6 +838,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bybit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -845,6 +859,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_coinbase_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -865,6 +880,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_deribit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -885,6 +901,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_okx_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -905,6 +922,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_kraken_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -925,6 +943,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: chainlink::KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: chainlink::validate_client,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -945,6 +964,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::Required(
+            chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget,
+        ),
         validate_client: chainlink_reference::validate_client,
         supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -965,6 +987,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: polyresearch::KEY,
+        nt_reconnect_budget: NtReconnectBudgetCapability::Required(
+            polyresearch::reconnect_timeout_ms_for_nt_connect_budget,
+        ),
         validate_client: polyresearch::validate_client,
         supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
@@ -1114,6 +1139,89 @@ pub(crate) fn resolution_oracle_client_http_timeout_secs(
     client_key: &str,
 ) -> Result<Option<u64>, String> {
     chainlink::resolution_oracle_client_http_timeout_secs(root, client_key)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NtReconnectBudget {
+    NotApplicable,
+    Required {
+        provider_key: &'static str,
+        reconnect_timeout_ms: u64,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum NtReconnectBudgetResolutionError {
+    UnsupportedProvider {
+        provider_key: String,
+    },
+    MissingData {
+        provider_key: &'static str,
+    },
+    InvalidData {
+        provider_key: &'static str,
+        source: toml::de::Error,
+    },
+}
+
+impl std::fmt::Display for NtReconnectBudgetResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedProvider { provider_key } => write!(
+                f,
+                "error_variant=NtReconnectBudgetUnsupportedProvider provider `{provider_key}` is not registered"
+            ),
+            Self::MissingData { provider_key } => write!(
+                f,
+                "error_variant=NtReconnectBudgetMissingData provider `{provider_key}` requires clients data to validate its NT reconnect budget"
+            ),
+            Self::InvalidData {
+                provider_key,
+                source,
+            } => write!(
+                f,
+                "error_variant=NtReconnectBudgetInvalidData provider `{provider_key}` has invalid typed config for NT reconnect-budget validation: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NtReconnectBudgetResolutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidData { source, .. } => Some(source),
+            Self::UnsupportedProvider { .. } | Self::MissingData { .. } => None,
+        }
+    }
+}
+
+pub(crate) fn nt_reconnect_budget(
+    provider_key: &str,
+    data: Option<&toml::Value>,
+) -> Result<NtReconnectBudget, NtReconnectBudgetResolutionError> {
+    let binding = binding_for_provider_key(provider_key).ok_or_else(|| {
+        NtReconnectBudgetResolutionError::UnsupportedProvider {
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    match binding.nt_reconnect_budget {
+        NtReconnectBudgetCapability::NotApplicable => Ok(NtReconnectBudget::NotApplicable),
+        NtReconnectBudgetCapability::Required(load_reconnect_timeout_ms) => {
+            let data = data.ok_or(NtReconnectBudgetResolutionError::MissingData {
+                provider_key: binding.key,
+            })?;
+            let reconnect_timeout_ms = load_reconnect_timeout_ms(data).map_err(|source| {
+                NtReconnectBudgetResolutionError::InvalidData {
+                    provider_key: binding.key,
+                    source,
+                }
+            })?;
+            Ok(NtReconnectBudget::Required {
+                provider_key: binding.key,
+                reconnect_timeout_ms,
+            })
+        }
+    }
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
@@ -1354,6 +1462,31 @@ mod tests {
             vec![chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY],
             "attach_live_input_health_transition_emitters currently attaches Chainlink live input-health emitters; add a provider attach path when adding another emitting provider"
         );
+    }
+
+    #[test]
+    fn provider_bindings_explicitly_classify_nt_reconnect_budget_capability() {
+        let nt_backed_provider_keys = provider_bindings()
+            .iter()
+            .filter_map(|binding| match binding.nt_reconnect_budget {
+                NtReconnectBudgetCapability::NotApplicable => None,
+                NtReconnectBudgetCapability::Required(_) => Some(binding.key),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            nt_backed_provider_keys,
+            vec![chainlink_reference::KEY, polyresearch::KEY]
+        );
+        assert_eq!(
+            nt_reconnect_budget(polymarket::KEY, None)
+                .expect("Polymarket should have an explicit reconnect-budget classification"),
+            NtReconnectBudget::NotApplicable
+        );
+        assert!(matches!(
+            nt_reconnect_budget("UNREGISTERED_PROVIDER", None),
+            Err(NtReconnectBudgetResolutionError::UnsupportedProvider { .. })
+        ));
     }
 
     fn fake_secret_value(path: &str) -> String {

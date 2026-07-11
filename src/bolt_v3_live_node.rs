@@ -162,7 +162,7 @@ use crate::{
         BoltV3RootConfig, CapitalPoolBlock, ClientBlock, DataClientReadinessProbeBlock,
         DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
         DataClientReadinessProbeQuoteTargetSource, LiveSubmitGovernanceMode, LoadedBoltV3Config,
-        LoadedStrategy, resolve_root_relative_path,
+        LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
@@ -2615,7 +2615,8 @@ pub async fn run_bolt_v3_live_node(
     .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
     let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
-    let startup_timeout_secs = nautilus_startup_bound_secs(loaded)?;
+    let startup_timeout_secs = nautilus_startup_bound_secs(&loaded.root.nautilus)
+        .map_err(|_| BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow)?;
     let startup_shutdown_grace_secs = live_node_startup_shutdown_grace_secs(loaded)?;
     let startup_client_labels = live_node_startup_client_labels(runtime);
 
@@ -2735,20 +2736,11 @@ fn fail_closed_on_unreconciled_startup_rebuild(
     Ok(())
 }
 
-fn nautilus_startup_bound_secs(loaded: &LoadedBoltV3Config) -> Result<u64, BoltV3LiveNodeError> {
-    loaded
-        .root
-        .nautilus
-        .timeout_connection_secs
-        .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
-        .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
-        .ok_or(BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow)
-}
-
 fn strategy_free_start_timeout_secs(
     loaded: &LoadedBoltV3Config,
 ) -> Result<u64, BoltV3LiveNodeError> {
-    nautilus_startup_bound_secs(loaded)
+    nautilus_startup_bound_secs(&loaded.root.nautilus)
+        .map_err(|_| BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow)
 }
 
 fn live_node_startup_shutdown_grace_secs(

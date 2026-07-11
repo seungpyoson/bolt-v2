@@ -14,6 +14,7 @@ const REQUIRED_REFERENCE_PRICE_FEEDERS: [BoundaryFeeder; 2] = [
 ];
 
 fn client_from_toml(toml: &str) -> ClientBlock {
+    // These provider-block fixtures bypass root validation, so their inline 5000ms values do not satisfy the root startup-bound rule.
     toml::from_str(toml).expect("test client block should parse")
 }
 

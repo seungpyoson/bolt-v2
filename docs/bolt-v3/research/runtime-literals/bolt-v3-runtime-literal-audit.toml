@@ -10790,7 +10790,7 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
-context = '''.map(|pair| pair[1].0.saturating_sub(pair[0].0))'''
+context = '''.map(|pair| pair[1].ts_ms.saturating_sub(pair[0].ts_ms))'''
 classification = "realized_volatility_two_sample_arity"
 reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
 
@@ -10798,7 +10798,7 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''0'''
-context = '''.map(|pair| pair[1].0.saturating_sub(pair[0].0))'''
+context = '''.map(|pair| pair[1].ts_ms.saturating_sub(pair[0].ts_ms))'''
 classification = "realized_volatility_two_sample_arity"
 reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
 
@@ -10846,7 +10846,7 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
-context = '''let dt = pair[1].0.saturating_sub(pair[0].0);'''
+context = '''let dt = pair[1].ts_ms.saturating_sub(pair[0].ts_ms);'''
 classification = "realized_volatility_two_sample_arity"
 reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
 
@@ -10854,7 +10854,7 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''0'''
-context = '''let dt = pair[1].0.saturating_sub(pair[0].0);'''
+context = '''let dt = pair[1].ts_ms.saturating_sub(pair[0].ts_ms);'''
 classification = "realized_volatility_two_sample_arity"
 reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
 
@@ -10862,7 +10862,7 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
-context = '''let log_return = (pair[1].1 / pair[0].1).ln();'''
+context = '''let log_return = (pair[1].sample.price / pair[0].sample.price).ln();'''
 classification = "realized_volatility_two_sample_arity"
 reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
 
@@ -10870,7 +10870,7 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''0'''
-context = '''let log_return = (pair[1].1 / pair[0].1).ln();'''
+context = '''let log_return = (pair[1].sample.price / pair[0].sample.price).ln();'''
 classification = "realized_volatility_two_sample_arity"
 reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
 

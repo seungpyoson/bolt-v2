@@ -15,6 +15,7 @@ use crate::{
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
     bolt_v3_taker_pricing::TakerPricingBlockReason,
+    bolt_v3_timestamp_domain::LocalReceiveMs,
 };
 
 use super::{
@@ -60,6 +61,23 @@ pub(super) struct EntryPricingInputs {
     pub(super) seconds_to_expiry: u64,
     pub(super) realized_vol: f64,
     pub(super) theta_scaled_min_edge_bps: f64,
+}
+
+/// Receive-clock ownership captured once by the entry trigger and shared by
+/// every consumer participating in that evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EntryEvaluationReceiveContext {
+    receive_ms: LocalReceiveMs,
+}
+
+impl EntryEvaluationReceiveContext {
+    pub(super) const fn new(receive_ms: LocalReceiveMs) -> Self {
+        Self { receive_ms }
+    }
+
+    pub(super) const fn receive_ms(self) -> LocalReceiveMs {
+        self.receive_ms
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

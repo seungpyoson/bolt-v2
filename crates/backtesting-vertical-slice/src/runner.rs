@@ -3030,7 +3030,8 @@ mod tests {
     }
 
     #[test]
-    fn backtest_runner_invokes_execution_contract_validator() -> Result<()> {
+    fn issue_789_first_real_free_data_taker_pl_runner_invokes_execution_contract_validator()
+    -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create execution smoke catalog root")?;
         write_execution_contract_smoke_catalog(tempdir.path())?;
         let mut manifest = maker_smoke_manifest(tempdir.path());
@@ -3133,7 +3134,7 @@ mod tests {
     }
 
     #[test]
-    fn executable_book_replay_excludes_late_arriving_deltas() -> Result<()> {
+    fn issue_789_first_real_free_data_taker_pl_excludes_late_arriving_book_deltas() -> Result<()> {
         let instrument_id = InstrumentId::from(MAKER_SMOKE_YES_INSTRUMENT);
         let timely = OrderBookDelta::new(
             instrument_id,
@@ -3178,7 +3179,8 @@ mod tests {
     }
 
     #[test]
-    fn resolved_config_identity_covers_applied_rv_source_filter() -> Result<()> {
+    fn issue_789_first_real_free_data_taker_pl_config_identity_covers_applied_rv_source_filter()
+    -> Result<()> {
         let raw_config = toml::from_str::<toml::Value>(&maker_smoke_config_toml())?;
         let mut override_spec = StrategyConfigOverlaySource {
             production_root_config_path: "config/root.toml".to_string(),

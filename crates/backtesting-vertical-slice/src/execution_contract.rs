@@ -288,26 +288,26 @@ mod tests {
     }
 
     #[test]
-    fn accepts_exact_shared_primitive_trace() {
+    fn issue_789_first_real_free_data_taker_pl_accepts_exact_shared_primitive_trace() {
         validate_execution_contract(&fixture().trace()).expect("valid trace should pass");
     }
 
     #[test]
-    fn rejects_fill_price_improvement() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_fill_price_improvement() {
         let mut fixture = fixture();
         fixture.fills[0].price = Price::from("0.410");
         assert!(validate_execution_contract(&fixture.trace()).is_err());
     }
 
     #[test]
-    fn rejects_depth_over_consumption() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_depth_over_consumption() {
         let mut fixture = fixture();
         fixture.fills[0].quantity = Quantity::from("21.53");
         assert!(validate_execution_contract(&fixture.trace()).is_err());
     }
 
     #[test]
-    fn rejects_broken_quote_base_conversion() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_broken_quote_base_conversion() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.effective_base_quantity = Quantity::from("2.72");
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dropped_or_duplicated_cash_leg() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_dropped_or_duplicated_cash_leg() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.terminal_cash = Money::from("1000003.14 USDC");
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_correlated_dropped_cash_and_pnl_legs() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_correlated_dropped_cash_and_pnl_legs() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.terminal_cash = trace.initial_cash;
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_commission() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_wrong_commission() {
         let fixture = fixture();
         let mut trace = fixture.trace();
         trace.position_commission = Money::from("0.01 USDC");
@@ -340,7 +340,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_correlated_wrong_fill_and_position_commission() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_correlated_wrong_fill_and_position_commission()
+     {
         let mut fixture = fixture();
         fixture.position_fills[0].commission = Some(Money::from("0.01 USDC"));
         let mut trace = fixture.trace();
@@ -351,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_config_change_with_unchanged_provenance() {
+    fn issue_789_first_real_free_data_taker_pl_rejects_config_change_with_unchanged_provenance() {
         let mut fixture = fixture();
         fixture.config_bytes.push(b' ');
         assert!(validate_execution_contract(&fixture.trace()).is_err());

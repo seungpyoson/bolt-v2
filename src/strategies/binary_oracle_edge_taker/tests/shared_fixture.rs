@@ -568,6 +568,7 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     /// settlement oracle, not a separately rounded recomputation.
     Settlement(RecordedSettlementEvidenceEvent),
     SettlementBookingError(RecordedSettlementBookingErrorEvidenceEvent),
+    TerminalSettlement(crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -585,9 +586,17 @@ pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
 #[derive(Debug, Default)]
 pub(super) struct RecordingSequencedDecisionEvidenceWriter {
     events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
+    fail_standalone_order_lifecycle: bool,
 }
 
 impl RecordingSequencedDecisionEvidenceWriter {
+    pub(super) fn with_failing_standalone_order_lifecycle() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            fail_standalone_order_lifecycle: true,
+        }
+    }
+
     pub(super) fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
         self.events
             .lock()
@@ -600,18 +609,6 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .lock()
             .expect("recording evidence writer mutex poisoned")
             .push(RecordedDecisionEvidenceEvent::Settlement(settlement));
-    }
-
-    pub(super) fn push_settlement_booking_error(
-        &self,
-        reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
-    ) {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
-                RecordedSettlementBookingErrorEvidenceEvent { reason },
-            ));
     }
 }
 
@@ -740,6 +737,9 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence,
     ) -> Result<()> {
+        if self.fail_standalone_order_lifecycle {
+            anyhow::bail!("standalone order lifecycle write failed");
+        }
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")
@@ -782,7 +782,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
-        self.push_settlement_booking_error(evidence.reason);
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
+                RecordedSettlementBookingErrorEvidenceEvent {
+                    reason: evidence.reason,
+                },
+            ));
+        Ok(())
+    }
+
+    fn record_terminal_settlement(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::TerminalSettlement(
+                evidence.clone(),
+            ));
         Ok(())
     }
 
@@ -871,6 +891,29 @@ pub(super) fn fixture_settlement_account_id() -> String {
 
 pub(super) fn fixture_settlement_currency() -> Currency {
     fixture_settlement_identity().1
+}
+
+pub(super) fn noop_settlement_health_transition_emitter()
+-> crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter {
+    Arc::new(|_| Ok(()))
+}
+
+pub(super) fn attach_recording_settlement_health_transitions(
+    strategy: &mut BinaryOracleEdgeTaker,
+) -> Arc<Mutex<Vec<crate::bolt_v3_operator_health::BoltV3SettlementHealthTransition>>> {
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let recorded = transitions.clone();
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_health_transition_emitter(Some(Arc::new(move |transition| {
+            recorded
+                .lock()
+                .expect("recording settlement health transition mutex poisoned")
+                .push(transition);
+            Ok(())
+        })));
+    transitions
 }
 
 fn fixture_settlement_identity() -> (String, Currency) {
@@ -1217,7 +1260,10 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             fixture_execution_venue(),
         )
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
-        .with_settlement_currency(Some(fixture_settlement_currency())),
+        .with_settlement_currency(Some(fixture_settlement_currency()))
+        .with_settlement_health_transition_emitter(Some(
+            noop_settlement_health_transition_emitter(),
+        )),
     );
     register_test_strategy(&mut strategy);
     strategy
@@ -1499,7 +1545,8 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         fixture_execution_venue(),
     )
     .with_settlement_account_id(Some(fixture_settlement_account_id()))
-    .with_settlement_currency(Some(fixture_settlement_currency()));
+    .with_settlement_currency(Some(fixture_settlement_currency()))
+    .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()));
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy

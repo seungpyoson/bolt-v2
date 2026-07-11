@@ -35,6 +35,9 @@
 # - 2026-06-25 (#711): re-baselined only the root schema version from 1 to 2
 #   after the capital-admission config-key migration. Effective runtime values are
 #   still compared against the composed config below.
+# - 2026-07-10 (#1349): absorbed the non-enforcing Polymarket settlement-currency
+#   capital pool inherited from `config/root.toml`. It supplies pUSD identity for
+#   load-time settlement validation without arming submit admission.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
@@ -192,6 +195,21 @@ forced_reduction_max_notional_per_order = "10.00"
 authorized_operator_ids = ["operator-primary"]
 account_ids = ["POLYMARKET-001"]
 instrument_ids = []
+
+[[risk.capital_pools]]
+pool_id = "polymarket-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "pUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = false
+max_pool_liability = "25.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.capital_admission_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
 
 [risk.loss_governor]
 # The block is tracked and explicit; enabled=false deliberately keeps submit admission

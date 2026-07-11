@@ -14,6 +14,7 @@ use crate::bolt_v3_iv::{
     runtime::{IvRuntimeEngine, runtime_derived_inputs_from_profile},
     store::{IvRetentionPolicy, IvStore},
 };
+use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
@@ -43,6 +44,7 @@ pub struct BoltV3StrategyExecutionControls {
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
+    pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
 #[derive(Clone)]
@@ -58,6 +60,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
+    pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -411,6 +414,9 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 realized_volatility_runtime: realized_volatility_runtime.clone(),
                 settlement_runtime_sink: execution_controls.settlement_runtime_sink.clone(),
                 settlement_recovery: execution_controls.settlement_recovery.clone(),
+                settlement_health_transition_emitter: execution_controls
+                    .settlement_health_transition_emitter
+                    .clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

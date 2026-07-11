@@ -925,6 +925,26 @@ fn live_node_config_suppresses_nt_credential_module_logs_to_warn() {
 }
 
 #[test]
+fn live_node_config_suppresses_nt_orderbook_out_of_order_warns_to_error() {
+    // NT `nautilus_model::orderbook::book` emits per-tick WARN on sequence/ts
+    // high-water regressions. Force Error so they do not dominate operator logs.
+    let loaded = fixture_loaded_config();
+    let cfg = make_live_node_config(&loaded);
+    let key = Ustr::from("nautilus_model::orderbook::book");
+    let level = cfg
+        .logging
+        .module_level
+        .get(&key)
+        .copied()
+        .expect("logger module_level must include nautilus_model::orderbook::book");
+    assert_eq!(
+        level,
+        log::LevelFilter::Error,
+        "orderbook module filter must be Error, got {level:?}"
+    );
+}
+
+#[test]
 fn secret_resolver_setup_variant_renders_clean_message_without_empty_client_path() {
     // Per #255-2: before this fix, session-construction failure was
     // mapped into `BoltV3SecretError` with empty `client_key` and

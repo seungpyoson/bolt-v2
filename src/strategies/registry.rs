@@ -21,6 +21,7 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
@@ -77,6 +78,7 @@ pub struct StrategyBuildContext {
     settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
     settlement_account_id: Option<String>,
     settlement_currency: Option<Currency>,
+    settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
 impl StrategyBuildContext {
@@ -104,6 +106,7 @@ impl StrategyBuildContext {
             settlement_recovery: None,
             settlement_account_id: None,
             settlement_currency: None,
+            settlement_health_transition_emitter: None,
         }
     }
 
@@ -153,6 +156,14 @@ impl StrategyBuildContext {
 
     pub fn with_settlement_currency(mut self, currency: Option<Currency>) -> Self {
         self.settlement_currency = currency;
+        self
+    }
+
+    pub fn with_settlement_health_transition_emitter(
+        mut self,
+        emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+    ) -> Self {
+        self.settlement_health_transition_emitter = emitter;
         self
     }
 
@@ -210,6 +221,12 @@ impl StrategyBuildContext {
 
     pub fn settlement_currency(&self) -> Option<Currency> {
         self.settlement_currency
+    }
+
+    pub fn settlement_health_transition_emitter(
+        &self,
+    ) -> Option<&BoltV3SettlementHealthTransitionEmitter> {
+        self.settlement_health_transition_emitter.as_ref()
     }
 
     /// Subscription requests scoped to a single configured surface. A strategy must use this

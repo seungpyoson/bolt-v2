@@ -304,7 +304,40 @@ pub fn validate_strategy(
         &parameters,
         default_max_notional,
     ));
+    errors.extend(validate_settlement_currency_derivable(
+        context, root, strategy,
+    ));
     errors
+}
+
+/// Fail closed when a settlement-booking strategy cannot derive settlement currency.
+///
+/// Uses the **same** [`settlement_currency_for_execution_account`] predicate the
+/// runtime archetype applies — one owning match on (execution venue, account_id).
+fn validate_settlement_currency_derivable(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    let execution_client_id = strategy.execution_client_id.as_str();
+    let Some(client) = root.clients.get(execution_client_id) else {
+        return vec![format!(
+            "{context}: execution_client_id `{execution_client_id}` is not present in loaded clients; cannot derive settlement currency"
+        )];
+    };
+    let execution_venue = client.venue;
+    let Some(account_id) = execution_account_id(root, execution_client_id) else {
+        return vec![format!(
+            "{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"
+        )];
+    };
+    if settlement_currency_for_execution_account(root, execution_venue, account_id).is_none() {
+        return vec![format!(
+            "{context}: settlement currency is not derivable for execution venue `{}` account `{account_id}`; configure risk.capital_pools with matching venue_id/account_id and collateral_currency (settlement booking requires it)",
+            execution_venue.as_str()
+        )];
+    }
+    Vec::new()
 }
 
 #[derive(Debug)]
@@ -454,7 +487,10 @@ pub fn register_runtime_strategy(
     .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
     .with_settlement_recovery(context.settlement_recovery.clone())
     .with_settlement_account_id(settlement_account_id)
-    .with_settlement_currency(settlement_currency);
+    .with_settlement_currency(settlement_currency)
+    .with_settlement_health_transition_emitter(
+        context.settlement_health_transition_emitter.clone(),
+    );
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -480,7 +516,12 @@ fn execution_account_id<'a>(
         .as_str()
 }
 
-fn settlement_currency_for_execution_account(
+/// Owning settlement-currency derivation for execution accounts.
+///
+/// Match keys: `risk.capital_pools[].venue_id == execution_venue` and
+/// `risk.capital_pools[].account_id == account_id`. Used by the runtime
+/// archetype binding and load-time validation — do not re-derive elsewhere.
+pub(crate) fn settlement_currency_for_execution_account(
     root: &BoltV3RootConfig,
     execution_venue: Venue,
     account_id: &str,
@@ -547,6 +588,72 @@ mod tests {
             Some(settlement_currency_from_config_code(
                 pool.collateral_currency.as_str()
             ))
+        );
+    }
+
+    #[test]
+    fn edge_taker_validation_fails_without_capital_pool_settlement_currency() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("bolt-v3 fixture root should load");
+        let strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| strategy.config.strategy_archetype.as_str() == KEY)
+            .expect("fixture should include a binary oracle strategy")
+            .config
+            .clone();
+        loaded.root.risk.capital_pools = None;
+        let errors = validate_strategy("strategies.test", &loaded.root, &strategy, None);
+        assert!(
+            errors.iter().any(|error| {
+                error.contains("settlement currency is not derivable")
+                    && error.contains("risk.capital_pools")
+            }),
+            "deployed profile shape without a matching capital pool must fail load-time validation; errors={errors:?}"
+        );
+    }
+
+    #[test]
+    fn edge_taker_validation_passes_with_capital_pool_settlement_currency() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("bolt-v3 fixture root should load");
+        let strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| strategy.config.strategy_archetype.as_str() == KEY)
+            .expect("fixture should include a binary oracle strategy");
+        let errors = validate_strategy("strategies.test", &loaded.root, &strategy.config, None);
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.contains("settlement currency is not derivable")),
+            "fixture with matching capital pool must pass settlement-currency validation; errors={errors:?}"
+        );
+    }
+
+    #[test]
+    fn production_root_derives_pusd_settlement_currency_for_polymarket_execution_account() {
+        let loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("production root.toml should load");
+        let execution_venue = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("production root must declare polymarket_main")
+            .venue;
+        let account_id = execution_account_id(&loaded.root, "polymarket_main")
+            .expect("production polymarket_main must bind execution.account_id");
+        let currency =
+            settlement_currency_for_execution_account(&loaded.root, execution_venue, account_id);
+        assert_eq!(
+            currency,
+            Some(settlement_currency_from_config_code("pUSD")),
+            "production root capital pool must derive pUSD for POLYMARKET / POLYMARKET-001"
         );
     }
 }

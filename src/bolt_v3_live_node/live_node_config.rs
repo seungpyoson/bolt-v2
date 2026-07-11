@@ -26,6 +26,14 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
     for module_path in bolt_v3_providers::credential_log_modules() {
         module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
     }
+    // NT OrderBook emits per-tick WARN on sequence/ts_event high-water regressions
+    // (`Out-of-order update: ...`). Suppress below Error; bolt strategy logs remain
+    // at stdout/fileout level. Module path is the log target (plain log::warn! has
+    // no NT component name).
+    module_level.insert(
+        Ustr::from("nautilus_model::orderbook::book"),
+        LevelFilter::Error,
+    );
     let logging = LoggerConfig {
         stdout_level: nautilus_common::logging::map_log_level_to_filter(
             loaded.root.logging.stdout_level,

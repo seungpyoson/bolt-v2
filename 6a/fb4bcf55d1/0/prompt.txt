@@ -1,0 +1,953 @@
+Complete PR #1346, the durable fixture-Git enforcement slice for issue #1323.
+
+  Context
+  - Read AGENTS.md first and follow it exactly.
+  - PR #1326 is PR A: it implements and verifies the maintenance-suppression mechanism.
+  - PR #1346 is PR B: it prevents future scripts/test_*.py code from bypassing the shared fixture-Git helpers.
+  - Do not merge #1346 before #1326. Final integrated verification must run after #1326 is on main.
+  - Current PR head: 8ebdfe553a50eabaace8332a2f8927270b1ee606.
+  - Keep this PR focused on enforcement; do not change production Rust behavior.
+
+  Problem
+  The current verifier in scripts/verify_fixture_git_helper_usage.py models only a subset of Python process-execution edges. It can miss direct Git execution
+  through wrappers or APIs such as:
+
+  - asyncio.create_subprocess_exec / create_subprocess_shell
+  - pty.spawn
+  - os.execlpe, spawnlpe, spawnvpe, posix_spawnp
+  - subprocess commands wrapped by xargs, nice, nohup, stdbuf, timeout, time, command, env, or shells
+  - dynamic exec/eval paths
+
+  The checker must not claim comprehensive fail-closed coverage while these paths bypass it. Avoid raw string scanning and false positives such as
+  print("init").
+
+  Implementation direction
+  1. Begin with differential RED tests proving every supported bypass currently escapes detection.
+  2. Expand the AST/process-command resolver so direct Git execution through aliases, keyword arguments, variables, local wrappers, process APIs, and command
+  wrappers is rejected.
+  3. Treat unresolved dynamic execution fail-closed. For actual exec/eval calls, either recursively prove a constant payload non-Git or reject it; ordinary
+  string literals and expected argv fixtures must remain legal.
+  4. Reuse or align with the execution-edge vocabulary already present in scripts/test_lane_governor.py. Do not create another silently divergent process-API
+  list.
+  5. Make the module documentation precisely match the enforced scope.
+  6. Preserve legal uses:
+     - repo_git_command / run_repo_git
+     - init_fixture_repo / clone_fixture_repo
+     - comparisons, expected values, CompletedProcess/CalledProcessError fixtures
+     - provably non-Git commands
+  7. After #1326 is merged, update from main and verify the real repository scan reports zero violations. Do not add blanket exclusions or weaken detection to
+  obtain green.
+
+  Required evidence
+  - Focused verifier tests include planted positive and negative cases for every execution API/wrapper above.
+  - Each planted direct-Git case fails before its fix and passes after.
+  - Provably non-Git cases remain accepted.
+  - python3.12 scripts/test_verify_fixture_git_helper_usage.py
+  - python3.12 scripts/verify_fixture_git_helper_usage.py
+  - just ci-lint-workflow
+  - just source-fence-static
+  - just fmt-check
+  - just deny
+  - git diff --check
+
+  Completion process
+  - Keep the PR draft until #1326 is merged and all local checks are green.
+  - Commit and push the exact final head.
+  - Run required exact-head remote CI.
+  - Resolve every finding.
+  - Then obtain unanimous configured external review, reporting each reviewer source and exact model from ci/ai-review.toml.
+  - Obtain the required sp-reviewer approval.
+  - Report the final SHA, tests, reviewers/models, and whether any execution-edge limitation remains.
+  - Do not merge; return the PR ready for the owner to queue.
+
+---
+
+don't think we should be building a lot of conditional fallbacks and tech debts
+
+---
+
+commit push
+
+---
+
+> Commit and push the completed #1346 work now. Do not wait for #1326.
+  >
+  > - Commit only the scoped #1346 changes.
+  > - Push using just sandbox-safe-push.
+  > - Verify the remote PR head exactly matches local HEAD.
+  > - Keep #1346 as a draft.
+  > - Report the commit SHA, changed files, and verification results.
+  >
+  > The 337 expected source-fence violations are a temporary dependency condition that #1326 will remove. They do not prevent committing and pushing this draft
+  > work.
+  >
+  > Do not mark ready, request external review, queue, or merge yet. After #1326 lands, update #1346 from main, rerun all integrated checks, obtain exact-head
+  > CI and required review, then prepare it for merge.
+
+---
+
+### PR #1346 — close the analyzer
+
+  Handle PR #1346 as a closure task, not an implementation task.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1323-git-fixture-helper-fence
+
+  Expected state:
+  - Clean worktree
+  - HEAD and GitHub PR head: fcfb6a043f03146725b8fb0fd4a6addb396ab193
+
+  Read AGENTS.md first.
+
+  Verify directly that main contains #1326’s runtime fix and accepted differential evidence:
+  - fixture constructors persist gc.auto=0 and maintenance.auto=false
+  - routed fixture Git produces no maintenance child
+  - suppression has one owning implementation
+
+  If confirmed, do not modify code. Post a concise rationale and close PR #1346:
+
+  “Closing this enforcement slice. #1326 landed the actual runtime invariant and differential proof. #1346 grew into a 1,675-line partial Python/process-
+  language analyzer covering aliases, wrappers, shells, xargs, eval/exec, exceptions, and special cases. That is a second incomplete execution analyzer and
+  would accumulate precisely the conditional/exception debt we are removing. We will not attempt to enumerate every spelling that can launch Git.”
+
+  Update issue #1323 explaining that its earlier requirement for #1346 is superseded. If #1326 satisfies all original behavioral acceptance criteria, close
+  #1323 as completed by #1326. Otherwise leave only a narrowly stated missing runtime behavior—no proposed checker.
+
+  Do not delete the branch or worktree. Report the final PR and issue states.
+
+---
+
+### #1346 — prove whether any work remains
+
+  Audit whether closed PR #1346 needs any replacement. Do not edit code, create a branch, or reopen #1323 unless a current behavioral gap is proven.
+
+  Start from current main, where #1326 is merged. Read AGENTS.md.
+
+  Verify these owners:
+
+  scripts/ci_workflow_hygiene_test_helpers.py:
+  - GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+  - GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS
+  - repo_git_command
+  - run_repo_git
+  - suppress_repo_auto_maintenance
+  - init_fixture_repo
+  - clone_fixture_repo
+
+  scripts/test_governance_diff_analysis.py:
+  - suppression arguments derive from the single config
+  - init/clone constructors persist suppression
+  - local receive-pack is protected
+  - suppression-off launches a maintenance child
+  - suppression-on and the routed fixture suite launch zero children
+
+  Run:
+  python3.12 scripts/test_governance_diff_analysis.py
+  python3.12 scripts/test_ci_input_sets.py
+  just fmt-check
+  just deny
+  just source-fence-static
+  git diff --check
+  git status --short
+
+  Decision:
+  - If everything passes and no current fixture bypass is demonstrated, report:
+    “NO REPLACEMENT REQUIRED. #1326 satisfies #1323. #1346 attempted to protect against hypothetical future Python spellings and would add more debt than it
+    removes.”
+  - Do not create a PR merely because future code could ignore an API.
+
+  Separately inspect `scripts/merge_queue_preflight.py::PrivateFetchRefs`, which creates a temporary bare repository outside the fixture helpers. Measure with
+  GIT_TRACE2_EVENT whether `fetch_sha` launches detached maintenance before cleanup.
+
+  If it does not, stop.
+
+  If it does, report exact RED evidence and propose a separate one-scope fix that persists suppression when PrivateFetchRefs creates its repository. Do not
+  revive #1346 or build any AST/shell/source-spelling analyzer.
+
+---
+
+Fix the measured PrivateFetchRefs temporary-repository maintenance race as a fresh one-scope issue and draft PR from current main. Do not reopen #1323 or
+  #1346.
+
+  Measured RED:
+  - PrivateFetchRefs.fetch_sha returned the requested SHA
+  - 82 Trace2 events
+  - 5 children
+  - 1 detached `git maintenance run --auto --quiet --detach` child before cleanup
+
+  Scope:
+  - scripts/merge_queue_preflight.py
+  - scripts/test_merge_queue_preflight.py
+  - the existing shared Git-maintenance suppression ownership only
+
+  Implementation:
+  1. Move `GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG` into a small production-neutral shared module. Update `ci_workflow_hygiene_test_helpers.py` to import it so
+  the values retain one owner.
+  2. In `PrivateFetchRefs.create`, immediately after `git init --bare`, persist both settings into the temporary repository using the existing timeout-aware
+  `git()` path:
+     - gc.auto=0
+     - maintenance.auto=false
+  3. Keep configuration inside the existing create/cleanup error boundary.
+  4. Do not modify fetch behavior, add retries, ignore cleanup errors, inject flags at every command, or add any source/command analyzer.
+
+  Regression evidence:
+  - Assert both values exist in the temporary bare repository’s local config before fetch.
+  - Run a real `PrivateFetchRefs.fetch_sha` under GIT_TRACE2_EVENT.
+  - Assert requested SHA equals fetched SHA.
+  - Assert zero maintenance/gc children before cleanup.
+  - Reuse or extract the existing Trace2 maintenance-child counter; do not duplicate another parser.
+
+  Verification:
+  - focused RED on unmodified main
+  - GREEN after the fix
+  - `python3.12 scripts/test_merge_queue_preflight.py`
+  - `python3.12 scripts/test_governance_diff_analysis.py`
+  - permitted static gates from AGENTS.md
+  - `git diff --check`
+
+  Keep the PR draft, publish with `just sandbox-safe-push`, and report exact remote SHA plus RED/GREEN Trace2 counts. Do not ready, review, queue, or merge.
+
+---
+
+Own this PR through draft review closure.
+
+  Use the external review output already available in this session. For every substantive finding:
+
+  - Verify it against the exact code.
+  - Fix the root cause within the PR’s declared scope, or rebut it with concrete evidence.
+  - Do not add fallback chains, denylist conditions, duplicate paths, new analyzers, or parallel sources of truth.
+  - Commit and publish fixes with `just sandbox-safe-push`.
+  - Re-run external review at the new exact head.
+  - Continue until the reviewer returns no substantive findings.
+
+  If no review exists yet, obtain one adversarial external review now.
+
+  Do not send raw transcripts to the global orchestrator. Return only:
+
+  PR / exact remote head:
+  Reviewer source and model:
+  Findings by severity:
+  Resolved findings:
+  Final re-review result:
+  Net diff and debt delta:
+  Verification completed:
+  Remaining blockers:
+  Worktree clean:
+  Requested next action:
+
+  Keep the PR draft. Do not run full CI, mark ready, request `sp-reviewer`, queue, merge, deploy, or trade. The global orchestrator will coordinate those steps
+  after review closure.
+
+---
+
+don't use relay - I'll give you review outputs
+
+---
+
+Kimi: Head verified: GitHub headRefOid for PR #1358 is exactly 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987 — matches the requested SHA,
+   so I proceeded. Review-only: no edits, comments, or CI dispatched. Read the diff and full file regions at that exact tree via
+   git show/git grep against the fetched FETCH_HEAD.
+
+   Findings
+
+   Blocking
+
+   B1 — New Trace2 regression accepts zero events as "zero maintenance children" (not fail-closed).
+   • scripts/test_merge_queue_preflight.py:1616-1641 (specifically :1628 and :1637-1641), relying on
+     scripts/git_maintenance.py:18-23.
+   • Failure scenario: count_trace2_maintenance_children returns 0 when the trace file is missing (:18), empty, or every line is
+     malformed JSON (:21-22 except ValueError: continue). If GIT_TRACE2_EVENT is silently not honored — git built without trace2,
+     unwritable path, env var renamed, or a future change that makes run_command/git() pass a sanitized env — the file is never
+     produced, the counter returns 0, and assert_equal(maintenance_children, 0, …) at :1637 passes. There is no assertion that the
+     trace exists, is non-empty, is valid JSON, or that any child_start/event was observed. The fetched == requested check at :1636
+      does not guard this: a real git fetch succeeds even when Trace2 writes nothing. So the test reports GREEN while having
+     observed no Trace2 data — exactly the "zero events accepted as zero maintenance children" outcome issue #1355's verification
+     forbids, and it falls short of the fail-closed-evidence bar for config changes in AGENTS.md. Note the same helper is used
+     fail-closed in test_governance_diff_analysis.py:190-194 only because that test adds an explicit unsuppressed-control (!= 0);
+     the new preflight test has no such baseline.
+
+   Non-blocking
+
+   None substantive. One context note (not against this PR's diff): scripts/test_governance_diff_analysis.py:202-224
+   (assert_routed_fixture_module_spawns_no_background_maintenance) shares the counter's fail-open-on-missing-trace shape, but that
+   path is pre-existing and only had its helper renamed here (_maintenance_children → count_trace2_maintenance_children); the PR
+   did not introduce it.
+
+   Verification-point results (against #1355 and the diff)
+
+   • Single production-neutral owner of suppression values — satisfied. Defined only at scripts/git_maintenance.py:10-12; every
+     other use (ci_workflow_hygiene_test_helpers.py:19/24-26/1814, merge_queue_preflight.py:31/1942, both test files) imports or
+     iterates it. Grep confirms no second gc.auto/maintenance.auto value definition (remaining hits are docstrings/comments).
+   • Fixture helpers and PrivateFetchRefs consume the owner without duplicating values — satisfied; both loop the imported tuple
+     (:1814, :1942), and GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS is derived from it (:24-28).
+   • Persists both settings immediately after bare init — satisfied; the loop at merge_queue_preflight.py:1942-1950 runs right
+     after git init --bare (:1936) and before rev-parse (:1951), through the timeout-aware git() path.
+   • Configuration failure stays inside the existing cleanup/error boundary — satisfied; the loop sits in the existing try (:1935)
+     whose except Exception: temp_dir.cleanup(); raise (:1961-1963) still governs it, and git() defaults check=True (:2320), so a
+     config failure raises into that boundary.
+   • Fetch behavior and timeout semantics unchanged — satisfied; fetch_sha (:1996-2016) and run_command timeout/kill/check
+     (:2285-2313) are untouched, and the new calls reuse input_timeout_seconds.
+   • No retry / ignored cleanup error / per-command flag injection / source analyzer introduced — satisfied; no retry added;
+     temp_dir.cleanup() errors are not swallowed; the PrivateFetchRefs path persists repo-local config rather than injecting -c
+     flags (the fixture repo_git_command -c injection at :1788 is pre-existing and unchanged); the new module is the sanctioned
+     stdlib Trace2 event counter, not a source/command analyzer.
+   • Real fetch + exact requested SHA — satisfied; make_pr returns the commit SHA pushed to the remote (:174-177), fetch_sha runs a
+     real git fetch <origin> <SHA>:<ref> and returns rev-parse <ref> (:2000-2016), asserted equal at :1636.
+   • Maintenance counted before cleanup — satisfied; count at :1628 is in the try, cleanup in finally at :1634.
+   • Shared Trace2 helper production-neutral, no mixed prod/test responsibility — satisfied; git_maintenance.py is stdlib-only
+     (json, pathlib), and production imports only the constant, never the counter.
+   • RED/GREEN correspond to reviewed code paths — satisfied; RED was the manual fetch_sha measurement on unmodified main, GREEN is
+     the encoded assertion on the same fetch_sha path now suppressed, and the event/child deltas (82→70, 5→4, 1→0 maintenance)
+     match removing exactly one maintenance child. (RED being manual is the issue's stated design.)
+
+   Net: one blocking finding (B1). The production change and single-owner refactor are sound; the gap is solely that the new GREEN
+   regression is not fail-closed about Trace2 actually producing data.
+
+   Reviewer source and model
+
+   • Reviewer source: Kimi Code CLI
+   • Exact configured model: kimi-k2.7-code (per ci/ai-review.toml [kimi].model)
+   • Exact-head full CI: not run and not evaluated — review-only scope, no CI dispatched; PR is draft/mergeable at
+     543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987.
+GLM: I now have all the information needed. Let me compile the findings.
+Reviewer Source and Model
+- Reviewer source: opencode (interactive CLI tool)
+- Exact model: zai-coding-plan/glm-5.2
+Verification Summary
+Verification Point	Result
+Suppression values have one production-neutral owner	PASS — git_maintenance.py:9 is the sole definition
+Fixture helpers and PrivateFetchRefs consume without duplicating	PASS — all consumers import from git_maintenance
+PrivateFetchRefs persists both settings immediately after bare init	PASS — merge_queue_preflight.py:1942 loops config between git init --bare and git rev-parse
+Configuration failure inside existing cleanup/error boundary	PASS — git() defaults check=True; failure raises into the except Exception: temp_dir.cleanup(); raise block at merge_queue_preflight.py:1951
+Fetch behavior and timeout semantics unchanged	PASS — fetch_sha is untouched; config uses same input_timeout_seconds
+No retry, ignored cleanup, per-command flag injection, or analyzer	PASS — diff contains none of these
+Trace2 regression performs real fetch and checks exact SHA	PASS — test_merge_queue_preflight.py:1621 calls fetch_sha on a real fixture and asserts fetched == requested
+Trace2 test fails on missing/empty/malformed/absent trace	FAIL — see blocking finding below
+Maintenance counted before cleanup	PASS — count_trace2_maintenance_children called in try block; cleanup() in finally
+Shared Trace2 helper in production-neutral code without mixed responsibility	NON-BLOCKING — see finding below
+RED and GREEN measurements correspond to reviewed code paths	PASS — RED on unmodified main (no config loop); GREEN on reviewed code (config loop present)
+Blocking Findings
+B1: Trace2 regression test passes vacuously when tracing is absent
+File: scripts/git_maintenance.py:15 and scripts/test_merge_queue_preflight.py:1624
+Failure scenario: count_trace2_maintenance_children returns 0 for every failure mode of the trace file:
+- Missing file: trace_path.exists() is False → returns 0 (line 16)
+- Empty file: splitlines() yields [] → returns 0
+- Malformed file: every json.loads raises ValueError → continue → returns 0 (line 22)
+- Silently not produced: git ignores GIT_TRACE2_EVENT (unsupported version, permission error, invalid path) → file never created → returns 0
+- Zero events: file exists but contains no child_start events → returns 0
+The test assert_private_fetch_sha_spawns_no_background_maintenance asserts maintenance_children == 0 (line 1635) without first verifying the trace file exists and contains real events. All five cases above produce 0, and the test accepts 0 as proof that suppression worked.
+Compare with the existing assert_push_to_fixture_remote_spawns_no_background_maintenance in test_governance_diff_analysis.py:188, which has a positive control — the unsuppressed remote must produce >0 children, so a missing trace file fails the unsuppressed arm. The new test has no positive control and no trace-existence check.
+Impact: The regression test provides false confidence. If GIT_TRACE2_EVENT is silently not honored in any environment, the test passes without exercising the actual suppression logic. The issue's verification bar explicitly requires: "the Trace2 test fails if the trace file is missing, empty, malformed, or silently not produced; zero events must not be accepted as 'zero maintenance children.'" The code does not meet this bar.
+Non-Blocking Findings
+N1: count_trace2_maintenance_children is a test-only function in a module imported by production code
+File: scripts/git_maintenance.py:15
+merge_queue_preflight.py:31 imports GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG from git_maintenance, making the entire module — including count_trace2_maintenance_children — part of the production import graph. However, count_trace2_maintenance_children is consumed only by test_governance_diff_analysis.py:14 and test_merge_queue_preflight.py:33. No production caller uses it.
+This creates a minor mixed-responsibility concern: production code imports a module containing a test-only utility. The function is pure (file read + JSON parse + counter) with no side effects, so there is no runtime risk. The concern is purely architectural. The function could live in ci_workflow_hygiene_test_helpers.py (which all test consumers already import) leaving git_maintenance.py as the sole owner of the config constant consumed by both production and test code.
+Impact: No correctness or safety impact. Architectural cleanliness only.
+Conclusion
+One blocking finding (B1). The Trace2 regression test can pass vacuously when tracing is absent, missing, empty, or malformed. The fix requires the test to assert trace file existence and at least one event before accepting zero maintenance children, or to add a positive control analogous to the existing unsuppressed-remote pattern.
+Grok: Reviewer
+
+┌────────────┬───────────────────────────────────────────────────────────────────────────┐
+│ Field      │ Value                                                                     │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Source     │ Grok (xAI) interactive CLI — review-only, no GitHub comments / CI / edits │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Model      │ Grok 4.5                                                                  │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ PR         │ #1358 fix/1355-private-fetch-maintenance                                  │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Exact head │ 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987 (matches GitHub head)            │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Base       │ main @ 7095c6f5f250b99a453300fafd0c9046c3da4a5b                           │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Issue      │ #1355                                                                     │
+└────────────┴───────────────────────────────────────────────────────────────────────────┘
+
+───
+
+Blocking findings
+
+1. Trace2 regression is fail-open: missing / empty / silent / malformed trace is accepted as “zero maintenance children”
+
+• Files/lines:
+  • scripts/git_maintenance.py:17–30 (count_trace2_maintenance_children)
+  • scripts/test_merge_queue_preflight.py:1616–1641 (assert_private_fetch_sha_spawns_no_background_maintenance)
+• Failure scenario:
+  GIT_TRACE2_EVENT is set, but Trace2 produces no usable log (env not inherited as expected, Trace2 disabled/unsupported, path never written, empty file, or only non-JSON / unparseable lines). The helper returns 0 when the path is missing, returns 0 for an empty file, and silently skips malformed JSON lines (except ValueError: continue). The new regression then only asserts maintenance_children == 0 and never requires:
+  • that the trace file exists,
+  • that it is non-empty,
+  • that any parseable Trace2 events were produced,
+  • or a live-channel control (unsuppressed path must show ≥1 maintenance child).
+• Why it blocks #1355: This is the sole PR-added proof that PrivateFetchRefs.fetch_sha no longer detaches maintenance. A green test under a dead Trace2 channel does not prove zero maintenance children; it proves the counter saw nothing. That is exactly “zero events accepted as zero maintenance children.”
+• Contrast (same PR tree): scripts/test_governance_diff_analysis.py push coverage still has a positive control (unsuppressed == 0 → fail). The new PrivateFetchRefs test does not.
+
+───
+
+Non-blocking findings
+
+2. git gc child matching still depends on bare git argv prefix (pre-existing, carried into shared helper)
+
+• File/line: scripts/git_maintenance.py:28–29
+• Failure scenario: Trace2 child_start.argv[0] is a full path (/usr/bin/git gc …). "maintenance" in argv still matches the actual #1355 failure mode (git maintenance run --auto --quiet --detach), but argv.startswith("git gc") would miss a full-path git gc. Pre-existing semantics moved unchanged from the old test helper; not the RED failure mode claimed for this issue.
+
+───
+
+Checklist (adversarial)
+
+┌─────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────┐
+│ Criterion                           │ Result                                                                  │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Suppression values have exactly one │ Pass — only scripts/git_maintenance.py:10–13 defines the pair;          │
+│ production-neutral owner            │ fixtures/preflight/tests consume it                                     │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Fixture helpers + PrivateFetchRefs  │ Pass — helpers derive GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS / suppress  │
+│ consume owner without duplicating   │ _repo_auto_maintenance; PrivateFetchRefs.create iterates the shared     │
+│ values                              │ tuple                                                                   │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ PrivateFetchRefs persists both      │ Pass — scripts/merge_queue_preflight.py:1937–1950, right after git init │
+│ settings immediately after bare     │ --bare                                                                  │
+│ init                                │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Config failure stays in existing    │ Pass — still inside try / except Exception: temp_dir.cleanup(); raise   │
+│ cleanup/error boundary              │ (1954–1956)                                                             │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Fetch behavior + timeout semantics  │ Pass — diff only adds create-time config; fetch_sha / timeouts / git()  │
+│ unchanged                           │ argv unchanged                                                          │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ No retry, ignored cleanup error,    │ Pass                                                                    │
+│ per-command -c injection, or source │                                                                         │
+│ analyzer                            │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Trace2 regression does a real fetch │ Pass — real fetch_sha + assert_equal(fetched, requested, …)             │
+│ and checks exact requested SHA      │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Trace2 fails closed on missing      │ Fail — blocking #1                                                      │
+│ /empty/malformed/silent non-        │                                                                         │
+│ production                          │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Maintenance counted before cleanup  │ Pass — count in try before finally: private_fetch.cleanup()             │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Shared Trace2 helper in production  │ Pass (narrow) — helper lives in production-neutral git_maintenance.py;  │
+│ -neutral code without mixed prod/   │ production only imports the config constant, does not call the counter  │
+│ test duty                           │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ RED/GREEN map to reviewed code      │ Pass (path mapping only) — RED/GREEN claims correspond to               │
+│ paths                               │ PrivateFetchRefs.create + fetch_sha under Trace2; numeric event/child   │
+│                                     │ counts not re-executed in this review (not confirmed)                   │
+└─────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────┘
+
+───
+
+Verdict
+
+Not code-complete for #1355 at 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987 until the Trace2 regression fails closed when the measurement channel is dead.
+
+Exact-head full CI remains pending/incomplete on this draft (many compile lanes skipped; this review did not dispatch CI).
+
+No edits, comments, CI dispatches, or fixes were made.
+
+---
+
+Grok: Reviewer
+
+┌────────────┬───────────────────────────────────────────────────────────────────────────┐
+│ Field      │ Value                                                                     │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Source     │ Grok (xAI) interactive CLI — review-only, no GitHub comments / CI / edits │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Model      │ Grok 4.5                                                                  │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ PR         │ #1358 fix/1355-private-fetch-maintenance                                  │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Exact head │ 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987 (matches GitHub head)            │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Base       │ main @ 7095c6f5f250b99a453300fafd0c9046c3da4a5b                           │
+├────────────┼───────────────────────────────────────────────────────────────────────────┤
+│ Issue      │ #1355                                                                     │
+└────────────┴───────────────────────────────────────────────────────────────────────────┘
+
+───
+
+Blocking findings
+
+1. Trace2 regression is fail-open: missing / empty / silent / malformed trace is accepted as “zero maintenance children”
+
+• Files/lines:
+  • scripts/git_maintenance.py:17–30 (count_trace2_maintenance_children)
+  • scripts/test_merge_queue_preflight.py:1616–1641 (assert_private_fetch_sha_spawns_no_background_maintenance)
+• Failure scenario:
+  GIT_TRACE2_EVENT is set, but Trace2 produces no usable log (env not inherited as expected, Trace2 disabled/unsupported, path never written, empty file, or only non-JSON / unparseable lines). The helper returns 0 when the path is missing, returns 0 for an empty file, and silently skips malformed JSON lines (except ValueError: continue). The new regression then only asserts maintenance_children == 0 and never requires:
+  • that the trace file exists,
+  • that it is non-empty,
+  • that any parseable Trace2 events were produced,
+  • or a live-channel control (unsuppressed path must show ≥1 maintenance child).
+• Why it blocks #1355: This is the sole PR-added proof that PrivateFetchRefs.fetch_sha no longer detaches maintenance. A green test under a dead Trace2 channel does not prove zero maintenance children; it proves the counter saw nothing. That is exactly “zero events accepted as zero maintenance children.”
+• Contrast (same PR tree): scripts/test_governance_diff_analysis.py push coverage still has a positive control (unsuppressed == 0 → fail). The new PrivateFetchRefs test does not.
+
+───
+
+Non-blocking findings
+
+2. git gc child matching still depends on bare git argv prefix (pre-existing, carried into shared helper)
+
+• File/line: scripts/git_maintenance.py:28–29
+• Failure scenario: Trace2 child_start.argv[0] is a full path (/usr/bin/git gc …). "maintenance" in argv still matches the actual #1355 failure mode (git maintenance run --auto --quiet --detach), but argv.startswith("git gc") would miss a full-path git gc. Pre-existing semantics moved unchanged from the old test helper; not the RED failure mode claimed for this issue.
+
+───
+
+Checklist (adversarial)
+
+┌─────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────┐
+│ Criterion                           │ Result                                                                  │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Suppression values have exactly one │ Pass — only scripts/git_maintenance.py:10–13 defines the pair;          │
+│ production-neutral owner            │ fixtures/preflight/tests consume it                                     │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Fixture helpers + PrivateFetchRefs  │ Pass — helpers derive GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS / suppress  │
+│ consume owner without duplicating   │ _repo_auto_maintenance; PrivateFetchRefs.create iterates the shared     │
+│ values                              │ tuple                                                                   │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ PrivateFetchRefs persists both      │ Pass — scripts/merge_queue_preflight.py:1937–1950, right after git init │
+│ settings immediately after bare     │ --bare                                                                  │
+│ init                                │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Config failure stays in existing    │ Pass — still inside try / except Exception: temp_dir.cleanup(); raise   │
+│ cleanup/error boundary              │ (1954–1956)                                                             │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Fetch behavior + timeout semantics  │ Pass — diff only adds create-time config; fetch_sha / timeouts / git()  │
+│ unchanged                           │ argv unchanged                                                          │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ No retry, ignored cleanup error,    │ Pass                                                                    │
+│ per-command -c injection, or source │                                                                         │
+│ analyzer                            │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Trace2 regression does a real fetch │ Pass — real fetch_sha + assert_equal(fetched, requested, …)             │
+│ and checks exact requested SHA      │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Trace2 fails closed on missing      │ Fail — blocking #1                                                      │
+│ /empty/malformed/silent non-        │                                                                         │
+│ production                          │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Maintenance counted before cleanup  │ Pass — count in try before finally: private_fetch.cleanup()             │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Shared Trace2 helper in production  │ Pass (narrow) — helper lives in production-neutral git_maintenance.py;  │
+│ -neutral code without mixed prod/   │ production only imports the config constant, does not call the counter  │
+│ test duty                           │                                                                         │
+├─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ RED/GREEN map to reviewed code      │ Pass (path mapping only) — RED/GREEN claims correspond to               │
+│ paths                               │ PrivateFetchRefs.create + fetch_sha under Trace2; numeric event/child   │
+│                                     │ counts not re-executed in this review (not confirmed)                   │
+└─────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────┘
+
+───
+
+Verdict
+
+Not code-complete for #1355 at 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987 until the Trace2 regression fails closed when the measurement channel is dead.
+
+Exact-head full CI remains pending/incomplete on this draft (many compile lanes skipped; this review did not dispatch CI).
+
+No edits, comments, CI dispatches, or fixes were made.
+GLM: I now have all the information needed. Let me compile the findings.
+Reviewer Source and Model
+- Reviewer source: opencode (interactive CLI tool)
+- Exact model: zai-coding-plan/glm-5.2
+Verification Summary
+Verification Point	Result
+Suppression values have one production-neutral owner	PASS — git_maintenance.py:9 is the sole definition
+Fixture helpers and PrivateFetchRefs consume without duplicating	PASS — all consumers import from git_maintenance
+PrivateFetchRefs persists both settings immediately after bare init	PASS — merge_queue_preflight.py:1942 loops config between git init --bare and git rev-parse
+Configuration failure inside existing cleanup/error boundary	PASS — git() defaults check=True; failure raises into the except Exception: temp_dir.cleanup(); raise block at merge_queue_preflight.py:1951
+Fetch behavior and timeout semantics unchanged	PASS — fetch_sha is untouched; config uses same input_timeout_seconds
+No retry, ignored cleanup, per-command flag injection, or analyzer	PASS — diff contains none of these
+Trace2 regression performs real fetch and checks exact SHA	PASS — test_merge_queue_preflight.py:1621 calls fetch_sha on a real fixture and asserts fetched == requested
+Trace2 test fails on missing/empty/malformed/absent trace	FAIL — see blocking finding below
+Maintenance counted before cleanup	PASS — count_trace2_maintenance_children called in try block; cleanup() in finally
+Shared Trace2 helper in production-neutral code without mixed responsibility	NON-BLOCKING — see finding below
+RED and GREEN measurements correspond to reviewed code paths	PASS — RED on unmodified main (no config loop); GREEN on reviewed code (config loop present)
+Blocking Findings
+B1: Trace2 regression test passes vacuously when tracing is absent
+File: scripts/git_maintenance.py:15 and scripts/test_merge_queue_preflight.py:1624
+Failure scenario: count_trace2_maintenance_children returns 0 for every failure mode of the trace file:
+- Missing file: trace_path.exists() is False → returns 0 (line 16)
+- Empty file: splitlines() yields [] → returns 0
+- Malformed file: every json.loads raises ValueError → continue → returns 0 (line 22)
+- Silently not produced: git ignores GIT_TRACE2_EVENT (unsupported version, permission error, invalid path) → file never created → returns 0
+- Zero events: file exists but contains no child_start events → returns 0
+The test assert_private_fetch_sha_spawns_no_background_maintenance asserts maintenance_children == 0 (line 1635) without first verifying the trace file exists and contains real events. All five cases above produce 0, and the test accepts 0 as proof that suppression worked.
+Compare with the existing assert_push_to_fixture_remote_spawns_no_background_maintenance in test_governance_diff_analysis.py:188, which has a positive control — the unsuppressed remote must produce >0 children, so a missing trace file fails the unsuppressed arm. The new test has no positive control and no trace-existence check.
+Impact: The regression test provides false confidence. If GIT_TRACE2_EVENT is silently not honored in any environment, the test passes without exercising the actual suppression logic. The issue's verification bar explicitly requires: "the Trace2 test fails if the trace file is missing, empty, malformed, or silently not produced; zero events must not be accepted as 'zero maintenance children.'" The code does not meet this bar.
+Non-Blocking Findings
+N1: count_trace2_maintenance_children is a test-only function in a module imported by production code
+File: scripts/git_maintenance.py:15
+merge_queue_preflight.py:31 imports GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG from git_maintenance, making the entire module — including count_trace2_maintenance_children — part of the production import graph. However, count_trace2_maintenance_children is consumed only by test_governance_diff_analysis.py:14 and test_merge_queue_preflight.py:33. No production caller uses it.
+This creates a minor mixed-responsibility concern: production code imports a module containing a test-only utility. The function is pure (file read + JSON parse + counter) with no side effects, so there is no runtime risk. The concern is purely architectural. The function could live in ci_workflow_hygiene_test_helpers.py (which all test consumers already import) leaving git_maintenance.py as the sole owner of the config constant consumed by both production and test code.
+Impact: No correctness or safety impact. Architectural cleanliness only.
+Conclusion
+One blocking finding (B1). The Trace2 regression test can pass vacuously when tracing is absent, missing, empty, or malformed. The fix requires the test to assert trace file existence and at least one event before accepting zero maintenance children, or to add a positive control analogous to the existing unsuppressed-remote pattern.
+Kimi: Head verified: GitHub headRefOid for PR #1358 is exactly 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987 — matches the requested SHA,
+   so I proceeded. Review-only: no edits, comments, or CI dispatched. Read the diff and full file regions at that exact tree via
+   git show/git grep against the fetched FETCH_HEAD.
+
+   Findings
+
+   Blocking
+
+   B1 — New Trace2 regression accepts zero events as "zero maintenance children" (not fail-closed).
+   • scripts/test_merge_queue_preflight.py:1616-1641 (specifically :1628 and :1637-1641), relying on
+     scripts/git_maintenance.py:18-23.
+   • Failure scenario: count_trace2_maintenance_children returns 0 when the trace file is missing (:18), empty, or every line is
+     malformed JSON (:21-22 except ValueError: continue). If GIT_TRACE2_EVENT is silently not honored — git built without trace2,
+     unwritable path, env var renamed, or a future change that makes run_command/git() pass a sanitized env — the file is never
+     produced, the counter returns 0, and assert_equal(maintenance_children, 0, …) at :1637 passes. There is no assertion that the
+     trace exists, is non-empty, is valid JSON, or that any child_start/event was observed. The fetched == requested check at :1636
+      does not guard this: a real git fetch succeeds even when Trace2 writes nothing. So the test reports GREEN while having
+     observed no Trace2 data — exactly the "zero events accepted as zero maintenance children" outcome issue #1355's verification
+     forbids, and it falls short of the fail-closed-evidence bar for config changes in AGENTS.md. Note the same helper is used
+     fail-closed in test_governance_diff_analysis.py:190-194 only because that test adds an explicit unsuppressed-control (!= 0);
+     the new preflight test has no such baseline.
+
+   Non-blocking
+
+   None substantive. One context note (not against this PR's diff): scripts/test_governance_diff_analysis.py:202-224
+   (assert_routed_fixture_module_spawns_no_background_maintenance) shares the counter's fail-open-on-missing-trace shape, but that
+   path is pre-existing and only had its helper renamed here (_maintenance_children → count_trace2_maintenance_children); the PR
+   did not introduce it.
+
+   Verification-point results (against #1355 and the diff)
+
+   • Single production-neutral owner of suppression values — satisfied. Defined only at scripts/git_maintenance.py:10-12; every
+     other use (ci_workflow_hygiene_test_helpers.py:19/24-26/1814, merge_queue_preflight.py:31/1942, both test files) imports or
+     iterates it. Grep confirms no second gc.auto/maintenance.auto value definition (remaining hits are docstrings/comments).
+   • Fixture helpers and PrivateFetchRefs consume the owner without duplicating values — satisfied; both loop the imported tuple
+     (:1814, :1942), and GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS is derived from it (:24-28).
+   • Persists both settings immediately after bare init — satisfied; the loop at merge_queue_preflight.py:1942-1950 runs right
+     after git init --bare (:1936) and before rev-parse (:1951), through the timeout-aware git() path.
+   • Configuration failure stays inside the existing cleanup/error boundary — satisfied; the loop sits in the existing try (:1935)
+     whose except Exception: temp_dir.cleanup(); raise (:1961-1963) still governs it, and git() defaults check=True (:2320), so a
+     config failure raises into that boundary.
+   • Fetch behavior and timeout semantics unchanged — satisfied; fetch_sha (:1996-2016) and run_command timeout/kill/check
+     (:2285-2313) are untouched, and the new calls reuse input_timeout_seconds.
+   • No retry / ignored cleanup error / per-command flag injection / source analyzer introduced — satisfied; no retry added;
+     temp_dir.cleanup() errors are not swallowed; the PrivateFetchRefs path persists repo-local config rather than injecting -c
+     flags (the fixture repo_git_command -c injection at :1788 is pre-existing and unchanged); the new module is the sanctioned
+     stdlib Trace2 event counter, not a source/command analyzer.
+   • Real fetch + exact requested SHA — satisfied; make_pr returns the commit SHA pushed to the remote (:174-177), fetch_sha runs a
+     real git fetch <origin> <SHA>:<ref> and returns rev-parse <ref> (:2000-2016), asserted equal at :1636.
+   • Maintenance counted before cleanup — satisfied; count at :1628 is in the try, cleanup in finally at :1634.
+   • Shared Trace2 helper production-neutral, no mixed prod/test responsibility — satisfied; git_maintenance.py is stdlib-only
+     (json, pathlib), and production imports only the constant, never the counter.
+   • RED/GREEN correspond to reviewed code paths — satisfied; RED was the manual fetch_sha measurement on unmodified main, GREEN is
+     the encoded assertion on the same fetch_sha path now suppressed, and the event/child deltas (82→70, 5→4, 1→0 maintenance)
+     match removing exactly one maintenance child. (RED being manual is the issue's stated design.)
+
+   Net: one blocking finding (B1). The production change and single-owner refactor are sound; the gap is solely that the new GREEN
+   regression is not fail-closed about Trace2 actually producing data.
+
+   Reviewer source and model
+
+   • Reviewer source: Kimi Code CLI
+   • Exact configured model: kimi-k2.7-code (per ci/ai-review.toml [kimi].model)
+   • Exact-head full CI: not run and not evaluated — review-only scope, no CI dispatched; PR is draft/mergeable at
+     543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987.
+
+---
+
+so what do you suggest
+
+---
+
+you need to generate a review request promtp
+
+---
+
+Grok: Review metadata
+
+┌────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────┐
+│ Field                      │ Value                                                                            │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ Verified GitHub head       │ 1189e675a0719a0eabb21c72711756612a0bc9ed (matches gh head)                       │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ Base                       │ main @ 7095c6f5f250b99a453300fafd0c9046c3da4a5b                                  │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ Superseded head (not       │ 543b841eb3d8b8f7594b8fa4f635e5cc3ce5f987                                         │
+│ reviewed)                  │                                                                                  │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ Reviewer source            │ Grok (xAI) interactive CLI — review-only                                         │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ Exact model                │ Grok 4.5                                                                         │
+├────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ Scope                      │ Full diff vs base + full-file regions for changed production/test paths; AGENTS  │
+│                            │ .md + #1355                                                                      │
+└────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────┘
+
+No edits, comments, CI dispatch, ready/queue/merge actions.
+
+───
+
+Findings
+
+No substantive findings.
+
+───
+
+Previous findings — disposition
+
+┌──────┬──────────────────────────────────┬─────────────────────────────────────────────────────────────────────┐
+│ ID   │ Finding                          │ Disposition at 1189e6…                                              │
+├──────┼──────────────────────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ B1   │ Fail-open Trace2 regression (    │ Resolved. Shared reader fails closed; PrivateFetchRefs regression   │
+│      │ missing/empty/malformed/silent → │ requires ≥1 child_start before accepting 0 maintenance children;    │
+│      │ accepted as 0 maintenance        │ dedicated unit coverage for unusable traces.                        │
+│      │ children)                        │                                                                     │
+├──────┼──────────────────────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ GLM  │ Test-only Trace2 parser co-      │ Resolved. scripts/git_maintenance.py owns only GIT_AUTO_            │
+│ N1   │ located in production-imported   │ MAINTENANCE_SUPPRESSION_CONFIG. Trace2 parsing lives in scripts/ci_ │
+│      │ module                           │ workflow_hygiene_test_helpers.py (test-helper import graph only; no │
+│      │                                  │ non-test production consumer).                                      │
+├──────┼──────────────────────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ Grok │ Full-path git gc argv matching   │ Not a finding. Matching logic is unchanged for the measured git     │
+│ N2   │                                  │ maintenance run --auto --quiet --detach mode ("maintenance" in " ". │
+│      │                                  │ join(argv)). Diff does not worsen that path; out of #1355 scope.    │
+└──────┴──────────────────────────────────┴─────────────────────────────────────────────────────────────────────┘
+
+───
+
+Checklist against requested verification
+
+┌────┬────────────────────────────────────┬────────┬────────────────────────────────────────────────────────────┐
+│ #  │ Criterion                          │ Result │ Evidence                                                   │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 1  │ Fail closed on missing / empty /   │ Pass   │ ci_workflow_hygiene_test_helpers.py:36–56 raises on        │
+│    │ malformed / silent Trace2          │        │ missing, empty, invalid JSON, non-object lines; unit test  │
+│    │                                    │        │ test_governance_diff_analysis.py:105–122                   │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 2  │ Requires usable, parseable Trace2  │ Pass   │ Every non-empty line must json.loads to a dict before      │
+│    │ stream                             │        │ counting                                                   │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 3  │ Requires ≥1 child event before     │ Pass   │ test_merge_queue_preflight.py:1627–1638: count_trace2_     │
+│    │ accepting 0 maintenance/GC         │        │ children then hard-fail if trace_children == 0, then       │
+│    │                                    │        │ assert maintenance == 0                                    │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 4  │ Real fetch + fetched SHA ==        │ Pass   │ fetch_sha(str(fixture.remote), requested, "probe") +       │
+│    │ requested SHA                      │        │ assert_equal(fetched, requested, …)                        │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 5  │ Count maintenance before cleanup   │ Pass   │ Counts inside try before finally: private_fetch.cleanup()  │
+│    │                                    │        │ (1625–1634)                                                │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 6  │ Single production-neutral owner    │ Pass   │ Sole definition: git_maintenance.py:6–9; helpers/preflight │
+│    │ for suppression config             │        │ /tests import it                                           │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 7  │ Trace2 parser test-only (not       │ Pass   │ Production merge_queue_preflight.py imports only the       │
+│    │ production import graph)           │        │ config constant; Trace2 helpers only from test helpers /   │
+│    │                                    │        │ tests                                                      │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 8  │ Persist both settings immediately  │ Pass   │ merge_queue_preflight.py:1937–1956 — after git init --     │
+│    │ after bare init via git(), inside  │        │ bare, git(..., "config", "--local", …, timeout_seconds=…), │
+│    │ existing cleanup boundary          │        │ still in try/except Exception: temp_dir.cleanup(); raise   │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 9  │ Fetch + timeout semantics          │ Pass   │ Production diff is import + create-time config loop only;  │
+│    │ unchanged                          │        │ fetch_sha body unchanged                                   │
+├────┼────────────────────────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ 10 │ No retries, ignored cleanup, per-  │ Pass   │ Diff has none of those patterns; suppression values have   │
+│    │ command -c injection, dual paths,  │        │ one owner                                                  │
+│    │ analyzers, parallel SoT            │        │                                                            │
+└────┴────────────────────────────────────┴────────┴────────────────────────────────────────────────────────────┘
+
+───
+
+Final verdict
+
+NO SUBSTANTIVE FINDINGS
+
+Code at 1189e675a0719a0eabb21c72711756612a0bc9ed addresses the prior blocking Trace2 fail-open issue and the production-import mixing concern for the Trace2 parser. Exact-head full CI / merge readiness is outside this review-only pass.
+GLM: I have now reviewed the complete diff and all relevant full-file regions. Here is my assessment.
+Verified GitHub Head SHA
+1189e675a0719a0eabb21c72711756612a0bc9ed — confirmed via gh pr view 1358 --json headRefOid.
+Reviewer Source and Exact Model
+- Source: opencode (interactive CLI tool)
+- Model: zai-coding-plan/glm-5.2
+Verification Matrix
+#	Verification Point	Result	Evidence
+1	Fails closed on missing/empty/malformed/absent trace	PASS	ci_workflow_hygiene_test_helpers.py:36-44 — _read_trace2_events raises AssertionError for missing file, empty file, and invalid JSON. errors="strict" on read_text raises on invalid UTF-8.
+2	Requires usable, parseable Trace2 event stream	PASS	ci_workflow_hygiene_test_helpers.py:35-54 — every line must parse as JSON dict; non-dict lines raise. Both counters call _read_trace2_events first.
+3	Requires ≥1 child event before accepting zero maintenance	PASS	test_merge_queue_preflight.py:1623-1624 — count_trace2_children(trace) called; line 1635: if trace_children == 0: raise AssertionError(...) before the zero-maintenance assertion.
+4	Real fetch, fetched SHA == requested SHA	PASS	test_merge_queue_preflight.py:1620 — fetch_sha(str(fixture.remote), requested, "probe"); line 1634: assert_equal(fetched, requested, "private fetch SHA").
+5	Maintenance counted before cleanup	PASS	test_merge_queue_preflight.py:1623-1624 — both counts inside try block; private_fetch.cleanup() at line 1628 in finally.
+6	Single production-neutral owner for suppression config	PASS	git_maintenance.py:7-9 — sole definition. merge_queue_preflight.py:31, ci_workflow_hygiene_test_helpers.py:20, test_merge_queue_preflight.py:34 all import from it.
+7	Trace2 parser test-only, not in production import graph	PASS	git_maintenance.py contains only GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG (9 lines). All Trace2 functions live in ci_workflow_hygiene_test_helpers.py. merge_queue_preflight.py imports only the config constant from git_maintenance.
+8	Persists both settings after git init --bare, via git(), inside error boundary	PASS	merge_queue_preflight.py:1942-1950 — config loop between git init --bare (line 1936) and git rev-parse (line 1951). Uses git() with check=True (default) and timeout_seconds=input_timeout_seconds. Entire block inside try/except Exception: temp_dir.cleanup(); raise (lines 1956-1958).
+9	Fetch behavior and timeout semantics unchanged	PASS	fetch_sha (lines 1989-2006) is byte-identical to main. git() and run_command() signatures unchanged.
+10	No retries, fallbacks, ignored cleanup, flag injection, duplicates, analyzers	PASS	Diff contains a one-time config loop, Trace2 parsing in test helpers, and tests. No per-command -c injection. No retry logic. No analyzer. No duplicate config values.
+Previous Findings Disposition
+B1 — Fail-open Trace2 regression → RESOLVED
+Was: count_trace2_maintenance_children returned 0 for missing/empty/malformed traces; test accepted 0 as success with no positive control.
+Now: _read_trace2_events (ci_workflow_hygiene_test_helpers.py:35) raises AssertionError for all unusable-trace cases. The test (test_merge_queue_preflight.py:1623-1636) calls count_trace2_children first and raises if zero child events before checking maintenance. A dedicated meta-test assert_trace2_maintenance_counter_fails_closed_on_unusable_trace (test_governance_diff_analysis.py:106-131) validates missing, empty, and malformed cases plus confirms a valid non-child event returns 0.
+GLM N1 — Test-only parser in production-imported module → RESOLVED
+Was: git_maintenance.py contained both the config constant and count_trace2_maintenance_children, making test utilities reachable from the production import graph.
+Now: git_maintenance.py is 9 lines containing only GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG. All Trace2 parsing functions (_read_trace2_events, count_trace2_children, count_trace2_maintenance_children) live exclusively in ci_workflow_hygiene_test_helpers.py. Production code (merge_queue_preflight.py:31) imports only the config constant.
+Grok N2 — Full-path git-gc matching → NOT WORSENED, OUT OF SCOPE
+The matching logic ("maintenance" in " ".join(argv) or " ".join(argv).startswith("git gc")) is unchanged from the original _maintenance_children. The measured failure mode (git maintenance run --auto --quiet --detach) is matched by the "maintenance" in substring. The new diff does not touch this logic. Pre-existing and outside #1355.
+New Findings
+None. The new head also improves the existing assert_push_to_fixture_remote_spawns_no_background_maintenance and assert_routed_fixture_module_spawns_no_background_maintenance tests: they now use the fail-closed counter, so a missing trace file raises instead of silently returning 0.
+NO SUBSTANTIVE FINDINGS — code-complete for #1355 at 1189e675a0719a0eabb21c72711756612a0bc9ed; exact-head full CI remains pending.
+Kimi: Head verified: PR #1351 headRefOid = b861417339e1a8a1609165e068b65130fa62030a (matches the requested exact head; the PR body's
+   stale ## Head = 0cf630f9 was disregarded). Reviewed the actual tree at b861417 against main (7095c6f, = origin/main), AGENTS.md,
+   issue #1349, and the #1179 D1–D4 slice. No files edited, no comments posted, no CI dispatched.
+
+   Blocking findings
+
+   B1 — Restart appends a duplicate canonical terminal_settlement record on every boot (violates "restart is idempotent and cannot
+   duplicate evidence"; also contradicts the schema's own idempotency claim)
+
+   • src/bolt_v3_decision_evidence.rs:4289-4311 — read_settlement_booking_error_keys_for_recovery_scope now seeds the recovered set
+     from both legacy settlement_booking_error records and new terminal_settlement records (:4305 for evidence in
+     read_terminal_settlement_evidence(path, max_bytes)?). The comment at :4308 ("Canonical terminal records are state transitions,
+     so replay is idempotent") describes only the in-memory BTreeSet::insert, not the durable append.
+   • src/strategies/binary_oracle_edge_taker/mod.rs:2847-2868 — recovery branch triggers on
+     self.settlement_booking_error_keys.contains(&settlement_key) (:2851) and calls
+     apply_terminal_settlement_transition(eligibility, None, "prior_booking_error_key_on_restart …") (:2863-2867).
+   • src/strategies/binary_oracle_edge_taker/mod.rs:1346-1395 — apply_terminal_settlement_transition unconditionally calls
+     .record_terminal_settlement(&terminal_evidence) (:1380); it has no "canonical record already exists for this key" guard, and
+     the recovery caller bypasses the only in-process dedupe (the :1268 top-guard in record_settlement_booking_error).
+
+   Concrete failure scenario: a live (or first-recovery) terminal booking error writes terminal_settlement(K). Booking failed, so
+   nothing closes the venue position; it stays open across restart. On the next boot the reader re-seeds K from that very terminal
+   record into settlement_booking_error_keys, the cache re-recovers the still-open position, the :2851 branch fires, and :1380
+   appends a second terminal_settlement(K, booking_error=None). Each subsequent restart appends one more — unbounded duplicate
+   canonical evidence for one settlement key. Any JSONL consumer that counts terminal transitions or replays the stream sees
+   repeated terminal events for a single position.
+
+   It is also untested: every recovery test (position_market_lifecycle_recovered_*, adverse_path_harness.rs:1089-1340;
+   startup_settlement_recovery_replays_evidence_from_real_cache_positions, :2220) calls bootstrap_recovery_from_cache() exactly
+   once and asserts terminal_settlement_lifecycle_count == 1; none performs a second bootstrap against the same durable file, so
+   the count going to 2 on restart #2 is unasserted.
+
+   Required correction: make the durable boundary idempotent. Do not drive a recovery canonical append from a key that already
+   carries a terminal_settlement record — split the seeded set into legacy-only keys (trigger the one-time upgrade) versus
+   already-terminal keys (suppress re-append; adopt Flat in memory and skip the write). Gate the :1380 append on "no existing
+   canonical record for K", and add a two-bootstrap_recovery_from_cache() test over one evidence file asserting both
+   terminal_settlement_lifecycle_count and settlement_booking_error_count remain 1 after the second boot.
+
+   Non-blocking findings
+
+   N1 (low) — New health-surface read path panics on a poisoned lock, inconsistent with the emitter's explicit-error design
+
+   • src/bolt_v3_live_node.rs:1429 — the runtime health snapshot does self.settlement_health.lock().expect("settlement health lock
+     poisoned").clone().
+   • Contrast the emission paths added in the same PR, which map poison to an explicit error:
+     build_settlement_health_transition_emitter (live_node.rs:836) and the emit_operator_health_surface closure (live_node.rs:3136)
+     both use .lock().map_err(|_| anyhow!("settlement health lock poisoned"))?.
+
+   Concrete scenario: if any thread ever panics while holding settlement_health (currently unreachable — the guard is only used for
+   infallible apply_transition/.clone()), the mutex poisons and every subsequent health poll/snapshot panics the node via :1429,
+   whereas the emission path would surface an explicit error and continue. This cannot recreate a parked-exposure condition
+   (release precedes emission in the strategy), so it is not blocking, but it is a new crash surface introduced here and it
+   contradicts the PR's own "poison remains explicit" intent.
+
+   Required correction: mirror the emitter — replace the .expect at :1429 with map_err (or degrade to a last-known/NotConfigured
+   surface) so a poisoned lock never panics the read path.
+
+   Invariants verified as satisfied (no finding)
+
+   • Terminal eligibility. TerminalSettlementEligibility (mod.rs:297-344) has exactly the two required variants with private
+     fields/constructors; terminal_settlement_eligibility (:1284-1316) builds MarketExpired only on interval_ended_at and
+     RecoveryUnknownInterval only for RecoveryBootstrap + missing interval, otherwise anyhow::bail!.
+     record_settlement_booking_error (:1264-1283) and record_missing_interval_end_settlement_booking_error (:1416-1438) both route
+     through the gate, so pending/live-manageable/nonterminal positions fail loud and never reach Flat.
+     apply_terminal_settlement_transition is the sole consumer; no unconditional Flat helper exists.
+   • Canonical persistence. Live and recovery both emit one terminal_settlement line carrying embedded booking_error + lifecycle
+     via a single append_line (decision_evidence.rs:2003-2011, 3932-3983); legacy settlement_booking_error JSONL stays readable
+     (terminal_lifecycle #[serde(default)], :1232-1236); the recording writer emits exactly one in-memory event per call
+     (shared_fixture.rs:796-806), and the count helpers read the embedded fields rather than a synthesized second event
+     (adverse_path_harness.rs:2724-2758). (B1 is the sole exception.)
+   • Health & release ordering. Order is durable commit → key insert → exposure = Flat → health mutation → surface emit
+     (mod.rs:1380→:1383-1388→health). Key is inserted before release, so a post-release emitter failure logs and returns without
+     retry duplication; poison returns an explicit Err and cannot un-release.
+   • Config & admission. settlement_currency_for_execution_account (archetype/…:524-537) is the single predicate used by both
+     validation (:307-343) and registration (:475-477); the new POLYMARKET pool has enforce_submit_admission = false
+     (config/root.toml:155-174) and admission arming still keys on that flag in unchanged code, so the non-enforcing pool supplies
+     currency without arming submit; missing currency fails closed (validation error +
+     edge_taker_validation_fails_without_capital_pool_settlement_currency, :595).
+   • Debt & scope. No timer/gate/fallback-release/parallel latch; entry-block/entry-skip WARN dedupe is reporting-only and
+     evidence-independent (mod.rs:3929-4156, 4157-4226); NT order-book spam filtered at Error (live_node_config.rs:29-36); new
+     literals registered (runtime-literal-audit.toml:19415, :20216, :20927); the 20 files map cleanly to #1349 D1–D4 / #1179 with
+     no adjacent work.
+
+   Reviewer source: Kimi Code CLI · exact configured model: kimi-k2.7-code (per ci/ai-review.toml [kimi]). PR state at review:
+   OPEN/draft, REVIEW_REQUIRED; exact-head CI (bvs-ci-policy, coverage-enforcer, actionlint) still IN_PROGRESS — full CI remains
+   pending.
+
+---
+
+GLM, Grok didn't report substantive findings - here is Kimi
+
+ ● • Verified GitHub head SHA: 1189e675a0719a0eabb21c72711756612a0bc9ed (matches gh pr view 1358 headRefOid exactly; superseded
+     head 543b841e… not used)
+   • Reviewer source / exact model: Kimi Code CLI / kimi-k2.7-code (ci/ai-review.toml [kimi].model)
+   • Review-only: no edits, comments, CI dispatch, ready/queue/merge. Diff is git diff 7095c6f5..1189e675 (both commits local);
+     full-file regions read at the head tree.
+
+   Findings (ordered by severity)
+
+   None — blocking or non-blocking.
+
+   Non-blocking observation (not a finding, not part of the verdict): scripts/git_maintenance.py:2 still reads """Shared Git
+   auto-maintenance suppression and Trace2 inspection.""", but Trace2 inspection moved out to the test helper; the module is now
+   config-only. Cosmetic doc drift only.
+
+   Verification points (all satisfied at 1189e675)
+
+   1. Fail-closed on missing/empty/malformed/silent Trace2 — scripts/ci_workflow_hygiene_test_helpers.py:35-53
+      (_read_trace2_events) raises AssertionError for missing file (:37), empty (:39-40), invalid JSON line (:44-47), and
+      non-object line (:48-51); reads with errors="strict" (:38). git grep confirms the production path never imports this helper.
+   2. Usable, parseable stream required — same :35-53 only returns events after every line parses as a JSON object; positive
+      control at scripts/test_governance_diff_analysis.py:124-130 proves a usable {"event":"version"} stream parses and counts as
+      0.
+   3. ≥1 child event before accepting zero maintenance — scripts/test_merge_queue_preflight.py:1640-1646: trace_children =
+      count_trace2_children(trace) then if trace_children == 0: raise AssertionError(...) precedes the zero-maintenance assertion.
+      A real fetch of a new commit over the empty private repo reliably spawns children (index-pack/unpack-objects), so the bar is
+      met and not flaky.
+   4. Real fetch + exact SHA equality — :1639 fetched = private_fetch.fetch_sha(...), :1644 assert_equal(fetched, requested, …);
+      fetch_sha (merge_queue_preflight.py:2000-2016) runs a real git fetch <origin> <SHA>:<ref> and returns rev-parse <ref>;
+      make_pr returns the exact pushed head SHA.
+   5. Maintenance counted before cleanup — both counts (:1640-1641) are in the try; private_fetch.cleanup() is in the finally
+      (:1647).
+   6. Single production-neutral owner — GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG is defined only at scripts/git_maintenance.py:6-9;
+      every other use imports/iterates it (ci_workflow_hygiene_test_helpers.py:20/27/1867, merge_queue_preflight.py:31/1942,
+      test_merge_queue_preflight.py:34/1597, governance via hygiene_helpers. re-export). gc.auto/maintenance.auto elsewhere are
+      docstrings/comments only. No parallel source of truth.
+   7. Parser test-only, outside production import graph — parser lives solely in ci_workflow_hygiene_test_helpers.py;
+      git_maintenance.py is config-only (__future__ import + the tuple); git grep "ci_workflow_hygiene_test_helpers" --
+      merge_queue_preflight.py git_maintenance.py returns no matches (exit 1), so production pulls in only the config tuple.
+   8. Persist both settings immediately after git init --bare — merge_queue_preflight.py:1936-1941 init, then :1942-1950 persists
+      both keys via the timeout-aware git() (default check=True), before rev-parse (:1951), inside the existing try/except
+      Exception: temp_dir.cleanup(); raise (:1935/1961-1963).
+   9. Fetch behavior / timeout semantics unchanged — fetch_sha, git(), and run_command are not in the diff; new config calls reuse
+      input_timeout_seconds.
+   10. No retries / fallback chains / ignored cleanup errors / per-command flag injection / duplicate paths / analyzers / parallel
+       truth — none added; cleanup errors still propagate; PrivateFetchRefs persists repo-local config rather than injecting -c
+       flags (fixture repo_git_command -c injection is pre-existing and now derives from the single owner); the old local
+       _maintenance_children in test_governance_diff_analysis.py was deleted, leaving one parser; the parser reads a Trace2 event
+       log, not source.
+
+   Disposition of previous findings
+
+   • B1 (fail-open Trace2 regression) — RESOLVED. Counter is now fail-closed on usability
+     (ci_workflow_hygiene_test_helpers.py:35-53); the preflight regression additionally requires ≥1 child event
+     (test_merge_queue_preflight.py:1645-1646); and assert_trace2_maintenance_counter_fails_closed_on_unusable_trace
+     (test_governance_diff_analysis.py:105-130, registered :1150) directly asserts the shared counter rejects
+     missing/empty/malformed and accepts a usable non-child stream as 0.
+   • GLM N1 (test-only parser in production-imported module) — RESOLVED. git_maintenance.py is now config-only; the parser moved to
+     the test-only helper, which production does not import.
+   • Grok N2 (full-path git gc matching) — RE-EVALUATED, UNCHANGED/OUT OF SCOPE. Match logic "maintenance" in " ".join(argv) or "
+     ".join(argv).startswith("git gc") is byte-identical to the prior head (only relocated). The measured #1355 mode (git
+     maintenance run --auto --quiet --detach) is caught by the "maintenance" substring independent of path; the git gc branch is
+     secondary and not worsened. Not raised as a finding.
+
+   No new substantive finding with file/line evidence and a concrete failure scenario was identified.
+
+   Verdict
+
+   NO SUBSTANTIVE FINDINGS

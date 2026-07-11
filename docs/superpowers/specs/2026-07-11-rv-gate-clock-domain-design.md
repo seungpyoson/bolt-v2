@@ -53,14 +53,17 @@ evaluation event time. Future deltas are 1–347 ms, median 20 ms and p95 28 ms.
   directly. The lower-level diagnostic classifier retains an optional boundary so a
   structurally absent timestamp remains representable and fail-closed without making
   absence constructible in production pricing.
-- Book and signal triggers use NT `ts_init`. Maker pricing receives an explicit
-  evaluation stamp from its caller. Selection/local triggers explicitly convert
-  their strategy-clock evaluation instant at the timestamp-domain boundary and
-  therefore do not fall into `MissingEvaluationEventTime`.
-- Production signal `QuoteTick` handling requires its non-optional NT `ts_init`; it
-  never substitutes strategy-clock time. Structurally missing signal receive context
-  remains fail-closed. A genuinely local trigger uses a distinct typed constructor
-  that captures strategy time once at handler entry.
+- Book triggers use NT `ts_init`. Signal triggers may use NT `ts_init` only after
+  the producing adapter proves that it is captured from the local receive clock;
+  a field name alone is not timestamp-domain evidence. Maker pricing receives an
+  explicit evaluation stamp from its caller. Selection/local triggers explicitly
+  convert their strategy-clock evaluation instant at the timestamp-domain boundary
+  and therefore do not fall into `MissingEvaluationEventTime`.
+- Production signal `QuoteTick` handling requires a non-optional, adapter-proven
+  local-receive `ts_init`; it never substitutes strategy-clock time. Structurally
+  missing or event-clock-derived signal receive context remains fail-closed. A
+  genuinely local trigger uses a distinct typed constructor that captures strategy
+  time once at handler entry.
 - `MissingEvaluationEventTime` remains fail-closed only for a structurally absent
   receive stamp. No production trigger is allowed to construct that shape.
 
@@ -106,6 +109,29 @@ state.
 
 This closes the ownership boundary in function signatures instead of relying on
 call-site convention. No tolerance window or fallback comparison is introduced.
+
+### Binance SBE Receive-Timestamp Prerequisite
+
+The live BTC signal path uses Binance Spot SBE. In pinned Nautilus Trader
+`9e71b2b`, `parse_bbo_event` assigns the Binance event timestamp to both
+`QuoteTick.ts_event` and `QuoteTick.ts_init`. Bolt then treats `ts_init` as local
+receive time. Consequently, the current BTC signal path can still compare an RV
+local-receive watermark with a Binance event clock and preserve the #1354 flap.
+
+This is a blocking prerequisite for the #1354 ownership change, not a Bolt-side
+venue exception:
+
+- The pinned NT Binance SBE message-handling boundary must capture local receive
+  time once and pass it into `parse_bbo_event` as `ts_init`, following the adapter
+  ownership pattern used by other live market-data adapters.
+- `ts_event` remains the Binance event timestamp. `ts_init` becomes the actual local
+  receive timestamp; the two values must be independently testable.
+- Bolt consumes the corrected typed `ts_init` without re-stamping, fallback, venue
+  branching, or tolerance logic.
+- A differential with `ts_event != ts_init` must prove the adapter preserves both
+  domains and that the Bolt signal-trigger path classifies RV using `ts_init`.
+- #1354 implementation beyond this prerequisite cannot begin while the pinned NT
+  dependency still fabricates Binance SBE `ts_init` from `ts_event`.
 
 ## Behavioral Blast Radius
 
@@ -183,11 +209,11 @@ recovery remain required long-term but are not bundled into this change.
   no new archive upload. Classification and handling of that pre-#883 artifact remain
   with #883/#763.
 
-## Adjacent Reference-Price Clock-Domain Review Gate
+## Confirmed Separate Reference-Price Clock-Domain Defect
 
 Reference-current-price freshness remains on its existing event-time contract and is
-not changed by #1354. A separate review must determine whether that contract contains
-the same clock-domain ownership defect:
+not changed by #1354. Review at exact head `f572791db` confirmed that contract has
+the same clock-domain ownership defect, but it is separable from the RV correction:
 
 - `current_reference_pricing_event_ms` selects the maximum event timestamp across the
   selected pricing spot, the reference-current-price observation, and active
@@ -195,28 +221,23 @@ the same clock-domain ownership defect:
 - `reference_current_price_stale_at` subtracts each observation's venue event time
   from that combined evaluation value. If the clocks are independent, a fresh input
   can appear old and fail closed as `SpotPriceMissing` or reference-price stale.
-- The known configured age window is much larger than the incident's measured
-  millisecond skew, so this may be a structurally invalid comparison with little or
-  no current production impact. That must be established from call sites, timestamp
-  provenance, configuration, and replay evidence rather than assumed.
+- All live configurations use a 2,000 ms age limit. A cross-clock difference of
+  2,001 ms changes behavior even when both inputs are receive-fresh. The incident's
+  1-347 ms measurement covered a different clock pair and does not bound this path;
+  present production frequency remains unmeasured.
 
-The review must answer four questions before any implementation is proposed:
+The follow-up ownership rule is evaluation receive time compared only with each
+input's receive time. Venue event timestamps remain available for same-source
+ordering, interval membership, and diagnostics. The follow-up must retain typed
+receive timestamps throughout pricing and active state; cover primary, failover,
+taker entry, maker selection, source-health/live-window checks, and forced-flat
+reference freshness; and correct stale spot evidence currently labeled
+`SpotPriceMissing`. No tolerance window, venue exception, or enlarged freshness
+limit is acceptable.
 
-1. Are two independently clocked venue event timestamps directly compared on a live
-   entry path, or are the values normalized into one domain upstream?
-2. Can realistic observed or configured skew change admission, evidence, or dedupe
-   behavior, and what fail-closed reason results?
-3. Is receive-domain context available for every reference-price evaluation and
-   input, including fallback/failover sources?
-4. Would correcting the comparison require the same pricing-layer types touched by
-   #1354, making separation unsafe, or can it remain a clean follow-up issue and PR?
-
-If confirmed, the expected ownership rule is evaluation receive time compared only
-with input receive time. Venue event timestamps remain available for diagnostics and
-provider-specific computation. No tolerance window, venue exception, or enlarged
-freshness limit is acceptable. The confirmed defect must receive its own issue,
-branch, design, and PR unless reviewers prove that #1354 cannot establish a coherent
-pricing API without changing both gates atomically.
+This work requires its own issue, branch, design, and PR after #1354. Filing the
+issue requires explicit user approval. It is not added to the four already approved
+PRs, and this document does not authorize implementation or GitHub state changes.
 
 Maker production wiring is also outside this change: #1354 closes the shared maker
 pricing interface contract and its route-level tests without adding a new runtime

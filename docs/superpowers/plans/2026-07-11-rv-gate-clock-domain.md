@@ -20,11 +20,12 @@
 
 ---
 
-### Task 0: Obtain a ruling on the adjacent reference-price clock domain
+### Task 0: Record the reference-price ruling and gate the separate follow-up
 
-Complete this read-only review gate before amendment implementation. Do not change
-reference-price behavior in #1354 without an explicit ruling that the pricing API
-cannot be made coherent otherwise.
+The read-only review gate is complete at exact head `f572791db`: independently
+clocked signal/reference event timestamps are directly compared on the live taker
+entry path. This is a confirmed, separable defect. Do not change reference-price
+behavior in #1354.
 
 **Files to inspect:**
 - `src/strategies/binary_oracle_edge_taker/mod.rs`
@@ -37,14 +38,46 @@ cannot be made coherent otherwise.
 - Evaluation owner: entry trigger receive timestamp and the existing `reference_gate_event_ms` path.
 - Consumer: `reference_current_price_stale_at` and its entry block reasons/evidence.
 
-- [ ] Trace every producer of the three values combined by `current_reference_pricing_event_ms`; identify the physical clock and venue for each.
-- [ ] Enumerate every live caller of `reference_current_price_stale_at`, including primary and failover reference sources, and state the admission/evidence consequence of rejection.
-- [ ] Prove or refute that independently clocked venue event timestamps are directly ordered on the live path.
-- [ ] Compare configured freshness limits with measured and plausible venue skew; identify the exact skew required to change behavior without treating a large limit as semantic correctness.
-- [ ] Determine whether every producer already carries a trustworthy local receive timestamp and whether any structurally missing receive context exists.
-- [ ] Construct a synthetic differential or archived replay showing whether event-clock skew alone can change the stale result while receive freshness remains valid. This investigation may specify the test; do not add it to #1354 unless reviewers rule that atomic ownership is required.
-- [ ] Rule on scope: not a defect, confirmed separate issue/PR, or inseparable pricing-layer correction required before #1354 implementation.
-- [ ] If confirmed as separate work, obtain user approval before filing its issue; use no closing keywords and do not bundle it into the four already approved PRs.
+- [x] Trace the combined values and their physical clocks: Binance/OKX signal event time and Chainlink/PolyResearch reference event time are not normalized upstream.
+- [x] Confirm the live consequence: receive-fresh inputs can fail closed as `SpotPriceMissing` or `ReferenceCurrentPriceStale`; alternating reason sets can churn entry-skip evidence.
+- [x] Confirm the threshold: all live configurations use 2,000 ms and a 2,001 ms event-clock difference is discriminating; current frequency is unmeasured.
+- [x] Rule B: confirmed separate issue/branch/design/PR, sequenced after #1354 so it can consume the evaluation receive stamp established here.
+- [ ] Obtain explicit user approval before filing the separate issue. Do not use closing keywords or bundle it into the four already approved PRs.
+- [ ] In that separate design, census primary, failover, taker, maker, selector/source-health live-window, forced-flat freshness, retained receive timestamps, and the `SpotPriceMissing` mislabel.
+
+---
+
+### Task 0A: Correct the Binance SBE receive timestamp before #1354 implementation
+
+This is a blocking #1354 prerequisite and must be completed before Task 1. BTC
+production uses Binance Spot SBE, and pinned NT `9e71b2b` currently assigns the
+Binance event time to both `ts_event` and `ts_init`. Do not treat that `ts_init` as
+receive-domain evidence.
+
+**Upstream files to inspect and change in the pinned NT dependency source:**
+- `crates/adapters/binance/src/spot/websocket/streams/parse.rs`
+- The Binance Spot SBE WebSocket message handler that invokes `parse_bbo_event`
+- Its adapter tests covering BBO parsing and handler timestamp capture
+
+**Bolt files to verify:**
+- `Cargo.toml`
+- `Cargo.lock`
+- `src/strategies/binary_oracle_edge_taker/mod.rs`
+- `config/root.toml`
+- `config/strategies/binary_oracle_btc.toml`
+
+**Interfaces:**
+- Producer: Binance SBE handler captures one local receive timestamp at message handling.
+- Parser: `parse_bbo_event` receives both provider event time and local receive time and assigns them to `QuoteTick.ts_event` and `QuoteTick.ts_init` respectively.
+- Consumer: Bolt's signal observation and exit trigger use corrected `QuoteTick.ts_init` as `LocalReceiveMs` without restamping.
+
+- [ ] Add an NT adapter differential with deliberately unequal event and receive timestamps; on pinned `9e71b2b`, record the RED showing `ts_init == ts_event` instead of the supplied receive time.
+- [ ] Change the Binance SBE handler/parser ownership boundary so local receive time is captured once by the handler and passed explicitly into BBO parsing.
+- [ ] Verify the NT differential GREEN: `ts_event` preserves Binance event time and `ts_init` preserves the supplied local receive time.
+- [ ] Update Bolt's pinned NT revision through the repository's existing dependency update path; do not patch the Cargo checkout or introduce a Bolt-side venue branch.
+- [ ] Add or strengthen a Bolt differential where `ts_event != ts_init` and an RV watermark is receive-fresh only under `ts_init`; prove signal-trigger classification and evidence follow `ts_init`.
+- [ ] Verify BTC configuration reaches the corrected Binance SBE path and record the exact NT revision as evidence.
+- [ ] Keep #1354 blocked until automatic exact-head remote Rust verification covers both the adapter-domain differential and the Bolt consumer differential.
 
 ---
 

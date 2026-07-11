@@ -264,7 +264,10 @@ fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface
 
 #[test]
 fn settlement_health_configuration_tracks_registered_settlement_capability() {
-    let mut loaded = fixture_loaded_config();
+    let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+        "tests/fixtures/bolt_v3/root.toml",
+    ))
+    .expect("fixture config with registered strategies should load");
     assert_eq!(
         settlement_health_from_loaded(&loaded).status,
         BoltV3OperatorHealthStatus::Nominal

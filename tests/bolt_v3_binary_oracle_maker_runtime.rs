@@ -76,6 +76,9 @@ fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolS
     RealizedVolSnapshot {
         surface_id: TEST_REALIZED_VOL_SURFACE_ID.to_string(),
         as_of_ms,
+        latest_accepted_receive_ms: Some(bolt_v2::bolt_v3_timestamp_domain::LocalReceiveMs::new(
+            as_of_ms,
+        )),
         annualized_realized_vol_decimal: Some(realized_vol),
         measured_annualized_realized_vol_decimal: Some(realized_vol),
         noise_robust_annualized_realized_vol_decimal: Some(realized_vol),

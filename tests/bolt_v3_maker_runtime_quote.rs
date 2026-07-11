@@ -28,6 +28,7 @@ use bolt_v2::{
         RealizedVolSnapshot,
     },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
+    bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
 };
@@ -65,6 +66,7 @@ fn realized_vol_snapshot(as_of_ms: u64, realized_vol: f64, ready: bool) -> Reali
     RealizedVolSnapshot {
         surface_id: TEST_REALIZED_VOL_SURFACE_ID.to_string(),
         as_of_ms,
+        latest_accepted_receive_ms: Some(LocalReceiveMs::new(as_of_ms)),
         annualized_realized_vol_decimal: Some(realized_vol),
         measured_annualized_realized_vol_decimal: Some(realized_vol),
         noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
@@ -231,6 +233,47 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             .yes
             .intent
             .is_some()
+    );
+}
+
+#[test]
+fn maker_pricing_does_not_compare_independent_venue_clocks() {
+    let mut selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        500,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let quotes = vec![reference_quote(
+        TEST_REFERENCE_ASSET,
+        "primary",
+        0.63,
+        1_000,
+    )];
+    let mut realized_volatility_snapshot = ready_realized_vol_snapshot(1_001, 1.5);
+    realized_volatility_snapshot.latest_accepted_receive_ms = Some(LocalReceiveMs::new(999));
+
+    let result = maker_reference_current_price_fair_value(
+        &mut selector,
+        1_000,
+        MakerRuntimeReferenceFairValueInput {
+            family_key: static_binary_event::KEY,
+            interval_start_ms: 1_000,
+            interval_end_ms: 2_000,
+            reference_quotes: &quotes,
+            strike_price: Some(0.50),
+            seconds_to_market_end: Some(0),
+            realized_volatility_snapshot: &realized_volatility_snapshot,
+            realized_volatility_max_source_age_ms: None,
+            pricing_kurtosis: f64::NAN,
+        },
+    );
+
+    assert!(
+        result.is_some(),
+        "maker pricing must not reject an RV source venue clock that leads by one millisecond"
     );
 }
 

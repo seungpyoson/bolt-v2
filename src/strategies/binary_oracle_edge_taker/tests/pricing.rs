@@ -1827,6 +1827,7 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: "<surface_id>".to_string(),
             as_of_ms: 1_200,
+            latest_accepted_receive_ms: Some(LocalReceiveMs::new(1_200)),
             annualized_realized_vol_decimal: Some(0.0),
             measured_annualized_realized_vol_decimal: Some(0.0),
             noise_robust_annualized_realized_vol_decimal: Some(0.0),

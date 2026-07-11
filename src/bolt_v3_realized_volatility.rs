@@ -246,6 +246,11 @@ pub struct RealizedVolObservation {
 pub struct RealizedVolSnapshot {
     pub surface_id: String,
     pub as_of_ms: u64,
+    /// Latest receive timestamp among accepted observations which contribute to
+    /// this surface. Pricing freshness is evaluated only against this watermark;
+    /// `as_of_ms` remains the surface's venue-event-time coordinate for RV math
+    /// and evidence.
+    pub latest_accepted_receive_ms: Option<LocalReceiveMs>,
     pub annualized_realized_vol_decimal: Option<f64>,
     pub measured_annualized_realized_vol_decimal: Option<f64>,
     pub noise_robust_annualized_realized_vol_decimal: Option<f64>,
@@ -301,6 +306,7 @@ impl RealizedVolSnapshot {
         Self {
             surface_id: surface_id.to_string(),
             as_of_ms,
+            latest_accepted_receive_ms: None,
             annualized_realized_vol_decimal: None,
             measured_annualized_realized_vol_decimal: None,
             noise_robust_annualized_realized_vol_decimal: None,
@@ -458,19 +464,15 @@ impl RealizedVolEngine {
         &self.config
     }
 
-    pub fn latest_event_ts(&self) -> Option<VenueEventMs> {
+    pub fn latest_accepted_event_ts(&self) -> Option<VenueEventMs> {
         self.sources
             .values()
-            .flat_map(|state| {
-                [
-                    state
-                        .samples
-                        .back()
-                        .map(|sample| VenueEventMs::new(sample.event_ts_ms)),
-                    state.last_rejected_event_ts_ms.map(VenueEventMs::new),
-                ]
+            .filter_map(|state| {
+                state
+                    .samples
+                    .back()
+                    .map(|sample| VenueEventMs::new(sample.event_ts_ms))
             })
-            .flatten()
             .max()
     }
 
@@ -533,6 +535,11 @@ impl RealizedVolEngine {
                     noise_robust: diagnostic.noise_robust_annualized_realized_vol_decimal,
                     continuous: diagnostic.continuous_annualized_realized_vol_decimal,
                     jump: diagnostic.jump_annualized_realized_vol_decimal,
+                    latest_accepted_receive_ms: state
+                        .samples
+                        .back()
+                        .map(|sample| LocalReceiveMs::new(sample.recv_ts_ms))
+                        .expect("a ready source must contain an accepted sample"),
                 });
             }
             diagnostics.push(diagnostic);
@@ -571,9 +578,14 @@ impl RealizedVolEngine {
             _ => {}
         }
         let ready = blockers.is_empty() && aggregate.is_some();
+        let latest_accepted_receive_ms = ready_values
+            .iter()
+            .map(|value| value.latest_accepted_receive_ms)
+            .max();
         RealizedVolSnapshot {
             surface_id: self.config.surface_id.clone(),
             as_of_ms,
+            latest_accepted_receive_ms,
             annualized_realized_vol_decimal: if ready { aggregate } else { None },
             measured_annualized_realized_vol_decimal: if ready { measured_aggregate } else { None },
             noise_robust_annualized_realized_vol_decimal: if ready {
@@ -815,6 +827,7 @@ struct ReadySourceValue {
     noise_robust: Option<f64>,
     continuous: Option<f64>,
     jump: Option<f64>,
+    latest_accepted_receive_ms: LocalReceiveMs,
 }
 
 fn source_diagnostic(
@@ -1264,6 +1277,7 @@ fn aggregate_component(
                 noise_robust: None,
                 continuous: None,
                 jump: None,
+                latest_accepted_receive_ms: value.latest_accepted_receive_ms,
             })
         })
         .collect::<Vec<_>>();

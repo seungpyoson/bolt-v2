@@ -24,12 +24,14 @@
 
 **Interfaces:**
 - Consumes: `ExecutionContractTrace`, NT `OrderBook::simulate_fills`, `Price::{max,min}`, `fixed::FIXED_PRECISION`.
-- Produces: market-only validation whose simulated fills cover all executable levels and preserve partial fills.
+- Produces: market-only validation whose simulated fills cover all executable levels and whose settlement closes the quantity actually filled.
 
 - [ ] Add `rejects_non_market_entry_at_market_only_guard` by changing both order and position copies to `OrderType::Limit` and asserting the market-only error.
 - [ ] Add a multi-level book mutation whose observed fills omit a deeper executable level; assert rejection by the deterministic-book guard. This is RED against the observed-last-fill price bound.
 - [ ] Replace the observed-last-fill bound with `Price::max(FIXED_PRECISION)` for buys and `Price::min(FIXED_PRECISION)` for sells, matching NT's `determine_market_price_and_volume` implementation.
-- [ ] Preserve the existing partial-depth mutation and `is_closed()` mutation so partial fills remain supported and each guard remains discriminating.
+- [ ] Sum typed entry-fill quantities with exact checked `Quantity` arithmetic and require the terminal fill to close that observed total, not the requested quantity.
+- [ ] Replace the former reversed-position mutation with an acceptance test for a deterministic partial fill whose terminal settlement closes exactly the filled quantity.
+- [ ] Remove the redundant `Position::is_closed()` assertion: exact entry-sequence equality plus one opposite-side terminal fill for the exact filled quantity already proves closure, so the assertion cannot carry an independent mutation.
 - [ ] Format with `cargo fmt` in the BVS workspace and run `just bte-fmt-check`.
 
 ### Task 2: Make BVS dependency proof the only recorded revision owner

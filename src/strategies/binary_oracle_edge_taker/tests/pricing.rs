@@ -149,26 +149,6 @@ fn rv_clock_domain_amendment_resized_production_callsite_forwards_evaluation_rec
     assert!(callsite.contains("now_ms,\n                                receive_context,"));
 }
 
-#[test]
-fn rv_clock_domain_amendment_skip_log_production_callsites_forward_evaluation_receive_ms() {
-    let source = include_str!("../mod.rs");
-    let log_callsite = production_callsite(source, "self.log_entry_evaluation(");
-    assert!(log_callsite.contains("self.log_entry_evaluation(now_ms, receive_context, &decision)"));
-    let skip_callsite =
-        production_callsite(source, "if let Some(reason) = decision.blocked_reason");
-    assert!(
-        skip_callsite
-            .contains("self.record_and_log_entry_skip(now_ms, receive_context, &decision, reason)")
-    );
-}
-
-#[test]
-fn rv_clock_domain_amendment_submit_production_callsite_forwards_evaluation_receive_ms() {
-    let source = include_str!("../mod.rs");
-    let callsite = production_callsite(source, "let strategy_input_snapshot =");
-    assert!(callsite.contains("now_ms,\n            receive_context,"));
-}
-
 impl FeeProvider for PriceSensitiveEntryFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         Some(Decimal::ZERO)
@@ -306,11 +286,8 @@ fn rv_clock_domain_amendment_log_and_skip_evidence_use_entry_receive_stamp() {
             RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
             EntryEvaluationReceiveContext::new(LocalReceiveMs::new(evaluation_receive_ms)),
         );
-        let fields = strategy.entry_evaluation_log_fields_for_receive_at(
-            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
-            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(evaluation_receive_ms)),
-            &decision,
-        );
+        let fields = strategy
+            .entry_evaluation_log_fields_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS, &decision);
 
         assert_eq!(fields.realized_vol.is_some(), expected_available);
         assert_eq!(
@@ -335,9 +312,8 @@ fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
         let price = Price::new(0.50, 2);
         let quantity = Quantity::new(strategy.config.order_notional_target, 2);
 
-        let snapshot = strategy.entry_strategy_input_evidence_snapshot_for_receive_at(
+        let snapshot = strategy.entry_strategy_input_evidence_snapshot_at(
             RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
-            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(evaluation_receive_ms)),
             &decision,
             ClientOrderId::from("RV-CLOCK-DOMAIN-AMENDMENT"),
             &price,

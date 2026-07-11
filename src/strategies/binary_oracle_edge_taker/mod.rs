@@ -164,9 +164,8 @@ mod entry_decision;
 use self::entry_decision::{
     BlockedStrategyInputDedupeKey, EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields,
     EntryEvaluationReceiveContext, EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs,
-    EntryRealizedVolatilityReceipt,
-    EntrySkipDedupeKey, EntrySubmissionDecision, ForcedFlatEvidenceInputs,
-    RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
+    EntryRealizedVolatilityReceipt, EntrySkipDedupeKey, EntrySubmissionDecision,
+    ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
     entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
     entry_skip_reason_category_from_str, push_executable_edge_pricing_block,
 };
@@ -4339,12 +4338,7 @@ impl BinaryOracleEdgeTaker {
         let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
             .then(|| reason.to_string());
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
-        if self.record_entry_skip_once(
-            now_ms,
-            decision,
-            reason_category,
-            unclassified_context,
-        )? {
+        if self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)? {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
                 self.config.strategy_id,

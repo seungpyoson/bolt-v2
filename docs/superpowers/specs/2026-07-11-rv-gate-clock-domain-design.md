@@ -57,9 +57,10 @@ evaluation event time. Future deltas are 1–347 ms, median 20 ms and p95 28 ms.
   evaluation stamp from its caller. Selection/local triggers explicitly convert
   their strategy-clock evaluation instant at the timestamp-domain boundary and
   therefore do not fall into `MissingEvaluationEventTime`.
-- A signal quote without receive metadata is converted explicitly to the strategy
-  clock at the trigger boundary. Production `QuoteTick` handlers provide `ts_init`,
-  so this is a defensive boundary conversion, not an implicit pricing fallback.
+- Production signal `QuoteTick` handling requires its non-optional NT `ts_init`; it
+  never substitutes strategy-clock time. Structurally missing signal receive context
+  remains fail-closed. A genuinely local trigger uses a distinct typed constructor
+  that captures strategy time once at handler entry.
 - `MissingEvaluationEventTime` remains fail-closed only for a structurally absent
   receive stamp. No production trigger is allowed to construct that shape.
 
@@ -73,6 +74,12 @@ reconstruct one from `now_ms` or borrow the receive time of a pricing input.
   pricing, uncertainty-band pricing, fee-uncertainty adjustment, log fields, and
   submit-linked strategy-input evidence. `now_ms` remains the wall-clock input for
   expiry and lifecycle calculations only.
+- Entry RV evaluation produces an immutable typed receipt owned by `EntryEvaluation`
+  and transferred into `EntrySubmissionDecision`. The receipt contains the gate
+  result and, when admitted, the exact surface identity, event `as_of_ms`, receive
+  watermark, realized-volatility value/source, and evidence fields used by that
+  decision. Entry logs, skip evidence, and submit-linked evidence consume this
+  receipt; they cannot query the mutable current RV state or re-run the gate.
 - Maker fair-value evaluation receives an explicit typed evaluation stamp from its
   caller. The selected reference quote's receive timestamp describes that input; it
   does not own the maker evaluation time.
@@ -89,6 +96,14 @@ retained accepted history. It does not promise a fully historical reconstruction
 present-state rejection diagnostics, source status outside the computation, or
 already-pruned samples.
 
+Across sources, the snapshot watermark is the maximum contributing receive timestamp
+over every ready quorum-counting source that can affect readiness or dispersion.
+Sources numerically excluded by a trimmed-mean or quantile selection remain causal
+contributors because their presence and value still affect readiness, dispersion,
+and which aggregate value is selected. This intentionally conservative rule prevents
+the snapshot from appearing older than any input that could change its published
+state.
+
 This closes the ownership boundary in function signatures instead of relying on
 call-site convention. No tolerance window or fallback comparison is introduced.
 
@@ -100,6 +115,10 @@ call-site convention. No tolerance window or fallback comparison is introduced.
 - Submit-linked entry evidence no longer re-decides RV freshness after an entry has
   been admitted. It records the evaluation's snapshot and therefore cannot veto an
   otherwise valid submission merely because strategy wall time advanced.
+- When a live refresh's newest accepted observation falls after the final selected
+  grid point, that unused observation no longer refreshes the snapshot watermark.
+  Staleness may therefore fail closed earlier, while spurious future-dated rejection
+  from data absent from the published computation is removed.
 - Forced-flat exits, not-ready RV, stale RV, missing snapshots, and genuinely missing
   receive context remain fail-closed.
 - Historical `RejectedFutureDated` evidence remains decodable. Event-clock deltas stay
@@ -134,17 +153,25 @@ recovery remain required long-term but are not bundled into this change.
   collapse to one evidence key afterward.
 - Alternating book, signal, and selection triggers share the receive clock and do not
   oscillate.
+- A signal trigger without NT `ts_init` remains fail-closed; no strategy-clock
+  fallback silently changes its evaluation instant.
 - Entry, exit, and maker pricing all consume the same ownership rule.
 - Independent near-stale entry differentials prove the trigger receive stamp owns
   initial uncertainty pricing, sized fee adjustment, resized fee adjustment,
   log/skip evidence, and submit-linked evidence. Each test places strategy wall time
   beyond the stale boundary while the trigger stamp remains valid, so fixing an
   earlier gate cannot mask a later re-gate.
+- After entry evaluation, replacing the pricing state's latest RV snapshot cannot
+  change log, skip, or submit evidence: all three must retain the evaluation receipt's
+  gate result and admitted snapshot identity.
 - A cutoff surface ignores both accepted observations newer than its event-time
   cutoff and eligible-but-unused observations after the final selected grid point.
   A separate regression case uses ascending event times with a larger receive time
   on an earlier contributing event and requires the maximum contributing receive
   timestamp.
+- Trimmed-mean and quantile multi-source cases require the watermark to cover every
+  ready quorum source that affects readiness or dispersion, including a source whose
+  numeric value is not selected into the final aggregate.
 - Maker pricing remains available when the RV snapshot is newer than the selected
   reference quote but not newer than the explicit maker evaluation stamp.
 - Stale receive age and truly missing receive context stay fail-closed.
@@ -152,6 +179,9 @@ recovery remain required long-term but are not bundled into this change.
 - Restart bootstrap with an open position succeeds below 1 MiB and enters existing
   blind recovery above 1 MiB.
 - Dedupe-key and `position_id=None` findings remain report-only under #1354.
+- The archived replay reads the existing incident artifact in place; this PR creates
+  no new archive upload. Classification and handling of that pre-#883 artifact remain
+  with #883/#763.
 
 Reference-current-price freshness remains on its existing event-time contract and is
 not changed by #1354. Its multi-venue ordering deserves a separate ownership census;

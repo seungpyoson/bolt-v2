@@ -153,7 +153,7 @@ fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
     }
 }
 
-fn run_spec_template() -> &'static str {
+fn run_spec_template() -> String {
     r#"
 capture_time_utc = "2026-06-02T04:27:02Z"
 created_at_utc = "2026-06-02T00:00:00Z"
@@ -309,7 +309,7 @@ manifest_schema_version = "backtesting-run-manifest.v1"
 run_id = "stale-run"
 target_bolt_v2_branch = "main"
 target_bolt_v2_ref = "refs/heads/main"
-resolved_nt_version = "6be5a5094716790a8ca2875445fde4fa2586107e"
+resolved_nt_version = "__NT_REVISION__"
 market_structure_fixture = "perps-spot"
 venue_binding_key = "stale-source-binding"
 run_purpose = "normal"
@@ -368,4 +368,9 @@ catalog_fs_rust_storage_options = {}
 data_type = "TradeTick"
 nt_instrument_id = "SYNTHETIC.SIM"
 "#
+    .replace(
+        "__NT_REVISION__",
+        &backtesting_vertical_slice::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+            .expect("BVS NautilusTrader dependency provenance"),
+    )
 }

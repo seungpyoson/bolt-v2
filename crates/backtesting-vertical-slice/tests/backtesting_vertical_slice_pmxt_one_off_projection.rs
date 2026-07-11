@@ -1646,7 +1646,8 @@ fn pmxt_l2_manifest(
         run_id: "pmxt-one-off-l2-contract-proof".to_string(),
         target_bolt_v2_branch: "main".to_string(),
         target_bolt_v2_ref: "refs/heads/main".to_string(),
-        resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
+        resolved_nt_version: backtesting_vertical_slice::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+            .expect("BVS NautilusTrader dependency provenance"),
         market_structure_fixture: MarketStructureFixture::BinaryOption,
         venue_binding_key: "synthetic-pmxt-one-off-source".to_string(),
         run_purpose: RunPurpose::Audit,

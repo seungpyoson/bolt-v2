@@ -853,6 +853,52 @@ fn durable_store_round_trips_basket_specific_recovery_state_and_enforces_size_li
 }
 
 #[test]
+fn basket_state_v1_old_bytes_remain_readable() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("basket-state.json");
+    fs::write(
+        &path,
+        include_bytes!("fixtures/bolt_v3/compatibility/basket_state_v1.json"),
+    )
+    .expect("old-byte basket fixture should write");
+    let store = BoltV3BasketStore::new(path, 65_536);
+
+    let state = match store
+        .load_recovery_state()
+        .expect("old-byte basket state should parse")
+    {
+        BoltV3BasketRecoveryState::Recovered(state) => state,
+        other => panic!("expected Recovered, got {other:?}"),
+    };
+    let expected = BoltV3BasketExecutionState::candidate(
+        "legacy-basket",
+        "legacy-strategy",
+        "legacy-client",
+        vec![("yes", "YES.POLYMARKET", dec("1"))],
+        vec![vec![dec("1")]],
+        dec("0.01"),
+        dec("100"),
+        BoltV3BasketExecutionConfig {
+            repair: BoltV3BasketRepairPolicy {
+                max_retries: 1,
+                max_book_age_ms: 1_000,
+                max_slippage_bps: 25,
+                max_depth_levels: 5,
+                allow_unwind_when_repair_denied: true,
+            },
+            unwind: BoltV3BasketUnwindPolicy {
+                max_retries: 1,
+                max_book_age_ms: 1_000,
+                max_slippage_bps: 25,
+                max_depth_levels: 5,
+            },
+        },
+    )
+    .expect("expected legacy basket semantics should be valid");
+    assert_eq!(state, expected);
+}
+
+#[test]
 fn restart_reconciliation_joins_client_id_then_venue_id_and_stucks_orphans() {
     let mut basket = reserved_basket();
     basket

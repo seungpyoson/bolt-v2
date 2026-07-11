@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `fa3391d90c1aace4733fc73dae082b4cfee6b8fa`
+  - current value: `afc014a55b51463641cc19c68bffe25cdac6588a`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1374,7 +1374,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`fa3391d90c1aace4733fc73dae082b4cfee6b8fa`. WebSocket frames flow through
+`afc014a55b51463641cc19c68bffe25cdac6588a`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family; best-bid/ask events then flow through
 `parse_bbo_event`. This NT-owned path feeds both
@@ -1483,7 +1483,7 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins NautilusTrader to
-`fa3391d90c1aace4733fc73dae082b4cfee6b8fa` on the bolt pin-fork
+`afc014a55b51463641cc19c68bffe25cdac6588a` on the bolt pin-fork
 (`seungpyoson/nautilus_trader`, branch `pin/6be5a50-sbe-schema-3-5`), which is
 upstream pin `6be5a5094716790a8ca2875445fde4fa2586107e` plus the ported
 Binance Spot SBE schema 3:5 instrument-loading fix (upstream

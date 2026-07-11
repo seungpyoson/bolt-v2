@@ -1741,7 +1741,7 @@ fn live_and_restart_terminal_settlement_share_one_canonical_schema() {
         lifecycle: sample_terminal_settlement_lifecycle(),
     };
     let restart = BoltV3TerminalSettlementEvidence {
-        settlement_key: live.settlement_key.clone(),
+        settlement_key: "MKT-1:P-RESTART".to_string(),
         booking_error: None,
         lifecycle: sample_terminal_settlement_lifecycle(),
     };

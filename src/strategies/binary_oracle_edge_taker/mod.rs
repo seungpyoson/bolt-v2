@@ -49,7 +49,8 @@ use crate::{
         option_probability_evidence as option_evidence_probability, probability_evidence,
         read_settlement_booking_error_keys_for_recovery_scope,
         read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
-        realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
+        read_terminal_settlement_keys_for_recovery_scope, realized_vol_blocker_to_exit_evidence,
+        realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
@@ -306,6 +307,12 @@ enum TerminalSettlementEligibility {
         settlement_key: String,
         observed_at_ns: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalEvidenceState {
+    PersistCanonical,
+    CanonicalAlreadyDurable,
 }
 
 impl TerminalSettlementEligibility {
@@ -759,6 +766,7 @@ pub struct BinaryOracleEdgeTaker {
     entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     settled_position_keys: BTreeSet<String>,
     settlement_booking_error_keys: BTreeSet<String>,
+    terminal_settlement_keys: BTreeSet<String>,
     settlement_close_fetch_attempts: BTreeMap<String, SettlementCloseFetchAttemptState>,
     /// Flood guard for entry-evaluation log volume: last gate+pricing block-reason
     /// sets. WARN/INFO only on set change (blocked↔unblocked); full field dump is debug.
@@ -881,6 +889,7 @@ impl BinaryOracleEdgeTaker {
             entry_reject_state: BTreeMap::new(),
             settled_position_keys: BTreeSet::new(),
             settlement_booking_error_keys: BTreeSet::new(),
+            terminal_settlement_keys: BTreeSet::new(),
             last_entry_block_reason_sets: None,
             settlement_close_fetch_attempts: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
@@ -1278,7 +1287,12 @@ impl BinaryOracleEdgeTaker {
             observed_at_ns,
         );
         let reason_detail = format!("reason={reason:?} detail={}", evidence.detail);
-        self.apply_terminal_settlement_transition(eligibility, Some(evidence), reason_detail)
+        self.apply_terminal_settlement_transition(
+            eligibility,
+            Some(evidence),
+            reason_detail,
+            TerminalEvidenceState::PersistCanonical,
+        )
     }
 
     fn terminal_settlement_eligibility(
@@ -1315,6 +1329,7 @@ impl BinaryOracleEdgeTaker {
 
     fn recovered_terminal_settlement_eligibility(
         position: OpenPositionState,
+        origin: ManagedPositionOrigin,
         settlement_key: String,
         observed_at_ns: u64,
     ) -> Result<TerminalSettlementEligibility> {
@@ -1326,7 +1341,9 @@ impl BinaryOracleEdgeTaker {
                 observed_at_ns,
             });
         }
-        if position.lifecycle.interval_end_ms().is_none() {
+        if origin == ManagedPositionOrigin::RecoveryBootstrap
+            && position.lifecycle.interval_end_ms().is_none()
+        {
             return Ok(TerminalSettlementEligibility::RecoveryUnknownInterval {
                 position,
                 settlement_key,
@@ -1341,13 +1358,15 @@ impl BinaryOracleEdgeTaker {
 
     /// The only terminal-settlement transition. Eligibility is already encoded by
     /// [`TerminalSettlementEligibility`], so no caller can release a pending,
-    /// live-manageable, or nonterminal position. The transition writes durable
-    /// booking/lifecycle evidence, publishes operator health, then releases exposure.
+    /// live-manageable, or nonterminal position. The transition first ensures
+    /// canonical durable evidence, then releases exposure, and finally attempts
+    /// the fallible operator-health mutation/report.
     fn apply_terminal_settlement_transition(
         &mut self,
         eligibility: TerminalSettlementEligibility,
         booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
         reason_detail: String,
+        evidence_state: TerminalEvidenceState,
     ) -> Result<()> {
         let position = eligibility.position();
         let settlement_key = eligibility.settlement_key().to_string();
@@ -1375,10 +1394,13 @@ impl BinaryOracleEdgeTaker {
             booking_error,
             lifecycle,
         };
-        self.context
-            .decision_evidence()
-            .record_terminal_settlement(&terminal_evidence)
-            .context("failed to persist canonical terminal settlement evidence")?;
+        if evidence_state == TerminalEvidenceState::PersistCanonical {
+            self.context
+                .decision_evidence()
+                .record_terminal_settlement(&terminal_evidence)
+                .context("failed to persist canonical terminal settlement evidence")?;
+        }
+        self.terminal_settlement_keys.insert(settlement_key.clone());
         self.settlement_booking_error_keys
             .insert(settlement_key.clone());
         self.settlement_close_fetch_attempts.remove(&settlement_key);
@@ -2852,6 +2874,7 @@ impl BinaryOracleEdgeTaker {
         {
             let eligibility = match Self::recovered_terminal_settlement_eligibility(
                 open_position.clone(),
+                ManagedPositionOrigin::RecoveryBootstrap,
                 settlement_key.clone(),
                 observed_at_ns,
             ) {
@@ -2861,10 +2884,16 @@ impl BinaryOracleEdgeTaker {
                     return;
                 }
             };
+            let evidence_state = if self.terminal_settlement_keys.contains(&settlement_key) {
+                TerminalEvidenceState::CanonicalAlreadyDurable
+            } else {
+                TerminalEvidenceState::PersistCanonical
+            };
             if let Err(error) = self.apply_terminal_settlement_transition(
                 eligibility,
                 None,
                 format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
+                evidence_state,
             ) {
                 self.enter_blind_settlement_recovery(error);
             }
@@ -2920,6 +2949,18 @@ impl BinaryOracleEdgeTaker {
                     return false;
                 }
             };
+        let recovered_terminal_settlement_keys =
+            match read_terminal_settlement_keys_for_recovery_scope(
+                &recovery.path,
+                recovery.max_bytes,
+                &recovery_scope_settlement_keys,
+            ) {
+                Ok(keys) => keys,
+                Err(error) => {
+                    self.enter_blind_settlement_recovery(error);
+                    return false;
+                }
+            };
         let recovered_settlement_evidence = match read_settlement_evidence_for_recovery_scope(
             &recovery.path,
             recovery.max_bytes,
@@ -2952,6 +2993,8 @@ impl BinaryOracleEdgeTaker {
         self.settled_position_keys.extend(recovered_settled_keys);
         self.settlement_booking_error_keys
             .extend(recovered_booking_error_keys);
+        self.terminal_settlement_keys
+            .extend(recovered_terminal_settlement_keys);
         true
     }
 

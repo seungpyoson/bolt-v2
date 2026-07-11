@@ -1921,6 +1921,19 @@ impl JsonlBoltV3DecisionEvidenceWriter {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_path(path: &Path) -> Result<Self> {
+        let file = open_decision_evidence_append_file(path).with_context(|| {
+            format!(
+                "failed to open test decision evidence file `{}`",
+                path.display()
+            )
+        })?;
+        Ok(Self {
+            file: Mutex::new(file),
+        })
+    }
+
     fn append_line(&self, line: &[u8]) -> Result<()> {
         let mut file = self
             .file
@@ -4263,6 +4276,21 @@ pub fn read_terminal_settlement_evidence(
             Ok(decoded.terminal_settlement)
         },
     )
+}
+
+pub fn read_terminal_settlement_keys_for_recovery_scope(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+    recovery_scope_settlement_keys: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    Ok(read_terminal_settlement_evidence(path, max_bytes)?
+        .into_iter()
+        .filter_map(|evidence| {
+            recovery_scope_settlement_keys
+                .contains(&evidence.settlement_key)
+                .then_some(evidence.settlement_key)
+        })
+        .collect())
 }
 
 /// Seeds startup settlement idempotency from durable settlement keys relevant to

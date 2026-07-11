@@ -1417,23 +1417,34 @@ impl BoltV3LiveNodeRuntime {
     pub fn operator_health_surface(
         &self,
         input_health: Option<BoltV3InputHealth>,
-    ) -> BoltV3OperatorHealthSurface {
-        live_operator_health_surface(
+    ) -> Result<BoltV3OperatorHealthSurface> {
+        let settlement_health = self
+            .settlement_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))?
+            .clone();
+        Ok(live_operator_health_surface(
             self.order_reject_observer_feed.as_ref(),
             &self.submit_admission,
             self.capital_admission_runtime_feed.is_some(),
             self.input_health_configured_source_count,
             input_health,
-            self.settlement_health
-                .lock()
-                .expect("settlement health lock poisoned")
-                .clone(),
-        )
+            settlement_health,
+        ))
     }
 
     pub fn emit_operator_health_surface_transition(&self, reason: &'static str) {
-        self.operator_health_transition_logger
-            .emit_surface(reason, self.operator_health_surface(None));
+        match self.operator_health_surface(None) {
+            Ok(surface) => {
+                self.operator_health_transition_logger
+                    .emit_surface(reason, surface);
+            }
+            Err(error) => {
+                log::error!(
+                    "operator health surface snapshot failed: reason={reason} error={error:#}"
+                );
+            }
+        }
     }
 
     fn decision_evidence_producer_guards_for_shutdown(

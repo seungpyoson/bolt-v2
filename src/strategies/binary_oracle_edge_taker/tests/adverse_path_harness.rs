@@ -1864,11 +1864,11 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
     let terminal_position_ids = events
         .iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
-                if evidence.transition
+            RecordedDecisionEvidenceEvent::TerminalSettlement(evidence)
+                if evidence.lifecycle.transition
                     == BoltV3OrderLifecycleTransition::SettlementBookingTerminal =>
             {
-                evidence.position_id.clone()
+                evidence.lifecycle.position_id.clone()
             }
             _ => None,
         })
@@ -2112,7 +2112,12 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
 
     let temp = tempfile::tempdir().expect("settlement recovery tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = Arc::new(
+        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(
+            &evidence_path,
+        )
+        .expect("production JSONL evidence writer should open"),
+    );
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -2197,7 +2202,15 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     strategy.bootstrap_recovery_from_cache();
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    assert_eq!(terminal_settlement_lifecycle_count(&evidence.events()), 1);
+    assert_eq!(
+        crate::bolt_v3_decision_evidence::read_terminal_settlement_evidence(
+            &evidence_path,
+            100_000,
+        )
+        .expect("canonical terminal settlement should be readable")
+        .len(),
+        1
+    );
     let transitions = health_transitions
         .lock()
         .expect("recording settlement health transition mutex poisoned");
@@ -2213,6 +2226,20 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
         .len(),
         1,
         "restart must not append a parallel booking-error record"
+    );
+
+    drop(transitions);
+    strategy.bootstrap_recovery_from_cache();
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert_eq!(
+        crate::bolt_v3_decision_evidence::read_terminal_settlement_evidence(
+            &evidence_path,
+            100_000,
+        )
+        .expect("canonical evidence count should remain stable after another bootstrap")
+        .len(),
+        1,
+        "restart must not append duplicate canonical terminal evidence"
     );
 }
 

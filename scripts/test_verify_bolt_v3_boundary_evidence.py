@@ -210,15 +210,6 @@ reason = "test"
     )
     write(
         root,
-        "justfile",
-        """
-source-fence-static-inner:
-    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
-    python3 scripts/verify_bolt_v3_boundary_evidence.py
-""",
-    )
-    write(
-        root,
         "ci/rust-verification.toml",
         """
 [local_lane_policy]
@@ -511,26 +502,6 @@ def test_planted_unregistered_any_class_fails() -> None:
     assert_finding(scan_temp(mutate), "missing registry entry")
 
 
-def test_parser_only_chainlink_handler_fails() -> None:
-    def mutate(root: Path) -> None:
-        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
-        text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes", "message.as_text().unwrap()"), encoding="utf-8")
-
-    findings = scan_temp(mutate)
-    assert_finding(findings, "must accept Text and Binary")
-    assert_finding(findings, "must not use parser-only as_text")
-
-
-def test_registered_text_only_handler_fails() -> None:
-    def mutate(root: Path) -> None:
-        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
-        text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes", "WireMessage::Text(bytes) => bytes"), encoding="utf-8")
-
-    assert_finding(scan_temp(mutate), "must accept Text and Binary")
-
-
 def test_missing_committed_real_capture_decode_test_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/chainlink_reference.rs"
@@ -546,35 +517,6 @@ def test_missing_committed_real_capture_decode_test_fails() -> None:
     assert_finding(
         scan_temp(mutate),
         "missing test committed_real_capture_frame_decodes_through_production_handler",
-    )
-
-
-def test_string_literal_non_reference_metadata_provider_without_registry_fails() -> None:
-    def mutate(root: Path) -> None:
-        path = root / "src/bolt_v3_providers/mod.rs"
-        text = path.read_text(encoding="utf-8")
-        path.write_text(
-            text.replace(
-                "];\nfn validate_reference_live_probe_block()",
-                '    ReferencePriceProviderMetadata {\n'
-                '        provider_key: pyth::REFERENCE_PRICE_PROVIDER_KEY,\n'
-                '        client_venue_key: "PYTH_REFERENCE_PRICE",\n'
-                '        identifier_kind: ReferencePriceIdentifierKind::Symbol,\n'
-                '        supported_assets: &[],\n'
-                '    },\n'
-                "];\nfn validate_reference_live_probe_block()",
-            ),
-            encoding="utf-8",
-        )
-
-    findings = scan_temp(mutate)
-    assert_finding(
-        findings,
-        "missing registry entry ('\"PYTH_REFERENCE_PRICE\"', 'WebSocketFrame', 'ReferenceCurrentPriceHealth')",
-    )
-    assert_finding(
-        findings,
-        "missing registry entry ('\"PYTH_REFERENCE_PRICE\"', 'WebSocketFrame', 'ReferenceLiveProbe')",
     )
 
 

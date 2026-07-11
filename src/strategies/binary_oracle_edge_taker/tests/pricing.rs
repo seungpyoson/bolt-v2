@@ -20,6 +20,55 @@ const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
 
 struct PriceSensitiveEntryFeeProvider;
 
+const RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS: u64 = 1_200;
+const RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS: u64 = 3_201;
+
+fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let surface_id = strategy.config.realized_volatility_surface_id.clone();
+    let mut surfaces = std::collections::BTreeMap::new();
+    surfaces.insert(
+        surface_id.clone(),
+        crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
+            surface_id,
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            estimator: crate::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
+            sources: vec![
+                crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+                    source_id: "rv_clock_domain_amendment_source".to_string(),
+                    data_client_id: "rv_clock_domain_amendment_client".to_string(),
+                    instrument_id: "RV-CLOCK-DOMAIN-AMENDMENT.TEST".to_string(),
+                    source_class:
+                        crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+                    sample_kind:
+                        crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+                    enabled: true,
+                    counts_toward_quorum: true,
+                    canonical_base_asset: "RVTEST".to_string(),
+                    canonical_quote_asset: "USD".to_string(),
+                },
+            ],
+        },
+    );
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_realized_volatility_surfaces(surfaces);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy
+}
+
 impl FeeProvider for PriceSensitiveEntryFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         Some(Decimal::ZERO)
@@ -44,6 +93,116 @@ impl FeeProvider for PriceSensitiveEntryFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async move { Ok(()) }.boxed()
     }
+}
+
+#[test]
+fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
+    let strategy = rv_clock_domain_amendment_ready_entry();
+
+    let evaluation = strategy.entry_evaluation_for_receive_at(
+        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+        LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
+    );
+
+    assert!(
+        !evaluation
+            .pricing_blocked_by
+            .contains(&EntryPricingBlockReason::UncertaintyBandUnavailable),
+        "initial uncertainty must retain the entry receive stamp when wall time advances: {evaluation:#?}"
+    );
+    assert!(evaluation.uncertainty_band_probability.is_some());
+}
+
+#[test]
+fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
+    let strategy = rv_clock_domain_amendment_ready_entry();
+    let fair_probability_up = probability(0.75);
+
+    let adjusted = strategy.adjusted_probability_up_for_fee_uncertainty(
+        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+        OutcomeSide::Up,
+        fair_probability_up,
+        25.0,
+    );
+
+    assert!(
+        adjusted.is_some(),
+        "sized fee adjustment must use the entry receive stamp instead of later wall time"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_resized_fee_adjustment_uses_entry_receive_stamp() {
+    let strategy = rv_clock_domain_amendment_ready_entry();
+    let fair_probability_up = probability(0.75);
+
+    let adjusted = strategy.adjusted_probability_up_for_fee_uncertainty(
+        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+        OutcomeSide::Up,
+        fair_probability_up,
+        50.0,
+    );
+
+    assert!(
+        adjusted.is_some(),
+        "resized fee adjustment must preserve the same entry receive stamp after resizing"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_log_and_skip_evidence_use_entry_receive_stamp() {
+    let strategy = rv_clock_domain_amendment_ready_entry();
+    let decision = strategy.entry_submission_decision_for_receive_at(
+        RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS,
+        LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
+    );
+
+    let fields =
+        strategy.entry_evaluation_log_fields_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS, &decision);
+
+    assert_eq!(fields.realized_vol, Some(1.5));
+    assert_eq!(
+        fields.realized_vol_source_ts_ms,
+        Some(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
+        "log and entry-skip evidence fields must retain the evaluation timestamp"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
+    let strategy = rv_clock_domain_amendment_ready_entry();
+    let decision = strategy.entry_submission_decision_for_receive_at(
+        RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS,
+        LocalReceiveMs::new(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS),
+    );
+    let price = Price::new(
+        decision
+            .price
+            .expect("ready entry must have a submission price"),
+        2,
+    );
+    let quantity = Quantity::new(
+        decision
+            .quantity_value
+            .expect("ready entry must have a submission quantity"),
+        2,
+    );
+
+    let snapshot = strategy
+        .entry_strategy_input_evidence_snapshot_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            &decision,
+            ClientOrderId::from("RV-CLOCK-DOMAIN-AMENDMENT"),
+            &price,
+            &quantity,
+        )
+        .expect("submit-linked evidence must not re-gate at later wall time");
+
+    assert_eq!(snapshot.realized_volatility, "1.5");
+    assert_eq!(
+        snapshot.realized_volatility_as_of_ms,
+        Some(RV_CLOCK_DOMAIN_AMENDMENT_TRIGGER_RECEIVE_MS)
+    );
 }
 
 #[test]

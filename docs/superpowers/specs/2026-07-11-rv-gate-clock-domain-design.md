@@ -47,12 +47,33 @@ evaluation event time. Future deltas are 1–347 ms, median 20 ms and p95 28 ms.
 - `FairValuePricingRequest` and `TakerPricingRequest` carry an optional
   `LocalReceiveMs` evaluation stamp. `classify_rv_gate` compares only
   `LocalReceiveMs` values.
-- Book and signal triggers use NT `ts_init`. Maker pricing uses the selected reference
-  quote's receive timestamp. Selection/local triggers explicitly convert their
-  strategy-clock evaluation instant at the timestamp-domain boundary and therefore
-  do not fall into `MissingEvaluationEventTime`.
+- Book and signal triggers use NT `ts_init`. Maker pricing receives an explicit
+  evaluation stamp from its caller. Selection/local triggers explicitly convert
+  their strategy-clock evaluation instant at the timestamp-domain boundary and
+  therefore do not fall into `MissingEvaluationEventTime`.
 - `MissingEvaluationEventTime` remains fail-closed only for a structurally absent
   receive stamp. No production trigger is allowed to construct that shape.
+
+### Review-Follow-Up Ownership Closure
+
+Every pricing evaluation owns one receive stamp from its initiating trigger. Helpers
+that consume realized volatility must accept that stamp explicitly; they must not
+reconstruct one from `now_ms` or borrow the receive time of a pricing input.
+
+- Entry evaluation threads the book delta's typed receive stamp through fair-value
+  pricing, uncertainty-band pricing, fee-uncertainty adjustment, log fields, and
+  submit-linked strategy-input evidence. `now_ms` remains the wall-clock input for
+  expiry and lifecycle calculations only.
+- Maker fair-value evaluation receives an explicit typed evaluation stamp from its
+  caller. The selected reference quote's receive timestamp describes that input; it
+  does not own the maker evaluation time.
+- A historical realized-volatility snapshot derives each source's receive watermark
+  from the same accepted observations whose event timestamps are at or before the
+  requested `as_of_ms`. A later buffered observation that did not contribute to the
+  snapshot cannot advance its receive watermark.
+
+This closes the ownership boundary in function signatures instead of relying on
+call-site convention. No tolerance window or fallback comparison is introduced.
 
 ## Behavioral Blast Radius
 
@@ -91,8 +112,30 @@ recovery remain required long-term but are not bundled into this change.
 - Alternating book, signal, and selection triggers share the receive clock and do not
   oscillate.
 - Entry, exit, and maker pricing all consume the same ownership rule.
+- A near-stale entry evaluation uses its trigger receive stamp for every RV-dependent
+  decision and evidence field even when strategy wall time is later.
+- A historical surface ignores the receive timestamp of accepted observations newer
+  than its requested event-time cutoff.
+- Maker pricing remains available when the RV snapshot is newer than the selected
+  reference quote but not newer than the explicit maker evaluation stamp.
 - Stale receive age and truly missing receive context stay fail-closed.
 - Rejected observations cannot advance the event or receive watermark.
 - Restart bootstrap with an open position succeeds below 1 MiB and enters existing
   blind recovery above 1 MiB.
 - Dedupe-key and `position_id=None` findings remain report-only under #1354.
+
+## Sequenced Follow-On Work
+
+This pricing PR does not solve cumulative evidence retention. Follow-on work remains
+split by owner:
+
+1. #1275 item 13 segments local decision evidence and teaches recovery readers to
+   span immutable segments, removing the single-file 1 MiB restart ceiling.
+2. #883 classifies exported identifiers and replaces sensitive plaintext with stable
+   HMAC pseudonyms using a key resolved from SSM.
+3. #763 uploads only closed, redacted segments to S3, retains local segments on
+   upload failure, and deletes local copies only after confirmed upload and recovery
+   retention permit it.
+
+The first follow-on is required before the long soak. S3 archival is explicitly
+later work and depends on the redaction contract.

@@ -1,0 +1,250 @@
+Continue PR #1347 only. Fast-forward the clean fix-1339-smoke-full-shards worktree from local 95a19169 to remote head 028201ee. Do not touch the dirty fix-
+  1339-stable-smoke-shard worktree.
+
+  Adversarial review found two fail-open coverage bypasses:
+  1. matrix.exclude can remove shard 4.
+  2. A step-level `if` can prevent the BVS Run tests step from executing for shard 4.
+
+  Update the workflow hygiene verifier to reject include/exclude manipulation of the governed matrix and reject any `if` on the governed Run tests step. Add
+  mutation tests proving both previously pass and now fail. Preserve all-four-shard execution and leave issue-789 behavior unchanged.
+
+  Run permitted non-compile checks, commit, and push while keeping the PR draft. Report the exact head and evidence. Do not request external review or run
+  final full CI yet.
+
+  #1288 (https://github.com/seungpyoson/bolt-v2/pull/1288) is closed: its design could permit a direct green-head merge without full CI; the safe static slice
+  already landed in #1292, while #1256 (https://github.com/seungpyoson/bolt-v2/issues/1256) remains open for an enforceable queue-only design.
+
+---
+
+seems like we are having a lot of conditional fallbacks -
+
+---
+
+Pause before committing. Keep the RED mutation tests, but remove `matrix_expansion_keys` and the individual include/exclude/if denylist checks.
+
+  Implement one positive, fail-closed contract:
+
+  1. The matrix’s direct keys must be exactly `run_number` and `shard`; retain the existing exact-value, contiguous-shard, and denominator checks. Any extra
+  key must fail automatically.
+  2. The governed `Run tests` step must have exactly the canonical envelope: `name`, `env`, and `run`. Reuse `named_step_block` and
+  `block_has_canonical_step_envelope`.
+
+  Add mutations for quoted `"if"`, `include`, `exclude`, and an unknown extra control key. All must fail through the same structural-contract error.
+
+  Do not add another bespoke YAML scanner or one condition per discovered bypass. If the existing structural helpers cannot express this cleanly, stop and
+  report the abstraction gap rather than adding more regex.
+
+  The principle should be: define the single allowed path, not maintain an expanding list of forbidden alternatives.
+
+---
+
+### PR #1347 — retain the small fix
+
+  Complete PR #1347 with one canonical workflow contract and no denylist.
+
+  Worktree:
+  cd /Users/spson/Projects/Claude/bolt-v2/.worktrees/fix-1339-smoke-full-shards
+
+  Expected state:
+  - HEAD and GitHub head: 028201ee96f411183b112d390d3c08048961ea66
+  - One expected uncommitted file:
+    scripts/test_verify_ci_workflow_hygiene.py
+  Preserve and inspect that WIP; do not reset it blindly.
+
+  Invariant:
+  The smoke lane collectively executes every partition [1,2,3,4]. Issue-789 behavior remains byte-for-byte unchanged.
+
+  Implementation:
+  - Do not add `matrix_expansion_keys`, forbidden-key lists, or another YAML scanner.
+  - Define the one valid matrix structure: direct keys exactly `run_number` and `shard`, with existing exact values, contiguous sequence, and denominator
+  parity.
+  - Define the governed `Run tests` step through the existing positive structural-envelope helpers. Its permitted top-level structure must be exact; extra
+  execution-control fields fail automatically.
+  - Reuse or generalize an existing mapping helper only if doing so removes duplication. Do not create a second parser.
+  - Keep regression mutations under the existing flaky-workflow contract test owner. Avoid a second independent test owner for the same invariant.
+  - Cover `exclude`, quoted `"if"`, and an unknown extra control field through the same structural rejection.
+
+  If this cannot remain a small contract change, stop and report the abstraction problem.
+
+  Run permitted non-compile checks, including the focused Python verifier tests, actionlint, `just ci-lint-workflow`, and `git diff --check`. Commit and
+  publish with `just sandbox-safe-push`; keep the PR draft.
+
+  Report the exact remote head and net diff. Do not request external review, queue, or merge.
+
+---
+
+conduct an internal adverserial review
+
+---
+
+Continue PR #1347 at 418661a.
+
+  Create a normal follow-up commit that removes the latest canonical Run-tests machinery:
+
+  - remove the new 60-line mutation test from test_verify_ci_workflow_hygiene.py
+  - restore block_nested_mapping_items to its original API
+  - remove the canonical Run-tests envelope check
+  - remove fixture env additions needed only by that check
+
+  Keep:
+  - shard matrix [1,2,3,4]
+  - existing exact shard declaration
+  - contiguous-shard validation
+  - denominator parity
+  - existing incomplete-shard regression test
+  - issue-789 unchanged
+
+  The intended cumulative PR diff should return to three files. Sync current main, run the permitted static checks, push as draft, and report the exact head.
+
+  Do not run full CI, external review, or queue yet. The final behavioral proof will be an exact-head workflow dispatch showing all four shard jobs actually
+  execute.
+
+  Also, the reported “3 files, 88 insertions” described only the latest commit; the current cumulative PR diff is four files.
+
+---
+
+Own this PR through draft review closure.
+
+  Use the external review output already available in this session. For every substantive finding:
+
+  - Verify it against the exact code.
+  - Fix the root cause within the PR’s declared scope, or rebut it with concrete evidence.
+  - Do not add fallback chains, denylist conditions, duplicate paths, new analyzers, or parallel sources of truth.
+  - Commit and publish fixes with `just sandbox-safe-push`.
+  - Re-run external review at the new exact head.
+  - Continue until the reviewer returns no substantive findings.
+
+  If no review exists yet, obtain one adversarial external review now.
+
+  Do not send raw transcripts to the global orchestrator. Return only:
+
+  PR / exact remote head:
+  Reviewer source and model:
+  Findings by severity:
+  Resolved findings:
+  Final re-review result:
+  Net diff and debt delta:
+  Verification completed:
+  Remaining blockers:
+  Worktree clean:
+  Requested next action:
+
+  Keep the PR draft. Do not run full CI, mark ready, request `sp-reviewer`, queue, merge, deploy, or trade. The global orchestrator will coordinate those steps
+  after review closure.
+
+---
+
+don't use relay - I'll give you review outputs
+
+---
+
+GLM: I now have complete evidence for all verification points. Let me compile the final assessment.
+Adversarial Review: PR #1347 @ a057d31091741393033bf9346fbdc68610536d65
+Head verified: GitHub headRefOid matches a057d31091741393033bf9346fbdc68610536d65. Diff against origin/main is exactly 3 files, 37 insertions, 14 deletions.
+Verification Results
+#	Check	Result
+1	Smoke schedules shards [1,2,3,4]	Pass — flaky-test-smoke.yml:141 (PR head): shard: [1, 2, 3, 4]
+2	Count partition denominator matches shard count	Pass — --partition "count:${{ matrix.shard }}/4" (line 215); 4 shards, denom 4. Verifier checks denominators[0] != len(shards) at verify_ci_workflow_hygiene.py:7712
+3	Smoke covers same shards as full detection	Pass — Both workflows have shard: [1, 2, 3, 4]. Test asserts smoke_backtester_shards != full_backtester_shards at test_workflow_expression_analysis.py:947
+4	Incomplete/noncontiguous shard declarations fail	Pass — Three-tier check at verify_ci_workflow_hygiene.py:7707-7713: shards is None → inline-list error; not one_indexed_sequence(shards) → contiguity error (catches [1,3], [2,3,4]); denominators[0] != len(shards) → denominator mismatch (catches [1] with denom 4, [1,2,3,4,5] with denom 4). Test verifies shard: [1] case at test_workflow_expression_analysis.py:1816
+5	Issue-789 behavior unchanged	Pass — flaky-smoke-rust-backtester-issue-789 job absent from diff. Still runs issue_789_first_real_free_data_taker_pl ungated. Matches #1339 revised scope: "Leave it running and leave it red"
+6	No duplicate test owner / new parser / denylist / fallback / generalized framework	Pass — Uses existing inline_integer_matrix_values, one_indexed_sequence, simple_bte_run_block_partition_denominators. No new functions. Canonical contract approach was added (commit 418661a95) and removed (commit a057d3109) within branch — test_verify_ci_workflow_hygiene.py is byte-identical to main (confirmed: zero diff)
+7	Three-file diff is smallest sufficient	Pass — 1-line workflow change; verifier smoke check mirrors existing full-job pattern exactly (None → one_indexed_sequence → denominator != len); tests updated to match. expected_smoke_execution_count = 2 + len(full_backtester_shards) ties smoke execution count to full shard count dynamically
+Adversarial Probes (no findings)
+- matrix.include/exclude bypass: Verifier doesn't catch matrix manipulation that could silently skip shards. Pre-existing gap on main — not introduced by this PR. The PR is strictly additive (new denominator/contiguity checks main lacked). Out of scope for #1339 partition-drift fix.
+- Oversized shard list ([1,2,3,4,5] with denom 4): Caught by denominators[0] != len(shards) (5≠4) and fragment check ("shard: [1, 2, 3, 4]" missing). Covered.
+- Hardcoded "shard: [1, 2, 3, 4]" in contract: CI workflow contract fragment, consistent with existing "run_number: [1]" pattern. Not a runtime value — not an AGENTS.md §1 violation.
+- expected_smoke_execution_count formula: 2 + len(full_backtester_shards) = 2+4 = 6 = 1(root) + 1×4(backtester) + 1(issue-789). Correctly couples smoke to full.
+NO SUBSTANTIVE FINDINGS — code-complete for revised #1339 at a057d31091741393033bf9346fbdc68610536d65; behavioral workflow execution and full CI remain pending.
+Kimi: Head verified: GitHub PR #1347 headRefOid = a057d31091741393033bf9346fbdc68610536d65 (matches the requested head). Merge-base
+   with main is 7095c6f5f250b99a453300fafd0c9046c3da4a5b = current main/origin/main. Diff is exactly 3 files / +37 −14, as
+   reported. Review was read-only — no edits, comments, or CI dispatched.
+
+   NO SUBSTANTIVE FINDINGS — code-complete for revised #1339 at a057d31091741393033bf9346fbdc68610536d65; behavioral workflow
+   execution and full CI remain pending.
+
+   Verification trace (line refs at PR head):
+
+   • (a) smoke schedules [1,2,3,4] — .github/workflows/flaky-test-smoke.yml backtester job shard: [1, 2, 3, 4].
+   • (b) denominator == shard count — smoke run step --partition "count:${{ matrix.shard }}/4" (denom 4 vs 4 shards); verifier
+     rejects mismatch at scripts/verify_ci_workflow_hygiene.py:7711; positive pin at
+     scripts/test_workflow_expression_analysis.py:950-952.
+   • (c) smoke == full coverage — full detection shard: [1, 2, 3, 4] (.github/workflows/flaky-test-detection.yml:115); test
+     dynamically ties smoke to full (scripts/test_workflow_expression_analysis.py:912,946), so a future full reshard forces smoke
+     to follow (anti-drift, the #1339 invariant).
+   • (d) incomplete/noncontiguous fail — incomplete ([1] vs denom 4) rejected by denom rule and negative-tested at
+     scripts/test_workflow_expression_analysis.py:1816-1829; noncontiguous/non-one-indexed (e.g. [1,2,3,5], [0,1,2,3]) rejected by
+     one_indexed_sequence (scripts/workflow_expression_analysis.py:227, applied to smoke at
+     scripts/verify_ci_workflow_hygiene.py:7706-7707, identical to the existing full-job shard rule at :7699-7702). Shipped smoke
+     shards are pinned one-indexed transitively (test_workflow_expression_analysis.py:920 + :946).
+   • (e) issue-789 unchanged — flaky-smoke-rust-backtester-issue-789 job untouched (ungated, runs the diagnostic directly),
+     partitioned job still --skip issue_789_first_real_free_data_taker_pl; no gating / continue-on-error / re-pin / pusd_pnl change
+     — consistent with the retracted fix-#1 and "leave it red" scope.
+   • (f) no new machinery — reuses existing helpers (inline_integer_matrix_values, simple_bte_run_block_partition_denominators,
+     one_indexed_sequence, assert_no_inline_matrix_key); no new parser, denylist, fallback, framework, or second test-owner;
+     verifier numstat 7+/3− (no new def).
+   • (g) minimal & sufficient — workflow (behavior) + verifier (accept new shard list in allowlist
+     verify_ci_workflow_hygiene.py:7589, flip rule <=→!=) + tests (evidence); each necessary, none superfluous; no stale shard:
+     [1]/must exceed scheduled shard count/must keep 3 matrix references remain (sole shard: [1] is the intentional negative
+     fixture at test_workflow_expression_analysis.py:1816).
+
+   One non-blocking observation (not a finding): the smoke shard "one-indexed and contiguous" rejection message has no dedicated
+   negative test (only the denominator drift path does). Behavior is correct, structurally identical to the enforced full-job shard
+   rule, and the shipped smoke declaration is pinned one-indexed by transitivity — so this is optional thoroughness, not a defect
+   or missing scope.
+Grok: Head check
+
+GitHub PR #1347 head is a057d31091741393033bf9346fbdc68610536d65 — matches the requested exact head. Diff vs current main is three files only.
+
+───
+
+NO SUBSTANTIVE FINDINGS — code-complete for revised #1339 at a057d31091741393033bf9346fbdc68610536d65; behavioral workflow execution and full CI remain pending.
+
+───
+
+Checklist (verified at that head)
+
+┌─────────────────────────────┬────────┬────────────────────────────────────────────────────────────────────────┐
+│ Requirement                 │ Result │ Evidence                                                               │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ Smoke schedules shards      │ Pass   │ flaky-test-smoke.yml:141 only change vs main                           │
+│ [1,2,3,4]                   │        │                                                                        │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ Partition denominator       │ Pass   │ still count:${{ matrix.shard }}/4; hygiene denominators[0] != len(     │
+│ matches shard count         │        │ shards) at verify_ci_workflow_hygiene.py:7713-7714; expression         │
+│                             │        │ analysis smoke_partition_denominators != (len(...),) at test_workflow_ │
+│                             │        │ expression_analysis.py:950-952                                         │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ Smoke covers same shards as │ Pass   │ both matrices [1,2,3,4]; equality enforced at test_workflow_expression │
+│ full detection              │        │ _analysis.py:946-948                                                   │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ Incomplete / noncontiguous  │ Pass   │ incomplete: required fragment shard: [1, 2, 3, 4] (verify_ci_workflow_ │
+│ declarations fail           │        │ hygiene.py:7589) + denom mismatch (:7713-7714); noncontiguous: one_    │
+│                             │        │ indexed_sequence (:7711-7712); incomplete gap test at test_workflow_   │
+│                             │        │ expression_analysis.py:1816-1829                                       │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ Issue-789 behavior          │ Pass   │ smoke/detection issue-789 jobs byte-identical to main; only smoke BVS  │
+│ unchanged                   │        │ shard: line differs                                                    │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ No duplicate owner / new    │ Pass   │ reuses inline_integer_matrix_values + one_indexed_sequence;            │
+│ parser / denylist /         │        │ intermediate “canonical matrix” contract fully removed in a057d310     │
+│ fallback / generalized      │        │                                                                        │
+│ framework                   │        │                                                                        │
+├─────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
+│ Three-file minimal          │ Pass   │ only smoke workflow + hygiene + expression-analysis tests              │
+│ implementation              │        │                                                                        │
+└─────────────────────────────┴────────┴────────────────────────────────────────────────────────────────────────┘
+
+Scope alignment (revised #1339)
+
+• Partition-drift only: smoke BVS expanded from 1→4 shards; no issue-789 gating/continue-on-error/P&L re-pin.
+• Detection workflow untouched vs main.
+
+Explicit non-claims
+
+• Behavioral schedule/workflow_dispatch greenness: not confirmed (review-only; no CI dispatch).
+• Full CI at this head: not confirmed.
+
+---
+
+run the workflow dispatch yourself

@@ -35,6 +35,7 @@ use bolt_v2::{
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
         BoltV3SubmitReservationMetadataEvidence,
     },
+    bolt_v3_operator_artifacts::{json_artifact_bytes, json_artifact_sha256},
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -56,9 +57,11 @@ use nautilus_model::{
         AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
         PriceType,
     },
+    events::OrderEventAny,
     identifiers::{ClientId, InstrumentId, Venue},
     orders::Order,
-    types::{Price, Quantity},
+    position::Position,
+    types::{AccountBalance, Price, Quantity},
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -573,6 +576,8 @@ pub struct BacktestRunOutput {
 struct AddedManifestStrategy {
     config_override_report: Option<BacktestConfigOverrideReport>,
     run_guard_writer: Option<Arc<BacktestDecisionEvidenceWriter>>,
+    resolved_config_hash: Option<String>,
+    resolved_config_bytes: Option<Vec<u8>>,
 }
 
 fn register_backtest_data_clients(
@@ -827,6 +832,12 @@ fn add_manifest_strategy(
                     (raw_config, None, None)
                 };
             let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
+            let resolved_config_hash = json_artifact_sha256(&raw_config)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("hash canonical production-resolved taker configuration")?;
+            let resolved_config_bytes = json_artifact_bytes(&raw_config)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("serialize canonical production-resolved taker configuration")?;
             let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
             let submit_admission =
                 Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
@@ -856,6 +867,8 @@ fn add_manifest_strategy(
             Ok(AddedManifestStrategy {
                 config_override_report,
                 run_guard_writer: Some(run_guard_writer),
+                resolved_config_hash: Some(resolved_config_hash),
+                resolved_config_bytes: Some(resolved_config_bytes),
             })
         }
         STRATEGY_BINARY_ORACLE_MAKER => {
@@ -878,6 +891,8 @@ fn add_manifest_strategy(
             Ok(AddedManifestStrategy {
                 config_override_report: None,
                 run_guard_writer: Some(run_guard_writer),
+                resolved_config_hash: None,
+                resolved_config_bytes: None,
             })
         }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
@@ -948,6 +963,11 @@ pub struct OrderTerminalRecord {
     pub status: OrderStatus,
     pub quantity: String,
     pub filled_qty: String,
+    pub initialized_quantity: Quantity,
+    pub initialized_quote_quantity: bool,
+    pub effective_quantity: Quantity,
+    pub submission_timestamp: Option<UnixNanos>,
+    pub fills: Vec<nautilus_model::events::OrderFilled>,
     pub events_debug: Vec<String>,
 }
 
@@ -958,6 +978,11 @@ pub struct NtBacktestNodeRun {
     pub order_terminals: Vec<OrderTerminalRecord>,
     pub config_override_report: Option<BacktestConfigOverrideReport>,
     pub run_guard_report: Option<BacktestRunGuardReport>,
+    pub positions: Vec<Position>,
+    pub account_balances: Vec<AccountBalance>,
+    pub resolved_config_hash: Option<String>,
+    pub resolved_config_bytes: Option<Vec<u8>>,
+    pub execution_contract_report: Option<crate::execution_contract::ExecutionContractReport>,
 }
 
 fn reconstructed_reference_current_price_data(
@@ -1057,7 +1082,7 @@ fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<D
             &row.settlement_currency,
             &venue_config.starting_balances,
         )?;
-        let close_value = row.close_price.trim().parse::<f64>().with_context(|| {
+        let close_value = Decimal::from_str(row.close_price.trim()).with_context(|| {
             format!(
                 "parse instrument_settlements[{index}].close_price {:?}",
                 row.close_price
@@ -1067,15 +1092,21 @@ fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<D
         // a malformed resolution that would book a nonsensical multiple-of-stake P/L
         // while still passing as the "real market resolution".
         ensure!(
-            (0.0..=1.0).contains(&close_value),
+            (Decimal::ZERO..=Decimal::ONE).contains(&close_value),
             "instrument_settlements[{index}] {} close_price {close_value} is outside the binary [0,1] redemption range",
             row.nt_instrument_id
         );
-        let close_price = Price::new_checked(close_value, row.price_precision)
+        let close_price = Price::from_str(row.close_price.trim())
             .map_err(|error| anyhow::anyhow!("{error}"))
             .with_context(|| {
                 format!("invalid close_price for instrument_settlements[{index}]: {close_value}")
             })?;
+        ensure!(
+            close_price.precision == row.price_precision,
+            "instrument_settlements[{index}] close_price precision {} does not match declared {}",
+            close_price.precision,
+            row.price_precision
+        );
         closes.push(Data::InstrumentClose(InstrumentClose::new(
             instrument_id,
             close_price,
@@ -1165,23 +1196,29 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     // the node is dropped. A run that disposed (NautilusTrader default) would
     // leave this empty and the order-terminal proof would have nothing to check.
     let mut nt_result = results.remove(0);
-    let order_terminals = {
+    let (order_terminals, positions, account_balances) = {
         let engine = node
             .get_engine(&manifest.run_id)
             .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
-        let positions: Vec<_> = {
+        let (positions, account_balances): (Vec<_>, Vec<_>) = {
             let cache = engine.kernel().cache.borrow();
-            cache
+            let positions = cache
                 .positions(None, None, None, None, None)
                 .into_iter()
                 .map(|position| position.cloned())
-                .collect()
+                .collect();
+            let account_balances = std::iter::once(&manifest.venue)
+                .chain(manifest.additional_venues.iter())
+                .filter_map(|venue| cache.account_for_venue(&Venue::from(venue.nt_venue.as_str())))
+                .flat_map(|account| account.balances().into_values())
+                .collect();
+            (positions, account_balances)
         };
         domain_analyzer.add_positions(&positions);
         for (name, value) in domain_statistics_from_analyzer(&domain_analyzer, &domain_statistics) {
             nt_result.stats_general.insert(name, value);
         }
-        capture_order_terminals(engine)
+        (capture_order_terminals(engine), positions, account_balances)
     };
     let run_guard_report = added_strategy
         .run_guard_writer
@@ -1193,6 +1230,11 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         order_terminals,
         config_override_report: added_strategy.config_override_report,
         run_guard_report,
+        positions,
+        account_balances,
+        resolved_config_hash: added_strategy.resolved_config_hash,
+        resolved_config_bytes: added_strategy.resolved_config_bytes,
+        execution_contract_report: None,
     })
 }
 
@@ -1202,20 +1244,57 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> 
     cache
         .orders(None, None, None, None, None)
         .into_iter()
-        .map(|order| OrderTerminalRecord {
-            client_order_id: order.client_order_id().to_string(),
-            order_side: order.order_side().to_string(),
-            order_type: order.order_type().to_string(),
-            status: order.status(),
-            quantity: order.quantity().to_string(),
-            filled_qty: order.filled_qty().to_string(),
-            events_debug: order
+        .map(|order| {
+            let initialized = order
                 .events()
                 .iter()
-                .map(|event| format!("{event:?}"))
-                .collect(),
+                .find_map(|event| match event {
+                    OrderEventAny::Initialized(initialized) => Some(initialized),
+                    _ => None,
+                })
+                .expect("every cached order must have an initialization event");
+            OrderTerminalRecord {
+                client_order_id: order.client_order_id().to_string(),
+                order_side: order.order_side().to_string(),
+                order_type: order.order_type().to_string(),
+                status: order.status(),
+                quantity: order.quantity().to_string(),
+                filled_qty: order.filled_qty().to_string(),
+                initialized_quantity: initialized.quantity,
+                initialized_quote_quantity: initialized.quote_quantity,
+                effective_quantity: order.quantity(),
+                submission_timestamp: order.events().iter().find_map(|event| match event {
+                    OrderEventAny::Submitted(submitted) => Some(submitted.ts_event),
+                    _ => None,
+                }),
+                fills: order
+                    .events()
+                    .iter()
+                    .filter_map(|event| match event {
+                        OrderEventAny::Filled(fill) => Some(*fill),
+                        _ => None,
+                    })
+                    .collect(),
+                events_debug: order
+                    .events()
+                    .iter()
+                    .map(|event| format!("{event:?}"))
+                    .collect(),
+            }
         })
         .collect()
+}
+
+fn run_nt_backtest_node_with_execution_contract<F>(
+    manifest: &BacktestingRunManifest,
+    validator: F,
+) -> Result<NtBacktestNodeRun>
+where
+    F: FnOnce(&NtBacktestNodeRun) -> Result<crate::execution_contract::ExecutionContractReport>,
+{
+    let mut output = run_nt_backtest_node(manifest)?;
+    output.execution_contract_report = Some(validator(&output)?);
+    Ok(output)
 }
 
 /// Run one minimal NautilusTrader `BacktestNode` backtest over accepted data and
@@ -2191,10 +2270,11 @@ mod tests {
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         data::TradeTick,
-        enums::{AggressorSide, AssetClass},
+        enums::{AggressorSide, AssetClass, BookType, OrderSide},
         identifiers::{InstrumentId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
-        types::{Currency, Price, Quantity},
+        orderbook::OrderBook,
+        types::{Currency, Money, Price, Quantity},
     };
     use nautilus_persistence::backend::catalog::ParquetDataCatalog;
     use nautilus_polymarket::http::models::GammaMarket;
@@ -2205,8 +2285,8 @@ mod tests {
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
         assert_read_back_matches, ensure_settlement_currency_funded, expected_iterations,
-        iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
-        time_window_excludes_all_data,
+        iterations_mismatch, run_nt_backtest_node, run_nt_backtest_node_with_execution_contract,
+        selector_provenance_hashes, time_window_excludes_all_data,
     };
     use crate::canonical_market_data::{
         CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalQuotesTable,
@@ -2858,6 +2938,50 @@ mod tests {
     }
 
     #[test]
+    fn backtest_runner_invokes_execution_contract_validator() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create maker smoke catalog root")?;
+        write_maker_smoke_catalog(tempdir.path())?;
+        let manifest = maker_smoke_manifest(tempdir.path());
+        let instrument =
+            InstrumentAny::BinaryOption(nautilus_model::instruments::stubs::binary_option());
+        let book = OrderBook::new(instrument.id(), BookType::L2Mbp);
+        let fills = Vec::new();
+        let commissions = Vec::new();
+        let trace = crate::execution_contract::ExecutionContractTrace {
+            instrument: &instrument,
+            executable_book: &book,
+            order_side: OrderSide::Buy,
+            submitted_quantity: Quantity::from("1.00"),
+            quote_quantity: false,
+            effective_base_quantity: Quantity::from("1.00"),
+            fills: &fills,
+            settlement_price: Price::from("1.000"),
+            exit_price: Price::from("1.000"),
+            initial_cash: Money::from("100.00 USDC"),
+            terminal_cash: Money::from("100.00 USDC"),
+            realized_pnl: Money::from("0.00 USDC"),
+            fill_commissions: &commissions,
+            position_commission: Money::from("0.00 USDC"),
+            canonical_resolved_config_bytes: b"resolved-config",
+            canonical_resolved_config_sha256: &"0".repeat(64),
+        };
+
+        let error = run_nt_backtest_node_with_execution_contract(&manifest, |_| {
+            crate::execution_contract::validate_execution_contract(&trace)
+        })
+        .err()
+        .context("runner skipped the invalid execution contract")?;
+
+        ensure!(
+            error
+                .to_string()
+                .contains("canonical resolved configuration bytes"),
+            "runner returned an unrelated error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unknown_manifest_strategy_still_fails_allowlist() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create unknown-strategy catalog root")?;
         write_maker_smoke_catalog(tempdir.path())?;
@@ -3014,21 +3138,25 @@ mod tests {
         // (single source of truth — not synthesized).
         let up_terminal_bid = issue_789_terminal_best_bid(&pmxt_rows, ISSUE_789_UP_TOKEN)?;
         let down_terminal_bid = issue_789_terminal_best_bid(&pmxt_rows, ISSUE_789_DOWN_TOKEN)?;
+        let binary_midpoint = Decimal::new(5, 1);
         ensure!(
-            (up_terminal_bid > 0.5) ^ (down_terminal_bid > 0.5),
+            (up_terminal_bid > binary_midpoint) ^ (down_terminal_bid > binary_midpoint),
             "ambiguous #789 resolution: up_terminal_bid={up_terminal_bid} down_terminal_bid={down_terminal_bid}"
         );
         let (up_close, down_close) = if up_terminal_bid > down_terminal_bid {
-            (1.0_f64, 0.0_f64)
+            ("1", "0")
         } else {
-            (0.0_f64, 1.0_f64)
+            ("0", "1")
         };
         let up_precision = up_projection.instrument.price_precision();
         let down_precision = down_projection.instrument.price_precision();
         let instrument_settlements = vec![
             ManifestInstrumentSettlementInput {
                 nt_instrument_id: up_instrument_id.clone(),
-                close_price: format!("{up_close:.prec$}", prec = up_precision as usize),
+                close_price: format!(
+                    "{up_close}.{zeros}",
+                    zeros = "0".repeat(up_precision as usize)
+                ),
                 price_precision: up_precision,
                 ts_event_ns: ISSUE_789_END_NS as u64,
                 ts_init_ns: ISSUE_789_END_NS as u64,
@@ -3038,7 +3166,10 @@ mod tests {
             },
             ManifestInstrumentSettlementInput {
                 nt_instrument_id: down_instrument_id.clone(),
-                close_price: format!("{down_close:.prec$}", prec = down_precision as usize),
+                close_price: format!(
+                    "{down_close}.{zeros}",
+                    zeros = "0".repeat(down_precision as usize)
+                ),
                 price_precision: down_precision,
                 ts_event_ns: ISSUE_789_END_NS as u64,
                 ts_init_ns: ISSUE_789_END_NS as u64,
@@ -3061,10 +3192,17 @@ mod tests {
             down_instrument_id,
             reference_rows: reconstructed_reference_rows_from_okx(&okx_quotes)?,
             instrument_settlements,
-        });
+        })?;
 
-        let output = run_nt_backtest_node(&manifest)
-            .context("run issue #789 first real free-data taker P/L slice")?;
+        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output| {
+            validate_issue_789_execution_contract(
+                output,
+                &manifest,
+                &up_projection,
+                &down_projection,
+            )
+        })
+        .context("run issue #789 first real free-data taker P/L slice")?;
         let guard = output
             .run_guard_report
             .as_ref()
@@ -3128,39 +3266,133 @@ mod tests {
             !output.result.stats_pnls.is_empty(),
             "issue #789 run traded but stats_pnls was empty"
         );
-        // The held position must redeem at the real resolution and book a realized
-        // LOSS in the binary's settlement currency (pUSD). Assert the pUSD leg
-        // specifically, with sign and magnitude: a cross-currency sum can hide a
-        // silently-dropped pUSD leg (NT drops PnL booked in an unfunded currency)
-        // behind a small non-zero P/L in another currency, and a bare `!= 0` also
-        // passes a direction flip or a fill mis-scale. Pinning the proven value
-        // makes any drift fail loud for re-confirmation rather than silently
-        // re-baselining the headline first real P/L.
-        const ISSUE_789_EXPECTED_PUSD_PNL: f64 = -0.9462;
-        const ISSUE_789_PUSD_PNL_TOLERANCE: f64 = 0.05;
-        let pusd_pnl = output
-            .result
-            .stats_pnls
-            .get("pUSD")
-            .and_then(|per_stat| per_stat.get("PnL (total)"))
-            .copied()
-            .with_context(|| {
-                format!(
-                    "issue #789 settled but no pUSD realized P/L leg is present — the loss was dropped (the settlement currency was likely not funded); stats_pnls={:?}",
-                    output.result.stats_pnls
-                )
-            })?;
         ensure!(
-            pusd_pnl < 0.0,
-            "issue #789 first real P/L must be a loss (taker pays the spread); got pUSD P/L {pusd_pnl} (stats_pnls={:?})",
-            output.result.stats_pnls
-        );
-        ensure!(
-            (pusd_pnl - ISSUE_789_EXPECTED_PUSD_PNL).abs() < ISSUE_789_PUSD_PNL_TOLERANCE,
-            "issue #789 realized pUSD P/L {pusd_pnl} drifted beyond tolerance from the proven {ISSUE_789_EXPECTED_PUSD_PNL}; re-confirm the result before updating this anchor (stats_pnls={:?})",
-            output.result.stats_pnls
+            output.execution_contract_report.is_some(),
+            "issue #789 runner omitted the required execution contract report"
         );
         Ok(())
+    }
+
+    fn validate_issue_789_execution_contract(
+        output: &super::NtBacktestNodeRun,
+        manifest: &BacktestingRunManifest,
+        up_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
+        down_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
+    ) -> Result<crate::execution_contract::ExecutionContractReport> {
+        let settlement_ts = UnixNanos::from(ISSUE_789_END_NS as u64);
+        let entry_order = output
+            .order_terminals
+            .iter()
+            .find(|order| order.fills.iter().any(|fill| fill.ts_event < settlement_ts))
+            .context("issue #789 produced no pre-settlement entry fill")?;
+        let entry_fills: Vec<_> = entry_order
+            .fills
+            .iter()
+            .filter(|fill| fill.ts_event < settlement_ts)
+            .copied()
+            .collect();
+        ensure!(
+            !entry_fills.is_empty(),
+            "issue #789 entry order has no executable-book fills"
+        );
+        let instrument_id = entry_fills[0].instrument_id;
+        let projection = if up_projection.instrument.id() == instrument_id {
+            up_projection
+        } else if down_projection.instrument.id() == instrument_id {
+            down_projection
+        } else {
+            anyhow::bail!("issue #789 fill instrument {instrument_id} has no PMXT projection")
+        };
+        let fill_ts = entry_fills[0].ts_event;
+        let mut executable_book = OrderBook::new(instrument_id, BookType::L2Mbp);
+        for delta in projection
+            .order_book_deltas
+            .iter()
+            .filter(|delta| delta.ts_event <= fill_ts)
+        {
+            executable_book
+                .apply_delta(delta)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("replay PMXT executable book with NautilusTrader")?;
+        }
+        let observed_fills: Vec<_> = entry_fills
+            .iter()
+            .map(|fill| crate::execution_contract::ExecutionFill {
+                price: fill.last_px,
+                quantity: fill.last_qty,
+            })
+            .collect();
+        let position = output
+            .positions
+            .iter()
+            .find(|position| position.instrument_id == instrument_id)
+            .context("issue #789 entry fill has no Nautilus position")?;
+        let realized_pnl = position
+            .realized_pnl
+            .context("issue #789 position has no realized PnL")?;
+        let terminal_cash = output
+            .account_balances
+            .iter()
+            .find(|balance| balance.currency == realized_pnl.currency)
+            .map(|balance| balance.total)
+            .context("issue #789 settlement account has no terminal cash balance")?;
+        let initial_cash_text = manifest
+            .venue
+            .starting_balances
+            .iter()
+            .find(|balance| balance.ends_with(realized_pnl.currency.code.as_str()))
+            .context("issue #789 settlement account has no matching initial balance")?
+            .replace('_', "");
+        let initial_cash =
+            Money::from_str(&initial_cash_text).context("parse issue #789 exact initial cash")?;
+        let fill_commissions: Vec<_> = position
+            .events
+            .iter()
+            .filter_map(|fill| fill.commission)
+            .collect();
+        let position_commission = position
+            .commissions
+            .get(&realized_pnl.currency)
+            .copied()
+            .unwrap_or_else(|| Money::zero(realized_pnl.currency));
+        let settlement = manifest
+            .instrument_settlements
+            .iter()
+            .find(|settlement| settlement.nt_instrument_id == instrument_id.to_string())
+            .context("issue #789 fill instrument has no settlement")?;
+        let settlement_price = Price::from_str(&settlement.close_price)
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("parse issue #789 exact settlement price")?;
+        let exit_price = position
+            .events
+            .last()
+            .context("issue #789 position has no terminal fill")?
+            .last_px;
+        let resolved_config_bytes = output
+            .resolved_config_bytes
+            .as_deref()
+            .context("issue #789 runner omitted resolved config bytes")?;
+
+        crate::execution_contract::validate_execution_contract(
+            &crate::execution_contract::ExecutionContractTrace {
+                instrument: &projection.instrument,
+                executable_book: &executable_book,
+                order_side: entry_fills[0].order_side,
+                submitted_quantity: entry_order.initialized_quantity,
+                quote_quantity: entry_order.initialized_quote_quantity,
+                effective_base_quantity: entry_order.effective_quantity,
+                fills: &observed_fills,
+                settlement_price,
+                exit_price,
+                initial_cash,
+                terminal_cash,
+                realized_pnl,
+                fill_commissions: &fill_commissions,
+                position_commission,
+                canonical_resolved_config_bytes: resolved_config_bytes,
+                canonical_resolved_config_sha256: &manifest.strategy_config_hash,
+            },
+        )
     }
 
     fn write_issue_789_result_artifact(
@@ -3399,7 +3631,7 @@ mod tests {
 
     /// Terminal (latest-`ts_init`) best-bid for a PMXT token, used to read the
     /// real binary resolution: the winning outcome's book converges to ~1.0.
-    fn issue_789_terminal_best_bid(rows: &[Issue789PmxtCsvRow], token_id: &str) -> Result<f64> {
+    fn issue_789_terminal_best_bid(rows: &[Issue789PmxtCsvRow], token_id: &str) -> Result<Decimal> {
         let (terminal_ts, terminal_bid) = rows
             .iter()
             .filter(|row| row.asset_id == token_id)
@@ -3415,7 +3647,7 @@ mod tests {
         );
         terminal_bid
             .trim()
-            .parse::<f64>()
+            .parse::<Decimal>()
             .with_context(|| format!("parse terminal best_bid for token {token_id}"))
     }
 
@@ -3792,7 +4024,7 @@ mod tests {
         instrument_settlements: Vec<ManifestInstrumentSettlementInput>,
     }
 
-    fn issue_789_manifest(catalogs: Issue789Catalogs) -> BacktestingRunManifest {
+    fn issue_789_manifest(catalogs: Issue789Catalogs) -> Result<BacktestingRunManifest> {
         let catalog_hash = sha256_hex(
             format!(
                 "{}{}{}{}{}",
@@ -3804,12 +4036,12 @@ mod tests {
             )
             .as_bytes(),
         );
-        BacktestingRunManifest {
+        let mut manifest = BacktestingRunManifest {
             manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
             run_id: "issue-789-first-real-free-data-taker-pl".to_string(),
             target_bolt_v2_branch: "codex/789-first-faithful-taker-pl".to_string(),
             target_bolt_v2_ref: "worktree".to_string(),
-            resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+            resolved_nt_version: "9e71b2b1305a66945ba07f0aba2d1eb63208263d".to_string(),
             market_structure_fixture: MarketStructureFixture::BinaryOption,
             venue_binding_key: "issue-789-pmxt-okx-bybit-chainlink".to_string(),
             run_purpose: RunPurpose::Normal,
@@ -3854,9 +4086,7 @@ mod tests {
                     },
                 }),
             },
-            strategy_config_hash: sha256_hex(
-                b"config/root.toml + production config + documented OKX/Bybit override",
-            ),
+            strategy_config_hash: "0".repeat(64),
             // POLYMARKET must be funded in the binary's settlement currency
             // (pUSD — the NT Polymarket adapter's collateral currency), not
             // USDC. NT's multi-currency portfolio manager refuses to auto-create
@@ -3927,7 +4157,31 @@ mod tests {
             domain_metrics: Vec::new(),
             start_time: Some(ISSUE_789_START_NS),
             end_time: Some(ISSUE_789_END_NS),
-        }
+        };
+        let overlay = manifest
+            .strategy
+            .config_overlay
+            .as_ref()
+            .context("issue #789 manifest must carry its production config override")?;
+        let production_root_config_path =
+            resolve_existing_input_path(Path::new(&overlay.production_root_config_path));
+        let loaded = load_bolt_v3_config(&production_root_config_path)
+            .context("load issue #789 production config for canonical provenance")?;
+        let (loaded, _) = apply_backtest_config_override(loaded, &overlay.to_bolt_v3_override())
+            .context("apply issue #789 override for canonical provenance")?;
+        let loaded_strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| {
+                strategy.config.strategy_instance_id == overlay.override_delta.strategy_instance_id
+            })
+            .context("issue #789 overlaid strategy is missing")?;
+        let raw = raw_taker_config(loaded_strategy, &loaded)
+            .context("resolve issue #789 canonical taker config")?;
+        manifest.strategy_config_hash = json_artifact_sha256(&raw)
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("hash issue #789 canonical resolved config bytes")?;
+        Ok(manifest)
     }
 
     fn issue_789_venue(
@@ -3967,6 +4221,9 @@ mod tests {
             modules: None,
             fill_model: None,
             latency_model: None,
+            // This diagnostic fixture explicitly assumes zero commission. It is
+            // not a claim that production Polymarket economics are zero-fee;
+            // dynamic fee/rebate parity remains tracked by #843 item 10.
             fee_model: None,
             settlement_prices: None,
         }

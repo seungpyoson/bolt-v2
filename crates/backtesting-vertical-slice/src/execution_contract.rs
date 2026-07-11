@@ -4,14 +4,17 @@
 //! economic trace with results produced by NautilusTrader's shared order-book,
 //! instrument sizing, position, and account primitives.
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use nautilus_model::{
     data::BookOrder,
     enums::OrderSide,
+    identifiers::OrderId,
     instruments::InstrumentAny,
     orderbook::OrderBook,
     types::{Money, Price, Quantity},
 };
+
+use crate::hashing::sha256_hex;
 
 #[derive(Debug, Clone)]
 pub struct ExecutionFill {
@@ -27,6 +30,8 @@ pub struct ExecutionContractTrace<'a> {
     pub quote_quantity: bool,
     pub effective_base_quantity: Quantity,
     pub fills: &'a [ExecutionFill],
+    pub settlement_price: Price,
+    pub exit_price: Price,
     pub initial_cash: Money,
     pub terminal_cash: Money,
     pub realized_pnl: Money,
@@ -43,27 +48,87 @@ pub struct ExecutionContractReport {
 
 /// Validate an observed trace against shared NautilusTrader economics.
 ///
-/// The deliberately inert body is the differential RED baseline. The tests
-/// below specify the approved contract before its implementation is added.
 pub fn validate_execution_contract(
     trace: &ExecutionContractTrace<'_>,
 ) -> Result<ExecutionContractReport> {
-    let _ = (
-        trace.instrument,
-        trace.executable_book,
-        trace.order_side,
-        trace.submitted_quantity,
-        trace.quote_quantity,
-        trace.effective_base_quantity,
-        trace.fills,
-        trace.initial_cash,
-        trace.terminal_cash,
-        trace.realized_pnl,
-        trace.fill_commissions,
-        trace.position_commission,
-        trace.canonical_resolved_config_bytes,
-        trace.canonical_resolved_config_sha256,
+    ensure!(
+        sha256_hex(trace.canonical_resolved_config_bytes) == trace.canonical_resolved_config_sha256,
+        "canonical resolved configuration bytes do not match recorded provenance"
     );
+
+    let reference_price = match trace.order_side {
+        OrderSide::Buy => trace.executable_book.best_ask_price(),
+        OrderSide::Sell => trace.executable_book.best_bid_price(),
+        OrderSide::NoOrderSide => None,
+    }
+    .context("executable book has no opposing price")?;
+
+    if trace.quote_quantity {
+        let expected_base_quantity = trace
+            .instrument
+            .get_base_quantity(trace.submitted_quantity, reference_price);
+        ensure!(
+            trace.effective_base_quantity == expected_base_quantity,
+            "quote/base conversion mismatch: submitted {} at {} resolves to {}, observed {}",
+            trace.submitted_quantity,
+            reference_price,
+            expected_base_quantity,
+            trace.effective_base_quantity,
+        );
+    } else {
+        ensure!(
+            trace.effective_base_quantity == trace.submitted_quantity,
+            "base-denominated order quantity changed before execution"
+        );
+    }
+
+    let limit_price = trace
+        .fills
+        .last()
+        .context("execution contract requires at least one fill")?
+        .price;
+    let expected_fills = trace.executable_book.simulate_fills(&BookOrder::new(
+        trace.order_side,
+        limit_price,
+        trace.effective_base_quantity,
+        OrderId::from(0),
+    ));
+    ensure!(
+        expected_fills.len() == trace.fills.len()
+            && expected_fills.iter().zip(trace.fills).all(
+                |((expected_price, expected_quantity), observed)| {
+                    *expected_price == observed.price && *expected_quantity == observed.quantity
+                }
+            ),
+        "observed fills do not equal deterministic fills from the executable book"
+    );
+    ensure!(
+        trace.exit_price == trace.settlement_price,
+        "terminal exit price does not equal the configured settlement price"
+    );
+
+    let cash_change = trace
+        .terminal_cash
+        .checked_sub(trace.initial_cash)
+        .context("terminal cash subtraction overflow or scale mismatch")?;
+    ensure!(
+        cash_change == trace.realized_pnl,
+        "terminal cash change does not equal realized PnL"
+    );
+
+    let total_fill_commission = trace.fill_commissions.iter().try_fold(
+        Money::zero(trace.position_commission.currency),
+        |total, commission| {
+            total
+                .checked_add(*commission)
+                .context("fill commission addition overflow or scale mismatch")
+        },
+    )?;
+    ensure!(
+        total_fill_commission == trace.position_commission,
+        "position commission does not equal the sum of fill commissions"
+    );
+
     Ok(ExecutionContractReport {
         validated_fill_count: trace.fills.len(),
     })
@@ -72,11 +137,8 @@ pub fn validate_execution_contract(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashing::sha256_hex;
     use nautilus_core::UnixNanos;
-    use nautilus_model::{
-        enums::BookType, identifiers::OrderId, instruments::stubs, types::Currency,
-    };
+    use nautilus_model::{enums::BookType, identifiers::OrderId, instruments::stubs};
 
     struct Fixture {
         instrument: InstrumentAny,
@@ -97,6 +159,8 @@ mod tests {
                 quote_quantity: true,
                 effective_base_quantity: Quantity::from("2.71"),
                 fills: &self.fills,
+                settlement_price: Price::from("1.000"),
+                exit_price: Price::from("1.000"),
                 initial_cash: Money::from("1000000.00 USDC"),
                 terminal_cash: Money::from("1000001.57 USDC"),
                 realized_pnl: Money::from("1.57 USDC"),
@@ -131,7 +195,7 @@ mod tests {
                 price: Price::from("0.420"),
                 quantity: Quantity::from("2.71"),
             }],
-            fill_commissions: vec![Money::new(0.0, Currency::USDC())],
+            fill_commissions: vec![Money::from("0.00 USDC")],
             config_bytes,
             config_hash,
         }

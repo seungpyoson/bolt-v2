@@ -27,8 +27,9 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import config_validators as _cv  # noqa: E402
-from git_remote_utils import fetchable_origin_argument, fetchable_remote_url  # noqa: E402
 from ci_provenance import MERGIFY_CONFIG_EXPECTATIONS  # noqa: E402
+from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG  # noqa: E402
+from git_remote_utils import fetchable_origin_argument, fetchable_remote_url  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1938,6 +1939,15 @@ class PrivateFetchRefs:
                 check=True,
                 timeout_seconds=input_timeout_seconds,
             )
+            for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
+                git(
+                    git_repo,
+                    "config",
+                    "--local",
+                    key,
+                    value,
+                    timeout_seconds=input_timeout_seconds,
+                )
             source_objects = git(
                 repo,
                 "rev-parse",

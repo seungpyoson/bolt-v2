@@ -86,11 +86,13 @@ def clean_files(root: Path) -> None:
         f"  - current value: `{EXPECTED_NT_REV}`\n"
         "### 11.5 NautilusTrader pin governance\n"
         f"The live Binance Spot SBE quote boundary is owned by NautilusTrader revision `{EXPECTED_NT_REV}`.\n"
-        "## 13. CLOB V2 Readiness Gate\n"
-        f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork\n"
         "`BinanceSpotDataClient::handle_ws_message`\n"
         "`decode_market_data`\n"
-        "`parse_bbo_event`\n",
+        "`parse_bbo_event`\n"
+        "`RealizedVolatilityObservation`\n"
+        "`StrategySignalObservation`\n"
+        "## 13. CLOB V2 Readiness Gate\n"
+        f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork\n",
     )
     write(
         root,
@@ -745,7 +747,10 @@ def test_binance_registry_row_alone_cannot_masquerade_as_sha_provenance() -> Non
             encoding="utf-8",
         )
 
-    assert_finding(scan_temp(mutate), "missing pinned Binance Spot SBE source symbol parse_bbo_event")
+    assert_finding(
+        scan_temp(mutate),
+        "### 11.5 NautilusTrader pin governance missing parse_bbo_event",
+    )
 
 
 def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:
@@ -794,6 +799,80 @@ def test_runtime_contract_pin_census_rejects_wrong_section_decoy() -> None:
         )
 
     assert_finding(scan_temp(mutate), "runtime-contracts.md: NautilusTrader pin census")
+
+
+def test_runtime_contract_requires_one_pin_per_owner_section() -> None:
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8")
+        text = text.replace(f"  - current value: `{EXPECTED_NT_REV}`\n", "")
+        owner_pin = (
+            "The live Binance Spot SBE quote boundary is owned by NautilusTrader revision "
+            f"`{EXPECTED_NT_REV}`."
+        )
+        contract.write_text(
+            text.replace(owner_pin, f"{owner_pin}\n{owner_pin}"),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "### 9.3 Common required fields")
+    assert_finding(scan_temp(mutate), "### 11.5 NautilusTrader pin governance")
+
+
+def test_runtime_contract_requires_binance_lineage_inside_owner_section() -> None:
+    required = (
+        "BinanceSpotDataClient::handle_ws_message",
+        "decode_market_data",
+        "parse_bbo_event",
+        "RealizedVolatilityObservation",
+        "StrategySignalObservation",
+    )
+
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8")
+        for index, symbol in enumerate(required):
+            text = text.replace(f"`{symbol}`", f"`moved_symbol_{index}`")
+        decoy = "\n".join(f"`{symbol}`" for symbol in required)
+        contract.write_text(f"{text}\n## Decoy\n\n{decoy}\n", encoding="utf-8")
+
+    findings = scan_temp(mutate)
+    for symbol in required:
+        assert_finding(findings, f"### 11.5 NautilusTrader pin governance missing {symbol}")
+
+
+def test_runtime_contract_rejects_duplicate_or_misnamed_owner_heading() -> None:
+    mutations = (
+        lambda text: text + "\n### 11.5 NautilusTrader pin governance\n",
+        lambda text: text.replace(
+            "### 11.5 NautilusTrader pin governance",
+            "### 11.5 NautilusTrader pins governance",
+        ),
+    )
+    for mutate_text in mutations:
+        def mutate(root: Path, mutate_text=mutate_text) -> None:
+            contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+            contract.write_text(
+                mutate_text(contract.read_text(encoding="utf-8")),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), "### 11.5 NautilusTrader pin governance")
+
+
+def test_runtime_contract_rejects_expected_decoy_with_wrong_owner_value() -> None:
+    def mutate(root: Path) -> None:
+        contract = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+        text = contract.read_text(encoding="utf-8").replace(
+            f"  - current value: `{EXPECTED_NT_REV}`",
+            f"  - current value: `{OLD_NT_REV}`",
+        )
+        contract.write_text(
+            text + f"\n## Decoy\n\n  - current value: `{EXPECTED_NT_REV}`\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "### 9.3 Common required fields")
 
 
 def test_missing_binance_live_quote_feeder_fails_closed() -> None:

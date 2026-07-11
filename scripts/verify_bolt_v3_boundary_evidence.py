@@ -61,6 +61,11 @@ BINANCE_SOURCE_SYMBOLS = (
     "decode_market_data",
     "parse_bbo_event",
 )
+BINANCE_BOUNDARY_CONSUMERS = (
+    "RealizedVolatilityObservation",
+    "StrategySignalObservation",
+)
+BINANCE_BOUNDARY_OWNER_HEADING = "### 11.5 NautilusTrader pin governance"
 PIN_TEXT_PATTERNS = {
     PIN_SURFACES[5]: (
         re.compile(r'^nautilus_trader_revision:\s*"([0-9a-f]{40})"$', re.MULTILINE),
@@ -836,14 +841,33 @@ def markdown_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start + 1 : end])
 
 
-def runtime_contract_nt_revisions(text: str) -> list[str]:
-    revisions: list[str] = []
+def scan_runtime_contract_pin(surface: Path, text: str, findings: list[str]) -> None:
+    owner_sections: dict[str, str] = {}
     for heading, pattern in RUNTIME_CONTRACT_PIN_SECTIONS:
         section = markdown_section(text, heading)
         if section is None:
+            findings.append(
+                f"{surface}: NautilusTrader pin census required owner section {heading!r} "
+                "must appear exactly once"
+            )
             continue
-        revisions.extend(match.group(1) for match in pattern.finditer(section))
-    return revisions
+        owner_sections[heading] = section
+        revisions = [match.group(1) for match in pattern.finditer(section)]
+        if revisions != [EXPECTED_NT_REV]:
+            findings.append(
+                f"{surface}: NautilusTrader pin census {heading} must contain exactly one "
+                f"governed pin {EXPECTED_NT_REV}"
+            )
+
+    binance_owner = owner_sections.get(BINANCE_BOUNDARY_OWNER_HEADING)
+    if binance_owner is None:
+        return
+    for symbol in (*BINANCE_SOURCE_SYMBOLS, *BINANCE_BOUNDARY_CONSUMERS):
+        if f"`{symbol}`" not in binance_owner:
+            findings.append(
+                f"{surface}: NautilusTrader pin census {BINANCE_BOUNDARY_OWNER_HEADING} "
+                f"missing {symbol}"
+            )
 
 
 def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
@@ -856,7 +880,8 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
             scan_nt_lock_pin(surface, text, findings)
             continue
         if surface == PIN_SURFACES[4]:
-            revisions = runtime_contract_nt_revisions(text)
+            scan_runtime_contract_pin(surface, text, findings)
+            continue
         elif surface.suffix == ".py":
             revisions = python_expected_nt_revisions(surface, text, findings)
         else:
@@ -865,11 +890,7 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
                 for pattern in PIN_TEXT_PATTERNS[surface]
                 for match in pattern.finditer(text)
             ]
-        expected_count = (
-            len(RUNTIME_CONTRACT_PIN_SECTIONS)
-            if surface == PIN_SURFACES[4]
-            else len(PIN_TEXT_PATTERNS.get(surface, ())) or 1
-        )
+        expected_count = len(PIN_TEXT_PATTERNS.get(surface, ())) or 1
         if len(revisions) != expected_count or any(
             revision != EXPECTED_NT_REV for revision in revisions
         ):
@@ -877,14 +898,6 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
                 f"{surface}: NautilusTrader pin census must contain exactly the governed "
                 f"{EXPECTED_NT_REV} value(s)"
             )
-
-    runtime_contract = read(root, PIN_SURFACES[4])
-    for symbol in BINANCE_SOURCE_SYMBOLS:
-        if f"`{symbol}`" not in runtime_contract:
-            findings.append(
-                f"{PIN_SURFACES[4]}: missing pinned Binance Spot SBE source symbol {symbol}"
-            )
-
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:

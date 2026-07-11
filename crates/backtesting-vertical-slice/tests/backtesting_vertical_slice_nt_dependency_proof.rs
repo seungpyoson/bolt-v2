@@ -1,4 +1,6 @@
-use backtesting_vertical_slice::nt_dependency_proof::nt_dependency_proof_from_embedded_manifests;
+use backtesting_vertical_slice::nt_dependency_proof::{
+    nt_dependency_proof_from_embedded_manifests, verified_nt_revision_from_manifests,
+};
 
 #[test]
 fn nt_dependency_proof_binds_revision_and_required_features() {
@@ -24,4 +26,21 @@ fn nt_dependency_proof_binds_revision_and_required_features() {
         vec!["cloud".to_string()]
     );
     assert!(proof.lock_sources_all_resolve_to_revision);
+}
+
+#[test]
+fn verified_revision_rejects_lockfile_skew() {
+    let manifest = include_str!("../Cargo.toml");
+    let lock = include_str!("../Cargo.lock");
+    let declared_revision = nt_dependency_proof_from_embedded_manifests()
+        .expect("embedded dependency proof")
+        .nautilus_revision;
+    let divergent_lock = lock.replace(
+        &format!("#{declared_revision}"),
+        "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+
+    let error = verified_nt_revision_from_manifests(manifest, &divergent_lock)
+        .expect_err("lockfile skew must fail closed");
+    assert!(error.to_string().contains("does not resolve"));
 }

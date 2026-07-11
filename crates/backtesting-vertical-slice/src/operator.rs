@@ -1069,6 +1069,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         order_terminals,
         config_override_report,
         run_guard_report,
+        ..
     } = run_nt_backtest_node(&inputs.manifest)?;
     let expected = expected_iterations(
         &canonical_table.rows,

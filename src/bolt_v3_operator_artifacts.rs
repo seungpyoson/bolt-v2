@@ -188,6 +188,8 @@ pub fn build_head_sha_matches_current(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -386,14 +388,27 @@ mod tests {
         assert_eq!(path, temp.path().join("launch-identity.json"));
         assert!(path.ends_with("launch-identity.json"));
     }
+
+    #[test]
+    fn json_artifact_hash_covers_the_exact_canonical_bytes() {
+        let artifact = BTreeMap::from([("order_type", "MARKET"), ("quantity", "1.14")]);
+        let bytes = json_artifact_bytes(&artifact).expect("canonical bytes should serialize");
+        let hash = json_artifact_sha256(&artifact).expect("canonical bytes should hash");
+        assert_eq!(hash, sha256_hex(&bytes));
+    }
 }
 
 pub fn json_artifact_sha256<T: Serialize>(
     artifact: &T,
 ) -> Result<String, BoltV3OperatorArtifactError> {
-    let bytes =
-        serde_json::to_vec_pretty(artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    let bytes = json_artifact_bytes(artifact)?;
     Ok(sha256_hex(&bytes))
+}
+
+pub fn json_artifact_bytes<T: Serialize>(
+    artifact: &T,
+) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+    serde_json::to_vec_pretty(artifact).map_err(BoltV3OperatorArtifactError::Serialize)
 }
 
 pub fn write_json_artifact_create_new<T: Serialize>(

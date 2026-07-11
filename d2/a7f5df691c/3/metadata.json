@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "d2a7f5df691c",
+  "session_id": "019f4cb6-ef6c-7af0-8fe1-9933dd283e31",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-11T08:34:52.079813Z",
+  "branch": "fix/1354-rv-gate-clock-domain",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "28bfbd54a8ee",
+  "checkpoint_transcript_start": 577,
+  "transcript_lines_at_start": 577,
+  "compact_transcript_start": 127,
+  "token_usage": {
+    "input_tokens": 622645,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 60167424,
+    "output_tokens": 40901,
+    "api_call_count": 277
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

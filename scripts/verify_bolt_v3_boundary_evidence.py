@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import datetime as dt
 import hashlib
@@ -23,6 +24,8 @@ from verifier_io import require_nonempty
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_NT_REV = "fa3391d90c1aace4733fc73dae082b4cfee6b8fa"
+EXPECTED_NT_GIT = "https://github.com/seungpyoson/nautilus_trader.git"
+EXPECTED_NT_LOCK_SOURCE = f"git+{EXPECTED_NT_GIT}?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
 EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")
@@ -59,15 +62,30 @@ BINANCE_SOURCE_SYMBOLS = (
     "parse_bbo_event",
 )
 PIN_TEXT_PATTERNS = {
-    PIN_SURFACES[4]: (
-        re.compile(r"current value: `([0-9a-f]{40})`"),
-        re.compile(r"live Binance Spot SBE quote boundary is owned by NautilusTrader revision\s+`([0-9a-f]{40})`"),
-        re.compile(r"Current status: this branch pins NautilusTrader to\s+`([0-9a-f]{40})`"),
+    PIN_SURFACES[5]: (
+        re.compile(r'^nautilus_trader_revision:\s*"([0-9a-f]{40})"$', re.MULTILINE),
     ),
-    PIN_SURFACES[5]: (re.compile(r'nautilus_trader_revision:\s*"([0-9a-f]{40})"'),),
-    PIN_SURFACES[6]: (re.compile(r'EXPECTED_NT_REV\s*=\s*"([0-9a-f]{40})"'),),
-    PIN_SURFACES[7]: (re.compile(r'EXPECTED_NT_REV\s*=\s*"([0-9a-f]{40})"'),),
 }
+RUNTIME_CONTRACT_PIN_SECTIONS = (
+    (
+        "### 9.3 Common required fields",
+        re.compile(r"^  - current value: `([0-9a-f]{40})`$", re.MULTILINE),
+    ),
+    (
+        "### 11.5 NautilusTrader pin governance",
+        re.compile(
+            r"^The live Binance Spot SBE quote boundary is owned by NautilusTrader revision\s+`([0-9a-f]{40})`\.",
+            re.MULTILINE,
+        ),
+    ),
+    (
+        "## 13. CLOB V2 Readiness Gate",
+        re.compile(
+            r"^Current status: this branch pins NautilusTrader to\s+`([0-9a-f]{40})` on the bolt pin-fork$",
+            re.MULTILINE,
+        ),
+    ),
+)
 REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
@@ -699,30 +717,165 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
             findings.append(f"{workflow_path}: missing {needle}")
 
 
+DEPENDENCY_SCOPE_KEYS = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
+
+
+def dependency_tables(
+    value: object,
+    path: tuple[str, ...] = (),
+) -> list[tuple[tuple[str, ...], dict[str, object]]]:
+    if not isinstance(value, dict):
+        return []
+    tables: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    for key, child in value.items():
+        child_path = (*path, str(key))
+        if key in DEPENDENCY_SCOPE_KEYS and isinstance(child, dict):
+            tables.append((child_path, child))
+        tables.extend(dependency_tables(child, child_path))
+    return tables
+
+
+def scan_nt_manifest_pin(surface: Path, text: str, findings: list[str]) -> None:
+    try:
+        manifest = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        findings.append(f"{surface}: NautilusTrader pin census could not parse TOML: {error}")
+        return
+
+    dependencies: list[tuple[str, object]] = []
+    for path, table in dependency_tables(manifest):
+        for name, specification in table.items():
+            package_name = (
+                specification.get("package") if isinstance(specification, dict) else None
+            )
+            if name.startswith("nautilus-") or (
+                isinstance(package_name, str) and package_name.startswith("nautilus-")
+            ):
+                dependencies.append((f"{'.'.join(path)}.{name}", specification))
+    if not dependencies:
+        findings.append(f"{surface}: NautilusTrader pin census found no nautilus-* dependencies")
+        return
+
+    for location, specification in dependencies:
+        if not isinstance(specification, dict):
+            findings.append(
+                f"{surface}: NautilusTrader pin census {location} must use the canonical pinned Git table"
+            )
+            continue
+        git = specification.get("git")
+        rev = specification.get("rev")
+        selectors = sorted(key for key in ("branch", "tag") if key in specification)
+        if git != EXPECTED_NT_GIT or rev != EXPECTED_NT_REV or selectors:
+            findings.append(
+                f"{surface}: NautilusTrader pin census {location} must use git={EXPECTED_NT_GIT!r} "
+                f"and rev={EXPECTED_NT_REV!r} with no branch/tag selector"
+            )
+
+
+def scan_nt_lock_pin(surface: Path, text: str, findings: list[str]) -> None:
+    try:
+        lock = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        findings.append(f"{surface}: NautilusTrader pin census could not parse TOML: {error}")
+        return
+
+    packages = lock.get("package")
+    if not isinstance(packages, list):
+        findings.append(f"{surface}: NautilusTrader pin census found no package records")
+        return
+    nautilus_packages = [
+        package
+        for package in packages
+        if isinstance(package, dict)
+        and isinstance(package.get("name"), str)
+        and package["name"].startswith("nautilus-")
+    ]
+    if not nautilus_packages:
+        findings.append(f"{surface}: NautilusTrader pin census found no nautilus-* packages")
+        return
+    for package in nautilus_packages:
+        if package.get("source") != EXPECTED_NT_LOCK_SOURCE:
+            findings.append(
+                f"{surface}: NautilusTrader pin census package {package['name']} must use "
+                f"source={EXPECTED_NT_LOCK_SOURCE!r}"
+            )
+
+
+def python_expected_nt_revisions(surface: Path, text: str, findings: list[str]) -> list[str]:
+    try:
+        module = ast.parse(text, filename=str(surface))
+    except SyntaxError as error:
+        findings.append(f"{surface}: NautilusTrader pin census could not parse Python: {error}")
+        return []
+    revisions: list[str] = []
+    for statement in module.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if not any(isinstance(target, ast.Name) and target.id == "EXPECTED_NT_REV" for target in targets):
+            continue
+        value = statement.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            revisions.append(value.value)
+    return revisions
+
+
+def markdown_section(text: str, heading: str) -> str | None:
+    lines = text.splitlines()
+    indexes = [index for index, line in enumerate(lines) if line == heading]
+    if len(indexes) != 1:
+        return None
+    start = indexes[0]
+    level = len(heading) - len(heading.lstrip("#"))
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        match = re.match(r"^(#+)\s", lines[index])
+        if match is not None and len(match.group(1)) <= level:
+            end = index
+            break
+    return "\n".join(lines[start + 1 : end])
+
+
+def runtime_contract_nt_revisions(text: str) -> list[str]:
+    revisions: list[str] = []
+    for heading, pattern in RUNTIME_CONTRACT_PIN_SECTIONS:
+        section = markdown_section(text, heading)
+        if section is None:
+            continue
+        revisions.extend(match.group(1) for match in pattern.finditer(section))
+    return revisions
+
+
 def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
-    manifest_pattern = re.compile(
-        r'git\s*=\s*"https://github\.com/seungpyoson/nautilus_trader\.git"[^\n]*?rev\s*=\s*"([0-9a-f]{40})"'
-    )
-    lock_pattern = re.compile(
-        r'git\+https://github\.com/seungpyoson/nautilus_trader\.git\?rev=([0-9a-f]{40})#([0-9a-f]{40})'
-    )
     for surface in PIN_SURFACES:
         text = read(root, surface)
-        revisions: list[str]
         if surface.name == "Cargo.toml":
-            revisions = manifest_pattern.findall(text)
-        elif surface.name == "Cargo.lock":
-            lock_revisions = lock_pattern.findall(text)
-            revisions = [revision for pair in lock_revisions for revision in pair]
+            scan_nt_manifest_pin(surface, text, findings)
+            continue
+        if surface.name == "Cargo.lock":
+            scan_nt_lock_pin(surface, text, findings)
+            continue
+        if surface == PIN_SURFACES[4]:
+            revisions = runtime_contract_nt_revisions(text)
+        elif surface.suffix == ".py":
+            revisions = python_expected_nt_revisions(surface, text, findings)
         else:
             revisions = [
                 match.group(1)
                 for pattern in PIN_TEXT_PATTERNS[surface]
                 for match in pattern.finditer(text)
             ]
-        if not revisions or any(revision != EXPECTED_NT_REV for revision in revisions):
+        expected_count = (
+            len(RUNTIME_CONTRACT_PIN_SECTIONS)
+            if surface == PIN_SURFACES[4]
+            else len(PIN_TEXT_PATTERNS.get(surface, ())) or 1
+        )
+        if len(revisions) != expected_count or any(
+            revision != EXPECTED_NT_REV for revision in revisions
+        ):
             findings.append(
-                f"{surface}: NautilusTrader pin census must contain only {EXPECTED_NT_REV}"
+                f"{surface}: NautilusTrader pin census must contain exactly the governed "
+                f"{EXPECTED_NT_REV} value(s)"
             )
 
     runtime_contract = read(root, PIN_SURFACES[4])

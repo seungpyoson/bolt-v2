@@ -943,23 +943,28 @@ def markdown_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start + 1 : end])
 
 
-def rust_brace_depth_at(masked: str, end: int) -> int | None:
-    brace_depth = 0
+def rust_open_delimiters_at(masked: str, end: int) -> tuple[str, ...] | None:
+    openers = {"(", "[", "{"}
+    closer_to_opener = {")": "(", "]": "[", "}": "{"}
+    delimiter_stack: list[str] = []
     for char in masked[:end]:
-        if char == "{":
-            brace_depth += 1
-        elif char == "}":
-            brace_depth -= 1
-            if brace_depth < 0:
+        if char in openers:
+            delimiter_stack.append(char)
+        elif char in closer_to_opener:
+            if (
+                not delimiter_stack
+                or delimiter_stack[-1] != closer_to_opener[char]
+            ):
                 return None
-    return brace_depth
+            delimiter_stack.pop()
+    return tuple(delimiter_stack)
 
 
 def rust_crate_inner_attributes(text: str) -> list[str]:
     masked = _mask_rust_non_code(text)
     attributes: list[str] = []
     for match in re.finditer(r"#\s*!\s*\[\s*([^\[\]]+?)\s*\]", masked):
-        if rust_brace_depth_at(masked, match.start()) == 0:
+        if rust_open_delimiters_at(masked, match.start()) == ():
             attributes.append(re.sub(r"\s+", "", match.group(1)))
     return attributes
 
@@ -975,7 +980,7 @@ def rust_ordinary_test_function_body(
     if len(matches) != 1:
         return None, False
 
-    if rust_brace_depth_at(masked, matches[0].start()) != 0:
+    if rust_open_delimiters_at(masked, matches[0].start()) != ():
         return None, True
 
     attribute_cluster = re.search(

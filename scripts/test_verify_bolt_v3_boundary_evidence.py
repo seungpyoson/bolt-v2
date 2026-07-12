@@ -1030,6 +1030,34 @@ def test_binance_timestamp_behavioral_contract_requires_top_level_test_functions
     )
 
 
+def test_binance_timestamp_behavioral_contract_rejects_parenthesized_macro_wrapper() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        text = path.read_text(encoding="utf-8")
+        path.write_text(f"discard!(\n{text}\n);\n", encoding="utf-8")
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{function_name} must use exactly one ordinary #[test] outer attribute",
+    )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_bracketed_macro_wrapper() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        text = path.read_text(encoding="utf-8")
+        path.write_text(f"discard![\n{text}\n];\n", encoding="utf-8")
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{function_name} must use exactly one ordinary #[test] outer attribute",
+    )
+
+
 def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:
     def mutate(root: Path) -> None:
         path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"

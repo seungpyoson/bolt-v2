@@ -566,10 +566,19 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Setup governed sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
@@ -618,6 +627,7 @@ jobs:
         shell: bash
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mapfile -t sidecars < <(python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice)
           if [[ "${#sidecars[@]}" == "0" ]]; then
@@ -646,6 +656,12 @@ jobs:
             printf '%s\0' "${tar_inputs[@]}" \
               | tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
           )
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Save BVS binary sidecars
         id: bvs-bin-sidecars-cache-save

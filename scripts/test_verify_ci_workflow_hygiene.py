@@ -7967,6 +7967,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
     checks = [
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
         assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract,
+        assert_backtester_primary_sccache_contract,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
         assert_v6_red_backtester_test_uses_nextest_archive,
         assert_cache_as_same_run_transport_is_banned,
@@ -8033,6 +8034,54 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
     )
     if not any("must not restore or save the BVS managed target" in error for error in errors(injected_restore)):
         raise AssertionError("BVS managed-target restore injection was not rejected")
+
+
+def assert_backtester_primary_sccache_contract() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+
+    def errors(mutated: str) -> list[str]:
+        return [
+            error
+            for error in verifier.backtester_test_shard_errors(
+                ".github/workflows/backtester-ci.yml", mutated
+            )
+            if "BVS_TEST_ARCHIVE_JOB_SHA256" not in error
+        ]
+
+    required = (
+        "      - name: Setup governed sccache\n",
+        "          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}\n",
+        "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+        "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+        "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+        "      - name: Print sccache stats\n",
+    )
+    missing = [fragment for fragment in required if fragment not in workflow]
+    if missing:
+        raise AssertionError(f"primary BVS sccache contract missing: {missing}")
+
+    mutations = (
+        replace_once(workflow, "      - name: Setup governed sccache\n", "      - name: Omit governed sccache\n"),
+        replace_once(
+            workflow,
+            "          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}\n",
+            '          active: "true"\n',
+        ),
+        replace_once(workflow, "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n", ""),
+        replace_once(workflow, "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n", ""),
+        replace_once(
+            workflow,
+            "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+            'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+        ),
+        replace_once(workflow, "      - name: Print sccache stats\n", "      - name: Omit sccache stats\n"),
+        replace_once(workflow, '          CARGO_PROFILE_TEST_DEBUG: "0"\n', '          RUSTFLAGS: "-C debuginfo=0"\n'),
+        replace_once(workflow, '          CARGO_PROFILE_DEV_DEBUG: "0"\n', '          RUSTC_WRAPPER: "sccache"\n'),
+    )
+    for mutated in mutations:
+        if not errors(mutated):
+            raise AssertionError("primary BVS sccache mutation was not rejected")
 
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
@@ -8255,8 +8304,18 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - uses: Swatinem/rust-cache@example
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
+      - name: Setup governed sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
           printf 'BVS archive args: %s\\n' "${archive_args[*]}"
@@ -8278,10 +8337,18 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           fi
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
           tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
       - name: Save BVS binary sidecars
         id: bvs-bin-sidecars-cache-save
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}

@@ -1256,7 +1256,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "e4ecb19ac8ed16867f1bfc3ff48e6ebfc7e1ffe447114d4632ddbe9817310c95"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "622e9ef2f764a26cb23461fa80f6f1983fd6383265e10825697b32b49bbbddce"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -8167,6 +8167,53 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     ]
     if not artifact_identity_lines or any(artifact_digest_ref not in line for line in artifact_identity_lines):
         errors.append("backtester bvs-test S3 keys and metadata must consistently use the BVS artifact digest")
+    sccache_setup_block = named_step_block(archive_job, "Setup governed sccache")
+    sccache_setup_text = uncommented_text(sccache_setup_block) if sccache_setup_block is not None else ""
+    sccache_active = (
+        "active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || "
+        "steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}"
+    )
+    for fragment in (
+        f"uses: {SCCACHE_SETUP_ACTION_PATH}",
+        "id: sccache",
+        sccache_active,
+        "role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
+        "write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}",
+    ):
+        if fragment not in sccache_setup_text:
+            errors.append(f"backtester bvs-test archive governed sccache setup must include {fragment!r}")
+    build_archive_block = named_step_block(archive_job, "Build BVS nextest archive")
+    build_sidecars_block = named_step_block(archive_job, "Build BVS binary sidecars")
+    for block, profile_fragment, label in (
+        (build_archive_block, 'CARGO_PROFILE_TEST_DEBUG: "0"', "archive"),
+        (build_sidecars_block, 'CARGO_PROFILE_DEV_DEBUG: "0"', "sidecar"),
+    ):
+        block_text = uncommented_text(block) if block is not None else ""
+        if DEBUG_LANE_SCCACHE_OPT_IN not in block_text:
+            errors.append(f"backtester bvs-test {label} compile must opt into managed sccache conditionally")
+        if profile_fragment not in block_text:
+            errors.append(f"backtester bvs-test {label} compile must preserve {profile_fragment}")
+        for forbidden in (
+            "RUSTFLAGS:",
+            "CARGO_BUILD_RUSTFLAGS:",
+            "CARGO_ENCODED_RUSTFLAGS:",
+            "RUSTC_WRAPPER:",
+            "RUSTC_WORKSPACE_WRAPPER:",
+            "CARGO_INCREMENTAL:",
+        ):
+            if forbidden in block_text:
+                errors.append(f"backtester bvs-test {label} compile must not set {forbidden[:-1]}")
+    stats_block = named_step_block(archive_job, "Print sccache stats")
+    stats_text = uncommented_text(stats_block) if stats_block is not None else ""
+    if (
+        stats_block is None
+        or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text
+        or not step_block_has_field(stats_block, "if", "always()")
+        or "enabled: ${{ steps.sccache.outputs.enabled || 'false' }}" not in stats_text
+        or not step_occurs_after(archive_job, "Print sccache stats", "Build BVS nextest archive")
+        or not step_occurs_after(archive_job, "Print sccache stats", "Build BVS binary sidecars")
+    ):
+        errors.append("backtester bvs-test archive must print governed sccache stats after both compile opportunities")
     if archive_text.count(f"uses: {BVS_MINIO_SETUP_ACTION}") != 1:
         errors.append("backtester bvs-test archive must set up MinIO through the shared action exactly once")
     if "just bte-test --partition" in combined_text:

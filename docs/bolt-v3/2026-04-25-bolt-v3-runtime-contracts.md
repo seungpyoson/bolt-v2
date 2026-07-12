@@ -1395,6 +1395,13 @@ timestamp remains `ts_event` and the caller-supplied adapter-initialization
 timestamp remains `ts_init`; Bolt does not restamp, fall back, branch by venue,
 compare with a tolerance, or infer either stamp from a clock heuristic.
 
+The boundary verifier's Cargo-target and Rust-test-body checks are a structural
+fence only. They reject target fields or function attributes that can suppress
+ordinary test execution and require the governed parser/assertion shapes while
+masking comments and strings. They do not compile or execute the harness and
+do not prove runtime semantics. The required exact-head nextest execution is
+the behavioral execution proof; a green structural fence is not a substitute.
+
 ### 11.6 Controlled-connect and controlled-disconnect boundary
 
 The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and execution clients registered but not connected. NT's connect dispatchers (`NautilusKernel::connect_data_clients` and `NautilusKernel::connect_exec_clients`) and NT's disconnect dispatcher (`NautilusKernel::disconnect_clients`) are reachable from bolt-v3 only through the explicit `connect_bolt_v3_clients` and `disconnect_bolt_v3_clients` boundaries defined in `src/bolt_v3_live_node.rs`.

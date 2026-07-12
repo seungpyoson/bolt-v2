@@ -858,6 +858,53 @@ def test_binance_timestamp_behavioral_contract_requires_exact_target_registratio
         )
 
 
+def test_binance_timestamp_behavioral_contract_accepts_explicit_execution_enabling_fields() -> None:
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
+                f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\nharness = true\ntest = true\n',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert scan_temp(mutate) == []
+
+
+def test_binance_timestamp_behavioral_contract_rejects_execution_disabling_target_fields() -> None:
+    mutations = (
+        (
+            'required-features = ["never-enabled"]',
+            "has execution-unsafe field(s): required-features",
+        ),
+        ("harness = false", "harness must be true when specified"),
+        ("test = false", "test must be true when specified"),
+        (
+            'crate-type = ["rlib"]',
+            "has execution-unsafe field(s): crate-type",
+        ),
+    )
+    for target_field, expected_finding in mutations:
+        def mutate(root: Path, target_field: str = target_field) -> None:
+            manifest = root / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8").replace(
+                    f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
+                    f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n{target_field}\n',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"Cargo.toml: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET} "
+            f"{expected_finding}",
+        )
+
+
 def test_binance_timestamp_behavioral_contract_requires_every_case() -> None:
     for case_name in BINANCE_TIMESTAMP_TEST_CASES:
         def mutate(root: Path, case_name: str = case_name) -> None:
@@ -906,6 +953,52 @@ def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
             "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps "
             f"{expected_finding}",
         )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attributes() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    ordinary_header = f"#[test]\nfn {function_name}()"
+    mutations = (
+        f"#[ignore]\n{ordinary_header}",
+        f"#[should_panic]\n{ordinary_header}",
+        f"#[cfg(any())]\n{ordinary_header}",
+        f"#[cfg_attr(all(), ignore)]\n{ordinary_header}",
+        f"#[test]\n#[ignore]\nfn {function_name}()",
+        f"#[test]\n#[test]\nfn {function_name}()",
+    )
+    for replacement in mutations:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    ordinary_header,
+                    replacement,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{function_name} must use exactly one ordinary #[test] outer attribute",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_requires_top_level_test_functions() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            f"#[cfg(any())]\nmod disabled {{\n{text}\n}}\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{function_name} must use exactly one ordinary #[test] outer attribute",
+    )
 
 
 def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:

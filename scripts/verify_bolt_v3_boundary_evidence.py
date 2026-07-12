@@ -73,6 +73,9 @@ BINANCE_BOUNDARY_CONSUMERS = (
 BINANCE_BOUNDARY_OWNER_HEADING = "### 11.5 NautilusTrader pin governance"
 BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_TEST_PATH = Path("tests/binance_sbe_quote_timestamps.rs")
+BINANCE_TIMESTAMP_TEST_SAFE_TARGET_FIELDS = frozenset(
+    {"name", "path", "harness", "test"}
+)
 BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
         ("parse_trades_event call", r"\bparse_trades_event\s*\("),
@@ -940,14 +943,43 @@ def markdown_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start + 1 : end])
 
 
-def rust_test_function_body(text: str, function_name: str) -> str | None:
+def rust_ordinary_test_function_body(
+    text: str, function_name: str
+) -> tuple[str | None, bool]:
     masked = _mask_rust_non_code(text)
-    header = re.compile(
-        rf"#\s*\[\s*test\s*\]\s*fn\s+{re.escape(function_name)}\s*\([^)]*\)\s*\{{"
+    function_header = re.compile(
+        rf"\bfn\s+{re.escape(function_name)}\s*\([^)]*\)\s*\{{"
     )
-    matches = list(header.finditer(masked))
+    matches = list(function_header.finditer(masked))
     if len(matches) != 1:
-        return None
+        return None, False
+
+    brace_depth = 0
+    for char in masked[: matches[0].start()]:
+        if char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None, True
+    if brace_depth != 0:
+        return None, True
+
+    attribute_cluster = re.search(
+        r"(?P<attributes>(?:#\s*\[[^\[\]]+\]\s*)+)$",
+        masked[: matches[0].start()],
+    )
+    if attribute_cluster is None:
+        return None, True
+    attributes = [
+        re.sub(r"\s+", "", attribute)
+        for attribute in re.findall(
+            r"#\s*\[\s*([^\[\]]+?)\s*\]",
+            attribute_cluster.group("attributes"),
+        )
+    ]
+    if attributes != ["test"]:
+        return None, True
 
     opening_brace = masked.find("{", matches[0].start(), matches[0].end())
     depth = 0
@@ -958,8 +990,8 @@ def rust_test_function_body(text: str, function_name: str) -> str | None:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return masked[opening_brace + 1 : index]
-    return None
+                return masked[opening_brace + 1 : index], True
+    return None, True
 
 
 def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) -> None:
@@ -1000,6 +1032,23 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
             f"{manifest_surface}: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET} "
             f"must register exactly {BINANCE_TIMESTAMP_TEST_PATH}"
         )
+    if len(exact_entries) == 1:
+        exact_entry = exact_entries[0]
+        unsafe_fields = sorted(
+            set(exact_entry) - BINANCE_TIMESTAMP_TEST_SAFE_TARGET_FIELDS
+        )
+        if unsafe_fields:
+            findings.append(
+                f"{manifest_surface}: required [[test]] target "
+                f"{BINANCE_TIMESTAMP_TEST_TARGET} has execution-unsafe field(s): "
+                f"{', '.join(unsafe_fields)}"
+            )
+        for field in ("harness", "test"):
+            if field in exact_entry and exact_entry[field] is not True:
+                findings.append(
+                    f"{manifest_surface}: required [[test]] target "
+                    f"{BINANCE_TIMESTAMP_TEST_TARGET} {field} must be true when specified"
+                )
 
     test_path = root / BINANCE_TIMESTAMP_TEST_PATH
     if not test_path.is_file():
@@ -1019,12 +1068,20 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
         return
 
     for function_name, requirements in BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS.items():
-        body = rust_test_function_body(test_text, function_name)
+        body, has_named_function = rust_ordinary_test_function_body(
+            test_text, function_name
+        )
         if body is None:
-            findings.append(
-                f"{BINANCE_TIMESTAMP_TEST_PATH}: missing required #[test] function "
-                f"{function_name}"
-            )
+            if has_named_function:
+                findings.append(
+                    f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must use exactly "
+                    "one ordinary #[test] outer attribute and no other function attributes"
+                )
+            else:
+                findings.append(
+                    f"{BINANCE_TIMESTAMP_TEST_PATH}: missing required #[test] function "
+                    f"{function_name}"
+                )
             continue
         for description, pattern in requirements:
             if re.search(pattern, body) is None:

@@ -502,6 +502,15 @@ def test_planted_unregistered_any_class_fails() -> None:
     assert_finding(scan_temp(mutate), "missing registry entry")
 
 
+def test_registered_text_only_handler_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes", "WireMessage::Text(bytes) => bytes"), encoding="utf-8")
+
+    assert_finding(scan_temp(mutate), "must accept Text and Binary")
+
+
 def test_missing_committed_real_capture_decode_test_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/chainlink_reference.rs"

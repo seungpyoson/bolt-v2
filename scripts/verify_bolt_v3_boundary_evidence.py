@@ -943,6 +943,27 @@ def markdown_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start + 1 : end])
 
 
+def rust_brace_depth_at(masked: str, end: int) -> int | None:
+    brace_depth = 0
+    for char in masked[:end]:
+        if char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None
+    return brace_depth
+
+
+def rust_crate_inner_attributes(text: str) -> list[str]:
+    masked = _mask_rust_non_code(text)
+    attributes: list[str] = []
+    for match in re.finditer(r"#\s*!\s*\[\s*([^\[\]]+?)\s*\]", masked):
+        if rust_brace_depth_at(masked, match.start()) == 0:
+            attributes.append(re.sub(r"\s+", "", match.group(1)))
+    return attributes
+
+
 def rust_ordinary_test_function_body(
     text: str, function_name: str
 ) -> tuple[str | None, bool]:
@@ -954,15 +975,7 @@ def rust_ordinary_test_function_body(
     if len(matches) != 1:
         return None, False
 
-    brace_depth = 0
-    for char in masked[: matches[0].start()]:
-        if char == "{":
-            brace_depth += 1
-        elif char == "}":
-            brace_depth -= 1
-            if brace_depth < 0:
-                return None, True
-    if brace_depth != 0:
+    if rust_brace_depth_at(masked, matches[0].start()) != 0:
         return None, True
 
     attribute_cluster = re.search(
@@ -1066,6 +1079,12 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
             f"behavioral proof: {error}"
         )
         return
+
+    for attribute in rust_crate_inner_attributes(test_text):
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-level inner attribute is forbidden: "
+            f"{attribute}"
+        )
 
     for function_name, requirements in BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS.items():
         body, has_named_function = rust_ordinary_test_function_body(

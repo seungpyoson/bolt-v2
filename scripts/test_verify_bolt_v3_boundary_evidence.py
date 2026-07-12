@@ -984,6 +984,35 @@ def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attribut
         )
 
 
+def test_binance_timestamp_behavioral_contract_rejects_crate_cfg_inner_attribute() -> None:
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        path.write_text(
+            f"#![cfg(any())]\n{path.read_text(encoding='utf-8')}",
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-level inner attribute is forbidden: cfg(any())",
+    )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_crate_cfg_attr_inner_attribute() -> None:
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        path.write_text(
+            f"#![cfg_attr(all(), cfg(any()))]\n{path.read_text(encoding='utf-8')}",
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-level inner attribute is forbidden: "
+        "cfg_attr(all(),cfg(any()))",
+    )
+
+
 def test_binance_timestamp_behavioral_contract_requires_top_level_test_functions() -> None:
     function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
 

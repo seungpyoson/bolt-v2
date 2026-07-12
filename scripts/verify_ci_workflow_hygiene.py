@@ -7387,13 +7387,6 @@ def missing_nextest_junit_stage_lines(report_path: str) -> tuple[str, ...]:
 
 
 BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
-    "Resolve crate managed target dir": (
-        'dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"',
-        'echo "dir=$dir" >> "$GITHUB_OUTPUT"',
-    ),
-    "Compute BVS cache input hash": (
-        'echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
-    ),
     "Configure nextest JUnit output": (
         "printf '%s\\n' \\",
         "'[profile.default.junit]' \\",
@@ -7416,7 +7409,6 @@ BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
         ("Setup read-only sccache", SCCACHE_SETUP_ACTION_PATH),
         ("Print sccache stats", SCCACHE_STATS_ACTION_PATH),
         (None, "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4"),
-        ("Restore test target cache", "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"),
         ("Install cargo-nextest", "taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538"),
         ("Setup BVS MinIO S3 smoke", BVS_MINIO_SETUP_ACTION),
         ("Upload test results to Mergify", "mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3"),
@@ -8061,6 +8053,13 @@ def verify_debug_lane_compile_cache_parity(
                 ("flaky-smoke-rust-root", "Run tests", True, False),
                 ("flaky-smoke-rust-backtester", "Run tests", False, False),
                 ("flaky-smoke-rust-backtester-issue-789", "Run tests", False, False),
+            ),
+        ),
+        (
+            ".github/workflows/flaky-test-detection.yml",
+            (
+                ("flaky-detection-rust-backtester", "Run tests", False, False),
+                ("flaky-detection-rust-backtester-issue-789", "Run tests", False, False),
             ),
         ),
     )

@@ -151,18 +151,6 @@ jobs:
           install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester
 
-      - name: Resolve crate managed target dir
-        id: crate_target
-        run: |
-          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
-        shell: bash
-        run: |
-          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -170,14 +158,6 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-bvs-v1
           save-if: false
-
-      - name: Restore test target cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
-          restore-keys: |
-            managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
@@ -281,18 +261,6 @@ jobs:
           install-rust-linker: "true"
           build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester-issue-789
 
-      - name: Resolve crate managed target dir
-        id: crate_target
-        run: |
-          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
-        shell: bash
-        run: |
-          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -300,14 +268,6 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-bvs-v1
           save-if: false
-
-      - name: Restore test target cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
-          restore-keys: |
-            managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1

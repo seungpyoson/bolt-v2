@@ -3959,8 +3959,8 @@ def assert_runner_config_floor_handles_missing_and_empty_inputs() -> None:
 
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     workflows = (
-        (".github/workflows/flaky-test-detection.yml", 2),
-        (".github/workflows/flaky-test-smoke.yml", 2),
+        ".github/workflows/flaky-test-detection.yml",
+        ".github/workflows/flaky-test-smoke.yml",
     )
     pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
     expected_job_names = (
@@ -3973,7 +3973,7 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
         "MERGIFY_TEST_JOB_NAME: bvs-test archive",
         "MERGIFY_TEST_JOB_NAME: bvs-test issue-789",
     )
-    for workflow_path, expected_bvs_count in workflows:
+    for workflow_path in workflows:
         workflow = repo_workflow_text(workflow_path)
         if workflow.count(pinned_v14_action) != 3:
             raise AssertionError(f"{workflow_path} must pin all Mergify uploads to the v14 action SHA")
@@ -3989,12 +3989,10 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
                 raise AssertionError(f"{workflow_path} missing current Mergify CLI env {job_env!r}")
         if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
             raise AssertionError(f"{workflow_path} must pass test runner exit codes to Mergify")
-        if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != expected_bvs_count:
-            raise AssertionError(f"{workflow_path} BVS jobs must use the shared backtester cache digest")
-        if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
-            raise AssertionError(f"{workflow_path} BVS target cache keys must not use inline hashFiles")
-        if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != expected_bvs_count:
-            raise AssertionError(f"{workflow_path} BVS target cache keys must use the shared digest")
+        if "python3 scripts/ci_input_sets.py hash backtester_cache" in workflow:
+            raise AssertionError(f"{workflow_path} must not compute a dead BVS target-cache digest")
+        if "managed-target-bvs-" in workflow:
+            raise AssertionError(f"{workflow_path} must not restore a BVS whole-target cache")
         if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
             raise AssertionError(f"{workflow_path} must restore from production cache namespaces")
 
@@ -4333,6 +4331,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     workflows = {
         ".github/workflows/debug-test.yml": repo_workflow_text(".github/workflows/debug-test.yml"),
         ".github/workflows/rust-probe.yml": repo_workflow_text(".github/workflows/rust-probe.yml"),
+        ".github/workflows/flaky-test-detection.yml": repo_workflow_text(".github/workflows/flaky-test-detection.yml"),
         ".github/workflows/flaky-test-smoke.yml": repo_workflow_text(".github/workflows/flaky-test-smoke.yml"),
     }
     bvs_policy = repo_source_text("crates/backtesting-vertical-slice/ci/rust-verification.toml")
@@ -4354,6 +4353,55 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
+
+    flaky_jobs = (
+        (".github/workflows/flaky-test-detection.yml", "flaky-detection-rust-backtester"),
+        (".github/workflows/flaky-test-detection.yml", "flaky-detection-rust-backtester-issue-789"),
+        (".github/workflows/flaky-test-smoke.yml", "flaky-smoke-rust-backtester"),
+        (".github/workflows/flaky-test-smoke.yml", "flaky-smoke-rust-backtester-issue-789"),
+    )
+    setup_block = (
+        "      - name: Setup read-only sccache\n"
+        "        id: sccache\n"
+        "        uses: ./.github/actions/sccache-setup\n"
+        "        with:\n"
+        "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n"
+    )
+    for workflow_name, job_name in flaky_jobs:
+        workflow = workflows[workflow_name]
+        anchor = f"  {job_name}:\n"
+        mutations = (
+            replace_once_after(workflow, anchor, setup_block, ""),
+            replace_once_after(
+                workflow,
+                anchor,
+                "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+                'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Print sccache stats\n",
+                "      - name: Omit sccache stats\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                '          CARGO_PROFILE_TEST_DEBUG: "0"\n',
+                '          RUSTFLAGS: "-C debuginfo=0"\n',
+            ),
+        )
+        for mutated in mutations:
+            mutated_workflows = {**workflows, workflow_name: mutated}
+            mutation_errors = verifier.verify_debug_lane_compile_cache_parity(mutated_workflows, bvs_policy)
+            if not mutation_errors:
+                raise AssertionError(f"{workflow_name} {job_name} sccache mutation was not rejected")
 
     cases = (
         (

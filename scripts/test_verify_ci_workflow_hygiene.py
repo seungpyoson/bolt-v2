@@ -71,27 +71,6 @@ from ci_workflow_hygiene_test_helpers import (
 SYNC_CI_DEBUG_SSH_PATH = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT = 'expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"'
-GATE_DEFER_CONTEXT_GUARD = """            if [[ "$expected_event_class" != "defer" ]]; then
-              echo "deferred CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-"""
-GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote for full feedback or mark ready for merge proof"
-            exit 0
-          fi
-"""
-GATE_NOOP_CONTEXT_GUARD = """            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-"""
-GATE_NOOP_BLOCK = f"""          if [[ "$policy_path" == "noop" ]]; then
-{GATE_NOOP_CONTEXT_GUARD}            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-"""
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]"
 FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",

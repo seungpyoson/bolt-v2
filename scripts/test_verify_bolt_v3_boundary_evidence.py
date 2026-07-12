@@ -529,6 +529,35 @@ def test_missing_committed_real_capture_decode_test_fails() -> None:
     )
 
 
+def test_string_literal_non_reference_metadata_provider_without_registry_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/mod.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "];\nfn validate_reference_live_probe_block()",
+                '    ReferencePriceProviderMetadata {\n'
+                '        provider_key: pyth::REFERENCE_PRICE_PROVIDER_KEY,\n'
+                '        client_venue_key: "PYTH_REFERENCE_PRICE",\n'
+                '        identifier_kind: ReferencePriceIdentifierKind::Symbol,\n'
+                '        supported_assets: &[],\n'
+                '    },\n'
+                "];\nfn validate_reference_live_probe_block()",
+            ),
+            encoding="utf-8",
+        )
+
+    findings = scan_temp(mutate)
+    assert_finding(
+        findings,
+        "missing registry entry ('\"PYTH_REFERENCE_PRICE\"', 'WebSocketFrame', 'ReferenceCurrentPriceHealth')",
+    )
+    assert_finding(
+        findings,
+        "missing registry entry ('\"PYTH_REFERENCE_PRICE\"', 'WebSocketFrame', 'ReferenceLiveProbe')",
+    )
+
+
 def test_stale_registry_row_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/boundary_registry.rs"

@@ -4498,6 +4498,18 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 replace_once_after(
                     workflow,
                     anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env: {"
+                    f'{forbidden_env}: "forbidden"'
+                    "}\n",
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
                     "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
                     "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
                     f'          {forbidden_env} : "forbidden"\n',
@@ -8208,6 +8220,30 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
     if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(combined_cache)):
         raise AssertionError("combined BVS target cache action was not rejected")
 
+    third_party_cache = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Third-party forbidden BVS target cache\n"
+        "        uses: buildjet/cache@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target\n"
+        "          key: novel-bvs-target-${{ github.sha }}\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not pass the BVS target directory to an action" in error for error in errors(third_party_cache)):
+        raise AssertionError("third-party BVS target cache action was not rejected")
+
+    obsolete_clippy_digest = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Compute obsolete BVS cache digest\n"
+        "        id: bvs_cache_inputs\n"
+        "        run: python3 scripts/ci_input_sets.py hash backtester_cache\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not contain bvs_cache_inputs" in error for error in errors(obsolete_clippy_digest)):
+        raise AssertionError("obsolete clippy BVS digest step was not rejected")
+
     for field, replacement, expected in (
         ("          cache-targets: false\n", "          cache-targets: true\n", "must set cache-targets: false"),
         ("          cache-bin: false\n", "          cache-bin: true\n", "must set cache-bin: false"),
@@ -8229,8 +8265,13 @@ def assert_backtester_primary_sccache_contract() -> None:
     def errors(mutated: str) -> list[str]:
         return [
             error
-            for error in verifier.backtester_test_shard_errors(
-                ".github/workflows/backtester-ci.yml", mutated
+            for error in (
+                verifier.backtester_managed_target_cache_errors(
+                    ".github/workflows/backtester-ci.yml", mutated
+                )
+                + verifier.backtester_test_shard_errors(
+                    ".github/workflows/backtester-ci.yml", mutated
+                )
             )
             if "BVS_TEST_ARCHIVE_JOB_SHA256" not in error
         ]
@@ -8327,6 +8368,54 @@ def assert_backtester_primary_sccache_contract() -> None:
                         f"compile must not set {forbidden_env}",
                     )
                 )
+    for forbidden_env in (
+        "RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_INCREMENTAL",
+    ):
+        for rendered_env in (
+            "    env:\n" + f'      {forbidden_env}: "forbidden"\n',
+            "    env:\n" + f'      "{forbidden_env}": "forbidden"\n',
+            "    env:\n" + f'      {forbidden_env} : "forbidden"\n',
+            "    env: {" + f'{forbidden_env}: "forbidden"' + "}\n",
+        ):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        "  clippy:\n",
+                        "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                        "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n" + rendered_env,
+                    ),
+                    f"backtester clippy must not set {forbidden_env}",
+                )
+            )
+        for rendered_key in (forbidden_env, f'"{forbidden_env}"', f"{forbidden_env} "):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        "  test-archive:\n",
+                        "    env:\n",
+                        "    env:\n" + f'      {rendered_key}: "forbidden"\n',
+                    ),
+                    f"backtester test-archive must not set {forbidden_env}",
+                )
+            )
+        mutations.append(
+            (
+                replace_once_after(
+                    workflow,
+                    "  issue_789:\n    name: bvs-test issue-789\n",
+                    "    env:\n",
+                    "    env:\n" + f'      {forbidden_env}: "forbidden"\n',
+                ),
+                f"backtester issue_789 must not set {forbidden_env}",
+            )
+        )
     for mutation_index, (mutated, expected_substring) in enumerate(mutations):
         mutation_errors = errors(mutated)
         if not any(expected_substring in error for error in mutation_errors):

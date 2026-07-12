@@ -2388,6 +2388,11 @@ def yaml_structural_key_count(lines: list[str], key: str) -> int:
         match = key_re.match(clean)
         if match is not None and unquote_yaml_scalar(match.group(1)) == key:
             count += 1
+        flow_mapping = re.match(rf"^\s*{YAML_KEY_PATTERN}\s*:\s*\{{([^{{}}]*)\}}\s*$", clean)
+        for flow_body in (() if flow_mapping is None else (flow_mapping.group(1),)):
+            for flow_item in re.finditer(rf"(?:^|,)\s*({YAML_KEY_PATTERN})\s*:", flow_body):
+                if unquote_yaml_scalar(flow_item.group(1)) == key:
+                    count += 1
     return count
 
 
@@ -2636,6 +2641,17 @@ def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
         action_blocks(job_lines, "actions/cache@")
         + action_blocks(job_lines, "actions/cache/restore@")
         + action_blocks(job_lines, "actions/cache/save@")
+    )
+
+
+def block_uses_action(block: list[str]) -> bool:
+    return any(re.match(r"^\s*(?:-\s*)?uses:\s*", strip_comment(line)) for line in block)
+
+
+def block_references_bvs_target_input(block: list[str]) -> bool:
+    return any(
+        "crates/backtesting-vertical-slice/target" in value or "steps.crate_target.outputs.dir" in value
+        for _, value in block_input_items(block)
     )
 
 
@@ -7102,12 +7118,18 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
-    for forbidden in ("managed-target-bvs-", "bootstrap-${GITHUB_SHA}"):
+    for forbidden in ("managed-target-bvs-", "bootstrap-${GITHUB_SHA}", "bvs_cache_inputs"):
         if forbidden in text:
             errors.append(f"backtester BVS contract must not contain {forbidden}")
     for job_id, job_lines in parse_jobs(text).items():
         for block in github_cache_blocks(job_lines):
             errors.append(f"backtester {job_id} must not use Actions cache restore/save in a BVS workflow")
+        if job_id in {"clippy", "test-archive"}:
+            for block in step_blocks(job_lines):
+                if block_uses_action(block) and block_references_bvs_target_input(block):
+                    errors.append(
+                        f"backtester {job_id} must not pass the BVS target directory to an action"
+                    )
         for block in action_blocks(job_lines, "Swatinem/rust-cache@"):
             if not block_has_input(block, "cache-targets", "false"):
                 errors.append(f"backtester {job_id} BVS registry cache must set cache-targets: false")
@@ -7115,6 +7137,17 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
                 errors.append(f"backtester {job_id} BVS registry cache must set cache-bin: false")
             if block_has_input(block, "cache-directories"):
                 errors.append(f"backtester {job_id} BVS registry cache must not set cache-directories")
+        if job_id in {"clippy", "test-archive", "issue_789"}:
+            for forbidden_env in (
+                "RUSTFLAGS",
+                "CARGO_BUILD_RUSTFLAGS",
+                "CARGO_ENCODED_RUSTFLAGS",
+                "RUSTC_WRAPPER",
+                "RUSTC_WORKSPACE_WRAPPER",
+                "CARGO_INCREMENTAL",
+            ):
+                if yaml_structural_key_count(job_lines, forbidden_env) > 0:
+                    errors.append(f"backtester {job_id} must not set {forbidden_env}")
     return errors
 
 

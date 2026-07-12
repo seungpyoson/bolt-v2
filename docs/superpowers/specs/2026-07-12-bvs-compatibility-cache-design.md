@@ -1,275 +1,363 @@
-# BVS Compile-Compatibility Cache Design
+# BVS S3 Compiler Cache and Target-Cache Removal Design
 
-**Status:** Draft pending Claude Fable 5/xhigh plan/spec review. No implementation may start until that review returns and every finding is resolved.
+**Status:** Draft pending Claude Fable 5/xhigh re-review. No implementation plan or code may start until that review approves this revision.
 
 ## Goal
 
-Make Backtester CI reuse compiled Rust artifacts only when the build environment and dependency graph are compatible, while keeping ordinary source and test edits fast. A cache miss must produce a clean cold build; it must never restore a merely similar target directory.
+Remove the unsafe Backtesting Vertical Slice (BVS) whole-target GitHub Actions caches that block exact-head Backtester proof for PR #1367. Preserve ordinary compile reuse through the repository's existing governed S3 `sccache`, without adding a cache backend, widening a limit, weakening a test, or changing trading behavior.
 
-This design fixes the CI failure that blocks exact-head Backtester proof for PR #1367. It does not change Binance timestamps, realized-volatility pricing, trading behavior, or the #1354 implementation.
+This is a separate CI blocker slice. It does not change Binance timestamps, realized-volatility pricing, the #1354 implementation, recovery, HMAC, or archival behavior.
 
 ## Incident Evidence
 
-PR #1367 exercised the live failure mode twice on the same head:
+The current PR #1367 head has one directly verified full Backtester failure:
 
-- The BVS archive producer had no exact target-cache hit.
-- The broad `managed-target-bvs-v3-...-test-` restore prefix selected a non-exact bootstrap cache containing 6,419,854,292 compressed bytes from a different source/dependency state.
-- The new NautilusTrader dependency graph then compiled into the restored target directory alongside artifacts whose provenance the lane could not establish.
-- Before the binary-sidecar build, the managed Rust preflight measured the target above the unchanged 32 GiB soft limit and refused the command with `disk_pressure`.
-- The runner still had approximately 79 GB of filesystem space. The refusal was caused by the managed target-size policy, not by exhaustion of the runner volume.
-- The refusal payload reported `reclaimable_bytes: 0`, although that path had not performed a retention-candidate scan. The logs therefore could not distinguish "measured zero" from "not measured," nor apportion target bytes between restored and newly compiled artifacts.
+- Run `29185376240`, head `ff174ca186b9362a6f10239e6dd28746a188d930`, failed in `bvs-test archive`.
+- The exact BVS target key missed. The broad `managed-target-bvs-v3-...-test-` fallback restored `managed-target-bvs-v3-Linux-ARM64-test-bootstrap-9f3b13f4c...`, a 6,419,854,292-byte compressed cache produced from another source/dependency state.
+- The BVS nextest archive then built successfully into that restored target. Before the binary-sidecar build, the managed Rust preflight found the target above the unchanged 32 GiB soft limit and refused the command with `disk_pressure`.
+- The runner still reported about 79 GB free. The refusal was caused by the managed target-size policy, not by exhaustion of the runner filesystem.
+- The refusal payload reported `reclaimable_bytes: 0` even though that preflight did not classify retention candidates. It therefore could not distinguish a measured zero from an unmeasured value.
 
-The cache fallback caused the unsafe mixture. The 32 GiB refusal behaved correctly and remains in force.
+The failure repeated on the earlier PR head `a9b4fc62ea5e7f6fbf929de90ef820586ca5f47f` in full Backtester runs `29177797488` and `29180923906`. Run `29180025916` on that head was an iteration-policy run: `bvs-clippy` and `bvs-test archive` were skipped and only `backtester-gate-iteration` ran. Its success is not a successful heavy-lane counterexample.
+
+The evidence supports one narrow root cause: a broad prefix restored a whole target tree whose compile provenance was not compatible with the current dependency graph. The logs do not prove a byte-by-byte split between old and new artifacts, and this design makes no such claim.
+
+The 32 GiB refusal behaved correctly. The unsafe restore is removed; the limit remains.
+
+## Storage Evidence
+
+A read-only GitHub Actions cache inventory on 2026-07-12 contained five entries, all in the root `managed-target-v1-Linux-ARM64-test-archive-test-*` family:
+
+- total listed bytes: `9,118,987,793`;
+- repository warning threshold: `10,737,418,240` bytes (10 GiB);
+- listed headroom: `1,618,430,447` bytes; and
+- BVS whole-target entries: zero.
+
+The prior 6,419,854,292-byte BVS cache had already been evicted. Reintroducing a BVS whole-target family would compete with a root family that is already churning near the repository threshold, invite eviction and repeated uploads, and transiently require old and new dependency seeds to coexist.
+
+This slice therefore makes the steady-state BVS Actions target-cache budget exact: **zero entries, zero bytes, and zero saves**. Root-cache allocation and churn remain verified separate scope; this design does not alter or claim to solve them.
 
 ## Decision
 
-Use exact, immutable cache keys derived from a compile-compatibility seed. Remove every broad BVS managed-target `restore-keys` prefix from Backtester CI and both BVS flaky workflows.
+Delete every BVS whole-target GitHub Actions restore and save from:
 
-The target cache is an optional acceleration layer:
+- the Backtester clippy job;
+- the Backtester nextest-archive/sidecar producer;
+- both BVS jobs in `flaky-test-detection.yml`; and
+- both BVS jobs in `flaky-test-smoke.yml`.
 
-- An exact hit may be restored.
-- An exact miss starts from an empty managed target directory and cold-builds.
-- Main may write the first cache for a compatibility seed.
-- Pull requests, merge queues, manual flaky detection, and scheduled flaky smoke are read-only.
-- If the repository's existing 10 GiB Actions-cache tripwire cannot accommodate the target-cache family, BVS managed-target caching is disabled. The limits are not raised and an approximate restore is never reintroduced.
+No `managed-target-bvs-*` cache family replaces them. A BVS compile begins with the lane-owned managed target directory created by the existing setup path, never with a downloaded whole target tree.
+
+Keep the existing `Swatinem/rust-cache` steps only in their current registry/git-only mode (`cache-targets: false`). They are not BVS target caches and must not be changed to store target directories.
+
+Use the existing governed `./.github/actions/sccache-setup` action for the primary Backtester nextest-archive and binary-sidecar compilation:
+
+- a push or trusted workflow dispatch on `refs/heads/main` receives the existing read/write role;
+- pull requests and merge queues receive the existing read-only role;
+- BVS flaky-smoke jobs remain read-only consumers and BVS flaky-detection jobs become read-only consumers; and
+- an unavailable or unhealthy compiler cache fails open to the same required local compilation.
+
+The Backtester clippy job loses its whole-target cache in this slice. This design does not add a new clippy cache path; the performance qualification below is specifically for the launch-blocking nextest-archive plus sidecar compile path.
+
+`sccache` stores individual compiler outputs under the already governed S3 location. It does not upload a mutable Cargo target directory, does not create a new S3 target-artifact class, and does not consume GitHub's 10 GiB Actions-cache budget.
+
+### Why this addresses both safety and latency
+
+- A normal source-only change can reuse compatible compiler outputs.
+- A dependency, toolchain, flag, or compiler change naturally misses incompatible compiler outputs and rebuilds them.
+- No run can mix an arbitrary old Cargo target tree with a new dependency graph.
+- If S3 or the cache action is unavailable, Rust still compiles and the full tests still run.
 
 ### Rejected alternatives
 
-1. **Keep the broad prefix fallback.** This is fast when the selected cache happens to be compatible, but the cache name does not prove compatibility. It reproduces the #1367 failure and is rejected.
-2. **Key the target cache by the complete source digest.** This is safe but makes every source or test edit a cold build and creates one immutable Actions cache per source state. It does not address the operator's CI-latency concern or the repository cache budget and is rejected.
-3. **Disable all target caching immediately.** This is safe and remains the bounded storage fallback, but it discards compatible dependency reuse. The exact compatibility seed is the preferred design when it fits the existing storage budget.
+1. **Keep or narrow the BVS target-cache prefix.** A prefix is not compatibility evidence and recreates the failure class.
+2. **Create exact whole-target compatibility keys.** The family does not fit the measured repository budget in steady state, including seed transitions and root churn.
+3. **Key whole targets by exact source.** This is safe but makes ordinary edits cold, creates immutable per-head objects, and worsens the storage problem.
+4. **Raise the 10 GiB or 32 GiB thresholds.** That hides pressure without fixing ownership and is rejected.
+5. **Upload Cargo target directories to S3.** That creates a new mutable artifact class and a second target-cache contract; it is rejected.
+6. **Disable all compile reuse.** This is the fail-open behavior during an outage, but not the intended steady state. The existing governed compiler cache is the bounded acceleration path.
 
-## Two Separate Cache Identities
+## Cache Identities and Ownership
 
-Target directories and executable test payloads have different validity rules and must not share one digest.
+### Full-source nextest and sidecar artifacts
 
-### Full-source artifact digest
-
-The existing full-source `backtester_cache` set remains the authority for:
-
-- BVS nextest archives in S3;
-- BVS binary sidecars in S3; and
-- any metadata that asserts an executable payload was produced from the exact source state.
-
-It continues to include root and BVS source, tests, manifests, locks, fixtures, target discovery, wrappers, toolchain, and build policy. S3 object metadata continues to carry this exact digest, and restore continues to reject missing or mismatched digest metadata. This design does not weaken or replace the full-source S3 contract.
-
-### Compile-compatibility target seed
-
-A new `backtester_target_seed` input set owns reusable target-directory compatibility. It excludes ordinary `src/**`, `tests/**`, and reference fixtures so a source-only change retains the same seed and Cargo recompiles only what changed.
-
-The seed includes every checked-in surface that can change the dependency graph, compiler ABI, target layout, feature/profile selection, or managed build command:
-
-- `Cargo.toml`
-- `Cargo.lock`
-- `crates/backtesting-vertical-slice/Cargo.toml`
-- `crates/backtesting-vertical-slice/Cargo.lock`
-- `rust-toolchain.toml`
-- `build.rs`
-- `ci/rust-verification.toml`
-- `crates/backtesting-vertical-slice/ci/rust-verification.toml`
-- `justfile`
-- `crates/backtesting-vertical-slice/justfile`
-- `scripts/rust_verification.py`
-- `scripts/command_understanding.py`
-- `scripts/rust_test_targets.py`
-- `.github/actions/setup-environment/action.yml`
-- `.github/workflows/backtester-ci.yml`
-- `.github/workflows/flaky-test-detection.yml`
-- `.github/workflows/flaky-test-smoke.yml`
-- `ci/github-actions-runners.toml`
-
-The input-set resolver already hashes both the ordered pathspec declarations and the tracked bytes selected by those pathspecs. Adding, removing, or changing a compatibility input therefore changes the seed without embedding a commit SHA.
-
-The workflow files are deliberately included. They own build flags such as the test/dev debug settings and the exact commands that populate or consume the target directory. A workflow-only documentation edit may cause one conservative cold build, but normal Rust source/test edits do not.
-
-The input set must reject accidental source or test inclusion. Its self-tests must also reject omission of either manifest, either lockfile, the toolchain, either Rust-verification policy, the setup action, the three consuming workflows, or the command wrappers.
-
-## Key Contract
-
-The target keys are exact and lane-specific:
+One head-resolver digest step, renamed to make its ownership explicit, computes:
 
 ```text
-managed-target-bvs-v4-<os>-<arch>-clippy-<backtester_target_seed>
-managed-target-bvs-v4-<os>-<arch>-test-<backtester_target_seed>
+python3 scripts/ci_input_sets.py hash backtester_cache
 ```
 
-Requirements:
+That `backtester_cache` digest is used solely for:
 
-- `v4` is a cache-contract namespace, not a source revision.
-- OS, architecture, and lane/profile are mandatory separators.
-- The digest is produced only by `scripts/ci_input_sets.py hash backtester_target_seed`.
-- No BVS managed-target restore step may declare `restore-keys`, a shorter prefix, a previous schema, a full-source digest, or `GITHUB_SHA`.
-- Clippy never restores the test cache; tests and flaky consumers never restore the clippy cache.
-- S3 nextest/sidecar keys continue to use the full-source `backtester_cache` digest, never `backtester_target_seed`.
+- the BVS nextest-archive S3 key and metadata;
+- the BVS binary-sidecar S3 key and metadata; and
+- evidence that each executable payload came from the exact source/build input set.
 
-## Lifecycle and Authority
+The head version of the resolver always computes the digest. The `bootstrap-${GITHUB_SHA}` branch is eliminated from Backtester artifact identity as well as from all removed target-cache identity. When the resolver or `ci/rust-ci-inputs.toml` changes, the head resolver validates the head declaration and produces the digest used consistently by the restore key, save key, and metadata in that same run. A same-head restore is accepted only when object metadata carries the same digest. There is no mixed resolver or mixed metadata path.
 
-### Pull request and merge-queue runs
+The current workflow-hygiene contract is deliberately inverted and split:
 
-PR and merge-queue jobs compute the target seed from their exact checked-out head and attempt only the exact key. On a hit, they restore read-only. On a miss, they cold-build in an empty managed target directory. They never save, refresh, overwrite, or alias a target cache.
+- remove the rule that all BVS cache families share `bvs_cache_inputs`;
+- remove the rule requiring an exact-head `bootstrap-${GITHUB_SHA}` namespace;
+- require one full-source artifact-digest step for nextest/sidecar keys and metadata;
+- require no BVS whole-target restore or save step in any of the three workflows; and
+- require the governed sccache action and its event-specific authority on BVS compile steps.
 
-### Pushes to main
+Mutation tests must independently remove, substitute, or cross-wire each invariant so that one surviving rule cannot mask another.
 
-Main uses the same exact seed. If the exact cache exists, it restores read-only and does not write another entry. If the exact cache is absent, a successful producer build may save one immutable cache for that lane and seed. Failed or refused builds never save.
+### Compiler outputs
 
-This yields at most one clippy entry and one test entry for a compatibility seed, instead of one entry per commit. Later source-only main changes reuse the same seed and do not create new cache objects.
+`sccache` owns compiler-output identity. The repository does not invent a parallel GitHub key or a `backtester_target_seed`. Compiler version, arguments, environment handled by the cache, and source inputs determine compiler-cache reuse through the existing action and `sccache` implementation.
 
-### Flaky workflows
+The repository's authority is the existing governed location and role selection:
 
-Both BVS jobs in `flaky-test-detection.yml` and `flaky-test-smoke.yml` consume only the exact test key. They are read-only even when manually dispatched or scheduled. They do not create a separate flaky namespace and do not fall back to another seed.
+- `ci/sccache-location.toml` owns bucket, region, and key prefix;
+- `scripts/sccache_eligibility.py` owns event/ref eligibility and read-only versus read/write roles;
+- `.github/actions/sccache-setup/action.yml` owns fail-open installation and server start; and
+- `.github/actions/sccache-stats/action.yml` owns post-compile statistics emission.
 
-### Empty-directory rule
+This design does not add delete authority, a second bucket, a new prefix, or another secret path.
 
-After an exact miss, the workflow must prove that the managed target directory contains no restored payload before compiling. Setup-created empty directories are allowed. Any unexplained file on a reported miss is a hard failure; the workflow must not build beside an unowned target tree.
+### Intentional input-set asymmetry
 
-## Governance and Bootstrap
+`backtester_cache` intentionally forbids the workflow, resolver, input-set TOML, and setup action from becoming ordinary artifact-set members. Those governance surfaces are checked separately by workflow hygiene, input-set self-tests, source fences, and the reviewed action contract. The compiler cache is likewise governed by action/eligibility behavior rather than by adding those files to the executable-payload digest.
 
-Changes to `ci/rust-ci-inputs.toml` or `scripts/ci_input_sets.py` continue to force the Backtester lanes to run. They do not create `bootstrap-<GITHUB_SHA>` target caches.
+The implementation must preserve this asymmetry. It must not “fix” it by weakening `FORBIDDEN_BACKTESTER_CACHE_TARGETS` or by making the artifact digest self-referential.
 
-Bootstrap behavior is deterministic:
+## Workflow Behavior
 
-1. The head version of the resolver validates both `backtester_cache` and `backtester_target_seed`.
-2. It computes both digests from the head's declared pathspecs and tracked bytes.
-3. Because pathspec declarations are themselves hashed, changing the target-seed membership produces a new compatibility seed.
-4. A change to digest semantics must advance the `managed-target-bvs-v4` schema and its fixture contract. Merely editing comments or tests in the resolver does not authorize a per-commit key.
-5. The first run for a new seed is a normal exact miss. PR and merge-queue runs cold-build; the first successful main producer may save the stable seed.
+### Primary Backtester archive/sidecar producer
 
-The workflow-hygiene verifier must fail if it finds `bootstrap-${GITHUB_SHA}`, any other commit-SHA namespace, a broad restore prefix, a missing compatibility input, a non-main save condition, or a flaky-workflow save.
+1. Check out the exact head and compute the full-source `backtester_cache` digest with the head resolver.
+2. Restore exact full-source nextest and sidecar artifacts from S3 under the existing metadata checks.
+3. If either payload must be built, set up governed sccache once for the compilation phase. Main supplies both read and write role inputs; PR and merge-queue events supply only the read role selected by the action.
+4. Compile the missing nextest archive and/or sidecars with `BOLT_RUST_VERIFICATION_SCCACHE=1` only when the action reports `enabled=true`. Otherwise the managed environment scrubs the wrapper and compiles locally.
+5. Print one post-compilation stats record covering both compile steps.
+6. Preserve the existing main-only, full-source S3 save and metadata rules for nextest and sidecar payloads.
+7. Run the complete existing archive tests and required issue-specific tests. No partition, target, or test may be removed to improve timing.
 
-## Actions-Cache Storage Budget
+The workflow contains no BVS target-cache restore, target-cache save, fallback prefix, target-cache digest, or target-cache hit condition.
 
-The existing repository policy in `ci/storage-tripwire.toml` remains authoritative:
+### Backtester clippy
 
-- Actions cache listed bytes warning threshold: 10 GiB (`10,737,418,240` bytes).
-- The threshold is repository-wide, not reserved for BVS.
-- This slice does not increase it and does not add another competing threshold.
+The clippy job retains the existing registry/git-only cache and the full clippy command. Its BVS target restore/save steps and target digest step are removed. It cold-builds its lane-owned target directory. Any future clippy acceleration requires its own measured, reviewed scope.
 
-Read-only inventory on 2026-07-12 found five cache entries totaling 9,118,987,793 bytes and no surviving `managed-target-bvs-*` entry. That leaves 1,618,430,447 bytes below the tripwire. The prior BVS test cache alone was 6,419,854,292 compressed bytes. On the evidence available to this design, an enabled BVS target family does not fit. Compatibility-key correctness does not by itself prove storage viability.
+### Flaky detection and smoke
 
-The implementation has a mandatory rollout tripwire:
+Both BVS flaky workflows remove their whole-target restores. Their compile jobs use the existing governed sccache action in read-only mode and print stats. Manual and scheduled jobs never receive write or delete authority. Their test matrices, partitions, JUnit behavior, MinIO smoke behavior, and Mergify reporting remain unchanged.
 
-1. Record repository-wide listed cache bytes and the BVS family bytes before implementation approval.
-2. Use the most recent measured BVS cache size as a conservative candidate-size proxy. An enabled lane requires enough measured headroom before it may be selected in the implementation plan.
-3. If an enabled lane passes that pre-merge gate, record the same API-backed values after its first main save using the existing storage-audit contract.
-4. The rollout is accepted only if total listed bytes remain at or below 10 GiB and the cache family converges to at most one entry per enabled lane and compatibility seed.
-5. If either the projection or post-save measurement crosses the threshold, the accepted fallback is to remove/disable BVS managed-target restore and save steps. BVS then uses a clean cold target plus the existing Cargo registry/git cache, sccache where already governed, and full-source S3 nextest/sidecar artifacts.
-6. The fallback must not raise the threshold, delete unrelated caches automatically, add a prefix restore, move a mutable Cargo target to S3, or add a second cache backend.
+### Sccache outage or ineligibility
 
-The implementation plan must treat this as a decision gate, not deferred debt: either exact BVS target caching has measured budget evidence, or the final implementation contains no BVS target-cache steps. With the 2026-07-12 inventory, the default outcome is the disabled-cache fallback unless a fresh inventory or separately authorized operator cleanup establishes enough headroom before plan approval. Existing cache deletion remains an explicit operator action and is not authorized by this design.
+Eligibility resolution, AWS authentication, installation, or server startup may fail. The shared action remains `continue-on-error`, reports `enabled=false`, and the Rust command runs without `RUSTC_WRAPPER` through the existing managed environment.
+
+An outage must never:
+
+- skip clippy, compilation, sidecars, archives, or tests;
+- restore a BVS target cache;
+- switch to a second compiler-cache location;
+- weaken the 32 GiB guard; or
+- turn a required Backtester result into success without running it.
+
+The cache is an optimization. Cold compilation is the correctness fallback.
+
+## Actions-Cache Steady-State Contract
+
+After rollout, the GitHub Actions cache inventory must show:
+
+- no key beginning `managed-target-bvs-`;
+- zero BVS target-cache bytes;
+- zero BVS target-cache saves; and
+- repository listed bytes at or below `10,737,418,240`.
+
+Record API-backed inventory at four points: before rollout, after the implementation reaches main, and after each of two later dependency/toolchain-identical source-only heads. Those two heads must show that BVS did not reappear in Actions cache and that no BVS eviction/re-save loop exists.
+
+The recorded 2026-07-12 baseline is five root entries totaling `9,118,987,793` bytes with no BVS entry. Changes in root-family population are reported, but root allocation and eviction policy are not changed in this slice. Because the BVS family is permanently zero, a root-family fluctuation cannot trigger a BVS whole-target re-save.
+
+No workflow in this slice may delete cache entries. If the repository total exceeds the existing threshold because of root churn, the existing storage-audit owner reports it and a separate reviewed scope decides root allocation.
+
+## Performance Qualification
+
+Removing the unsafe target cache solves the correctness and merge-gate failure. `sccache` is accepted as the normal-change latency solution only when measured evidence shows at least a 20% improvement.
+
+### Comparable measurements
+
+Record two immutable remote runs on the same runner class, OS, architecture, Rust toolchain, dependency graph, profiles, job-count policy, and archive/sidecar commands:
+
+1. **Exact cold baseline:** no BVS target restore exists; an immutable measurement head captured before final sccache wiring explicitly compiles without the wrapper (or an enabled run reports zero hits); both full-source S3 payloads miss; the archive and sidecars build and the full gate is green. The failed #1367 incident runs are not baselines because they restored an unowned target tree.
+2. **Warm source-only run:** a later source-only head keeps dependencies and toolchain identical; both full-source S3 payloads miss because the source digest changed; governed sccache is enabled; the archive and sidecars build; and the full gate is green.
+
+Compile wall-clock is the sum of the GitHub-reported durations of the required archive-build and sidecar-build steps. Queue time, checkout, artifact download, tests, stats, and S3 upload are reported separately and excluded. The same step names, timestamps, and formula are recorded for both runs:
+
+```text
+improvement_percent = 100 * (cold_compile_seconds - warm_compile_seconds) / cold_compile_seconds
+```
+
+The warm run must also report:
+
+- `sccache` enabled;
+- read-only or read/write mode appropriate to the event;
+- nonzero compile requests;
+- nonzero cacheable requests;
+- nonzero cache hits;
+- zero cache read errors; and
+- successful nextest archive, sidecars, full tests, and `backtester-gate`.
+
+These counters come from the existing `sccache --show-stats` output emitted into the immutable job log by `.github/actions/sccache-stats`. The qualification report records the exact run, job, step, and counter values; this slice does not add a second statistics path.
+
+Because only trusted main runs may write, performance qualification is a post-rollout measurement. Exact-head PR proof establishes safe cold behavior and correct authority; the first trusted main compile populates compatible objects; a later dependency/toolchain-identical source-only main head supplies the warm measurement. The slice must not be reported as performance-complete before that evidence exists.
+
+If improvement is below 20%, the no-target-cache safety correction remains valid, but the normal-change performance problem is **not solved**. Stop, report the measurements, and do not start a broader root+BVS cache-allocation overhaul without a new spec and explicit user approval. Do not raise limits, add a target cache, or reinterpret a cache hit count as wall-clock success.
 
 ## Disk-Pressure Telemetry
 
-The 32 GiB managed target soft limit in `ci/rust-verification.toml` remains exactly `32,212,254,720` bytes. A target above that limit continues to fail closed before a managed Rust command.
+Two policy files independently govern managed targets and both retain the exact 32 GiB value:
+
+- `ci/rust-verification.toml`: `soft_limit_bytes = 32212254720`; and
+- `crates/backtesting-vertical-slice/ci/rust-verification.toml`: `soft_limit_bytes = 32212254720`.
+
+The BVS-local file governs the incident lane. Static tests must pin both values so a root-only assertion cannot hide BVS drift.
 
 `disk_preflight_refusal_payload` must report what it actually measured:
 
 - `total_bytes`: the scanned managed target size used by the pressure decision;
-- `filesystem`: the existing free/used/total filesystem measurements;
-- `thresholds` and `pressure_reasons`: unchanged policy evidence;
+- the existing filesystem, threshold, and pressure-reason fields;
 - `reclaimability_measured: false`; and
-- `reclaimable_bytes: null` when the preflight did not run retention-candidate classification.
+- `reclaimable_bytes: null` when no retention-candidate classification ran.
 
-Zero is reserved for a completed reclaimability scan that found zero reclaimable bytes. A later caller that does run the candidate scan reports `reclaimability_measured: true` with an integer `reclaimable_bytes`.
+Zero is reserved for a completed classification that found zero reclaimable bytes. A caller that performs the scan reports `reclaimability_measured: true` and an integer `reclaimable_bytes`.
 
-The payload does not claim to identify which bytes came from a restored cache versus the current compilation. Once Cargo uses the directory, that apportionment is not trustworthy without a separate before/after measurement. The exact key prevents incompatible restoration; `total_bytes` explains the refusal.
+The payload does not claim to identify which historical operation produced each byte. The target-cache removal prevents the known incompatible whole-tree restore; `total_bytes` explains any remaining refusal truthfully.
+
+## Runner-Image Residual
+
+The runner comes from `CI_RUNNER_MANAGED_HEAVY`; the checked-in registry owns the variable name, not a stable image digest. OS and architecture alone do not fully describe glibc or installed system-library state.
+
+The existing `sccache` keying covers the compiler and compilation inputs it knows, but this design does not claim a cryptographic runner-image identity. If an image change makes a cached object incompatible, the expected result is a compile, link, or test failure caught by required CI, followed by a clean rebuild after the cache miss/correction—not silent acceptance of an untested executable. No reliable image identifier is currently available to add to the contract. A repeated image-specific failure requires a separate source-backed design rather than an invented key.
 
 ## Failure Semantics
 
 | Condition | Required result |
 |---|---|
-| Target-seed validation or hashing fails | Fail the job before cache restore. |
-| Exact target key hits | Restore that key only; record key and hit status. |
-| Exact target key misses | Record a miss, prove the target is empty, and cold-build. |
-| A broad/prefix/old-schema key is present | Ignore it; never restore it. |
-| Cache restore reports corruption or a partial failure | Fail before compilation; do not build beside partial state. |
-| Target is non-empty after a reported miss | Fail before compilation. |
-| Managed target exceeds 32 GiB | Preserve the current `disk_pressure` refusal with truthful byte telemetry. |
-| Build/test/clippy fails or is refused | Do not save a target cache. |
-| Main cache save loses a race because the exact key now exists | Treat it as an already-seeded optimization; retain build/test result and report the race. |
-| Cache service save fails for another reason | Report the cache-save failure without weakening the completed Rust result; the next run safely cold-builds or restores an existing exact key. |
-| S3 full-source object is missing | Preserve the current cache-miss/build behavior. |
-| S3 metadata digest is missing or mismatched | Preserve the current integrity failure. |
-| Repository cache tripwire exceeds 10 GiB | Disable BVS target caching; do not widen limits or restore approximately. |
+| Full-source digest validation or hashing fails | Fail before S3 artifact restore. |
+| Resolver or input-set declaration changes | Use the head resolver's `backtester_cache` digest; never use a SHA bootstrap namespace. |
+| Exact full-source nextest/sidecar object hits with matching metadata | Restore it under the existing integrity contract. |
+| Full-source object misses | Compile the missing payload. |
+| S3 artifact metadata is missing or mismatched | Preserve the existing integrity failure. |
+| BVS Actions target cache exists from history | Ignore it; no workflow step may restore or save it. |
+| Sccache setup or remote I/O is unavailable | Report disabled/error state and cold-compile locally. |
+| Sccache is enabled | Compile with the governed wrapper and emit stats. |
+| Managed target exceeds either governing 32 GiB limit | Fail closed with truthful size/reclaimability telemetry. |
+| Build, clippy, sidecar, archive, or test fails | Required job fails; cache status does not mask it. |
+| GitHub Actions cache inventory exceeds 10 GiB | Existing storage governance reports it; this slice performs no deletion and creates no BVS target entry. |
+| Warm compile improves by at least 20% | Record compiler-cache latency qualification as passed. |
+| Warm compile improves by less than 20% | Do not call performance solved; stop before any broader redesign pending a new spec and user approval. |
 
 ## Exact Implementation Surface
 
-The eventual implementation is limited to these files unless the reviewed plan proves another file is mechanically required:
+The eventual implementation is limited to these files unless the reviewed plan proves another file mechanically necessary:
 
-- `ci/rust-ci-inputs.toml` — add and own `backtester_target_seed`; keep the full-source artifact set.
-- `scripts/ci_input_sets.py` — validate the target-seed policy and deterministic schema contract.
-- `scripts/test_ci_input_sets.py` — positive expansion/digest tests and negative source/omission/bootstrap tests.
-- `.github/workflows/backtester-ci.yml` — exact clippy/test keys, no prefixes, main-only saves, cold-miss proof, separate artifact/target digests.
-- `.github/workflows/flaky-test-detection.yml` — exact read-only test key and no prefix/save.
-- `.github/workflows/flaky-test-smoke.yml` — exact read-only test key and no prefix/save.
-- `scripts/verify_ci_workflow_hygiene.py` — enforce key identity, no prefix/SHA bootstrap, writer authority, flaky read-only use, and full-source S3 identity.
+- `.github/workflows/backtester-ci.yml` — remove BVS target restore/save and SHA bootstrap identity; retain one full-source artifact digest; wire governed sccache to archive/sidecar compilation.
+- `.github/workflows/flaky-test-detection.yml` — remove both BVS target restores; use governed read-only sccache for BVS compile jobs.
+- `.github/workflows/flaky-test-smoke.yml` — remove both BVS target restores; preserve governed read-only sccache.
+- `scripts/verify_ci_workflow_hygiene.py` — require no BVS target family, exact full-source S3 identity, correct sccache action/roles/fail-open wiring, full tests, and unchanged job authority.
 - `scripts/test_verify_ci_workflow_hygiene.py` — mutation tests for every workflow invariant.
-- `scripts/ci_workflow_hygiene_test_helpers.py` — fixture updates required by the verifier tests.
-- `scripts/rust_verification.py` — truthful disk-preflight size/reclaimability fields.
-- `scripts/test_rust_verification_cache_retention.py` — telemetry and unchanged 32 GiB threshold tests.
+- `scripts/ci_workflow_hygiene_test_helpers.py` — only fixture changes mechanically required by the verifier tests.
+- `scripts/rust_verification.py` — truthful target-size and reclaimability telemetry.
+- `scripts/test_rust_verification_cache_retention.py` — telemetry behavior and both 32 GiB authority assertions.
 
-The implementation reads but does not change these authorities unless the Fable review identifies a contradiction:
+These existing authorities are read-only unless the reviewed plan identifies a demonstrated contradiction:
 
-- `ci/rust-verification.toml` — existing 32 GiB managed target soft limit.
-- `ci/storage-tripwire.toml` — existing 10 GiB repository Actions-cache threshold.
-- `scripts/ci_storage_audit.py` and `scripts/ci_storage_tripwire.py` — existing API-backed storage evidence and alerting contracts.
-- `.github/workflows/ci-storage-tripwire.yml` — existing scheduled tripwire owner.
-- `docs/ci/storage-tripwire-governance.md` — existing operator authority.
+- `.github/actions/sccache-setup/action.yml` and `.github/actions/sccache-stats/action.yml`;
+- `scripts/sccache_eligibility.py` and its existing tests;
+- `ci/sccache-location.toml`;
+- `ci/rust-ci-inputs.toml` and `scripts/ci_input_sets.py`;
+- both `ci/rust-verification.toml` policy files;
+- `ci/storage-tripwire.toml`, storage-audit scripts/workflow, and storage governance docs; and
+- `.github/workflows/ci.yml` and every root managed-target cache.
 
-No source, test, manifest, lockfile, runtime configuration, strategy, or trading module belongs in this CI slice.
+The existing shared sccache actions remain unchanged. Their exact-head log output supplies the performance counters; the implementation may not replace them with inline credentials, a second statistics path, or an alternate cache action.
+
+No source, Rust test target, manifest, lockfile, runtime config, strategy, pricing, evidence, recovery, HMAC, or archival file belongs in this CI slice.
 
 ## Invariants
 
-1. No BVS managed-target cache uses `restore-keys` or any non-exact fallback.
-2. Source/test-only changes preserve the target seed; dependency, toolchain, or governed build-policy changes alter it.
-3. Full-source S3 payload identity remains independent from target compatibility identity.
-4. Only main writes target caches, and only after successful production of the relevant lane output.
-5. PR, merge-queue, manual flaky, and scheduled flaky jobs are read-only.
-6. One compatibility seed creates at most one immutable cache per OS/architecture/lane.
-7. A cache miss never leaves unowned artifacts in the directory used for the cold build.
-8. The 32 GiB target limit and 10 GiB repository Actions-cache tripwire are not increased.
-9. Disk-pressure diagnostics distinguish measured target bytes from unmeasured reclaimability.
-10. Storage pressure disables the optimization; it never weakens cache identity or Rust verification.
+1. All three workflows contain zero BVS whole-target restore and save steps.
+2. GitHub Actions stores zero BVS target entries and bytes after rollout.
+3. The primary compile path uses the existing governed sccache action; main is read/write, PR/MQ and flaky consumers are read-only.
+4. Cache failure falls open only to the same required local compilation, never to a skipped job or alternate cache.
+5. Full-source nextest and sidecar keys and metadata use one head-resolver `backtester_cache` digest.
+6. No `bootstrap-${GITHUB_SHA}` or other commit-SHA cache namespace remains in the BVS contract.
+7. Full tests, partitions, sidecars, issue-specific coverage, and S3 metadata validation remain intact.
+8. Both 32 GiB target limits and the 10 GiB Actions-cache threshold are unchanged.
+9. Disk-pressure telemetry distinguishes measured target bytes from unmeasured reclaimability.
+10. No cache delete authority, new S3 artifact class, bucket, prefix, credential source, or target-directory upload is added.
+11. Performance success requires a comparable warm run with nonzero hits, zero read errors, full green proof, and at least 20% compile wall-clock improvement.
+12. A sub-20% result stops the performance claim and requires new user-approved design work before any broader overhaul.
 
 ## Verification Matrix
 
+### Architecture and static evidence — always required
+
 | Requirement or risk | Required evidence |
 |---|---|
-| Source-only reuse | Input-set fixture mutates root/BVS source and tests without changing `backtester_target_seed`, while `backtester_cache` changes. |
-| Dependency/toolchain invalidation | Fixtures mutate each manifest, lockfile, toolchain, and governed build-policy category and observe a new target seed. |
-| Input-set membership | Negative tests remove every mandatory compatibility surface and add forbidden source/test pathspecs; validation fails. |
-| No approximate restore | Workflow mutations add block/inline `restore-keys`, old v3 prefixes, shortened keys, full-source digests, or SHA namespaces; hygiene fails for Backtester and both flaky workflows. |
-| Writer authority | Mutations allow PR, merge queue, or flaky saves; hygiene fails. Exact main-only conditions pass. |
-| Lane isolation | Mutations make clippy consume the test key or a test consumer use the clippy key; hygiene fails. |
-| Deterministic bootstrap | Mutations restore `bootstrap-${GITHUB_SHA}` or another per-commit key; hygiene fails. A config-only fixture yields a deterministic non-SHA seed. |
-| Empty cold miss | Workflow contract tests require an empty-directory assertion on miss and reject compile steps that can run before it. |
-| S3 identity separation | Mutations replace the full-source digest with target seed in any nextest/sidecar key or metadata; hygiene fails. |
-| 32 GiB limit retained | Static/behavior test confirms `soft_limit_bytes = 32212254720` and refusal still occurs above it. |
-| Truthful pressure payload | Unit test above the limit asserts exact `total_bytes`, `reclaimability_measured: false`, and `reclaimable_bytes: null`; a measured prune path asserts true plus an integer. |
-| Storage budget | Read-only cache inventory before/after first main seed records total and BVS-family bytes; existing storage tripwire evaluates the 10 GiB threshold. |
-| Fallback | A reviewed workflow variant with all BVS target restore/save steps absent still produces the required clippy/test/S3 proof and contains no alternate target cache. |
-| Local static eligibility | `just fmt-check`, `just ci-lint-workflow`, input-set self-tests, workflow-hygiene self-tests, storage-tripwire self-tests if touched, `just source-fence-static`, and `git diff --check`. |
-| Rust and workflow behavior | Exact-head remote Backtester CI: cold miss succeeds; a later same-seed source-only head gets an exact hit; a lockfile/NT-pin mutation gets an exact miss; required `backtester-gate` is green. |
-| Review | Claude Fable 5/xhigh approves this spec before planning; a separate implementation reviewer approves the final diff before publication; external review occurs only after green exact-head CI. |
+| No BVS target cache | Workflow mutations add any `managed-target-bvs-*`, target restore/save action, target path, target digest, or `restore-keys`; hygiene fails in Backtester and both flaky workflows. |
+| Exact S3 artifact identity | Mutations remove the head-resolver `backtester_cache` digest, use it outside nextest/sidecar keys or metadata, cross-wire key/metadata values, or add a SHA bootstrap; hygiene fails. |
+| Resolver-policy asymmetry | Input-set tests retain forbidden governance paths; hygiene/source-fence tests independently cover resolver, TOML, workflows, and shared actions. |
+| Sccache authority | Mutations give PR/MQ/flaky write authority, omit the shared action, substitute inline AWS setup, or change the governed location; hygiene fails. Main read/write and untrusted read-only configurations pass. |
+| Fail-open compilation | Mutations let cache ineligibility skip or weaken a Rust step, retain `RUSTC_WRAPPER`, or choose an alternate backend; hygiene/action tests fail. |
+| Test preservation | Mutations remove archive, sidecar, partitions, full tests, issue-specific tests, or gate dependencies; hygiene fails. |
+| Both 32 GiB limits | Static tests assert `32212254720` in root and BVS policy; above-limit behavior remains fail-closed. |
+| Truthful pressure payload | Unit tests assert exact `total_bytes`, `reclaimability_measured: false`, and `reclaimable_bytes: null`; a completed classification asserts true plus an integer. |
+| Zero-budget steady state | API-backed inventories before rollout, after main, and after two source-only heads show no BVS cache keys/bytes/saves and repository total at or below 10 GiB. |
+| Local static eligibility | `just fmt-check`, `just ci-lint-workflow`, targeted Python self-tests, `just source-fence-static`, and `git diff --check`. |
+| Review | Fable 5/xhigh approves this spec before planning; a separate implementation reviewer approves the diff before publication; external review follows green exact-head CI. |
+
+### Enabled-sccache evidence — required for the normal path
+
+| Requirement or risk | Required evidence |
+|---|---|
+| Exact-head safety | Remote PR Backtester CI has no target restore, compiles required misses, runs full tests, and produces green `backtester-gate`. |
+| Writer authority | Main reports `read_write`; PR/MQ and flaky jobs report `read_only`; no untrusted write occurs. |
+| Compiler reuse | Later dependency/toolchain-identical source-only run reports enabled sccache, nonzero requests, nonzero cacheable requests, nonzero hits, zero read errors, and full green proof. |
+| Latency | Comparable cold and warm compile intervals use the documented formula and show at least 20% improvement. |
+| Stable rollout | Two source-only heads show zero BVS Actions-cache entries/saves and no cache-eviction/re-upload loop. |
+
+### Fail-open/outage evidence — required for the fallback path
+
+| Requirement or risk | Required evidence |
+|---|---|
+| Cache ineligible/unavailable | Action/unit and workflow mutation tests cover missing role/location, AWS failure, install failure, and server-start failure; each resolves to `enabled=false`. |
+| Cold correctness | A remote run with sccache unavailable contains no BVS target restore, compiles locally, preserves the 32 GiB guard, runs full tests, and produces green `backtester-gate`. |
+| Honest reporting | Summary/stats report cache disabled or the read error; no target-cache hit or performance claim is required. |
+
+Enabled-lane evidence is not required from an outage run, and an outage run is never required to fabricate compiler-cache hits. Conversely, an enabled run cannot substitute a hit count for the required cold fallback proof or the 20% wall-clock criterion.
 
 Local compile-heavy Rust checks remain prohibited by the repository's remote-first policy.
 
 ## Sequencing With #1367 and #1354
 
-1. Claude Fable 5/xhigh reviews this spec. Findings are resolved in the spec before a plan exists.
-2. A separate CI issue/slice owns the implementation. It does not close or bundle #1354.
-3. The CI slice receives independent implementation review, is published through its own PR, and lands with exact-head static and remote proof.
-4. Main becomes authoritative. PR #1367 merges that main state into its branch and re-runs exact-head root and Backtester proof.
-5. After #1367 lands, #1354 consumes the corrected NautilusTrader pin and continues its own governed implementation/review path.
+1. Claude Fable 5/xhigh re-reviews this spec. Every finding is resolved before an implementation plan exists.
+2. A separate BVS CI issue/slice owns the plan and implementation. It does not close or bundle #1354.
+3. A Codex 5.6-sol-medium implementor works in an isolated worktree after the reviewed plan is approved.
+4. A separate implementation reviewer resolves all findings before publication.
+5. Exact-head PR Backtester proof establishes the no-target-cache cold path and required gate.
+6. After the slice reaches main, trusted main writes compiler outputs and the post-rollout inventory/performance qualification runs.
+7. PR #1367 merges authoritative main into its branch and reruns exact-head root and Backtester proof.
+8. After #1367 lands, #1354 consumes the corrected NautilusTrader pin and continues its own governed path.
 
-This CI slice is a launch/soak blocker only because the repository requires a green `backtester-gate` before #1367 can land. It is not a production trading defect and does not broaden #1367's timestamp scope.
+This slice blocks launch/soak only because the repository requires green `backtester-gate` proof before #1367 can land. It is a CI ownership defect, not a production trading defect.
 
 ## Non-Goals
 
-- No change to the Binance SBE timestamp fix or NautilusTrader pin.
-- No change to realized-volatility, reference-price, maker, entry, exit, evidence, recovery, HMAC, or S3 archival behavior.
-- No increase to the 32 GiB managed-target limit or 10 GiB Actions-cache tripwire.
-- No automatic deletion of GitHub caches and no destructive cleanup authorization.
+- No change to Binance SBE timestamps, the NautilusTrader pin, or #1354 behavior.
+- No change to realized volatility, reference pricing, maker, entry, exit, evidence, recovery, HMAC, or archival behavior.
+- No root target-cache allocation or eviction-policy change.
+- No increase to either 32 GiB target limit or the 10 GiB Actions-cache threshold.
+- No automatic GitHub/S3 deletion and no delete authority.
 - No mutable Cargo target directory in S3.
-- No new cache backend, cache tolerance, prefix fallback, commit-keyed target cache, or alternate build path.
-- No claim that a target-size scan can distinguish restored bytes from bytes compiled later in the run.
+- No new cache backend, bucket, prefix, credential path, target artifact, tolerance, or alternate build path.
+- No weakening of full-source S3 archives, sidecar metadata, tests, partitions, gates, or fail-closed behavior.
+- No claim that a target-size scan can apportion historical byte ownership.
+- No claim that sccache fully identifies the external runner image.
+- No broader performance overhaul if the 20% criterion misses without a new spec and explicit user approval.
 - No local compile-heavy Rust verification.

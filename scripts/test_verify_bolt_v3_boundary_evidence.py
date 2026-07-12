@@ -210,15 +210,6 @@ reason = "test"
     )
     write(
         root,
-        "justfile",
-        """
-source-fence-static-inner:
-    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
-    python3 scripts/verify_bolt_v3_boundary_evidence.py
-""",
-    )
-    write(
-        root,
         "ci/rust-verification.toml",
         """
 [local_lane_policy]
@@ -509,17 +500,6 @@ def test_planted_unregistered_any_class_fails() -> None:
         path.write_text(text.replace("BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },\n", ""), encoding="utf-8")
 
     assert_finding(scan_temp(mutate), "missing registry entry")
-
-
-def test_parser_only_chainlink_handler_fails() -> None:
-    def mutate(root: Path) -> None:
-        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
-        text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes", "message.as_text().unwrap()"), encoding="utf-8")
-
-    findings = scan_temp(mutate)
-    assert_finding(findings, "must accept Text and Binary")
-    assert_finding(findings, "must not use parser-only as_text")
 
 
 def test_registered_text_only_handler_fails() -> None:

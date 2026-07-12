@@ -1400,8 +1400,9 @@ fence only. They reject target fields or function attributes that can suppress
 ordinary test execution, reject crate-level inner attributes, and require the
 governed parser/assertion shapes while masking comments and strings. They do
 not compile or execute the harness and do not prove runtime semantics. The
-required exact-head nextest execution is the behavioral execution proof; a
-green structural fence is not a substitute.
+required full-CI nextest proof—executed at the head or admitted through
+governed fingerprint reuse—is the behavioral execution proof; a green
+structural fence is not a substitute.
 
 ### 11.6 Controlled-connect and controlled-disconnect boundary
 

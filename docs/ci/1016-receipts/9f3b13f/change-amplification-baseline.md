@@ -40,6 +40,20 @@ Accounting rules:
 
 Six distinct behavioral PRs were examined. The five non-relocation rows (#1151, #1186, #1297, #1290, #1173) total 4,461 raw textual lines across 26 unique paths. The relocation row #1309 is 33,131 raw textual lines over 22 paths. The union across all six is 44 unique paths.
 
+## Supported central cluster
+
+The supported 26,667-line central #1016 cluster at the planning base is exactly:
+
+| Path | Lines |
+| --- | ---: |
+| `scripts/verify_ci_workflow_hygiene.py` | 11,426 |
+| `scripts/test_verify_ci_workflow_hygiene.py` | 12,966 |
+| `scripts/ci_workflow_hygiene_test_helpers.py` | 2,149 |
+| `scripts/test_rust_verification_decoupling.py` | 126 |
+| **Total** | **26,667** |
+
+This enumeration is reproducibility evidence only. It does not define policy ownership, authorize deletion, or change the receipt's interpretation limits.
+
 ## Supported nominal subtotal
 
 The nominal aggregate contains only #1151, #1186, and #1297:

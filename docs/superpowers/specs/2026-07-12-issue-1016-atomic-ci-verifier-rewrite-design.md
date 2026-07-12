@@ -6,7 +6,7 @@ Issue #1016 will replace the central CI workflow-hygiene verifier atomically, bu
 
 The user's goal is straightforward: CI must prove real safety from one owner, and an ordinary configuration change must not require Python or Python-test edits. Line count is secondary.
 
-The governing sequence is approved: Program-A issue-owned deletions already landed; the precursor fixes the exact legacy deletion manifest; freeze follows promotion; and actual legacy deletion occurs only in atomic activation. The dormant-implementation correction, the two-context check design, and the separately governed control plane in this revision are not yet owner-approved. Publication and implementation require owner review and external adversarial review after the issue-body conflict is reconciled.
+Only two ordering decisions are already approved: Program-A issue-owned deletions landed before the precursor, and actual legacy deletion occurs atomically with activation rather than in the precursor. The proposed temporary admission lock, temporary Mergify Merge Protections/Freeze ceremony, pre-precursor final ruleset state, promotion, irreversible bootstrap disablement, closed canary, and activation hinge remain pending separate control-plane approval, disposable live proof, owner approval, and external adversarial review, as do the dormant-implementation correction, two-context check design, and separately governed control plane. Publication and implementation require those approvals after the issue-body conflict is reconciled.
 
 This revision explicitly supersedes the earlier self-grading architecture, the claim that #1016 is the first ordinary head to speak a new protocol, and the proposal to introduce the replacement implementation in the same head that deletes the legacy implementation.
 
@@ -32,7 +32,7 @@ Only independently proven retained, re-homed, or native-owned rules enter the fr
 2. Protected `policy_base_sha` supplies the sole semantic engine. Candidate bytes are governed inputs only.
 3. The atomic head must exactly match a protected-base pending-activation manifest and leave every staged replacement byte unchanged.
 4. Dormant conformance and focused tests are installation evidence, never a second enforcement path.
-5. There is no legacy protocol adapter, old/new comparison, candidate-selected policy, dual authority, compatibility layer, or cleanup-later phase.
+5. There is no legacy protocol adapter, old/new comparison, candidate-selected policy, dual semantic veto authority, ambiguous success conversion, compatibility layer, cleanup-later phase, or semantic AND window. The temporary admission lock and Mergify Merge Protections/Freeze are transition controls, never permanent semantic authority: legacy is the sole semantic veto for the admission-lock and precursor merges; no merge occurs between precursor and activation; and trusted authority is the sole semantic veto for activation and afterward.
 6. Missing, malformed, timed-out, crashed, cancelled, replayed, incomplete, unknown, neutral, or skipped authority outcomes do not authorize merge.
 7. Every retained semantic rule has one owner, one typed contract, and independent clean/falsifying evidence or exact native-owner identity proof.
 8. Each governed syntax has one restricted parser; retained adapters consume typed inputs and cannot reopen or reparse governed files.
@@ -43,11 +43,23 @@ Only independently proven retained, re-homed, or native-owned rules enter the fr
 
 ### Stage 1: permanent precursor on protected base
 
-After separate control-plane authorization, one precursor stages the complete replacement dormant: controller, classifiers, restricted parsers, typed snapshots, semantic registry, retained adapters, protocol validator, runner, materializer, corpus, manifest, bootstrap, focused tests, and an exact pending-activation manifest.
+Before the precursor exists, operators reserve its exact PR number and land one separately reviewed temporary `.mergify.yml` admission-lock PR under current legacy authority. Its protected configuration has exactly one ceremony queue matching only that precursor PR number, `batch_size: 1`, `max_parallel_checks: 1`, and `branch_protection_injection_mode: none`. It explicitly requires legacy `gate`, `backtester-gate`, `actionlint`, `host-health`, and mandatory native review. It exposes no hotfix, default, autoqueue, checkbox, automation, or other route for the activation or any unrelated PR.
 
-The legacy verifier remains the only repository semantic authority while the precursor is reviewed. Dormant conformance proves installability and expected failure behavior; it neither publishes merge authority nor compares old and new verdicts. The one-use bootstrap exception may authorize only this precursor after binding its complete reviewed byte set and protected base.
+After the separately approved and live-proven transition ceremony below, one precursor stages the complete replacement dormant: controller, classifiers, restricted parsers, typed snapshots, semantic registry, retained adapters, protocol validator, runner, materializer, corpus, manifest, bootstrap, focused tests, and an exact pending-activation manifest. The same precursor atomically replaces the temporary admission lock with final hotfix and default rules in which only legacy `gate` is replaced by App-qualified `trusted-ci-verifier`; `actionlint`, `backtester-gate`, and `host-health` remain explicit and subject to independently proven non-covered ownership.
 
-After merge, the external authority verifies the exact reviewed bytes at protected `policy_base_sha` and promotes them. It then writes the external monotonic tombstone and irreversibly disables all later bootstrap issuance and acceptance before running a closed canary against that post-tombstone, post-disable state. The covered surface freezes only after that canary passes. A failed canary remains fail-closed and blocked: the bootstrap exception cannot be reopened or reissued, and recovery requires a separately governed control-plane path. Any covered change invalidates caller, corpus, timing, RSS, cost, amplification, canary, and freeze evidence.
+The temporary protected-base admission lock governs the precursor merge and requires all four legacy checks plus mandatory native code-owner review. Because Mergify is placed in ruleset `exempt` mode before the precursor, it does not inject the final ruleset checks; `branch_protection_injection_mode: none` independently forbids such injection. The legacy verifier therefore remains the only repository semantic authority through the precursor merge. Dormant conformance proves installability and expected failure behavior; it neither publishes merge authority nor compares old and new verdicts. The bootstrap remains promotion-only and emits no check. There is no ordinary-PR authority-context exception.
+
+Before queueing the precursor, all enforcement mutations are complete. Operators enable and prove Mergify Merge Protections and an indefinite `main` Freeze as temporary controls, initially excluding only the exact precursor PR number. While all other paths are frozen, they atomically place ruleset 14763242 in its final state: replace only the Actions-published `gate` requirement with external-App `trusted-ci-verifier`, retain `backtester-gate`, `actionlint`, and `host-health`, and change Mergify integration 10562's bypass mode from `always` to `exempt`. Per Mergify's documented ruleset behavior, `exempt` skips rule injection. Native/direct merges remain blocked because trusted authority is absent on ordinary heads, while the exact-number admission lock and Freeze constrain Mergify.
+
+Operators then create and reserve the exact activation PR number and add that number as the second Freeze exclusion. This exclusion is procedural only and cannot authorize merge; it is inert before precursor merge because the admission lock rejects the activation number and every non-ceremony route. Terminal proof re-queries protected main, `.mergify.yml`, Freeze and exclusions, ruleset, bypass mode, queue configuration, publisher identities, and queue/batch state; every other entry is dequeued and no batch may be running. Any movement restarts the ceremony. The precursor is then queued alone under the temporary admission lock. After it merges, the precursor exclusion is closed, the activation becomes routable under the final config, but trusted authority remains withheld and Freeze blocks every other PR. No legacy, alternate, or fallback semantic authority can authorize a post-precursor merge.
+
+After merge, a signed bootstrap envelope authorizes only exact-byte verification and promotion; it never emits or satisfies a check. The external authority verifies the exact reviewed bytes at protected `policy_base_sha` and promotes them, writes the external monotonic tombstone, and irreversibly disables all later bootstrap issuance and acceptance. No repository, Mergify, ruleset, Freeze, or other enforcement mutation is permitted between precursor and activation; only promotion, tombstoning, and the closed canary occur. The control plane terminally re-queries final `main`, protected `.mergify.yml`, ruleset, protected ref, Freeze, bypass mode, queue/batch state, and publisher/App identities. The canary then runs under Freeze against the promoted protected-base engine, final authority tuple, and post-disable state. Its independently precommitted cases include at least one known-clean input and one known-falsifying input. It passes internally only when the clean case computes allow, the falsifying case computes deny for the expected stable rule ID, all complete protocol and tuple checks pass, no bootstrap issuance or acceptance succeeds, and no preexisting proof-head result survives any protected-state movement. The canary cannot create, update, publish, or satisfy `trusted-ci-verifier` or any other merge-visible status or check. Its nonce, authority record, artifacts, and computed results are canary-purpose evidence only and cannot be converted, promoted, replayed, or reused as activation authority. `trusted-ci-verifier` remains absent until the reserved activation is queued alone and the activation proof head passes complete terminal tuple validation.
+
+On canary success, exact freeze evidence is recorded as non-authorizing control-plane audit evidence and the already-reserved activation queues alone. That record is not a status or check and cannot satisfy a merge condition. The activation is literally the first subsequent covered Git/enforcement-surface change after the precursor. The App emits `trusted-ci-verifier` only for its exact Mergify proof head after validating ancestry, protected base, head, tree, manifest, staged-byte identity, final ruleset/configuration, exact constituent set, and queue/freeze state. It merges only when temporary procedural controls and trusted semantic authority both pass.
+
+After activation, Freeze remains until protected `main` exactly equals the expected activation result and terminal proof succeeds. Operators then delete the temporary Freeze and disable or remove temporary Merge Protections reporting and any temporary required binding. The final App-qualified trusted ruleset requirement and Mergify `exempt` bypass remain unless a later separately authorized design changes them.
+
+Before precursor merge, abort restores the pre-ceremony state through the separately reviewed operator procedure. After precursor merge, canary or activation failure has no recovery PR, recovery exclusion, or repository recovery path: Freeze remains active, the attempt is terminally abandoned, bootstrap stays tombstoned, and the repository may remain unable to merge. Proceeding therefore requires explicit owner risk acceptance and a separate external operational decision. Any recovery is a new, separately authorized program. Any movement in the exact base, configuration, or covered surface invalidates all prior proof and restarts the pre-precursor ceremony where still possible.
 
 ### Stage 2: atomic #1016 activation
 
@@ -60,11 +72,11 @@ The atomic head may only:
 - update provenance-bound generated artifacts deterministically; and
 - delete all legacy implementation, tests, helpers, registrations, aliases, and obsolete pins.
 
-Any semantic replacement edit or extra activation-surface change makes authority absent or failing. The base-owned staged implementation evaluates the atomic head, including its activation and deletion set.
+The activation manifest also removes legacy covered-semantic execution and registration from the required gate. Any semantic replacement edit or extra activation-surface change makes authority absent or failing. The base-owned staged implementation evaluates the atomic head, including its activation and deletion set. After cutover, no candidate-controlled required GitHub Actions check may retain a covered-semantic veto.
 
 ### Future verifier versions
 
-While Vn is sole authority, a separate PR stages Vn+1 dormant with its exact pending-activation manifest. Only after protected-base promotion and canary may an isolated activation PR, judged by base-owned Vn+1, activate Vn+1 and atomically delete Vn. No same-event comparison or candidate self-grading is permitted.
+While Vn is sole authority, a separate PR stages Vn+1 dormant with its exact pending-activation manifest. Only while a separately approved procedural freeze is already active, and after protected-base promotion, applicable final-authority establishment and validation, a successful closed canary, and exact base/config/surface-bound freeze evidence, may an isolated activation PR judged by base-owned Vn+1 activate Vn+1 and atomically delete Vn. No same-event comparison or candidate self-grading is permitted.
 
 ## Check contexts and Mergify authority
 
@@ -73,9 +85,13 @@ The repository uses Mergify rather than native `merge_group` as its normal merge
 Two external-App contexts have distinct purposes:
 
 - `trusted-ci-verifier-feedback`: non-required ordinary-PR feedback only. It can never satisfy a ruleset or Mergify merge condition.
-- `trusted-ci-verifier`: merge authority only. It is emitted for an exact Mergify proof head or a native `merge_group`, plus the single-use precursor bootstrap exception. It must be absent or failing on an ordinary PR head.
+- `trusted-ci-verifier`: merge authority only. It is absent on every ordinary PR, throughout promotion and the closed canary, and from every other proof head. It is emitted only after the reserved activation is queued alone and complete terminal tuple validation succeeds for that exact Mergify proof head; wrong phase, head, publisher, or identity fails.
+
+Both contexts are published by the external App. There is no GitHub Actions feedback or authority fork, and readiness is evidence-driven rather than tied to an arbitrary calendar deadline.
 
 Protected Mergify configuration requires the App-qualified authority name, conceptually `check-success = @<external-app-slug>/trusted-ci-verifier`. The protected GitHub ruleset separately binds `trusted-ci-verifier` to the exact App integration ID. The actual installed App slug is an installation output and must not be a hardcoded placeholder in production configuration.
+
+The staged base-owned semantic registry includes stable rule `merge.authority.app-qualified-condition`. It validates only the exact protected `.mergify.yml` condition structure and both hotfix/default queue-rule mappings. Live App publisher/integration identity and the ruleset binding are validated exclusively by the external authority-tuple/control-plane validator, never by repository semantic code. `merge_queue_preflight` remains advisory only and cannot authorize merge.
 
 Authority is invalidated by mismatch or movement in base, head, parent, tree, constituent set, installation identity, launcher or artifact identity, ruleset epoch or digest, Mergify configuration, or activation manifest. Reuse, cancellation, replay, timeout, crash, malformed protocol, extra activation changes, stale API state, or terminal revalidation failure also invalidate it. Neutral and skipped conclusions are forbidden because GitHub accepts them as successful required conclusions.
 
@@ -85,7 +101,15 @@ Every result is bound to one signed authority record containing repository ID; p
 
 `policy_base_sha` is the exact protected base of the ordinary PR or proof head. Merge-base computation selects diff bytes only and is never policy or semantic authority. Immediately before terminal success, the App re-queries every identity, ancestry, object-existence, parent/tree, constituent, protected-ref, configuration, ruleset, launcher, installation, manifest, staged-version, and digest field. Movement, missing objects, changed ordering, staleness, ambiguity, or mismatch fails closed; earlier successful queries are not terminal proof.
 
-For the precursor only, the App may mint one signed, expiring, event-specific bootstrap envelope bound to the complete tuple, protected `main`, the exact reviewed allowlist, and every reviewed content digest. It has no generic renewal, wildcard, derived-head reuse, or signer override. After merge, the App verifies the exact reviewed bytes at protected `policy_base_sha`, promotes those bytes, and records an external monotonic tombstone keyed to the precursor SHA once that SHA is an ancestor of protected `main`. Every later bootstrap issuance fails regardless of signer. Replay, reissue, datastore rollback, and restoration of an old App artifact must fail before canary or freeze.
+For the precursor only, the App may mint one signed, expiring, event-specific bootstrap envelope bound to the complete tuple, protected `main`, the exact reviewed allowlist, and every reviewed content digest. The envelope authorizes only post-merge exact-byte verification and promotion; it cannot publish, emit, satisfy, or waive a check. It has no generic renewal, wildcard, derived-head reuse, or signer override. After merge, the App verifies the exact reviewed bytes at protected `policy_base_sha`, promotes those bytes, and records an external monotonic tombstone keyed to the precursor SHA once that SHA is an ancestor of protected `main`. Every later bootstrap issuance and acceptance fails regardless of signer. Replay, reissue, datastore rollback, and restoration of an old App artifact must fail before authority establishment, canary, or freeze.
+
+### Temporary transition controls and proof
+
+There is no permanent `Mergify Merge Protections` required check. Before the precursor, separately approved operators use Merge Protections and Freeze only as temporary ceremony controls. Ruleset 14763242 reaches its final state before the precursor: only the Actions-bound `gate` is replaced by external-App `trusted-ci-verifier`, the other three checks remain, and Mergify integration 10562 changes from `always` bypass to `exempt`. The protected admission lock's `branch_protection_injection_mode: none` and Mergify's documented `exempt` behavior prevent final ruleset injection into the precursor queue.
+
+Disposable non-production proof must cover: `exempt` injection behavior; exact-number admission; `branch_protection_injection_mode: none`; absence of hidden hotfix/default/autoqueue/checkbox/automation routes; configuration self-change resetting prior proof; invalidation of a preexisting proof head; single and mixed batches; merge-time Freeze re-evaluation; exact exclusions; dequeue and no-running-batch state; wrong-publisher same-name rejection; native/direct blocking; Freeze behavior when Mergify is exempt; exact identity; latency; and API, quorum, and audit behavior. Until all results are reviewed and the separate control-plane design is approved, implementation remains blocked. The official basis is [GitHub rulesets and `exempt`](https://docs.mergify.com/merge-queue/github-rulesets/), [conditions](https://docs.mergify.com/configuration/conditions/), [batches](https://docs.mergify.com/merge-queue/batches/), [Merge Protections setup](https://docs.mergify.com/merge-protections/setup/), and [Freeze](https://docs.mergify.com/merge-protections/freeze/).
+
+The transition is exact replacement, never a semantic AND window. The separately landed exact-number admission lock is judged by legacy authority. The precursor atomically installs dormant bytes and replaces that lock with final Mergify mappings, but the lock and explicit legacy checks judge the precursor itself. Freeze prevents every other merge. The ruleset is already final; no post-precursor configuration or ruleset mutation occurs. Promotion, irreversible tombstoning, and the closed canary happen without a Git mutation. Trusted authority is then emitted only for the exact activation proof head. At activation, legacy covered-semantic execution and registration are removed from `gate`; `gate` may survive only for independently proven non-covered work and may not retain a covered-semantic veto. Ruleset, Mergify, Freeze, queue, base, or staged-byte movement invalidates the proof.
 
 ## Separately approved control-plane prerequisite
 
@@ -96,9 +120,14 @@ This design does not authorize the external App, its installation, ruleset mutat
 - append-only, rollback-resistant bootstrap tombstone and proof-reuse state;
 - key custody, rotation, revocation, and recovery;
 - audit retention and incident reconstruction; and
-- ownership of ruleset and Mergify installation changes.
+- ownership of ruleset and Mergify installation changes; and
+- authorization, quorum, audit, exact identity, and recovery rules for Merge Protections and Freeze operations.
 
 The App may authenticate, resolve and revalidate authority records, sandbox the base-owned runner, validate its envelope, and publish the appropriate context. It may not contain hidden repository policy, parse governed documents, interpret the semantic corpus, or choose candidate semantics.
+
+### Trusted computing base
+
+The enumerated TCB comprises GitHub protected refs, ruleset evaluation, object and identity APIs, check-run publisher binding, and native-review enforcement; the Mergify merge/bypass executor, condition evaluator, queue/batch engine, Merge Protections/Freeze service, and protected `.mergify.yml`; and the external App, launcher, control plane, artifact store, keys, rollback-resistant state, and monotonic tombstone. Native code-owner review is an independent human authorization anchor for the admission lock, precursor, and activation, but it is not the semantic oracle. Residual risk includes compromise, equivocation, stale or misreported identity/configuration, bypass misuse, queue race, key loss, and rollback failure across those systems. Detailed prevention, detection, separately governed incident recovery, quorum, and audit controls belong to the separately approved control-plane design.
 
 ## Components and dependency direction
 
@@ -110,8 +139,6 @@ The staged replacement consists of independently reviewable units:
 - **Protocol validator/reporter:** validates canonical structured results, completeness, identity, order, and termination; rendering never reinterprets policy.
 - **Bootstrap:** installs exact locked parser/runtime artifacts hermetically and fails closed on unsupported, missing, corrupt, ambient, or mismatched inputs.
 - **Activation manifest:** binds every staged byte, public entrypoint, caller disposition, lifecycle membership, generated output, legacy deletion, and allowed activation edit.
-
-Dependency direction is:
 
 `external App -> protected-base runner/materializer -> staged controller -> classifier -> restricted parser -> typed snapshot -> semantic owner -> protocol validator -> reporter`
 
@@ -223,7 +250,7 @@ Evidence and digests may therefore be duplicated or derived. Independent evidenc
 
 All ordinary numerical line, file, ratio, percentage, and rolling-median values are provisional review signals until a reproducible calibration set exists. They are not gates, acceptance criteria, or automatic exception machinery. The explicit exception is the 13,333-line #1016 ceiling: it is a one-time owner-selected governance ceiling secondary to semantic minimality, not empirical evidence or a runtime CI fence. The historical method and supported subtotals live in [`docs/ci/1016-receipts/9f3b13f/change-amplification-baseline.md`](../../ci/1016-receipts/9f3b13f/change-amplification-baseline.md).
 
-Deterministic `just ci-verifier-budget-report` and a protected-base path/symbol inventory attribute full paths across all languages, including launcher seams, runner/protocol, facade, parsers, registry, adapters, bootstrap, measurement, focused tests, and generated executable code. Non-executable corpus and manifest exclusions are validated and reported separately. Hidden policy in data, generated output, retained owners, or another language is counted and rejected.
+Deterministic `just ci-verifier-budget-report` and a protected-base path/symbol inventory attribute full paths across all languages, including launcher seams, runner/protocol, facade, parsers, registry, adapters, bootstrap, measurement, focused tests, and generated executable code. Non-executable corpus and manifest exclusions are validated and reported separately. Corpus and manifest data may carry governed inputs and expected evidence, but never executable rule selection, applicability, or verdict logic; only typed materializer/runner evidence paths may consume them. Import/dataflow fences and hidden-policy mutations enforce that boundary. Hidden policy in data, generated output, retained owners, or another language is counted and rejected.
 
 Non-Python repository code and external-App code are visible subtotals. App operations, maintenance, and hosting cost remain separate and visible. Semantic policy in the App is forbidden; permitted non-semantic conformance and control-plane code is still cost-accounted. This deterministic report is cutover evidence, never a permanent ordinary-PR line fence.
 
@@ -233,6 +260,11 @@ Non-Python repository code and external-App code are visible subtotals. App oper
 | --- | --- |
 | Immutable launch | Candidate workflow deletion cannot suppress either context; publisher/App binding and launcher artifact are exact. |
 | Installation authority | Signed precursor envelope is allowlist/digest-bound; promoted bytes exactly equal reviewed bytes. |
+| Temporary lock prerequisite | A separately reviewed admission-lock PR lands under current legacy authority and proves exact precursor-number matching, one queue, batch size one, one parallel check, injection disabled, explicit four legacy checks, native review, and no alternate route. |
+| Final pre-precursor state | Disposable live proof covers `exempt` injection, exact-number admission, no hidden routes, self-change reset, proof-head invalidation, mixed batches, merge-time Freeze re-evaluation, exclusions, dequeue/no running batch, wrong publisher, native/direct blocking, Freeze under exempt, identity, latency, and API/quorum/audit. Terminal re-query proves final ruleset, bypass, Freeze, configuration, protected base, and empty queue/batch state before precursor. |
+| Authority establishment | Ruleset 14763242 is final before precursor; temporary admission lock and explicit legacy checks judge precursor; precursor atomically installs dormant bytes and final Mergify mappings; no enforcement mutation follows before activation. |
+| Exact check map | Final Mergify hotfix/default rules replace only `gate` with App-qualified `trusted-ci-verifier` and explicitly retain `actionlint`, `backtester-gate`, and `host-health`; final ruleset 14763242 makes the same gate-only replacement and retains the same three checks. No permanent Merge Protections requirement exists; Mergify stays `exempt`. |
+| Failed-canary terminal state | Canary is internal and non-publishing; it cannot create or satisfy a merge-visible context, and none of its records or artifacts can become activation authority. On failure, Freeze stays active, bootstrap stays tombstoned, no recovery PR or exclusion exists, and the repository may remain unable to merge. Recovery requires a new separately authorized program. |
 | Proof-head merge authority | Feedback cannot authorize merge; wrong proof head, branch, parent/tree, constituent, context purpose, or App fails. |
 | Bootstrap/tombstone closure | Replay, renewal, reissue, datastore rollback, and old-App restoration fail after monotonic tombstone. |
 | Exact revisions and terminal re-query | Every tuple field, object, ancestry, digest, and protected ref is revalidated immediately before success. |
@@ -256,14 +288,16 @@ Each row is bound to command, exact input SHA, output digest, and reviewer. Miss
 
 ## Delivery and review sequence
 
-1. Reconcile the issue body and record owner decisions; separately authorize the App/control plane.
+1. Reconcile the issue body and record owner decisions; separately authorize the App/control plane and the proposed Merge Protections/Freeze mechanism.
 2. Regenerate exact-main rule, caller, corpus, resource, cost, and attribution evidence.
 3. Assign one implementer per declared file set; resolve internal findings and run cheap checks first.
-4. Keep the precursor draft until exact-head feedback is green; request external/native review only after required exact-head CI or the approved equivalent is green.
-5. Queue the precursor alone. After merge, verify and promote exact bytes at protected `policy_base_sha`, write the external monotonic tombstone and irreversibly disable later bootstrap issuance and acceptance, pass a closed canary against that state, and only then publish freeze evidence. Canary failure remains fail-closed and blocked; it cannot reopen or reissue the bootstrap exception and requires a separately governed control-plane recovery path.
-6. Build the atomic activation with one implementer per file set; no covered semantic or corpus change is allowed.
-7. Resolve internal findings and cheap checks, then obtain exact-head evidence before external/native review.
-8. Verify ruleset, required reviewer, last-push approval, and review-thread requirements from `AGENTS.md`, then queue activation alone.
+4. Reserve the exact precursor PR number. Land one separately reviewed temporary admission-lock PR under legacy authority with exactly one precursor-number queue, batch size one, one parallel check, injection disabled, explicit four legacy checks, native review, and no alternate route.
+5. Build the precursor with complete dormant replacement/pending-activation manifest and atomic replacement of the admission lock by final hotfix/default Mergify rules. Keep it draft until exact-head feedback is green; request external/native review only after required exact-head CI or the approved equivalent is green.
+6. In disposable non-production state, prove the complete temporary Merge Protections/Freeze matrix. Then create an indefinite `main` Freeze initially excluding only the precursor, atomically establish the final ruleset and Mergify `exempt` bypass state, reserve the exact activation PR number, and add its inert second Freeze exclusion.
+7. Terminally re-query main, config, Freeze/exclusions, final ruleset, bypass, identities, exact-number queue, and no-running-batch state. Restart on movement; dequeue all other entries; queue precursor alone under the admission lock, legacy checks, and native review.
+8. After precursor merge, make no enforcement mutation. Promote exact bytes, tombstone bootstrap, irreversibly disable later issuance/acceptance, and run the internal, non-publishing closed canary against final state. It may compute allow/deny but cannot create or satisfy any merge-visible context, and its evidence cannot become activation authority. On failure, keep Freeze active and terminally abandon the attempt; there is no recovery PR.
+9. On canary success, queue the already-reserved activation alone as the literal first subsequent covered enforcement-surface change. Emit trusted authority only for its exact Mergify proof head after complete base/head/tree/manifest/staged-byte and terminal-state validation.
+10. After protected main equals the expected activation result and terminal proof succeeds, remove Freeze and disable/remove temporary Merge Protections reporting or binding. Retain final App-qualified trusted ruleset authority and Mergify `exempt` bypass unless separately redesigned.
 
 This sequence claims neither readiness nor approval.
 
@@ -273,6 +307,8 @@ This sequence claims neither readiness nor approval.
 - Old/new comparison or a legacy protocol adapter: dual authority and ambiguous failure ownership.
 - A single check context for feedback and authority: ordinary PR feedback could be mistaken for merge proof.
 - Bare required-check names: they do not bind the publishing App.
+- A Mergify-first PR that installs final authority, a post-precursor ruleset or exclusion mutation, a recovery manifest/PR, or an ad-hoc post-merge lock: each creates an unauthorized path or breaks the terminal pre-precursor state. The one permitted prior config PR is the exact-number temporary admission lock described above.
+- Mergify pause or drain as the security lock: joining continues while paused.
 - Manual suite/TOML/fingerprint mirrors or tests that restate exact sets: multiple authorities.
 - Missing-evidence deletion, expiry deletion, or silent corpus retention: unproved weakening.
 - Generated hidden policy, compatibility layers, permanent measurement fences, deletion exemptions, or a cross-domain mega-PR.
@@ -285,9 +321,10 @@ Program B remains blocked on:
 2. owner and external review of this dormant-base and two-context correction;
 3. separate authorization, budget, and installation design for the App/control plane;
 4. exact-SHA rule, caller, corpus, timing, RSS, cost, and amplification regeneration;
-5. successful precursor review and protected-base promotion;
-6. freeze evidence; and
-7. an exact-manifest atomic activation/cutover reviewed under base-owned semantics.
+5. successful precursor review and protected-base promotion plus irreversible bootstrap disablement;
+6. separate approval and disposable live proof of the temporary admission lock, Mergify Merge Protections/Freeze, `exempt` injection behavior, exact publisher binding, exclusions, all-path blocking, self-change reset, batch/queue races, latency, and API/quorum/audit behavior;
+7. successful pre-precursor final-state ceremony, terminal re-query, precursor merge under legacy authority, promotion/tombstone without later enforcement mutation, closed canary, exact freeze evidence, and explicit owner acceptance that failure has no repository recovery path and may leave merges disabled; and
+8. an exact-manifest atomic activation/cutover reviewed under base-owned semantics.
 
 Later subsystems have no implementation authority from this design.
 

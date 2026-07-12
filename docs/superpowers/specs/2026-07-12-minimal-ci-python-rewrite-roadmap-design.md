@@ -6,7 +6,7 @@ The program will reduce automatic CI and merge governance to the smallest system
 
 This is a sequencing and governance roadmap, not implementation authority, a mega-PR plan, or permission to delete controls. Each subsystem needs a named issue, reviewed exact file and cutover set, evidence, and an atomic owner transition.
 
-Issue #1016 is first because it establishes protected-base semantic authority for the central verifier. Its corrected dormant-base and two-context design is still blocked on owner and external review; the approved atomic sequence alone does not approve those corrections.
+Issue #1016 is first because it proposes protected-base semantic authority for the central verifier. Only Program-A-before-precursor and atomic legacy deletion ordering are already approved. Its temporary exact-number admission lock, temporary Mergify Merge Protections/Freeze ceremony, pre-precursor final ruleset state, promotion/disablement, closed canary, corrected dormant-base and two-context design, and control plane remain proposed and blocked on separate approval, disposable live proof, owner review, and external review.
 
 ## Current authority and supported baseline
 
@@ -61,7 +61,7 @@ Each symbol/span record has functional role (`authority`, `implementation`, `evi
 
 All ordinary numerical line, file, ratio, percentage, and rolling-median figures are provisional review signals until a reproducible calibration set exists. They are not gates, acceptance requirements, or automatic exception machinery. The explicit exception is the owner-selected 13,333-line #1016 ceiling: it is secondary one-time cutover governance, not empirical proof, a runtime fence, or an ordinary-PR fence.
 
-The ceiling uses the atomic design's protected-base full-path/all-language attribution contract: launcher seams, runner/protocol, facade, parsers, registry, adapters, bootstrap, measurement, focused tests, and generated executable code are counted, while validated non-executable corpus and manifest exclusions are reported separately. Hidden policy in data, generated output, retained owners, or another language is counted and rejected.
+The ceiling uses the atomic design's protected-base full-path/all-language attribution contract: launcher seams, runner/protocol, facade, parsers, registry, adapters, bootstrap, measurement, focused tests, and generated executable code are counted, while validated non-executable corpus and manifest exclusions are reported separately. Corpus and manifest data may contain governed inputs and expected evidence, never executable rule selection, applicability, or verdict logic; only typed materializer/runner evidence paths consume them, enforced by import/dataflow fences and hidden-policy mutations. Hidden policy in data, generated output, retained owners, or another language is counted and rejected.
 
 ## One authority for #1016 memberships
 
@@ -87,7 +87,7 @@ Only `must_land_before` edges must be acyclic. Shared-file serialization and des
 
 | Program node | Current evidence | State and authority condition |
 | --- | ---: | --- |
-| #1016 central verifier | 26,667 supported lines | `BLOCKED`; follow the dormant precursor, freeze, and atomic activation design |
+| #1016 central verifier | 26,667 supported lines | `BLOCKED`; follow dormant precursor, promotion/disablement, final authority establishment, closed canary/freeze, and atomic activation |
 | Shared GitHub transport | roughly 300 provisional lines | `UNASSIGNED`; one transport-only caller-migration slice after exact inventory |
 | CI provenance | 9,746 supported lines | `UNASSIGNED`; needs named issue and reviewed exact cutover set |
 | Merge governance | 11,116/11,811 provisional | `UNASSIGNED`; needs reconciled manifest and named issue |
@@ -106,7 +106,8 @@ No later domain has implementation authority until its node has a named issue, e
 2. Adjudicate every control; unresolved evidence retains existing behavior and blocks the applicable corpus or cutover.
 3. Establish a named issue, exact file set, owners, DAG node, and reviewed design.
 4. Choose the smallest risk-proportionate atomic transition for that issue. Existing trusted or native owners judge a one-head implementation-and-deletion cutover unless the change could authorize its own merge or deploy result.
-5. Use the protected-base dormant precursor, promotion/canary/freeze, and isolated activation sequence only when candidate self-grading is a real risk. This sequence is mandatory for #1016, not a universal ceremony for later domains.
+5. For #1016, reserve the exact precursor PR number and first land one separately reviewed temporary `.mergify.yml` admission lock under current legacy authority. It has exactly one queue matching that number, batch size one, one parallel check, branch-protection injection disabled, four explicit legacy checks, mandatory native review, and no alternate route.
+   Before precursor merge, disposable proof covers `exempt` injection, exact-number admission, injection-disabled behavior, hidden routes, self-change reset, preexisting proof invalidation, mixed batches, merge-time Freeze re-evaluation, exclusions, dequeue/no-running-batch state, wrong publisher, native/direct blocking, Freeze under exempt, identity, latency, and API/quorum/audit. Operators establish an indefinite Freeze, atomically put ruleset 14763242 in final gate-only-replacement state, change Mergify 10562 from `always` to `exempt`, reserve the activation PR, add its inert second exclusion, and terminally re-query all state. The precursor stages the dormant replacement and manifest and atomically replaces the admission lock with final hotfix/default mappings. The temporary lock, legacy checks, and native review judge it; trusted emits nothing. After merge, no enforcement mutation occurs: promotion, tombstone, and an internal, non-publishing closed canary run against final state. The canary may compute allow/deny, but it cannot create or satisfy a merge-visible context and none of its records or artifacts can become activation authority. Success permits the reserved activation to queue alone as the literal first subsequent covered change; trusted remains absent until terminal tuple validation succeeds for its exact proof head. After exact protected-main proof, Freeze and temporary Merge Protections reporting/binding are removed; final trusted ruleset authority and Mergify `exempt` remain. Failure after precursor has no recovery PR: Freeze remains and recovery requires a new program plus explicit owner/external operational decision. This remains pending approval and is not a universal ceremony for later domains.
 6. For advisory or operator-only tools, use the smallest direct reviewed change; they never inherit merge-authority ceremony merely because #1016 needed it.
 7. Record exact-head evidence, review state, merge SHA, and before/after receipts in the current ledger.
 
@@ -122,7 +123,7 @@ The following are not progress: moving or splitting code without reducing owners
 
 ## Current blockers
 
-Program B is blocked on issue-body/atomic-ruling reconciliation; owner approval of the corrected dormant-base and two-context design; separate App/control-plane authorization and budget; exact-SHA rule/caller/corpus/timing/RSS/cost/amplification regeneration; precursor; freeze; and atomic cutover. Later subsystem rows are unauthorized planning nodes, not queued implementations.
+Program B is blocked on issue-body/atomic-ruling reconciliation; owner/external approval of the proposed hinge and corrected dormant-base/two-context design; separate App/control-plane and temporary Merge Protections/Freeze authorization and budget; disposable live proof of exact-number admission, injection and `exempt` behavior, hidden routes, identity, exclusions, self-change reset, proof invalidation, mixed batches, merge-time re-evaluation, dequeue/no-running-batch state, native/direct blocking, latency, and API/quorum/audit; exact-SHA regeneration; the admission-lock PR; pre-precursor terminal final state; the single precursor merge under legacy checks and native review; promotion and irreversible bootstrap disablement without later enforcement mutation; successful closed canary and exact freeze evidence; and atomic cutover as the first subsequent covered Git/enforcement-surface change. Before precursor merge, abort uses the separately reviewed operator procedure. After precursor merge or canary/activation failure, Freeze stays active and there is no recovery PR; proceeding requires explicit acceptance that the repository may remain unable to merge and any recovery is a new separately authorized program. Later subsystem rows are unauthorized planning nodes, not queued implementations.
 
 ## Spec self-review status
 

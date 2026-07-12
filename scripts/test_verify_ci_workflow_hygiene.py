@@ -4416,6 +4416,17 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 workflow,
                 anchor,
                 "      - name: Install cargo-nextest\n",
+                "      - name: Combined forbidden BVS target cache\n"
+                "        uses: actions/cache@example\n"
+                "        with:\n"
+                "          path: crates/backtesting-vertical-slice/target\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
                 "      - name: Inject forbidden BVS target key\n"
                 "        env:\n"
                 "          FORBIDDEN_KEY: managed-target-bvs-evil\n"
@@ -4449,10 +4460,22 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must print sccache stats after compile",
             "must not restore or save a BVS whole-target cache",
             "must not restore or save a BVS whole-target cache",
+            "must not restore or save a BVS whole-target cache",
             "must not contain BVS target-cache fragment 'managed-target-bvs-'",
             "must not contain BVS target-cache fragment 'restore-keys:'",
             "must not contain BVS target-cache fragment 'bvs_cache_inputs'",
         ]
+        for field, replacement, expected_substring in (
+            ("          cache-targets: false\n", "          cache-targets: true\n", "must set cache-targets: false"),
+            ("          cache-bin: false\n", "          cache-bin: true\n", "must set cache-bin: false"),
+            (
+                "          cache-targets: false\n",
+                '          cache-targets: false\n          "cache-directories": crates/backtesting-vertical-slice/target\n',
+                "must not set cache-directories",
+            ),
+        ):
+            mutations.append(replace_once_after(workflow, anchor, field, replacement))
+            expected_substrings.append(expected_substring)
         for forbidden_env in (
             "RUSTFLAGS",
             "CARGO_BUILD_RUSTFLAGS",
@@ -4468,6 +4491,59 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                     "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
                     "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
                     f'          {forbidden_env}: "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                    f'          {forbidden_env} : "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                    f'          "{forbidden_env}": "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env:\n"
+                    f'      "{forbidden_env}": "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env:\n"
+                    f'      {forbidden_env}: "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env:\n"
+                    f'      {forbidden_env} : "forbidden"\n',
                 )
             )
             expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
@@ -5066,16 +5142,6 @@ def assert_security_key_public_prefix_is_validated() -> None:
 def assert_backtester_detect_uses_ci_input_set() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
-    missing_bootstrap_output = replace_once(
-        workflow,
-        "      bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}\n",
-        "",
-    )
-    bootstrap_output_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": missing_bootstrap_output}
-    )
-    if not any("backtester detect must expose CI input-set bootstrap changes" in error for error in bootstrap_output_errors):
-        raise AssertionError(f"backtester detector must reject missing bootstrap output, got: {bootstrap_output_errors}")
     validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
     missing_validate = replace_once(workflow, f"          {validate_required}\n", "")
     validate_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_validate})
@@ -5086,15 +5152,12 @@ def assert_backtester_detect_uses_ci_input_set() -> None:
     bootstrap_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_bootstrap})
     if not any("backtester detect must force-run on CI input-set bootstrap changes" in error for error in bootstrap_errors):
         raise AssertionError(f"backtester detector must reject missing bootstrap guard, got: {bootstrap_errors}")
-    missing_bootstrap_marker = replace_once(
+    missing_bootstrap_marker = replace_once_after(
         workflow,
-        '            echo "CI input-set bootstrap paths changed:"\n'
-        '            cat "$bootstrap_changed_path"\n'
+        '          if [[ -s "$bootstrap_changed_path" ]]; then\n',
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
-        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
-        '            echo "CI input-set bootstrap paths changed:"\n'
-        '            cat "$bootstrap_changed_path"\n'
-        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n',
+        "            exit 0\n",
+        "            exit 0\n",
     )
     bootstrap_marker_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": missing_bootstrap_marker}
@@ -8115,8 +8178,48 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
         "          key: forbidden\n"
         "      - name: Install cargo-nextest\n",
     )
-    if not any("must not restore or save the BVS managed target" in error for error in errors(injected_restore)):
+    if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(injected_restore)):
         raise AssertionError("BVS managed-target restore injection was not rejected")
+
+    sneaky_clippy_restore = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Restore disguised BVS whole target\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target\n"
+        "          key: sneaky-bvs-whole-target-${{ github.sha }}\n"
+        "          restore-keys: sneaky-bvs-whole-target-\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(sneaky_clippy_restore)):
+        raise AssertionError("disguised BVS clippy target restore was not rejected")
+
+    combined_cache = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Combined forbidden BVS target cache\n"
+        "        uses: actions/cache@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target\n"
+        "          key: sneaky-bvs-whole-target-${{ github.sha }}\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(combined_cache)):
+        raise AssertionError("combined BVS target cache action was not rejected")
+
+    for field, replacement, expected in (
+        ("          cache-targets: false\n", "          cache-targets: true\n", "must set cache-targets: false"),
+        ("          cache-bin: false\n", "          cache-bin: true\n", "must set cache-bin: false"),
+        (
+            "          cache-targets: false\n",
+            '          cache-targets: false\n          "cache-directories": crates/backtesting-vertical-slice/target\n',
+            "must not set cache-directories",
+        ),
+    ):
+        mutated = replace_once(workflow, field, replacement)
+        if not any(expected in error for error in errors(mutated)):
+            raise AssertionError(f"BVS registry cache mutation was not rejected with {expected!r}")
 
 
 def assert_backtester_primary_sccache_contract() -> None:
@@ -8144,27 +8247,93 @@ def assert_backtester_primary_sccache_contract() -> None:
     if missing:
         raise AssertionError(f"primary BVS sccache contract missing: {missing}")
 
-    mutations = (
-        replace_once(workflow, "      - name: Setup governed sccache\n", "      - name: Omit governed sccache\n"),
-        replace_once(
+    mutations = [
+        (
+            replace_once(workflow, "      - name: Setup governed sccache\n", "      - name: Omit governed sccache\n"),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(
             workflow,
             "          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}\n",
             '          active: "true"\n',
+            ),
+            "governed sccache setup must include",
         ),
-        replace_once(workflow, "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n", ""),
-        replace_once(workflow, "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n", ""),
-        replace_once(
+        (
+            replace_once(workflow, "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n", ""),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(workflow, "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n", ""),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(
             workflow,
             "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
             'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+            ),
+            "compile must opt into managed sccache conditionally",
         ),
-        replace_once(workflow, "      - name: Print sccache stats\n", "      - name: Omit sccache stats\n"),
-        replace_once(workflow, '          CARGO_PROFILE_TEST_DEBUG: "0"\n', '          RUSTFLAGS: "-C debuginfo=0"\n'),
-        replace_once(workflow, '          CARGO_PROFILE_DEV_DEBUG: "0"\n', '          RUSTC_WRAPPER: "sccache"\n'),
-    )
-    for mutated in mutations:
-        if not errors(mutated):
-            raise AssertionError("primary BVS sccache mutation was not rejected")
+        (
+            replace_once(workflow, "      - name: Print sccache stats\n", "      - name: Omit sccache stats\n"),
+            "must print governed sccache stats after both compile opportunities",
+        ),
+    ]
+    for step_name in ("Build BVS nextest archive", "Build BVS binary sidecars"):
+        for profile_env in ("CARGO_PROFILE_TEST_DEBUG", "CARGO_PROFILE_DEV_DEBUG"):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        f"      - name: {step_name}\n",
+                        f'          {profile_env}: "0"\n',
+                        "",
+                    ),
+                    f"compile must preserve {profile_env}",
+                )
+            )
+        for forbidden_env in (
+            "RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_INCREMENTAL",
+        ):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        f"      - name: {step_name}\n",
+                        "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                        "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                        f'          {forbidden_env}: "forbidden"\n',
+                    ),
+                    f"compile must not set {forbidden_env}",
+                )
+            )
+            for rendered_key in (f'"{forbidden_env}"', f"{forbidden_env} "):
+                mutations.append(
+                    (
+                        replace_once_after(
+                            workflow,
+                            f"      - name: {step_name}\n",
+                            "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                            "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                            f'          {rendered_key}: "forbidden"\n',
+                        ),
+                        f"compile must not set {forbidden_env}",
+                    )
+                )
+    for mutation_index, (mutated, expected_substring) in enumerate(mutations):
+        mutation_errors = errors(mutated)
+        if not any(expected_substring in error for error in mutation_errors):
+            raise AssertionError(
+                f"primary BVS sccache mutation {mutation_index} did not emit {expected_substring!r}: "
+                f"{mutation_errors!r}"
+            )
 
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
@@ -8398,6 +8567,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
@@ -8421,6 +8591,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |

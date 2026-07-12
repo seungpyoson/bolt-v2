@@ -198,7 +198,6 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     outputs:
       bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
-      bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -210,17 +209,15 @@ jobs:
         run: |
           python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "push or manual dispatch event; treating crate as changed with exact-head cache namespace"
+            echo "push or manual dispatch event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
             # A skipped required gate counts as passing, so queue validation must run proof lanes.
             # The merge queue is proof-bearing, so avoid opaque archive reuse when this path
             # cannot use the pull_request bootstrap diff.
-            echo "merge_group event; treating crate as changed with exact-head cache namespace"
+            echo "merge_group event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           base_sha="${{ github.event.pull_request.base.sha }}"
@@ -231,7 +228,6 @@ jobs:
             echo "CI input-set bootstrap paths changed:"
             cat "$bootstrap_changed_path"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # The backtester compiles against the root bolt-v2 crate. Keep this
@@ -242,11 +238,9 @@ jobs:
             echo "crate-relevant paths changed:"
             echo "$changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "no crate-relevant paths changed"
             echo "bvs_changed=false" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Fail-early gate: fmt is a parse-only check (no dependency compile), so a mis-formatted
@@ -578,6 +572,7 @@ jobs:
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
@@ -626,6 +621,7 @@ jobs:
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |

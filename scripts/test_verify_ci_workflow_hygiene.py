@@ -4370,7 +4370,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     for workflow_name, job_name in flaky_jobs:
         workflow = workflows[workflow_name]
         anchor = f"  {job_name}:\n"
-        mutations = (
+        mutations = [
             replace_once_after(workflow, anchor, setup_block, ""),
             replace_once_after(
                 workflow,
@@ -4393,15 +4393,98 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             replace_once_after(
                 workflow,
                 anchor,
-                '          CARGO_PROFILE_TEST_DEBUG: "0"\n',
-                '          RUSTFLAGS: "-C debuginfo=0"\n',
+                "      - name: Install cargo-nextest\n",
+                "      - name: Restore forbidden BVS target cache\n"
+                "        uses: actions/cache/restore@example\n"
+                "        with:\n"
+                "          path: crates/backtesting-vertical-slice/target\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
             ),
-        )
-        for mutated in mutations:
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Save forbidden BVS target cache\n"
+                "        uses: actions/cache/save@example\n"
+                "        with:\n"
+                "          path: crates/backtesting-vertical-slice/target\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Inject forbidden BVS target key\n"
+                "        env:\n"
+                "          FORBIDDEN_KEY: managed-target-bvs-evil\n"
+                "        run: echo forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Inject forbidden broad restore prefix\n"
+                "        uses: example/cache@example\n"
+                "        with:\n"
+                "          restore-keys: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Compute BVS cache input hash\n"
+                "        id: bvs_cache_inputs\n"
+                "        run: echo digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+        ]
+        expected_substrings = [
+            "must route read-only sccache through the shared sccache action",
+            "must use only the PR-readonly sccache role",
+            "compile step must opt into managed sccache conditionally",
+            "must print sccache stats after compile",
+            "must not restore or save a BVS whole-target cache",
+            "must not restore or save a BVS whole-target cache",
+            "must not contain BVS target-cache fragment 'managed-target-bvs-'",
+            "must not contain BVS target-cache fragment 'restore-keys:'",
+            "must not contain BVS target-cache fragment 'bvs_cache_inputs'",
+        ]
+        for forbidden_env in (
+            "RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_INCREMENTAL",
+        ):
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                    f'          {forbidden_env}: "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+        for mutation_index, (mutated, expected_substring) in enumerate(zip(mutations, expected_substrings, strict=True)):
             mutated_workflows = {**workflows, workflow_name: mutated}
             mutation_errors = verifier.verify_debug_lane_compile_cache_parity(mutated_workflows, bvs_policy)
-            if not mutation_errors:
-                raise AssertionError(f"{workflow_name} {job_name} sccache mutation was not rejected")
+            mutation_errors.extend(
+                verifier.flaky_test_detection_workflow_errors(
+                    mutated,
+                    verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_name],
+                )
+            )
+            if not any(expected_substring in error for error in mutation_errors):
+                raise AssertionError(
+                    f"{workflow_name} {job_name} sccache mutation {mutation_index} did not emit "
+                    f"{expected_substring!r}: {mutation_errors!r}"
+                )
 
     cases = (
         (

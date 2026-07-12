@@ -7612,6 +7612,20 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             errors.append(f"flaky-test-detection missing {label} {job_id}")
             continue
         job_text = job_texts[job_id]
+        if "backtester" in job_id:
+            for block in action_blocks(jobs[job_id], "actions/cache/restore@") + action_blocks(
+                jobs[job_id], "actions/cache/save@"
+            ):
+                errors.append(f"flaky-test-detection {label} must not restore or save a BVS whole-target cache")
+            for forbidden in (
+                "managed-target-bvs-",
+                "restore-keys:",
+                "bvs_cache_inputs",
+                "Compute BVS cache input hash",
+                "python3 scripts/ci_input_sets.py hash backtester_cache",
+            ):
+                if forbidden in job_text:
+                    errors.append(f"flaky-test-detection {label} must not contain BVS target-cache fragment {forbidden!r}")
         run_block = named_step_run_block(job_text, "Run tests")
         run_lines = simple_shell_lines(run_block or "")
         if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' not in run_lines:
@@ -7984,8 +7998,16 @@ def debug_lane_sccache_job_errors(
         errors.append(f"{label} must print sccache stats after compile")
     elif not step_block_has_field(stats_block, "if", "always()") or not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
         errors.append(f"{label} must print sccache stats after compile")
-    if "RUSTC_WRAPPER:" in job_text:
-        errors.append(f"{label} must not bypass managed_env with a direct RUSTC_WRAPPER env")
+    for forbidden_env in (
+        "RUSTFLAGS:",
+        "CARGO_BUILD_RUSTFLAGS:",
+        "CARGO_ENCODED_RUSTFLAGS:",
+        "RUSTC_WRAPPER:",
+        "RUSTC_WORKSPACE_WRAPPER:",
+        "CARGO_INCREMENTAL:",
+    ):
+        if forbidden_env in compile_text:
+            errors.append(f"{label} must not bypass managed_env with {forbidden_env[:-1]}")
     return errors
 
 

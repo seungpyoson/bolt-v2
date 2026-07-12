@@ -5,15 +5,20 @@ use nautilus_binance::{
             BinanceLotSizeFilterSbe, BinancePriceFilterSbe, BinanceSymbolFiltersSbe,
             BinanceSymbolSbe,
         },
-        sbe::stream::BestBidAskStreamEvent,
-        websocket::streams::parse::parse_bbo_event,
+        sbe::stream::{
+            BestBidAskStreamEvent, DepthDiffStreamEvent, DepthSnapshotStreamEvent, PriceLevel,
+            Trade, TradesStreamEvent,
+        },
+        websocket::streams::parse::{
+            parse_bbo_event, parse_depth_diff, parse_depth_snapshot, parse_trades_event,
+        },
     },
 };
 use nautilus_core::UnixNanos;
+use nautilus_model::{data::Data, instruments::InstrumentAny};
 use ustr::Ustr;
 
-#[test]
-fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
+fn sample_instrument() -> InstrumentAny {
     let symbol = BinanceSymbolSbe {
         symbol: "BTCUSDT".to_string(),
         base_asset: "BTC".to_string(),
@@ -48,9 +53,56 @@ fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
         permissions: vec![vec!["SPOT".to_string()]],
     };
     let instrument_stamp = UnixNanos::from(1_600_000_000_000_000_000_u64);
-    let instrument = parse_spot_instrument_sbe(&symbol, instrument_stamp, instrument_stamp)
-        .expect("public Binance SBE instrument parser must construct BTCUSDT");
+    parse_spot_instrument_sbe(&symbol, instrument_stamp, instrument_stamp)
+        .expect("public Binance SBE instrument parser must construct BTCUSDT")
+}
+
+#[test]
+fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let instrument = sample_instrument();
+    let transact_time_us = 1_700_000_000_100_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(transact_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = TradesStreamEvent {
+        event_time_us: 1_700_000_000_000_000_i64,
+        transact_time_us,
+        price_exponent: -2,
+        qty_exponent: -4,
+        trades: vec![
+            Trade {
+                id: 1,
+                price_mantissa: 12_345,
+                qty_mantissa: 25_000,
+                is_buyer_maker: false,
+            },
+            Trade {
+                id: 2,
+                price_mantissa: 12_340,
+                qty_mantissa: 10_000,
+                is_buyer_maker: true,
+            },
+        ],
+        symbol: Ustr::from("BTCUSDT"),
+    };
+
+    let trades = parse_trades_event(&event, &instrument, adapter_ts_init);
+
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(trades.len(), 2);
+    for data in trades {
+        let Data::Trade(trade) = data else {
+            panic!("expected every parsed item to be trade data");
+        };
+        assert_eq!(trade.ts_event, expected_ts_event);
+        assert_eq!(trade.ts_init, adapter_ts_init);
+    }
+}
+
+#[test]
+fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let instrument = sample_instrument();
     let event_time_us = 1_700_000_000_000_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = BestBidAskStreamEvent {
         event_time_us,
@@ -66,10 +118,100 @@ fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
 
     let quote = parse_bbo_event(&event, &instrument, adapter_ts_init);
 
-    assert_ne!(
-        UnixNanos::from_micros(event_time_us as u64),
-        adapter_ts_init
-    );
-    assert_eq!(quote.ts_event, UnixNanos::from_micros(event_time_us as u64));
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(quote.ts_event, expected_ts_event);
     assert_eq!(quote.ts_init, adapter_ts_init);
+}
+
+#[test]
+fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let instrument = sample_instrument();
+    let event_time_us = 1_700_000_000_000_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = DepthSnapshotStreamEvent {
+        event_time_us,
+        book_update_id: 123,
+        price_exponent: -2,
+        qty_exponent: -4,
+        bids: vec![PriceLevel {
+            price_mantissa: 12_345,
+            qty_mantissa: 25_000,
+        }],
+        asks: vec![PriceLevel {
+            price_mantissa: 12_350,
+            qty_mantissa: 30_000,
+        }],
+        symbol: Ustr::from("BTCUSDT"),
+    };
+
+    let deltas = parse_depth_snapshot(&event, &instrument, adapter_ts_init)
+        .expect("non-empty SBE depth snapshot must produce deltas");
+
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(deltas.deltas.len(), 3);
+    assert_eq!(deltas.ts_event, expected_ts_event);
+    assert_eq!(deltas.ts_init, adapter_ts_init);
+    assert!(
+        deltas
+            .deltas
+            .iter()
+            .all(|delta| delta.ts_event == expected_ts_event)
+    );
+    assert!(
+        deltas
+            .deltas
+            .iter()
+            .all(|delta| delta.ts_init == adapter_ts_init)
+    );
+}
+
+#[test]
+fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let instrument = sample_instrument();
+    let event_time_us = 1_700_000_000_000_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = DepthDiffStreamEvent {
+        event_time_us,
+        first_book_update_id: 100,
+        last_book_update_id: 101,
+        price_exponent: -2,
+        qty_exponent: -4,
+        bids: vec![
+            PriceLevel {
+                price_mantissa: 12_345,
+                qty_mantissa: 25_000,
+            },
+            PriceLevel {
+                price_mantissa: 12_340,
+                qty_mantissa: 0,
+            },
+        ],
+        asks: vec![PriceLevel {
+            price_mantissa: 12_350,
+            qty_mantissa: 30_000,
+        }],
+        symbol: Ustr::from("BTCUSDT"),
+    };
+
+    let deltas = parse_depth_diff(&event, &instrument, adapter_ts_init)
+        .expect("non-empty SBE depth diff must produce deltas");
+
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(deltas.deltas.len(), 3);
+    assert_eq!(deltas.ts_event, expected_ts_event);
+    assert_eq!(deltas.ts_init, adapter_ts_init);
+    assert!(
+        deltas
+            .deltas
+            .iter()
+            .all(|delta| delta.ts_event == expected_ts_event)
+    );
+    assert!(
+        deltas
+            .deltas
+            .iter()
+            .all(|delta| delta.ts_init == adapter_ts_init)
+    );
 }

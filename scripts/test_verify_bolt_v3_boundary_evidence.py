@@ -23,6 +23,14 @@ SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
 UNRESOLVABLE_SHA = "1" * 40
 EXPECTED_NT_REV = "afc014a55b51463641cc19c68bffe25cdac6588a"
 OLD_NT_REV = "0000000000000000000000000000000000000000"
+BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
+BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"
+BINANCE_TIMESTAMP_TEST_CASES = (
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+)
 
 
 def load_verifier():
@@ -48,13 +56,63 @@ def digest(root: Path, rel: str) -> str:
     return hashlib.sha256((root / rel).read_bytes()).hexdigest()
 
 
+def binance_timestamp_test_source() -> str:
+    return """
+#[test]
+fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let trades = parse_trades_event(&event, &instrument, adapter_ts_init);
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(trades.len(), 2);
+    for data in trades {
+        let Data::Trade(trade) = data else { panic!() };
+        assert_eq!(trade.ts_event, expected_ts_event);
+        assert_eq!(trade.ts_init, adapter_ts_init);
+    }
+}
+
+#[test]
+fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let quote = parse_bbo_event(&event, &instrument, adapter_ts_init);
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(quote.ts_event, expected_ts_event);
+    assert_eq!(quote.ts_init, adapter_ts_init);
+}
+
+#[test]
+fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let deltas = parse_depth_snapshot(&event, &instrument, adapter_ts_init).unwrap();
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(deltas.deltas.len(), 3);
+    assert_eq!(deltas.ts_event, expected_ts_event);
+    assert_eq!(deltas.ts_init, adapter_ts_init);
+    assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
+    assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
+}
+
+#[test]
+fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let deltas = parse_depth_diff(&event, &instrument, adapter_ts_init).unwrap();
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(deltas.deltas.len(), 3);
+    assert_eq!(deltas.ts_event, expected_ts_event);
+    assert_eq!(deltas.ts_init, adapter_ts_init);
+    assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
+    assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
+}
+"""
+
+
 def clean_files(root: Path) -> None:
     write(
         root,
         "Cargo.toml",
         "[dependencies]\n"
-        f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+        f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+        "[[test]]\n"
+        f'name = "{BINANCE_TIMESTAMP_TEST_TARGET}"\n'
+        f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
     )
+    write(root, BINANCE_TIMESTAMP_TEST_PATH, binance_timestamp_test_source())
     write(
         root,
         "Cargo.lock",
@@ -87,8 +145,12 @@ def clean_files(root: Path) -> None:
         "### 11.5 NautilusTrader pin governance\n"
         f"The live Binance Spot SBE quote boundary is owned by NautilusTrader revision `{EXPECTED_NT_REV}`.\n"
         "`BinanceSpotDataClient::handle_ws_message`\n"
+        "`handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init`\n"
         "`decode_market_data`\n"
+        "`parse_trades_event`\n"
         "`parse_bbo_event`\n"
+        "`parse_depth_snapshot`\n"
+        "`parse_depth_diff`\n"
         "`RealizedVolatilityObservation`\n"
         "`StrategySignalObservation`\n"
         "## 13. CLOB V2 Readiness Gate\n"
@@ -591,6 +653,10 @@ nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", 
 [target.'cfg(unix)'.dependencies.nautilus-network]
 git = "https://github.com/seungpyoson/nautilus_trader.git"
 rev = "{EXPECTED_NT_REV}"
+
+[[test]]
+name = "{BINANCE_TIMESTAMP_TEST_TARGET}"
+path = "{BINANCE_TIMESTAMP_TEST_PATH}"
 '''
 
     def mutate(root: Path) -> None:
@@ -753,6 +819,95 @@ def test_binance_registry_row_alone_cannot_masquerade_as_sha_provenance() -> Non
     )
 
 
+def test_binance_timestamp_behavioral_contract_requires_exact_test_file() -> None:
+    def mutate(root: Path) -> None:
+        (root / BINANCE_TIMESTAMP_TEST_PATH).unlink()
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{BINANCE_TIMESTAMP_TEST_PATH}: required Binance SBE timestamp behavioral proof file is missing",
+    )
+
+
+def test_binance_timestamp_behavioral_contract_requires_exact_target_registration() -> None:
+    mutations = (
+        (
+            f'name = "{BINANCE_TIMESTAMP_TEST_TARGET}"',
+            'name = "replacement_timestamp_test"',
+        ),
+        (
+            f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"',
+            'path = "tests/replacement_timestamp_test.rs"',
+        ),
+    )
+    for original, replacement in mutations:
+        def mutate(
+            root: Path,
+            original: str = original,
+            replacement: str = replacement,
+        ) -> None:
+            manifest = root / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8").replace(original, replacement),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"Cargo.toml: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET}",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_requires_every_case() -> None:
+    for case_name in BINANCE_TIMESTAMP_TEST_CASES:
+        def mutate(root: Path, case_name: str = case_name) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    f"fn {case_name}()",
+                    f"fn removed_{case_name}()",
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"missing required #[test] function {case_name}",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
+    mutations = (
+        (
+            "parse_depth_snapshot(&event",
+            "removed_depth_snapshot_parser(&event",
+            "missing parse_depth_snapshot call",
+        ),
+        (
+            "delta.ts_init == adapter_ts_init",
+            "delta.ts_init != adapter_ts_init",
+            "missing all inner initialization timestamps assertion",
+        ),
+    )
+    for original, replacement, expected_finding in mutations:
+        def mutate(
+            root: Path,
+            original: str = original,
+            replacement: str = replacement,
+        ) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(original, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps "
+            f"{expected_finding}",
+        )
+
+
 def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:
     def mutate(root: Path) -> None:
         path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
@@ -822,8 +977,12 @@ def test_runtime_contract_requires_one_pin_per_owner_section() -> None:
 def test_runtime_contract_requires_binance_lineage_inside_owner_section() -> None:
     required = (
         "BinanceSpotDataClient::handle_ws_message",
+        "handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init",
         "decode_market_data",
+        "parse_trades_event",
         "parse_bbo_event",
+        "parse_depth_snapshot",
+        "parse_depth_diff",
         "RealizedVolatilityObservation",
         "StrategySignalObservation",
     )

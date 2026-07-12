@@ -1376,13 +1376,24 @@ Governance rules:
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
 `afc014a55b51463641cc19c68bffe25cdac6588a`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
-`decode_market_data` parser family; best-bid/ask events then flow through
-`parse_bbo_event`. This NT-owned path feeds both
-`RealizedVolatilityObservation` and `StrategySignalObservation`. The venue
-event timestamp remains `QuoteTick.ts_event`, while the caller-supplied local
-adapter-initialization timestamp remains `QuoteTick.ts_init`; Bolt does not
-restamp, fall back, branch by venue, compare with a tolerance, or infer either
-stamp from a clock heuristic.
+`decode_market_data` parser family. Exact pinned source shows the handler
+capturing one local clock value per decoded message and supplying it to
+`parse_trades_event`, `parse_bbo_event`, `parse_depth_snapshot`, or
+`parse_depth_diff`; pinned-NT test
+`handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init` exercises the
+private BBO handler arm. This NT-owned path feeds both
+`RealizedVolatilityObservation` and `StrategySignalObservation`.
+
+Bolt's `binance_sbe_quote_timestamps` harness exercises only the public parser
+contract: unequal venue-event and adapter-initialization stamps across every
+trade in a multi-trade message, the BBO quote, and both aggregate and inner
+snapshot/diff deltas. It cannot call the private production handler. Handler
+clock provenance is therefore governed by the exact dependency pin, reviewed
+NT source and its pinned unit test, not inferred by the Bolt harness or from
+numeric timestamp equality. For each public parser output, the venue event
+timestamp remains `ts_event` and the caller-supplied adapter-initialization
+timestamp remains `ts_init`; Bolt does not restamp, fall back, branch by venue,
+compare with a tolerance, or infer either stamp from a clock heuristic.
 
 ### 11.6 Controlled-connect and controlled-disconnect boundary
 

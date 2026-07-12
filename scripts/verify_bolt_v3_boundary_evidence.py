@@ -18,6 +18,7 @@ import urllib.request
 from pathlib import Path
 
 import ci_provenance
+from ci_test_manifest import _mask_rust_non_code
 from verify_bolt_v3_provider_leaks import production_text
 from verifier_io import require_nonempty
 
@@ -58,14 +59,112 @@ PIN_SURFACES = (
 )
 BINANCE_SOURCE_SYMBOLS = (
     "BinanceSpotDataClient::handle_ws_message",
+    "handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init",
     "decode_market_data",
+    "parse_trades_event",
     "parse_bbo_event",
+    "parse_depth_snapshot",
+    "parse_depth_diff",
 )
 BINANCE_BOUNDARY_CONSUMERS = (
     "RealizedVolatilityObservation",
     "StrategySignalObservation",
 )
 BINANCE_BOUNDARY_OWNER_HEADING = "### 11.5 NautilusTrader pin governance"
+BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
+BINANCE_TIMESTAMP_TEST_PATH = Path("tests/binance_sbe_quote_timestamps.rs")
+BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
+        ("parse_trades_event call", r"\bparse_trades_event\s*\("),
+        (
+            "unequal event/init assertion",
+            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+        ),
+        (
+            "two-output assertion",
+            r"\bassert_eq\s*!\s*\(\s*trades\s*\.\s*len\s*\(\s*\)\s*,\s*2",
+        ),
+        ("all-output iteration", r"\bfor\s+data\s+in\s+trades\b"),
+        ("TradeTick extraction", r"\bData\s*::\s*Trade\b"),
+        (
+            "per-trade event timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*trade\s*\.\s*ts_event\s*,\s*expected_ts_event",
+        ),
+        (
+            "per-trade initialization timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*trade\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+        ),
+    ),
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
+        ("parse_bbo_event call", r"\bparse_bbo_event\s*\("),
+        (
+            "unequal event/init assertion",
+            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+        ),
+        (
+            "quote event timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*quote\s*\.\s*ts_event\s*,\s*expected_ts_event",
+        ),
+        (
+            "quote initialization timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*quote\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+        ),
+    ),
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
+        ("parse_depth_snapshot call", r"\bparse_depth_snapshot\s*\("),
+        (
+            "unequal event/init assertion",
+            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+        ),
+        (
+            "three-inner-delta assertion",
+            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
+        ),
+        (
+            "aggregate event timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_event\s*,\s*expected_ts_event",
+        ),
+        (
+            "aggregate initialization timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+        ),
+        (
+            "all inner event timestamps assertion",
+            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_event\s*==\s*expected_ts_event",
+        ),
+        (
+            "all inner initialization timestamps assertion",
+            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
+        ),
+    ),
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
+        ("parse_depth_diff call", r"\bparse_depth_diff\s*\("),
+        (
+            "unequal event/init assertion",
+            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+        ),
+        (
+            "three-inner-delta assertion",
+            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
+        ),
+        (
+            "aggregate event timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_event\s*,\s*expected_ts_event",
+        ),
+        (
+            "aggregate initialization timestamp assertion",
+            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+        ),
+        (
+            "all inner event timestamps assertion",
+            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_event\s*==\s*expected_ts_event",
+        ),
+        (
+            "all inner initialization timestamps assertion",
+            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
+        ),
+    ),
+}
 PIN_TEXT_PATTERNS = {
     PIN_SURFACES[5]: (
         re.compile(r'^nautilus_trader_revision:\s*"([0-9a-f]{40})"$', re.MULTILINE),
@@ -841,6 +940,99 @@ def markdown_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start + 1 : end])
 
 
+def rust_test_function_body(text: str, function_name: str) -> str | None:
+    masked = _mask_rust_non_code(text)
+    header = re.compile(
+        rf"#\s*\[\s*test\s*\]\s*fn\s+{re.escape(function_name)}\s*\([^)]*\)\s*\{{"
+    )
+    matches = list(header.finditer(masked))
+    if len(matches) != 1:
+        return None
+
+    opening_brace = masked.find("{", matches[0].start(), matches[0].end())
+    depth = 0
+    for index in range(opening_brace, len(masked)):
+        char = masked[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return masked[opening_brace + 1 : index]
+    return None
+
+
+def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) -> None:
+    manifest_surface = Path("Cargo.toml")
+    try:
+        manifest = tomllib.loads(read(root, manifest_surface))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        findings.append(
+            f"{manifest_surface}: could not verify required Binance SBE timestamp "
+            f"behavioral test target: {error}"
+        )
+        return
+
+    test_entries = manifest.get("test", [])
+    if not isinstance(test_entries, list):
+        findings.append(
+            f"{manifest_surface}: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET} "
+            "cannot be verified because Cargo test entries are not an array"
+        )
+        test_entries = []
+    conflicting_entries = [
+        entry
+        for entry in test_entries
+        if isinstance(entry, dict)
+        and (
+            entry.get("name") == BINANCE_TIMESTAMP_TEST_TARGET
+            or entry.get("path") == BINANCE_TIMESTAMP_TEST_PATH.as_posix()
+        )
+    ]
+    exact_entries = [
+        entry
+        for entry in conflicting_entries
+        if entry.get("name") == BINANCE_TIMESTAMP_TEST_TARGET
+        and entry.get("path") == BINANCE_TIMESTAMP_TEST_PATH.as_posix()
+    ]
+    if len(exact_entries) != 1 or len(conflicting_entries) != 1:
+        findings.append(
+            f"{manifest_surface}: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET} "
+            f"must register exactly {BINANCE_TIMESTAMP_TEST_PATH}"
+        )
+
+    test_path = root / BINANCE_TIMESTAMP_TEST_PATH
+    if not test_path.is_file():
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: required Binance SBE timestamp behavioral "
+            "proof file is missing"
+        )
+        return
+
+    try:
+        test_text = test_path.read_text(encoding="utf-8")
+    except OSError as error:
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: could not read required Binance SBE timestamp "
+            f"behavioral proof: {error}"
+        )
+        return
+
+    for function_name, requirements in BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS.items():
+        body = rust_test_function_body(test_text, function_name)
+        if body is None:
+            findings.append(
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: missing required #[test] function "
+                f"{function_name}"
+            )
+            continue
+        for description, pattern in requirements:
+            if re.search(pattern, body) is None:
+                findings.append(
+                    f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} missing {description}"
+                )
+
+
 def scan_runtime_contract_pin(surface: Path, text: str, findings: list[str]) -> None:
     owner_sections: dict[str, str] = {}
     for heading, pattern in RUNTIME_CONTRACT_PIN_SECTIONS:
@@ -914,6 +1106,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_chainlink_tests(root, findings)
     scan_fixture_origin(root, findings)
     scan_static_wiring(root, findings)
+    scan_binance_timestamp_behavioral_contract(root, findings)
     scan_nt_pin_census(root, findings)
     return findings
 

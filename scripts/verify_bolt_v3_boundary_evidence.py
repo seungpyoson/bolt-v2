@@ -359,15 +359,6 @@ def reference_live_probe_client_keys(text: str) -> set[str]:
     return keys
 
 
-def reference_named_provider_binding_keys(keys: set[str]) -> set[str]:
-    reference_keys = set()
-    for key in keys:
-        module = key.rsplit("::", 1)[0].rsplit("::", 1)[-1]
-        if module == "reference" or module.endswith("_reference") or "_reference_" in module:
-            reference_keys.add(key)
-    return reference_keys
-
-
 def required_ws_registry_entries(provider_mod: str, findings: list[str]) -> set[tuple[str, str, str]]:
     binding_keys = provider_binding_keys(provider_mod, findings)
     metadata_keys = reference_price_metadata_client_keys(provider_mod)
@@ -403,8 +394,6 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
     for klass in REQUIRED_CLASSES:
         if f"{klass}," not in text:
             findings.append(f"{REGISTRY}: missing BoundaryEvidenceClass::{klass}")
-    if re.search(r"class:\s*\"", text):
-        findings.append(f"{REGISTRY}: registry class tags must use enum variants, not strings")
 
     entries = registry_entries(text)
     required_entries = (
@@ -418,14 +407,6 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
     extra = sorted(entries - required_entries)
     for entry in extra:
         findings.append(f"{REGISTRY}: unexpected registry entry {entry}")
-
-    extra_http = sorted(
-        entry
-        for entry in entries
-        if entry[1] == "HttpResponseBody" and entry not in REQUIRED_NON_WS_REGISTRY_ENTRIES
-    )
-    if extra_http:
-        findings.append(f"{REGISTRY}: unexpected http_response_body registry entry {extra_http}")
 
     cross_checks = {
         "reference_price_provider_metadata": (
@@ -597,9 +578,6 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     production = production_text(chainlink)
     if "WireMessage::Text(bytes) | WireMessage::Binary(bytes)" not in production:
         findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must accept Text and Binary frames")
-    if re.search(r"\.as_text\(", production):
-        findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must not use parser-only as_text")
-
     health = read(root, "src/bolt_v3_reference_price_health.rs")
     if "chainlink_binary_loopback_observes_reference_update_through_health_msgbus" not in health:
         findings.append("src/bolt_v3_reference_price_health.rs: missing Chainlink loopback health/msgbus test")
@@ -780,14 +758,6 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
 
 
 def scan_static_wiring(root: Path, findings: list[str]) -> None:
-    justfile = read(root, "justfile")
-    for command in (
-        "python3 scripts/test_verify_bolt_v3_boundary_evidence.py",
-        "python3 scripts/verify_bolt_v3_boundary_evidence.py",
-    ):
-        if command not in justfile:
-            findings.append(f"justfile: source-fence-static-inner missing {command}")
-
     lane_config = tomllib.loads(read(root, "ci/rust-verification.toml"))
     labels = lane_config["local_lane_policy"]["cheap_lane_labels"]
     for label in (

@@ -2649,10 +2649,11 @@ def block_uses_action(block: list[str]) -> bool:
 
 
 def block_references_bvs_target_input(block: list[str]) -> bool:
-    return any(
-        "crates/backtesting-vertical-slice/target" in value or "steps.crate_target.outputs.dir" in value
-        for _, value in block_input_items(block)
-    )
+    forbidden_roots = {
+        "crates/backtesting-vertical-slice/target",
+        "${{ steps.crate_target.outputs.dir }}",
+    }
+    return any(unquote_yaml_scalar(value) in forbidden_roots for _, value in block_input_items(block))
 
 
 def block_run_command_count(block: list[str], command: str) -> int:
@@ -7124,12 +7125,11 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     for job_id, job_lines in parse_jobs(text).items():
         for block in github_cache_blocks(job_lines):
             errors.append(f"backtester {job_id} must not use Actions cache restore/save in a BVS workflow")
-        if job_id in {"clippy", "test-archive"}:
-            for block in step_blocks(job_lines):
-                if block_uses_action(block) and block_references_bvs_target_input(block):
-                    errors.append(
-                        f"backtester {job_id} must not pass the BVS target directory to an action"
-                    )
+        for block in step_blocks(job_lines):
+            if block_uses_action(block) and block_references_bvs_target_input(block):
+                errors.append(
+                    f"backtester {job_id} must not pass the BVS target directory to an action"
+                )
         for block in action_blocks(job_lines, "Swatinem/rust-cache@"):
             if not block_has_input(block, "cache-targets", "false"):
                 errors.append(f"backtester {job_id} BVS registry cache must set cache-targets: false")
@@ -7651,6 +7651,11 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
         if "backtester" in job_id:
             for block in github_cache_blocks(jobs[job_id]):
                 errors.append(f"flaky-test-detection {label} must not restore or save a BVS whole-target cache")
+            for block in step_blocks(jobs[job_id]):
+                if block_uses_action(block) and block_references_bvs_target_input(block):
+                    errors.append(
+                        f"flaky-test-detection {label} must not pass the BVS target directory to an action"
+                    )
             for forbidden in (
                 "managed-target-bvs-",
                 "restore-keys:",

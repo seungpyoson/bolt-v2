@@ -4405,6 +4405,17 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 workflow,
                 anchor,
                 "      - name: Install cargo-nextest\n",
+                "      - name: Third-party forbidden BVS target cache\n"
+                "        uses: buildjet/cache@example\n"
+                "        with:\n"
+                "          path: ${{ steps.crate_target.outputs.dir }}\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
                 "      - name: Save forbidden BVS target cache\n"
                 "        uses: actions/cache/save@example\n"
                 "        with:\n"
@@ -4459,6 +4470,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile step must opt into managed sccache conditionally",
             "must print sccache stats after compile",
             "must not restore or save a BVS whole-target cache",
+            "must not pass the BVS target directory to an action",
             "must not restore or save a BVS whole-target cache",
             "must not restore or save a BVS whole-target cache",
             "must not contain BVS target-cache fragment 'managed-target-bvs-'",
@@ -8232,6 +8244,23 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
     )
     if not any("must not pass the BVS target directory to an action" in error for error in errors(third_party_cache)):
         raise AssertionError("third-party BVS target cache action was not rejected")
+
+    issue_789_third_party_cache = replace_once_after(
+        workflow,
+        "  issue_789:\n    name: bvs-test issue-789\n",
+        "      - name: Build issue #789 lib archive\n",
+        "      - name: Third-party forbidden BVS target cache\n"
+        "        uses: buildjet/cache@example\n"
+        "        with:\n"
+        "          path: ${{ steps.crate_target.outputs.dir }}\n"
+        "          key: novel-bvs-target-${{ github.sha }}\n"
+        "      - name: Build issue #789 lib archive\n",
+    )
+    if not any(
+        "backtester issue_789 must not pass the BVS target directory to an action" in error
+        for error in errors(issue_789_third_party_cache)
+    ):
+        raise AssertionError("issue-789 third-party BVS target cache action was not rejected")
 
     obsolete_clippy_digest = replace_once(
         workflow,

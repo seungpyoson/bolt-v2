@@ -2648,12 +2648,74 @@ def block_uses_action(block: list[str]) -> bool:
     return any(re.match(r"^\s*(?:-\s*)?uses:\s*", strip_comment(line)) for line in block)
 
 
+def block_input_entries(block: list[str]) -> list[str]:
+    entries: list[str] = []
+    with_indent: int | None = None
+    input_indent: int | None = None
+    line_index = 0
+    while line_index < len(block):
+        clean = strip_comment(block[line_index]).rstrip()
+        if with_indent is None:
+            match = re.match(r"^(\s*)with:\s*$", clean)
+            if match is not None:
+                with_indent = len(match.group(1))
+                input_indent = with_indent + 2
+            line_index += 1
+            continue
+        if not clean.strip():
+            line_index += 1
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent <= with_indent:
+            break
+        if indent != input_indent:
+            line_index += 1
+            continue
+        match = re.match(rf"^\s{{{input_indent}}}({YAML_KEY_PATTERN})\s*:\s*(.*)$", clean)
+        if match is None:
+            line_index += 1
+            continue
+        value = match.group(2).strip()
+        if value.startswith(("|", ">")):
+            line_index += 1
+            while line_index < len(block):
+                nested = strip_comment(block[line_index]).rstrip()
+                if not nested.strip():
+                    line_index += 1
+                    continue
+                nested_indent = len(nested) - len(nested.lstrip(" "))
+                if nested_indent <= input_indent:
+                    break
+                entries.append(nested.strip())
+                line_index += 1
+            continue
+        if value.startswith("[") and value.endswith("]"):
+            entries.extend(item.strip() for item in value[1:-1].split(",") if item.strip())
+        else:
+            entries.append(value)
+        line_index += 1
+    return entries
+
+
+def normalize_bvs_target_action_input(value: str) -> str:
+    normalized = unquote_yaml_scalar(value).strip()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.rstrip("/")
+    if re.fullmatch(r"\$\{\{\s*steps\.crate_target\.outputs\.dir\s*\}\}", normalized):
+        return "${{ steps.crate_target.outputs.dir }}"
+    return normalized
+
+
 def block_references_bvs_target_input(block: list[str]) -> bool:
     forbidden_roots = {
         "crates/backtesting-vertical-slice/target",
         "${{ steps.crate_target.outputs.dir }}",
     }
-    return any(unquote_yaml_scalar(value) in forbidden_roots for _, value in block_input_items(block))
+    return any(
+        normalize_bvs_target_action_input(value) in forbidden_roots
+        for value in block_input_entries(block)
+    )
 
 
 def block_run_command_count(block: list[str], command: str) -> int:

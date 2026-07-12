@@ -4405,6 +4405,17 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
                 workflow,
                 anchor,
                 "      - name: Install cargo-nextest\n",
+                "      - name: Block-scalar third-party BVS target cache\n"
+                "        uses: buildjet/cache@example\n"
+                "        with:\n"
+                "          path: |\n"
+                "            ./crates/backtesting-vertical-slice/target/\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
                 "      - name: Third-party forbidden BVS target cache\n"
                 "        uses: buildjet/cache@example\n"
                 "        with:\n"
@@ -4470,6 +4481,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "compile step must opt into managed sccache conditionally",
             "must print sccache stats after compile",
             "must not restore or save a BVS whole-target cache",
+            "must not pass the BVS target directory to an action",
             "must not pass the BVS target directory to an action",
             "must not restore or save a BVS whole-target cache",
             "must not restore or save a BVS whole-target cache",
@@ -8168,6 +8180,29 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
     if clean:
         raise AssertionError(f"real backtester workflow violates BVS cache-removal contract: {clean}")
 
+    target_input_forms = (
+        "          path: crates/backtesting-vertical-slice/target",
+        "          path: ./crates/backtesting-vertical-slice/target/",
+        "          path: ${{steps.crate_target.outputs.dir}}",
+        "          path: [crates/backtesting-vertical-slice/target]",
+        "          path: |\n            crates/backtesting-vertical-slice/target",
+    )
+    for rendered_input in target_input_forms:
+        block = (
+            "      - uses: buildjet/cache@example\n"
+            "        with:\n"
+            f"{rendered_input}\n"
+        ).splitlines()
+        if not verifier.block_references_bvs_target_input(block):
+            raise AssertionError(f"BVS target input normalization missed {rendered_input!r}")
+    allowed_subpath = (
+        "      - uses: actions/upload-artifact@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json\n"
+    ).splitlines()
+    if verifier.block_references_bvs_target_input(allowed_subpath):
+        raise AssertionError("BVS target input normalization rejected the issue-789 artifact subpath")
+
     injected_target_key = workflow + "\n# managed-target-bvs-v99-forbidden\n"
     if not any("must not contain managed-target-bvs-" in error for error in errors(injected_target_key)):
         raise AssertionError("managed-target-bvs injection was not rejected")
@@ -8261,6 +8296,23 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
         for error in errors(issue_789_third_party_cache)
     ):
         raise AssertionError("issue-789 third-party BVS target cache action was not rejected")
+
+    issue_789_block_scalar_cache = replace_once_after(
+        workflow,
+        "  issue_789:\n    name: bvs-test issue-789\n",
+        "      - name: Build issue #789 lib archive\n",
+        "      - name: Block-scalar third-party BVS target cache\n"
+        "        uses: buildjet/cache@example\n"
+        "        with:\n"
+        "          path: |\n"
+        "            ${{steps.crate_target.outputs.dir}}\n"
+        "      - name: Build issue #789 lib archive\n",
+    )
+    if not any(
+        "backtester issue_789 must not pass the BVS target directory to an action" in error
+        for error in errors(issue_789_block_scalar_cache)
+    ):
+        raise AssertionError("issue-789 block-scalar BVS target cache action was not rejected")
 
     obsolete_clippy_digest = replace_once(
         workflow,

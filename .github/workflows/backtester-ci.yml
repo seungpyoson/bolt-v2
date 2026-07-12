@@ -290,26 +290,6 @@ jobs:
           toolchain-components: clippy
           build-jobs-key: backtester_ci.clippy
 
-      # The setup action's managed_target_dir output is hardcoded to --repo $GITHUB_WORKSPACE
-      # (the bolt-v2 root namespace). Resolve THIS crate's lane explicitly instead, or the cache
-      # would silently restore into the wrong (root) target dir.
-      - name: Resolve crate managed target dir
-        id: crate_target
-        run: |
-          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
-        shell: bash
-        run: |
-          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
-            echo "CI input-set bootstrap changed; using exact-head cache namespace"
-            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -320,26 +300,8 @@ jobs:
           shared-key: cargo-registry-git-bvs-v1
           save-if: false
 
-      - name: Restore BVS clippy managed target cache
-        id: bvs-clippy-managed-target-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          # BVS depends on the root crate, so root inputs are part of the cache identity.
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
-          restore-keys: |
-            managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-
-
       - name: clippy
         run: just bte-clippy
-
-      - name: Save BVS clippy managed target cache
-        id: bvs-clippy-managed-target-cache-save
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-clippy-managed-target-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
 
   test-archive:
     name: bvs-test archive
@@ -363,16 +325,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
+      - name: Compute BVS artifact input hash
+        id: bvs_artifact_inputs
         shell: bash
         run: |
-          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
-            echo "CI input-set bootstrap changed; using exact-head cache namespace"
-            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-          fi
+          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
 
       - name: Setup environment
         id: setup
@@ -426,8 +383,8 @@ jobs:
         id: bvs-nextest-archive-cache
         if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
         env:
-          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_artifact_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_artifact_inputs.outputs.digest }}
         run: |
           set +e
           start_epoch="$(date +%s)"
@@ -489,8 +446,8 @@ jobs:
         id: bvs-bin-sidecars-cache
         if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
         env:
-          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
-          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_artifact_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_artifact_inputs.outputs.digest }}
         run: |
           set +e
           start_epoch="$(date +%s)"
@@ -603,16 +560,6 @@ jobs:
           shared-key: cargo-registry-git-bvs-v1
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
-      - name: Restore archive build target cache
-        id: test-target-cache
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
-          restore-keys: |
-            managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
@@ -634,8 +581,8 @@ jobs:
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         env:
-          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_artifact_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_artifact_inputs.outputs.digest }}
         run: |
           set +e
           if [[ ! -s "$BVS_NEXTEST_ARCHIVE_PATH" ]]; then
@@ -705,8 +652,8 @@ jobs:
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         env:
-          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
-          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_artifact_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_artifact_inputs.outputs.digest }}
         run: |
           set +e
           if [[ ! -s "$BVS_BIN_SIDECARS_PATH" ]]; then
@@ -736,13 +683,6 @@ jobs:
             exit 1
           fi
           exit 0
-
-      - name: Save archive build target cache
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
 
       - name: Summarize BVS S3 save outcomes
         if: always()

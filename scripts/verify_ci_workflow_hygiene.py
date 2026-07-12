@@ -1256,7 +1256,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "352d88a330e83f8d8374781a5f62f995398dae692df12d76194e291d57f9e178"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "e4ecb19ac8ed16867f1bfc3ff48e6ebfc7e1ffe447114d4632ddbe9817310c95"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -7102,41 +7102,16 @@ def repo_automation_source_build_errors(text: str) -> list[str]:
 
 
 def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[str]:
-    if not any(prefix in text for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+    if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
-    for _job_id, job_lines in parse_jobs(text).items():
-        job_text = "\n".join(job_lines)
-        cache_key_seen = False
-        for line in job_text.splitlines():
-            if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
-                continue
-            if "key:" not in line:
-                continue
-            cache_key_seen = True
-            if "hashFiles(" in line:
-                errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
-            if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
-                errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
-        if not cache_key_seen:
-            continue
-        if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
-            errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
-        if file_name.endswith("backtester-ci.yml") and (
-            'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
-            or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
-        ):
-            errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
-        for block in action_blocks(job_lines, "actions/cache@"):
-            block_text = uncommented_text(block)
-            if "managed-target-bvs-v" in block_text:
-                errors.append("backtester managed target cache saves must be push-to-main only")
-        for block in action_blocks(job_lines, "actions/cache/save@"):
-            block_text = uncommented_text(block)
-            if "managed-target-bvs-v" not in block_text:
-                continue
-            if "github.event_name == 'push'" not in block_text or "github.ref == 'refs/heads/main'" not in block_text:
-                errors.append("backtester managed target cache saves must be push-to-main only")
+    for forbidden in ("managed-target-bvs-", "bootstrap-${GITHUB_SHA}"):
+        if forbidden in text:
+            errors.append(f"backtester BVS contract must not contain {forbidden}")
+    for job_id, job_lines in parse_jobs(text).items():
+        for block in action_blocks(job_lines, "actions/cache/restore@") + action_blocks(job_lines, "actions/cache/save@"):
+            if "steps.crate_target.outputs.dir" in uncommented_text(block):
+                errors.append(f"backtester {job_id} must not restore or save the BVS managed target")
     return errors
 
 
@@ -8173,6 +8148,26 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     gate_text = uncommented_text(gate_job) if gate_job is not None else ""
     consumer_text = f"{job_text}\n{issue_text}"
     combined_text = f"{archive_text}\n{consumer_text}"
+    artifact_digest_block = named_step_block(archive_job, "Compute BVS artifact input hash")
+    artifact_digest_text = uncommented_text(artifact_digest_block) if artifact_digest_block is not None else ""
+    if (
+        artifact_digest_block is None
+        or "id: bvs_artifact_inputs" not in artifact_digest_text
+        or "python3 scripts/ci_input_sets.py hash backtester_cache" not in artifact_digest_text
+    ):
+        errors.append("backtester bvs-test archive must compute one full-source BVS artifact digest")
+    if "bootstrap-${GITHUB_SHA}" in archive_text or "bvs_cache_inputs" in archive_text:
+        errors.append("backtester bvs-test artifact identity must use only the head full-source digest")
+    artifact_digest_ref = "${{ steps.bvs_artifact_inputs.outputs.digest }}"
+    artifact_identity_lines = [
+        line
+        for line in archive_text.splitlines()
+        if "CACHE_KEY: bvs-nextest-archive-" in line
+        or "CACHE_KEY: bvs-bin-sidecars-" in line
+        or line.strip().startswith("DIGEST:")
+    ]
+    if not artifact_identity_lines or any(artifact_digest_ref not in line for line in artifact_identity_lines):
+        errors.append("backtester bvs-test S3 keys and metadata must consistently use the BVS artifact digest")
     if archive_text.count(f"uses: {BVS_MINIO_SETUP_ACTION}") != 1:
         errors.append("backtester bvs-test archive must set up MinIO through the shared action exactly once")
     if "just bte-test --partition" in combined_text:
@@ -8355,7 +8350,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
+            "CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_artifact_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
@@ -8363,7 +8358,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
+            "CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_artifact_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test sidecars must restore from S3",
@@ -8444,14 +8439,6 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         (
             "backtester bvs-test archive must summarize BVS S3 save outcomes",
             "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
-        ),
-        (
-            "backtester bvs-test archive must restore target cache only while producing caches",
-            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
-        ),
-        (
-            "backtester bvs-test archive must save target cache only after archive/sidecar misses",
-            "if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
         ),
         (
             "backtester bvs-test archive must fail closed on missing local payload",

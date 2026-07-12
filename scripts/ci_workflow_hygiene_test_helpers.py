@@ -977,10 +977,10 @@ jobs:
           set -euo pipefail
           proof_extract_root="$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"
           mkdir -p "$proof_extract_root"
-          just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" --no-tests=fail -E 'binary(=binance_sbe_quote_timestamps) & test(=sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps)'
-          just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" --no-tests=fail -E 'binary(=binance_sbe_quote_timestamps) & test(=sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps)'
-          just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" --no-tests=fail -E 'binary(=binance_sbe_quote_timestamps) & test(=sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps)'
-          just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" --no-tests=fail -E 'binary(=binance_sbe_quote_timestamps) & test(=sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps)'
+          just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" 'binary(=binance_sbe_quote_timestamps) & test(=sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps)'
+          just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" 'binary(=binance_sbe_quote_timestamps) & test(=sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps)'
+          just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" 'binary(=binance_sbe_quote_timestamps) & test(=sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps)'
+          just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" 'binary(=binance_sbe_quote_timestamps) & test(=sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps)'
       - name: Run nextest archive partitions
         shell: bash
         run: |

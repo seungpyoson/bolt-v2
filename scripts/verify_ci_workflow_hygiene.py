@@ -1116,7 +1116,7 @@ CARGO_BUILD_JOBS_COMPILE_COMMAND_RE = re.compile(
     r"cargo\s+--repo\b|"
     r"just\s+(?:"
     r"build|check-aarch64|clippy|source-fence|source-fence-static|cargo-shim-tests|"
-    r"test-archive|test-archive-run|test|"
+    r"test-archive-filtered-run|test-archive|test-archive-run|test|"
     r"bte-clippy|bte-test-archive|bte-test-archive-run|bte-test"
     r")\b"
     r")"
@@ -1226,8 +1226,8 @@ BINANCE_TIMESTAMP_ARCHIVE_PROOF_EXTRACT_ROOT = (
     "$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"
 )
 BINANCE_TIMESTAMP_ARCHIVE_PROOF_COMMANDS = tuple(
-    'just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
-    f"--no-tests=fail -E 'binary(={BINANCE_TIMESTAMP_ARCHIVE_PROOF_BINARY}) & "
+    'just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
+    f"'binary(={BINANCE_TIMESTAMP_ARCHIVE_PROOF_BINARY}) & "
     f"test(={case_name})'"
     for case_name in BINANCE_TIMESTAMP_ARCHIVE_PROOF_CASES
 )
@@ -1239,7 +1239,7 @@ BINANCE_TIMESTAMP_ARCHIVE_PROOF_RUN_BODY = "\n".join(
         *BINANCE_TIMESTAMP_ARCHIVE_PROOF_COMMANDS,
     )
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "f14f33af4e6ea1b630063424e21dd6bbdd48b64a013c2f3451019d78d70b07de"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "bfd3d532fb92c024d32e5b9bf1492e75419c3ea163161f3dbc8c62a3e7a20da5"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -1517,7 +1517,7 @@ MANAGED_TARGET_CACHE_KEYS = {
 }
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
-    r"(deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
+    r"(deny|deny-advisories|clippy|test-archive-filtered-run|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
     r"([^A-Za-z0-9_]|$)"
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
@@ -6727,7 +6727,7 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
                 errors.append(f"{workflow_name} {job} must include deny version")
             if "steps.setup.outputs.deny_version" not in uncommented_text(lines):
                 errors.append(f"{workflow_name} {job} must use setup.outputs.deny_version")
-        if lanes.intersection({"test", "test-archive", "test-archive-run"}):
+        if lanes.intersection({"test", "test-archive", "test-archive-run", "test-archive-filtered-run"}):
             if not job_has_setup_input(lines, "include-nextest-version", '"true"'):
                 errors.append(f"{workflow_name} {job} must include nextest version")
             if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):
@@ -9050,6 +9050,44 @@ def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[
     return errors
 
 
+def test_archive_filtered_run_recipe_errors(file_name: str, text: str) -> list[str]:
+    if file_name != "justfile" and not file_name.endswith("/justfile"):
+        return []
+    recipes = just_recipe_blocks(text)
+    recipe_name = "test-archive-filtered-run"
+    if recipe_name not in recipes:
+        return ["test-archive filtered run recipe is required"]
+
+    errors: list[str] = []
+    expected_header = (
+        "test-archive-filtered-run archive extract_root filterset: "
+        "check-workspace require-rust-verification-owner"
+    )
+    headers = [
+        line.strip()
+        for line in text.splitlines()
+        if line and not line[0].isspace() and line.strip().startswith(recipe_name)
+    ]
+    if headers != [expected_header]:
+        errors.append(
+            "test-archive filtered run recipe must accept archive, extract_root, "
+            "and filterset as fixed parameters"
+        )
+
+    expected_command = (
+        'python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" '
+        '-- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" '
+        '--extract-overwrite --workspace-remap "{{repo_root}}" --no-tests=fail '
+        "-E {{quote(filterset)}}"
+    )
+    if active_recipe_lines(recipes, recipe_name) != [expected_command]:
+        errors.append(
+            "test-archive filtered run recipe must own --no-tests=fail and pass "
+            "the complete filterset as one shell-quoted -E argument"
+        )
+    return errors
+
+
 def normalized_repo_file_name(file_name: str) -> str:
     normalized = file_name.replace("\\", "/")
     while normalized.startswith("./"):
@@ -9150,6 +9188,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_nextest_archive_recipe_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in test_archive_filtered_run_recipe_errors(file_name, text)),
         )
         add_unique_errors(
             errors,

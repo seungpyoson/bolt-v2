@@ -99,8 +99,8 @@ BINANCE_TIMESTAMP_PROOF_EXTRACT_ROOT = (
 
 def binance_timestamp_proof_command(case_name: str) -> str:
     return (
-        'just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
-        f"--no-tests=fail -E 'binary(={BINANCE_TIMESTAMP_PROOF_BINARY}) & "
+        'just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
+        f"'binary(={BINANCE_TIMESTAMP_PROOF_BINARY}) & "
         f"test(={case_name})'"
     )
 
@@ -797,7 +797,7 @@ def assert_binance_timestamp_archive_execution_proof_gaps_are_reported() -> None
                     workflow,
                     BINANCE_TIMESTAMP_PROOF_STEP_NAME,
                     command,
-                    command.replace(" --no-tests=fail", "", 1),
+                    command.replace("test-archive-filtered-run", "test-archive-run", 1),
                 ),
             )
         )
@@ -813,6 +813,55 @@ def assert_binance_timestamp_archive_execution_proof_gaps_are_reported() -> None
                 "Binance timestamp archive execution proof drift was silent: "
                 f"{errors}"
             )
+
+
+def assert_test_archive_filtered_run_recipe_preserves_filterset_argv() -> None:
+    verifier = load_verifier()
+    expected_error = "test-archive filtered run recipe"
+    generic_recipe = """test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 \"{{rust_verification_owner}}\" cargo --repo \"{{repo_root}}\" -- nextest run --archive-file \"{{archive}}\" --extract-to \"{{extract_root}}\" --extract-overwrite --workspace-remap \"{{repo_root}}\" {{args}}
+"""
+    dedicated_recipe = """test-archive-filtered-run archive extract_root filterset: check-workspace require-rust-verification-owner
+    python3 \"{{rust_verification_owner}}\" cargo --repo \"{{repo_root}}\" -- nextest run --archive-file \"{{archive}}\" --extract-to \"{{extract_root}}\" --extract-overwrite --workspace-remap \"{{repo_root}}\" --no-tests=fail -E {{quote(filterset)}}
+"""
+
+    def filtered_recipe_errors(justfile_text: str) -> list[str]:
+        return [
+            error
+            for error in verifier.verify_repo_automation_texts({"justfile": justfile_text})
+            if expected_error in error
+        ]
+
+    missing_errors = filtered_recipe_errors(generic_recipe)
+    if not missing_errors:
+        raise AssertionError(
+            "missing dedicated filtered archive recipe was silently accepted"
+        )
+
+    unquoted_errors = filtered_recipe_errors(
+        generic_recipe + dedicated_recipe.replace("{{quote(filterset)}}", "{{filterset}}")
+    )
+    if not unquoted_errors:
+        raise AssertionError(
+            "unquoted filtered archive recipe did not prove filterset argv delivery"
+        )
+
+    variadic_errors = filtered_recipe_errors(
+        generic_recipe
+        + dedicated_recipe.replace(
+            "archive extract_root filterset:", "archive extract_root *filterset:"
+        )
+    )
+    if not variadic_errors:
+        raise AssertionError(
+            "variadic filtered archive recipe was silently accepted"
+        )
+
+    safe_errors = filtered_recipe_errors(generic_recipe + dedicated_recipe)
+    if safe_errors:
+        raise AssertionError(
+            "safely quoted filtered archive recipe was rejected: " f"{safe_errors}"
+        )
 
 
 
@@ -10254,6 +10303,7 @@ def main() -> int:
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_binance_timestamp_archive_execution_proof_gaps_are_reported()
+    assert_test_archive_filtered_run_recipe_preserves_filterset_argv()
     real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     assert_clean(workflow=real_ci_workflow)
     root_just_version_bump = replace_once(

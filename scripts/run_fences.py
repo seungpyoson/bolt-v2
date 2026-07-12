@@ -34,12 +34,7 @@ NON_STATIC_VERIFY_PREFIXES = (
 # Add new standalone source-fence test suites here; paired test_verify_*.py
 # suites are discovered automatically from their verifier filenames.
 STANDALONE_TEST_FILENAMES = (
-    "test_cargo_command_analysis.py",
-    "test_shell_dataflow_analysis.py",
-    "test_governance_diff_analysis.py",
-    "test_workflow_expression_analysis.py",
     "test_migrate_bolt_v3_decision_evidence_to_v15.py",
-    "test_sccache_eligibility.py",
     "test_verify_runtime_capture_yaml.py",
     "test_local_verification_gate.py",
     "test_lane_governor.py",

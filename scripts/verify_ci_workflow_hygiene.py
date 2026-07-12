@@ -5299,7 +5299,6 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 
 
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
-GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT = 'expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"'
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:

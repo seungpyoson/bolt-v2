@@ -59,7 +59,7 @@ Use the existing governed `./.github/actions/sccache-setup` action for the prima
 
 The Backtester clippy job loses its whole-target cache in this slice. This design does not add a new clippy cache path; the performance qualification below is specifically for the launch-blocking nextest-archive plus sidecar compile path.
 
-`sccache` stores individual compiler outputs under the already governed S3 location. It does not upload a mutable Cargo target directory, does not create a new S3 target-artifact class, and does not consume GitHub's 10 GiB Actions-cache budget.
+`sccache` stores individual compiler outputs under the existing location- and authority-governed S3 path. It does not upload a mutable Cargo target directory, does not create a new S3 target-artifact class, and does not consume GitHub's 10 GiB Actions-cache budget.
 
 ### Why this addresses both safety and latency
 
@@ -118,6 +118,22 @@ The repository's authority is the existing governed location and role selection:
 
 This design does not add delete authority, a second bucket, a new prefix, or another secret path.
 
+The checked-in repository does not govern or prove an S3 lifecycle rule, retention limit, or byte ceiling for this compiler-cache location; S3-side growth is therefore unbounded in-repo. That is a pre-existing residual, not a property this slice silently acquires by reusing the location. BVS compilation will marginally increase the object population; substantial dependency overlap with the root build is expected but unmeasured and is not an acceptance premise. The owner accepts that bounded scope here. Adding or changing S3 lifecycle, retention, size accounting, or cleanup authority requires a separate reviewed design and must not be pulled into this slice.
+
+The existing `sccache/bolt-v2/arm64/root-nextest/` prefix name is historical and becomes descriptively incomplete when BVS participates. It is intentionally retained because one governed shared content-addressed location is the current contract; renaming it would split or orphan the existing cache and is outside this slice.
+
+### Compiler-cache effectiveness preconditions
+
+Every BVS compile step wired to sccache must set `CARGO_INCREMENTAL: "0"`. This is a new explicit workflow requirement: the current Backtester producer does not set it. Incremental compilation competes with compiler-cache reuse, so silently dropping this value after qualification would invalidate the measured latency claim.
+
+The implementation also preserves the compile-profile inputs already present on the affected paths:
+
+- the nextest-archive build keeps `CARGO_PROFILE_TEST_DEBUG: "0"`;
+- the binary-sidecar build keeps `CARGO_PROFILE_DEV_DEBUG: "0"`; and
+- BVS flaky compile steps keep both `CARGO_PROFILE_TEST_DEBUG: "0"` and `CARGO_PROFILE_DEV_DEBUG: "0"` where they already exist.
+
+The wired steps must not introduce raw `RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTC_WRAPPER`, or `RUSTC_WORKSPACE_WRAPPER` overrides. The managed verification environment already scrubs those caller-controlled values and owns the optional sccache wrapper. The workflow-hygiene verifier and mutation tests must require `CARGO_INCREMENTAL: "0"`, preserve the applicable profile values, and reject a raw wrapper or flag override on every sccache-wired BVS compile step. A future reviewed change may alter a compile input, but it must requalify the 20% performance claim rather than inheriting stale evidence.
+
 ### Intentional input-set asymmetry
 
 `backtester_cache` intentionally forbids the workflow, resolver, input-set TOML, and setup action from becoming ordinary artifact-set members. Those governance surfaces are checked separately by workflow hygiene, input-set self-tests, source fences, and the reviewed action contract. The compiler cache is likewise governed by action/eligibility behavior rather than by adding those files to the executable-payload digest.
@@ -131,7 +147,7 @@ The implementation must preserve this asymmetry. It must not “fix” it by wea
 1. Check out the exact head and compute the full-source `backtester_cache` digest with the head resolver.
 2. Restore exact full-source nextest and sidecar artifacts from S3 under the existing metadata checks.
 3. If either payload must be built, set up governed sccache once for the compilation phase. Main supplies both read and write role inputs; PR and merge-queue events supply only the read role selected by the action.
-4. Compile the missing nextest archive and/or sidecars with `BOLT_RUST_VERIFICATION_SCCACHE=1` only when the action reports `enabled=true`. Otherwise the managed environment scrubs the wrapper and compiles locally.
+4. Compile the missing nextest archive and/or sidecars with `CARGO_INCREMENTAL=0`, the path's existing debug-profile value, and `BOLT_RUST_VERIFICATION_SCCACHE=1` only when the action reports `enabled=true`. Otherwise the managed environment scrubs the wrapper and compiles locally while retaining the same compile inputs.
 5. Print one post-compilation stats record covering both compile steps.
 6. Preserve the existing main-only, full-source S3 save and metadata rules for nextest and sidecar payloads.
 7. Run the complete existing archive tests and required issue-specific tests. No partition, target, or test may be removed to improve timing.
@@ -167,13 +183,13 @@ After rollout, the GitHub Actions cache inventory must show:
 - no key beginning `managed-target-bvs-`;
 - zero BVS target-cache bytes;
 - zero BVS target-cache saves; and
-- repository listed bytes at or below `10,737,418,240`.
+- no BVS eviction/re-save loop across the observation window.
 
 Record API-backed inventory at four points: before rollout, after the implementation reaches main, and after each of two later dependency/toolchain-identical source-only heads. Those two heads must show that BVS did not reappear in Actions cache and that no BVS eviction/re-save loop exists.
 
-The recorded 2026-07-12 baseline is five root entries totaling `9,118,987,793` bytes with no BVS entry. Changes in root-family population are reported, but root allocation and eviction policy are not changed in this slice. Because the BVS family is permanently zero, a root-family fluctuation cannot trigger a BVS whole-target re-save.
+The recorded 2026-07-12 baseline is five root entries totaling `9,118,987,793` bytes with no BVS entry. Changes in root-family population and the repository total are report-only metrics routed to the existing storage-tripwire owner; they are not acceptance conditions for this slice. Root allocation and eviction policy are not changed here. Because the BVS family is permanently zero, a root-family fluctuation cannot trigger a BVS whole-target re-save.
 
-No workflow in this slice may delete cache entries. If the repository total exceeds the existing threshold because of root churn, the existing storage-audit owner reports it and a separate reviewed scope decides root allocation.
+No workflow in this slice may delete cache entries. If the repository total exceeds the existing `10,737,418,240`-byte threshold because of root churn, the existing storage-audit owner reports it and a separate reviewed scope decides root allocation; that condition does not fail this slice when all four BVS-specific assertions remain true.
 
 ## Performance Qualification
 
@@ -259,8 +275,8 @@ The eventual implementation is limited to these files unless the reviewed plan p
 - `.github/workflows/backtester-ci.yml` — remove BVS target restore/save and SHA bootstrap identity; retain one full-source artifact digest; wire governed sccache to archive/sidecar compilation.
 - `.github/workflows/flaky-test-detection.yml` — remove both BVS target restores; use governed read-only sccache for BVS compile jobs.
 - `.github/workflows/flaky-test-smoke.yml` — remove both BVS target restores; preserve governed read-only sccache.
-- `scripts/verify_ci_workflow_hygiene.py` — require no BVS target family, exact full-source S3 identity, correct sccache action/roles/fail-open wiring, full tests, and unchanged job authority.
-- `scripts/test_verify_ci_workflow_hygiene.py` — mutation tests for every workflow invariant.
+- `scripts/verify_ci_workflow_hygiene.py` — require no BVS target family, exact full-source S3 identity, correct sccache action/roles/fail-open wiring and effectiveness preconditions, full tests, and unchanged job authority.
+- `scripts/test_verify_ci_workflow_hygiene.py` — mutation tests for every workflow invariant, including the sccache effectiveness preconditions.
 - `scripts/ci_workflow_hygiene_test_helpers.py` — only fixture changes mechanically required by the verifier tests.
 - `scripts/rust_verification.py` — truthful target-size and reclaimability telemetry.
 - `scripts/test_rust_verification_cache_retention.py` — telemetry behavior and both 32 GiB authority assertions.
@@ -293,6 +309,8 @@ No source, Rust test target, manifest, lockfile, runtime config, strategy, prici
 10. No cache delete authority, new S3 artifact class, bucket, prefix, credential source, or target-directory upload is added.
 11. Performance success requires a comparable warm run with nonzero hits, zero read errors, full green proof, and at least 20% compile wall-clock improvement.
 12. A sub-20% result stops the performance claim and requires new user-approved design work before any broader overhaul.
+13. Every sccache-wired BVS compile sets `CARGO_INCREMENTAL=0`, preserves its applicable debug-profile input, and uses no raw wrapper or Rust-flag override.
+14. Repository-wide Actions-cache bytes and S3 compiler-cache growth are reported residuals, not acceptance conditions owned by this slice.
 
 ## Verification Matrix
 
@@ -304,11 +322,12 @@ No source, Rust test target, manifest, lockfile, runtime config, strategy, prici
 | Exact S3 artifact identity | Mutations remove the head-resolver `backtester_cache` digest, use it outside nextest/sidecar keys or metadata, cross-wire key/metadata values, or add a SHA bootstrap; hygiene fails. |
 | Resolver-policy asymmetry | Input-set tests retain forbidden governance paths; hygiene/source-fence tests independently cover resolver, TOML, workflows, and shared actions. |
 | Sccache authority | Mutations give PR/MQ/flaky write authority, omit the shared action, substitute inline AWS setup, or change the governed location; hygiene fails. Main read/write and untrusted read-only configurations pass. |
+| Sccache effectiveness preconditions | Mutations remove or change `CARGO_INCREMENTAL: "0"`, remove an applicable existing debug-profile value, or add a raw Rust flag/wrapper override on any wired BVS compile step; hygiene fails. |
 | Fail-open compilation | Mutations let cache ineligibility skip or weaken a Rust step, retain `RUSTC_WRAPPER`, or choose an alternate backend; hygiene/action tests fail. |
 | Test preservation | Mutations remove archive, sidecar, partitions, full tests, issue-specific tests, or gate dependencies; hygiene fails. |
 | Both 32 GiB limits | Static tests assert `32212254720` in root and BVS policy; above-limit behavior remains fail-closed. |
 | Truthful pressure payload | Unit tests assert exact `total_bytes`, `reclaimability_measured: false`, and `reclaimable_bytes: null`; a completed classification asserts true plus an integer. |
-| Zero-budget steady state | API-backed inventories before rollout, after main, and after two source-only heads show no BVS cache keys/bytes/saves and repository total at or below 10 GiB. |
+| Zero-budget steady state | API-backed inventories before rollout, after main, and after two source-only heads show no BVS cache keys, bytes, saves, eviction, or re-save loop. Repository totals are reported to the existing storage-tripwire owner but do not gate this slice. |
 | Local static eligibility | `just fmt-check`, `just ci-lint-workflow`, targeted Python self-tests, `just source-fence-static`, and `git diff --check`. |
 | Review | Fable 5/xhigh approves this spec before planning; a separate implementation reviewer approves the diff before publication; external review follows green exact-head CI. |
 

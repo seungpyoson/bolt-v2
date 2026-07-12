@@ -124,7 +124,7 @@ The existing `sccache/bolt-v2/arm64/root-nextest/` prefix name is historical and
 
 ### Compiler-cache effectiveness preconditions
 
-Every BVS compile step wired to sccache must set `CARGO_INCREMENTAL: "0"`. This is a new explicit workflow requirement: the current Backtester producer does not set it. Incremental compilation competes with compiler-cache reuse, so silently dropping this value after qualification would invalidate the measured latency claim.
+`CARGO_INCREMENTAL` is not a workflow-owned sccache effectiveness control. `scripts/rust_verification.py` includes it in `SCRUB_ENV_KEYS`; `managed_env` removes any caller-supplied value before Cargo runs and does not re-inject it. A `CARGO_INCREMENTAL` value written in a workflow therefore cannot shape the managed compile and must not be treated as an acceptance precondition. Cargo's registry and git dependency compiles provide the dominant cacheable work and are non-incremental; the 20% qualification does not attribute benefit to workspace-local incremental products. Qualification deliberately follows the already-operating root sccache path, which uses the same managed environment without a workflow-owned `CARGO_INCREMENTAL` value.
 
 The implementation also preserves the compile-profile inputs already present on the affected paths:
 
@@ -132,7 +132,7 @@ The implementation also preserves the compile-profile inputs already present on 
 - the binary-sidecar build keeps `CARGO_PROFILE_DEV_DEBUG: "0"`; and
 - BVS flaky compile steps keep both `CARGO_PROFILE_TEST_DEBUG: "0"` and `CARGO_PROFILE_DEV_DEBUG: "0"` where they already exist.
 
-The wired steps must not introduce raw `RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTC_WRAPPER`, or `RUSTC_WORKSPACE_WRAPPER` overrides. The managed verification environment already scrubs those caller-controlled values and owns the optional sccache wrapper. The workflow-hygiene verifier and mutation tests must require `CARGO_INCREMENTAL: "0"`, preserve the applicable profile values, and reject a raw wrapper or flag override on every sccache-wired BVS compile step. A future reviewed change may alter a compile input, but it must requalify the 20% performance claim rather than inheriting stale evidence.
+The wired steps must not introduce raw `RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTC_WRAPPER`, or `RUSTC_WORKSPACE_WRAPPER` overrides. The managed verification environment already scrubs those caller-controlled values and owns the optional sccache wrapper. The workflow-hygiene verifier and mutation tests must preserve the applicable profile values and reject a raw wrapper or flag override on every sccache-wired BVS compile step; they must not require an inert workflow `CARGO_INCREMENTAL` value. The existing managed-environment test remains the evidence that caller `CARGO_INCREMENTAL` is scrubbed. A future reviewed change to that scrub contract, an applicable profile input, a raw flag/wrapper policy, or another compile input must requalify the 20% performance claim rather than inherit stale evidence.
 
 ### Intentional input-set asymmetry
 
@@ -147,7 +147,7 @@ The implementation must preserve this asymmetry. It must not “fix” it by wea
 1. Check out the exact head and compute the full-source `backtester_cache` digest with the head resolver.
 2. Restore exact full-source nextest and sidecar artifacts from S3 under the existing metadata checks.
 3. If either payload must be built, set up governed sccache once for the compilation phase. Main supplies both read and write role inputs; PR and merge-queue events supply only the read role selected by the action.
-4. Compile the missing nextest archive and/or sidecars with `CARGO_INCREMENTAL=0`, the path's existing debug-profile value, and `BOLT_RUST_VERIFICATION_SCCACHE=1` only when the action reports `enabled=true`. Otherwise the managed environment scrubs the wrapper and compiles locally while retaining the same compile inputs.
+4. Compile the missing nextest archive and/or sidecars with the path's existing debug-profile value and `BOLT_RUST_VERIFICATION_SCCACHE=1` only when the action reports `enabled=true`. Do not rely on workflow `CARGO_INCREMENTAL`: `managed_env` scrubs it in both cache-enabled and cache-disabled execution, matching the already-qualified root sccache path. When the action is disabled, the managed environment also scrubs the wrapper and compiles locally while retaining the same effective compile inputs.
 5. Print one post-compilation stats record covering both compile steps.
 6. Preserve the existing main-only, full-source S3 save and metadata rules for nextest and sidecar payloads.
 7. Run the complete existing archive tests and required issue-specific tests. No partition, target, or test may be removed to improve timing.
@@ -275,11 +275,11 @@ The eventual implementation is limited to these files unless the reviewed plan p
 - `.github/workflows/backtester-ci.yml` — remove BVS target restore/save and SHA bootstrap identity; retain one full-source artifact digest; wire governed sccache to archive/sidecar compilation.
 - `.github/workflows/flaky-test-detection.yml` — remove both BVS target restores; use governed read-only sccache for BVS compile jobs.
 - `.github/workflows/flaky-test-smoke.yml` — remove both BVS target restores; preserve governed read-only sccache.
-- `scripts/verify_ci_workflow_hygiene.py` — require no BVS target family, exact full-source S3 identity, correct sccache action/roles/fail-open wiring and effectiveness preconditions, full tests, and unchanged job authority.
-- `scripts/test_verify_ci_workflow_hygiene.py` — mutation tests for every workflow invariant, including the sccache effectiveness preconditions.
+- `scripts/verify_ci_workflow_hygiene.py` — require no BVS target family, exact full-source S3 identity, correct sccache action/roles/fail-open wiring, applicable debug-profile inputs, raw flag/wrapper exclusion, full tests, and unchanged job authority.
+- `scripts/test_verify_ci_workflow_hygiene.py` — mutation tests for every workflow invariant, including the effective compile-profile and raw-override rules.
 - `scripts/ci_workflow_hygiene_test_helpers.py` — only fixture changes mechanically required by the verifier tests.
 - `scripts/rust_verification.py` — truthful target-size and reclaimability telemetry.
-- `scripts/test_rust_verification_cache_retention.py` — telemetry behavior and both 32 GiB authority assertions.
+- `scripts/test_rust_verification_cache_retention.py` — telemetry behavior, both 32 GiB authority assertions, and retention of the existing managed-environment `CARGO_INCREMENTAL` scrub evidence.
 
 These existing authorities are read-only unless the reviewed plan identifies a demonstrated contradiction:
 
@@ -309,7 +309,7 @@ No source, Rust test target, manifest, lockfile, runtime config, strategy, prici
 10. No cache delete authority, new S3 artifact class, bucket, prefix, credential source, or target-directory upload is added.
 11. Performance success requires a comparable warm run with nonzero hits, zero read errors, full green proof, and at least 20% compile wall-clock improvement.
 12. A sub-20% result stops the performance claim and requires new user-approved design work before any broader overhaul.
-13. Every sccache-wired BVS compile sets `CARGO_INCREMENTAL=0`, preserves its applicable debug-profile input, and uses no raw wrapper or Rust-flag override.
+13. Every sccache-wired BVS compile preserves its applicable debug-profile input and uses no raw wrapper or Rust-flag override; `CARGO_INCREMENTAL` remains scrubbed by the managed environment rather than being claimed as a workflow control.
 14. Repository-wide Actions-cache bytes and S3 compiler-cache growth are reported residuals, not acceptance conditions owned by this slice.
 
 ## Verification Matrix
@@ -322,7 +322,7 @@ No source, Rust test target, manifest, lockfile, runtime config, strategy, prici
 | Exact S3 artifact identity | Mutations remove the head-resolver `backtester_cache` digest, use it outside nextest/sidecar keys or metadata, cross-wire key/metadata values, or add a SHA bootstrap; hygiene fails. |
 | Resolver-policy asymmetry | Input-set tests retain forbidden governance paths; hygiene/source-fence tests independently cover resolver, TOML, workflows, and shared actions. |
 | Sccache authority | Mutations give PR/MQ/flaky write authority, omit the shared action, substitute inline AWS setup, or change the governed location; hygiene fails. Main read/write and untrusted read-only configurations pass. |
-| Sccache effectiveness preconditions | Mutations remove or change `CARGO_INCREMENTAL: "0"`, remove an applicable existing debug-profile value, or add a raw Rust flag/wrapper override on any wired BVS compile step; hygiene fails. |
+| Sccache compile-input contract | Mutations remove an applicable existing debug-profile value or add a raw Rust flag/wrapper override on any wired BVS compile step; hygiene fails. The existing managed-environment test proves that caller `CARGO_INCREMENTAL` is scrubbed rather than requiring an inert workflow value. |
 | Fail-open compilation | Mutations let cache ineligibility skip or weaken a Rust step, retain `RUSTC_WRAPPER`, or choose an alternate backend; hygiene/action tests fail. |
 | Test preservation | Mutations remove archive, sidecar, partitions, full tests, issue-specific tests, or gate dependencies; hygiene fails. |
 | Both 32 GiB limits | Static tests assert `32212254720` in root and BVS policy; above-limit behavior remains fail-closed. |

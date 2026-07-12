@@ -103,6 +103,42 @@ FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'scripts/rust_verification.py'",
 )
 MAIN_ONLY_SHARED_REGISTRY_SAVE_IF = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}"
+BINANCE_TIMESTAMP_PROOF_STEP_NAME = (
+    "Run Binance SBE timestamp proof from nextest archive"
+)
+BINANCE_TIMESTAMP_PROOF_BINARY = "binance_sbe_quote_timestamps"
+BINANCE_TIMESTAMP_PROOF_CASES = (
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+)
+BINANCE_TIMESTAMP_PROOF_EXTRACT_ROOT = (
+    "$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"
+)
+
+
+def binance_timestamp_proof_command(case_name: str) -> str:
+    return (
+        'just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
+        f"--no-tests=fail -E 'binary(={BINANCE_TIMESTAMP_PROOF_BINARY}) & "
+        f"test(={case_name})'"
+    )
+
+
+BINANCE_TIMESTAMP_PROOF_COMMANDS = tuple(
+    binance_timestamp_proof_command(case_name)
+    for case_name in BINANCE_TIMESTAMP_PROOF_CASES
+)
+BINANCE_TIMESTAMP_PROOF_STEP = (
+    f"      - name: {BINANCE_TIMESTAMP_PROOF_STEP_NAME}\n"
+    "        shell: bash\n"
+    "        run: |\n"
+    "          set -euo pipefail\n"
+    f'          proof_extract_root="{BINANCE_TIMESTAMP_PROOF_EXTRACT_ROOT}"\n'
+    '          mkdir -p "$proof_extract_root"\n'
+    + "".join(f"          {command}\n" for command in BINANCE_TIMESTAMP_PROOF_COMMANDS)
+)
 
 
 def load_sync_ci_debug_ssh_script(
@@ -739,6 +775,65 @@ def without_once_after(text: str, anchor: str, old: str) -> str:
     before = text[:index]
     after = text[index:]
     return before + after.replace(old, "", 1)
+
+
+def assert_binance_timestamp_archive_execution_proof_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = BASE_WORKFLOW
+    expected_error = "test-archive Binance SBE timestamp execution proof"
+
+    mutations = [
+        workflow.replace(BINANCE_TIMESTAMP_PROOF_STEP, "", 1),
+        replace_once(
+            workflow,
+            f"      - name: {BINANCE_TIMESTAMP_PROOF_STEP_NAME}\n",
+            "      - name: Run renamed Binance SBE timestamp proof\n",
+        ),
+        replace_once_after(
+            workflow,
+            BINANCE_TIMESTAMP_PROOF_STEP_NAME,
+            f"binary(={BINANCE_TIMESTAMP_PROOF_BINARY})",
+            "binary(=renamed_timestamp_harness)",
+        ),
+    ]
+    for case_name, command in zip(
+        BINANCE_TIMESTAMP_PROOF_CASES,
+        BINANCE_TIMESTAMP_PROOF_COMMANDS,
+    ):
+        mutations.extend(
+            (
+                replace_once_after(
+                    workflow,
+                    BINANCE_TIMESTAMP_PROOF_STEP_NAME,
+                    f"          {command}\n",
+                    "",
+                ),
+                replace_once_after(
+                    workflow,
+                    BINANCE_TIMESTAMP_PROOF_STEP_NAME,
+                    f"test(={case_name})",
+                    f"test(~{case_name})",
+                ),
+                replace_once_after(
+                    workflow,
+                    BINANCE_TIMESTAMP_PROOF_STEP_NAME,
+                    command,
+                    command.replace(" --no-tests=fail", "", 1),
+                ),
+            )
+        )
+
+    for mutated in mutations:
+        errors = [
+            error
+            for error in verifier.verify_workflow(mutated)
+            if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error
+        ]
+        if not any(expected_error in error for error in errors):
+            raise AssertionError(
+                "Binance timestamp archive execution proof drift was silent: "
+                f"{errors}"
+            )
 
 
 
@@ -10179,6 +10274,7 @@ def main() -> int:
     test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
+    assert_binance_timestamp_archive_execution_proof_gaps_are_reported()
     real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     assert_clean(workflow=real_ci_workflow)
     root_just_version_bump = replace_once(

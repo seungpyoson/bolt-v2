@@ -1212,7 +1212,34 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "682af87a5a168c034b281d100f47da66693f24320ca5bb64ea41b16520b8fe5c"
+BINANCE_TIMESTAMP_ARCHIVE_PROOF_STEP_NAME = (
+    "Run Binance SBE timestamp proof from nextest archive"
+)
+BINANCE_TIMESTAMP_ARCHIVE_PROOF_BINARY = "binance_sbe_quote_timestamps"
+BINANCE_TIMESTAMP_ARCHIVE_PROOF_CASES = (
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+)
+BINANCE_TIMESTAMP_ARCHIVE_PROOF_EXTRACT_ROOT = (
+    "$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"
+)
+BINANCE_TIMESTAMP_ARCHIVE_PROOF_COMMANDS = tuple(
+    'just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
+    f"--no-tests=fail -E 'binary(={BINANCE_TIMESTAMP_ARCHIVE_PROOF_BINARY}) & "
+    f"test(={case_name})'"
+    for case_name in BINANCE_TIMESTAMP_ARCHIVE_PROOF_CASES
+)
+BINANCE_TIMESTAMP_ARCHIVE_PROOF_RUN_BODY = "\n".join(
+    (
+        "set -euo pipefail",
+        f'proof_extract_root="{BINANCE_TIMESTAMP_ARCHIVE_PROOF_EXTRACT_ROOT}"',
+        'mkdir -p "$proof_extract_root"',
+        *BINANCE_TIMESTAMP_ARCHIVE_PROOF_COMMANDS,
+    )
+)
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "f14f33af4e6ea1b630063424e21dd6bbdd48b64a013c2f3451019d78d70b07de"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -5946,6 +5973,63 @@ def extract_action_output_block(action_text: str, output_name: str) -> list[str]
     return []
 
 
+def binance_timestamp_archive_execution_proof_errors(
+    archive_job_lines: list[str],
+) -> list[str]:
+    prefix = "test-archive Binance SBE timestamp execution proof"
+    proof_blocks = [
+        block
+        for block in step_blocks(archive_job_lines)
+        if step_name_matches(block, BINANCE_TIMESTAMP_ARCHIVE_PROOF_STEP_NAME)
+    ]
+    if len(proof_blocks) != 1:
+        return [
+            f"{prefix} must define exactly one step named "
+            f"{BINANCE_TIMESTAMP_ARCHIVE_PROOF_STEP_NAME!r}"
+        ]
+
+    errors: list[str] = []
+    proof_block = proof_blocks[0]
+    proof_text = uncommented_text(proof_block)
+    if not step_is_unconditional(proof_block):
+        errors.append(f"{prefix} step must be unconditional")
+    if re.search(r"(?m)^\s*continue-on-error\s*:", proof_text):
+        errors.append(f"{prefix} step must fail closed without continue-on-error")
+    shell_lines = [
+        line
+        for line in proof_text.splitlines()
+        if re.match(r"^\s*shell\s*:", line)
+    ]
+    if len(shell_lines) != 1 or shell_lines[0].strip() != "shell: bash":
+        errors.append(f"{prefix} step must use shell: bash")
+
+    run_body = step_run_command(proof_block)
+    if run_body != BINANCE_TIMESTAMP_ARCHIVE_PROOF_RUN_BODY:
+        errors.append(
+            f"{prefix} must run the exact four archive filters with "
+            "--no-tests=fail"
+        )
+
+    restore_index = step_index(archive_job_lines, "Restore nextest archive from S3")
+    build_index = step_index(archive_job_lines, "Build nextest archive")
+    proof_index = step_index(
+        archive_job_lines, BINANCE_TIMESTAMP_ARCHIVE_PROOF_STEP_NAME
+    )
+    partition_index = step_index(archive_job_lines, "Run nextest archive partitions")
+    if (
+        restore_index is None
+        or build_index is None
+        or proof_index is None
+        or partition_index is None
+        or not (restore_index < proof_index and build_index < proof_index < partition_index)
+    ):
+        errors.append(
+            f"{prefix} step must run after archive restore/build and before the "
+            "normal unfiltered partitions"
+        )
+    return errors
+
+
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     if SPIKE_PROBE_MARKER_RE.search(uncommented_text(workflow_text.splitlines())):
@@ -6136,6 +6220,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if "needs.detector.result == 'success'" not in uncommented_text(jobs["test-archive"]):
             errors.append("test-archive must require detector success")
         archive_lines = jobs["test-archive"]
+        errors.extend(binance_timestamp_archive_execution_proof_errors(archive_lines))
         archive_text = uncommented_text(archive_lines)
         if named_step_block(archive_lines, "Run nextest archive partitions") is None:
             errors.append("test-archive must define Run nextest archive partitions step")

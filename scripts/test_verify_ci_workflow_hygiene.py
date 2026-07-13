@@ -8280,6 +8280,43 @@ def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() 
     if not any("must not pass the BVS target directory to an action" in error for error in errors(third_party_cache)):
         raise AssertionError("third-party BVS target cache action was not rejected")
 
+    for label, rendered_inputs in (
+        (
+            "spaced with key",
+            "        with :\n"
+            "          path: |\n"
+            "            crates/backtesting-vertical-slice/target\n",
+        ),
+        (
+            "quoted with key",
+            "        \"with\":\n"
+            "          path: ./crates/backtesting-vertical-slice/target/\n",
+        ),
+        (
+            "single-quoted with key",
+            "        'with':\n"
+            "          path: ${{steps.crate_target.outputs.dir}}\n",
+        ),
+        (
+            "flow-list target path",
+            "        with:\n"
+            "          path: [allowed/path, 'crates/backtesting-vertical-slice/target']\n",
+        ),
+    ):
+        normalized_workflow_cache = replace_once(
+            workflow,
+            "      - name: clippy\n",
+            "      - name: Normalized forbidden BVS target cache\n"
+            "        uses: buildjet/cache@example\n"
+            f"{rendered_inputs}"
+            "      - name: clippy\n",
+        )
+        if not any(
+            "backtester clippy must not pass the BVS target directory to an action" in error
+            for error in errors(normalized_workflow_cache)
+        ):
+            raise AssertionError(f"{label} did not emit the BVS target-directory diagnostic")
+
     issue_789_third_party_cache = replace_once_after(
         workflow,
         "  issue_789:\n    name: bvs-test issue-789\n",

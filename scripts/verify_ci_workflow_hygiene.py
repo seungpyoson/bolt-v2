@@ -2656,8 +2656,8 @@ def block_input_entries(block: list[str]) -> list[str]:
     while line_index < len(block):
         clean = strip_comment(block[line_index]).rstrip()
         if with_indent is None:
-            match = re.match(r"^(\s*)with:\s*$", clean)
-            if match is not None:
+            match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*$", clean)
+            if match is not None and unquote_yaml_scalar(match.group(2)) == "with":
                 with_indent = len(match.group(1))
                 input_indent = with_indent + 2
             line_index += 1
@@ -2841,8 +2841,8 @@ def block_input_items(block: list[str]) -> list[tuple[str, str]]:
         if not clean.strip():
             continue
         if with_indent is None:
-            match = re.match(r"^(\s*)with:\s*$", clean)
-            if match is not None:
+            match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*$", clean)
+            if match is not None and unquote_yaml_scalar(match.group(2)) == "with":
                 with_indent = len(match.group(1))
                 input_indent = with_indent + 2
             continue

@@ -30,8 +30,8 @@ D4 does not prove semantic policy parity, select the final verifier corpus, auth
 
 Every rehearsal resource is isolated from the production repository and removable without changing production state:
 
-- a dedicated private GitHub test repository with no shared protected branches, secrets, environments, workflows, or issue automation;
-- a dedicated test installation of the proposed GitHub App, restricted to that repository;
+- two dedicated private repositories under the same sandbox owner: the synthetic rehearsal target and an inert anchor containing no workflows, configuration, automation, or branches beyond the provider minimum;
+- a dedicated selected-repository installation of the proposed authority App, restricted to exactly the target and anchor; the anchor exists only to keep the installation provider-valid while H9 removes the target;
 - a Mergify configuration scoped only to the test repository;
 - an ephemeral authority-service deployment, fixture launcher, signing keys, append-only state, and immutable evidence store with rehearsal-only identities;
 - synthetic commits, pull requests, queue heads, manifests, engine results, and authority epochs that cannot be accepted by production; and
@@ -43,10 +43,10 @@ Cleanup deletes or disables all executable rehearsal resources after evidence re
 
 ## Smallest sufficient topology
 
-The rehearsal uses one test repository, one App installation, one Mergify integration, and one logical authority service:
+The rehearsal uses one synthetic target, one inert anchor, one authority App installation selected for exactly those two repositories, one target-only Mergify integration, and one logical authority service:
 
-1. **Test repository:** a protected `main`, a minimal ruleset, synthetic pull requests, a minimal `.mergify.yml`, Freeze and Merge Protections where the scenario requires them, and no production source.
-2. **GitHub App:** repository and pull-request metadata read, Contents read for exact private-repository Git objects, and ruleset/Administration read only where the GitHub API requires it, plus Checks write. It owns the rehearsal feedback and authority contexts. It has no contents, refs, ruleset, administration, Actions, issue, or Mergify write permission, and no second repository-reading credential. Live proof must record the installation permission manifest and demonstrate that every required read endpoint succeeds while every undeclared or write endpoint remains unavailable.
+1. **Target and anchor repositories:** the target has protected `main`, synthetic pull requests, minimal `.mergify.yml`, Freeze and Merge Protections as required, and no production source. The empty anchor is never queued, evaluated, mutated by a scenario, or used for a check; it exists only because GitHub rejects removing the last selected repository from an installation.
+2. **GitHub App:** repository and pull-request metadata read, Contents and required ruleset state read, plus Checks write, installed on exactly target and anchor. The authority service rejects the anchor repository node ID for invocation, evaluation and publication. Live proof records both repository IDs/full names and demonstrates that target removal leaves only the anchor and makes target publication impossible.
 3. **Authority service:** the smallest disposable implementation of the D3 state machine needed for the matrix. It observes exact state, invokes the fixture launcher, validates canonical protocol and identity, appends state, and is the sole check publisher.
 4. **Fixture launcher:** returns predeclared, purpose-bound signed allow, deny, malformed, timeout, and classification fixtures. It contains no CI rule definitions and does not inspect repository policy to choose an answer.
 5. **State and evidence:** one conditional append-only log with monotonic sequence and uniqueness enforcement, plus one content-addressed immutable evidence store. There is no mirror database, fallback publisher, queue worker, or second verifier.
@@ -103,7 +103,7 @@ An ordinary synthetic change with signed `authority_surface_change: false` can f
 
 ### H9 — stop-only emergency disable
 
-The existing App owner/platform disable or credential-revocation control stops new publication. It cannot create success, change a result, rotate or activate an epoch, restore bootstrap, bypass Freeze, or provide another publisher. Re-enablement alone does not resume an abandoned or invalid attempt.
+An independent existing GitHub owner-user session removes the target from the selected-repository authority installation with `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}`. Preflight must prove the principal, exact installation, target and anchor identities and live provider support. The live call must return `204`; `422`, ambiguity, or any other result is `NO_GO`. Re-query must prove the installation contains only the inert anchor, the target no longer exposes the installation, and new target check publication is impossible. This stop-only control cannot create success, approve, restore, rotate, publish to the anchor, or provide another publisher; no credential or approval gate is added to the service.
 
 ### H10 — complete audit reconstruction
 
@@ -132,7 +132,7 @@ Every scenario begins from a recorded clean epoch and ends in a terminal receipt
 | Retry allowlist | Inject stale read, network/API timeout, cancelled run, blocked extra queue entry, and permitted proof-head regeneration | Only the enumerated unchanged-identity cases retry with fresh lineage evidence |
 | Terminal cases | Inject merits failure, malformed protocol, signature/epoch mismatch, unauthorized constituent, state movement, and budget exhaustion | Terminal; no fallback, conversion, reuse, or publication |
 | Classification ownership | Run signed `false`, signed `true`, unsigned mutation, and publisher-side override attempts | Only engine-signed value is carried; ordinary `true` path blocks |
-| Stop-only disable | Disable/revoke App publication while attempts are active and terminal | New publication stops; no success/epoch/bootstrap transition becomes available |
+| Stop-only disable | From the external owner-user session remove the target repository while the inert anchor remains | Provider returns 204; only anchor remains; target publication fails; no success/epoch/bootstrap transition becomes available |
 | Audit damage | Delete, alter, reorder, fork, roll back, hide a blob, or expire a test copy | Reconstruction detects damage; authority never relies on the damaged chain |
 | Cleanup | Disable installation, revoke/delete rehearsal credentials, remove rules/config/resources, then probe access | No executable publisher or repository access remains; retained evidence still verifies |
 
@@ -164,7 +164,7 @@ The full happy-path analogue is repeated from a clean baseline so the report der
 Each scenario receipt includes:
 
 - scenario ID, hypothesis IDs, exact script/harness revision, artifact and configuration digests, reviewer source, and exact configured model where AI review is used;
-- test repository node ID, protected ref/base/proof/constituent identities, App integration/installation IDs, context and ruleset binding, Mergify configuration digest/epoch, bypass/Freeze/exclusion/Merge Protections observations;
+- target and anchor repository node IDs/full names, proof/constituent identities, App integration/installation and selected-repository IDs, context/ruleset binding, Mergify configuration digest/epoch, bypass/Freeze/exclusion/Merge Protections observations;
 - ordered API request/response metadata with secrets and tokens excluded, webhook/delivery IDs, timestamps, fault controls, state-log sequence/hash, fixture invocation/result/signature digests, publication `external_id`, check-run identity, and final merge/block outcome;
 - raw timing, retry, resource, storage, API, and cost measurements;
 - expected result, actual result, discrepancies, terminal classification, and cleanup status; and
@@ -176,10 +176,10 @@ The aggregate receipt maps every H1–H10 hypothesis and every scenario row to e
 
 Cleanup is part of the rehearsal, not an optional housekeeping step. The terminal cleanup receipt proves:
 
-- the App installation is disabled or removed from the test repository and cannot create a check;
+- H9 evidence proves target removal while only the inert anchor remains, followed during cleanup by removal of the installation/credentials and both disposable repositories under owner/platform authority;
 - installation, fixture-signing, audit-signing, deployment, state, and artifact credentials are revoked or destroyed as designed;
 - ephemeral service, launcher, fault proxy, schedules, webhooks, environments, and writable state endpoints are absent;
-- test ruleset, Mergify, Freeze, Merge Protections, exclusions, admission routes, and required checks are removed or the entire test repository is archived/deleted according to the approved retention choice;
+- target ruleset, Mergify, Freeze, protections, exclusions, routes and checks are removed; the anchor is verified inert; target and anchor are then archived/deleted according to the approved retention choice;
 - no production repository, production App installation, production secret, production workflow, or production control changed; and
 - retained receipts remain readable, hash-verifiable, and incapable of publishing.
 

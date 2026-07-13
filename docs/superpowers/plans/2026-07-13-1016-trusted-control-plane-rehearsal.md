@@ -4,7 +4,7 @@
 
 **Goal:** Build, run, measure, and completely dismantle a disposable rehearsal that proves the D3 GitHub App authority protocol against a private synthetic repository without implementing or changing production CI.
 
-**Architecture:** A small Python harness owns canonical records, deterministic fixture results, scenario orchestration, evidence reconstruction, and cleanup verification. Live-only adapters use two sandbox-only GitHub Apps, Mergify, AWS Lambda, one disposable ARM64 CodeBuild project, a private ECR repository containing one digest-pinned derived image, asymmetric KMS signing, DynamoDB state, and S3 Object Lock evidence. The operator App can mutate only rehearsal controls and is denied Checks write; an external read-only operator verifies eventual destruction from platform records.
+**Architecture:** A small Python harness owns protocol, scenarios, evidence and cleanup. The sandbox owner has a synthetic target repository plus an empty inert anchor; the authority App selected-repository installation contains exactly both so an external owner-user can remove the target without GitHub's last-repository rejection. The anchor is never evaluated, queued or published to. AWS Lambda/CodeBuild/ECR/KMS/DynamoDB/S3 remain disposable and isolated.
 
 **Tech Stack:** Python 3 standard library, pinned Python wheels, OCI/Dockerfile, GitHub REST APIs, Mergify, AWS Lambda/CodeBuild/ECR/KMS/DynamoDB/S3 Object Lock, TOML, `just` cheap gates.
 
@@ -12,9 +12,10 @@
 
 - This plan implements the disposable D4 rehearsal only; it does not implement the final verifier, precursor, activation, production publisher, production corpus, or production control changes.
 - The fixture engine is policy-free: it selects only predeclared outcomes and never inspects candidate content to derive a verdict or `authority_surface_change`.
-- Runtime repository, App, ruleset, Mergify, key, deployment, state, and evidence identifiers come from one untracked TOML instance document; no secret or runtime identifier is committed.
+- Runtime target and anchor repository IDs/full names, Apps, ruleset, Mergify, keys, deployment, state, and evidence identifiers come from one untracked TOML instance document; no secret or runtime identifier is committed.
+- The authority App installation selects exactly target plus anchor. The authority service hard-rejects the anchor for triggers, invocations, checks and publication. The operator App remains target-only where GitHub permits and always Checks-free.
 - The AWS deployment artifact uses a hash-locked dependency file and an immutable Lambda artifact digest. Offline receipt verification uses only exported KMS public keys and `cryptography`; it never requires AWS credentials or a live KMS call.
-- The operator/fault principal and authority-service principal are distinct. The operator App is installed only on the exact sandbox repository, denied every production-denylist identity, and has no Checks write, authority state-writer, fixture-signing, or audit-signing capability. Its private key is a rehearsal-only SSM SecureString readable only by its exact execution role and is revoked/deleted during cleanup.
+- The operator/fault principal and authority-service principal are distinct. The operator App is target-only where provider-supported, denied anchor/production and Checks write, and has no authority state/signing capability.
 - The authority context is App-qualified; feedback, same-name Actions checks, commit statuses, other Apps, ordinary PR heads, and wrong installations never authorize.
 - One logical authority service makes at most one Checks API create call per authority domain; ambiguous acceptance enters `PUBLISHING_UNCERTAIN` and cannot be replaced while the old head may merge.
 - Local simulation cannot satisfy a live-matrix row involving App identity, rulesets, Mergify, Freeze, queue construction, bypass, invalidation, or merge-time re-evaluation.
@@ -199,6 +200,14 @@ def test_preflight_blocks_every_create_until_ids_are_separate() -> None:
         provision.preflight(instance_with_repository_node_id(PRODUCTION_NODE_ID))
     self.assertEqual(provider.create_calls, [])
 
+def test_preflight_requires_exact_target_anchor_selection() -> None:
+    config = valid_config(target=TARGET, anchor=ANCHOR)
+    self.assertNotEqual(config.target.node_id, config.anchor.node_id)
+    self.assertEqual(authority_installation(config).repository_ids, {TARGET.id, ANCHOR.id})
+    self.assertEqual(operator_installation(config).repository_ids, {TARGET.id})
+    with self.assertRaisesRegex(ConfigError, "anchor must be inert"):
+        load_instance(config_with_anchor_workflow(), contract())
+
 def test_lambda_accepts_only_private_ecr_derived_digest() -> None:
     with self.assertRaisesRegex(ConfigError, "private ECR derived digest"):
         load_instance(instance_with_image("public.ecr.aws/lambda/python:3.12-arm64"), contract())
@@ -237,7 +246,7 @@ Expected: import failure for `ci_rehearsal.config`.
 
 - [ ] **Step 3: Add the exact committed resource contract**
 
-The TOML must declare the sandbox repository/Apps plus Lambda, one private ECR repository, two ECC KMS keys, DynamoDB, S3 Object Lock, SSM paths, and one CodeBuild project with environment `ARM_CONTAINER`, compute `BUILD_GENERAL1_SMALL`, managed image `aws/codebuild/amazonlinux2-aarch64-standard:3.0`, source `NO_SOURCE`, privileged Docker mode only for this build, and exact log group. The build role may read only the exact immutable S3 build-context object/version and locked-wheel objects, obtain an ECR authorization token, push layers/manifests only to the exact private repository, describe only its own build/project/repository, and write only its exact log stream. It has no GitHub, KMS-sign, DynamoDB-write, SSM-secret, Lambda-mutate, other S3-prefix, other ECR-repository, or production-resource access. Every resource, build minute, log byte/retention, ECR scan/storage/transfer, and cleanup call is inventoried under the owner-approved worst-case cost/time ceiling.
+The TOML must bind exactly two private repository IDs/full names under the same sandbox owner: target and inert anchor. Both differ from all production identities; the anchor has no workflows/configuration and only provider-minimum branch state. The authority installation selects exactly both; the operator App selects only target where provider-supported and remains Checks-free. Inventory, denylist, cost and cleanup receipts include both repositories. AWS declarations remain as specified, including exact CodeBuild/ECR boundaries.
 
 The committed `[run_plan]` is deliberately small and makes no statistical claim: two clean full ceremonies, two lost-create/delayed-read runs, two pre-precursor abort/restore runs at each relevant cut point, and one run of every deterministic negative row. It reports every raw observation plus min/max where a row has two samples; it does not compute or claim p90, p95, convergence, confidence, or operational budgets. The exact expanded order, fault seeds, and repetition counts are signed before the first live mutation. Additional runs require a separate owner-approved worst-case cost/time ceiling and a new immutable run-plan digest; they never rewrite the first run's evidence.
 
@@ -253,7 +262,7 @@ python3 -m scripts.ci_rehearsal.provision preflight \
   --production-denylist /private/tmp/bolt-v2-1016-production-denylist.toml
 ```
 
-Preflight performs read-only `GET /repos/{owner}/{repo}` and AWS STS `GetCallerIdentity`, loads and digests the production denylist, requires the already-existing sandbox repository to be private/empty and its node ID/full name/owner to differ from every production entry, requires the sandbox AWS account/region/resource prefix to differ from every production entry, and writes a canonical SHA-256-bound local preflight receipt (the KMS audit key does not exist yet). Its provider interface exposes no create method until that exact receipt is supplied.
+Preflight performs read-only `GET /repos/{owner}/{target}` and `GET /repos/{owner}/{anchor}`, enumerates both installations' selected repositories, and calls AWS STS. It requires same sandbox owner, distinct nonproduction IDs/full names, private target, inert anchor, authority selection exactly `{target, anchor}`, operator selection exactly `{target}` where supported, no production access, and no anchor workflow/config/queue/check state. It writes a canonical receipt; no create method is exposed until it passes.
 
 Then deploy reproducibly:
 
@@ -377,7 +386,7 @@ git commit -m "test: add rehearsal append-only authority state"
 
 **Interfaces:**
 - Consumes: `InstanceConfig`; `HttpTransport.request(method, url, headers, body) -> HttpResponse`.
-- Produces: `GitHubObserver.observe_domain`, `observe_terminal`, `observe_merge_ineligibility`, `list_exact_checks`, `GitHubPublisher.create_once`, `GitHubPublisher.reconcile`; `SandboxOperator.apply(operation: OperatorOperation) -> MutationReceipt`; `OwnerPlatformStopControl.preflight() -> StopControlReceipt` and `disable(installation_id: int) -> StopControlReceipt`; and `FaultProxy.arm(fault: FaultSpec) -> FaultReceipt`.
+- Produces: GitHub observation/publication adapters; `SandboxOperator`; `OwnerPlatformStopControl.preflight() -> StopControlReceipt` and `remove_target(installation_id: int, target_repository_id: int) -> StopControlReceipt`; and `FaultProxy`.
 
 - [ ] **Step 1: Write scripted-transport tests for lost responses and identity**
 
@@ -405,9 +414,16 @@ def test_fault_proxy_changes_observation_not_github_identity() -> None:
     self.assertNotIn("forge_app_identity", proxy.capabilities)
 
 def test_owner_stop_control_can_only_remove_installation() -> None:
-    self.assertEqual(stop_control.operations, {"delete-user-installation"})
+    self.assertEqual(stop_control.operations, {"remove-target-repository"})
     self.assertFalse({"create-check", "approve", "restore", "rotate"} & stop_control.operations)
     self.assertNotIn("disable-authority-installation", operator.operations)
+
+def test_h9_requires_204_and_anchor_only_requery() -> None:
+    receipt = stop_control.remove_target(INSTALLATION_ID, TARGET_REPOSITORY_ID)
+    self.assertEqual(receipt.status, 204)
+    self.assertEqual(receipt.remaining_repository_ids, (ANCHOR_REPOSITORY_ID,))
+    with self.assertRaisesRegex(StopControlError, "provider returned 422"):
+        stop_control.remove_target(last_repository_installation(), TARGET_REPOSITORY_ID)
 ```
 
 - [ ] **Step 2: Verify tests fail before the adapter exists**
@@ -426,9 +442,9 @@ Fetch repository node ID, ref/object/tree/parents, PR constituents, reviews, rul
 
 - [ ] **Step 5: Implement the separate operator and fault boundaries**
 
-`SandboxOperator` mints short-lived installation tokens from its dedicated operator App key in the exact SSM SecureString parameter; its execution role can read only that parameter. The App is installed solely on the allowlisted sandbox repository and has `administration: write`, `contents: write`, `pull_requests: write`, and metadata read, with Checks explicitly absent. A closed `OperatorOperation` enum covers synthetic ref/config commits, PR creation, queue admission/removal, sandbox ruleset changes, `.mergify.yml` route/bypass/Freeze/Merge Protections/exclusion commits, and cleanup other than H9 authority-App disable. Each request must match the exact sandbox repository node ID/name and resource ID and must not match any production denylist entry. It has no authority-App private-key handle or token path, trusted-context Checks method, DynamoDB authority writer, KMS signer, or S3 evidence writer.
+`SandboxOperator` uses its dedicated target-only App and is denied anchor/production IDs and Checks write. Its closed operations cover target refs/config/PRs/queue/ruleset/Mergify controls and exclude H9. Every attempted anchor operation fails before API dispatch.
 
-H9 uses a separate, already-existing GitHub repository/App owner session outside both rehearsal Apps, Lambdas, IAM roles, SSM parameters, and services. No credential from that session is stored in the harness or added as a new approval gate. Before the run, `OwnerPlatformStopControl.preflight` calls `GET /user` and `GET /user/installations`, proves the exact owner principal can see the authority installation on only the sandbox repository, and records the principal ID, installation ID, repository node ID, endpoint, timestamp, request ID, and response digest without credentials. Its sole mutation is `DELETE /user/installations/{installation_id}` for that exact preflight-bound installation. The closed interface exposes no check creation, approval, result change, restore, bootstrap, epoch/key rotation, or alternate publisher. H9 captures the deletion response and independent `GET /repos/{owner}/{repo}/installation` not-found observation as platform evidence; failure to prove this exact stop-only path before scenarios is `NO_GO`.
+H9 uses a separate existing GitHub owner-user session outside both Apps/services; no credential or gate is stored. Preflight binds the principal, authority installation, target and inert anchor and proves the selected set is exactly both. Its sole mutation is `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}`. Live proof requires HTTP 204; 422 or ambiguity is `NO_GO`. Re-query must show selected repositories exactly `{anchor}`, target installation lookup absent, anchor unchanged/inert, and an attempted new authority check on target impossible. The interface cannot remove the anchor during H9, create checks, approve, restore, rotate, bootstrap, or publish to anchor.
 
 `FaultProxy` sits between the authority service and its Checks create/read transport and may delay or drop a create response, hide a bounded number of reads, return a proven pre-acceptance failure, duplicate inbound webhook/rerequest delivery, or cancel the disposable invocation; it cannot edit GitHub responses, forge App identity, alter signed results, or write a check itself. Every arm/disarm is append-only evidence and scoped to one run/scenario/domain.
 
@@ -601,7 +617,7 @@ Expected: import failure for `ci_rehearsal.driver`.
 
 - [ ] **Step 3: Implement the orchestration-only driver**
 
-`serve` exposes only `POST /github/webhook` and `GET /health`; it validates the GitHub webhook signature through the managed verification boundary, conditionally appends the unique delivery ID, and enqueues an internal trigger without treating event bytes as authority evidence. `preflight` validates the instance, verifies exact App permissions and negative endpoints, confirms the repository is private/synthetic and not in the production denylist, records ruleset/Mergify baselines, tests managed sign/verify, conditional append, immutable put, and service health, then seals a preflight receipt. `local` runs only scenarios declared local. `live SCENARIO` requires the exact unexpired preflight digest, clean harness revision, fresh scenario/domain, and explicit `--confirm-sandbox-node-id` equal to the observed test repository node ID. `reconstruct` invokes only the offline reader. The driver contains no scenario-specific policy branches beyond dispatch through `SCENARIOS`.
+`serve` exposes only webhook and health. `preflight` validates exact target/anchor identities, authority selection of both, target-only Checks-free operator selection, anchor inertness and production denial before the existing AWS/protocol checks. `live` requires explicit confirmation of both node IDs and rejects every anchor event/invocation/publication. `reconstruct` remains offline; the driver contains no policy logic.
 
 - [ ] **Step 4: Add one public Just recipe**
 
@@ -658,6 +674,12 @@ def test_cleanup_revokes_publication_before_deleting_observability() -> None:
     self.assertNotIn("destroy-observer", names)
     self.assertEqual(CleanupPlanner.observer_phase(config)[-1].name, "destroy-evidence-writer")
 
+def test_repository_cleanup_preserves_h9_order() -> None:
+    names = [step.name for step in CleanupPlanner.observer_phase(config)]
+    self.assertLess(names.index("verify-target-removed-anchor-only"), names.index("delete-authority-installation"))
+    self.assertLess(names.index("delete-authority-installation"), names.index("delete-target-repository"))
+    self.assertLess(names.index("delete-target-repository"), names.index("delete-anchor-repository"))
+
 def test_surviving_check_writer_fails_cleanup() -> None:
     adapters.github.create_check_succeeds = True
     with self.assertRaisesRegex(CleanupError, "check writer remains"):
@@ -684,7 +706,7 @@ While the observer still exists, probe authentication, conditional append, fixtu
 
 - [ ] **Step 5: Implement phase two: destroy observer and evidence writer**
 
-Only a verified phase-one cleanup receipt plus successful offline reconstruction unlocks phase two. Remove both sandbox-only App installations while their exact keys remain usable for that removal, then revoke/delete both App SSM SecureStrings, revoke audit-signing use, destroy the independent observer Lambda/roles and evidence-writer credential, disable S3 writes, and apply the approved retained-evidence disposition without deleting immutable evidence needed for review. Inert App registrations may remain only if they have no installation and their sole private key is deleted. The destroyed observer cannot prove its own destruction. A separate read-only operator session outside every rehearsal App, IAM role, Lambda, SSM parameter, and evidence writer queries GitHub App installations plus AWS CloudTrail/resource APIs for the exact inventory and captures deletion/disabled/not-found states. The report explicitly trusts those provider records and the owner/operator capture for post-destruction truth; it makes no recursive or self-proving claim. Retained evidence remains independently readable and hash-verifiable.
+Only verified phase-one cleanup plus offline reconstruction unlocks phase two. First re-prove H9 target removal and anchor-only selection. Under existing owner/platform authority, remove the remaining authority and operator installations, revoke/delete App keys, then archive/delete target and inert anchor after confirming neither is production and the anchor stayed inert. Destroy observer/evidence-writer capabilities afterward while retaining immutable evidence. External GitHub/AWS platform records and owner capture—not the destroyed observer—prove final installation/repository/resource absence.
 
 - [ ] **Step 6: Run cleanup tests**
 
@@ -771,12 +793,12 @@ git commit -m "test: report rehearsal evidence and owner decisions"
 - Modify repository files: none
 
 **Interfaces:**
-- Consumes: the complete harness and owner-provided platform authorization for a disposable private repository, GitHub App registration/installation, Mergify test integration, and managed ephemeral service/signing/state/object resources.
+- Consumes: the complete harness and authorization for target plus inert anchor repositories under one sandbox owner, selected-repository Apps, target-only Mergify, and disposable AWS resources.
 - Produces: immutable scenario receipts, cleanup receipt, independent reconstruction report, aggregate receipt, and owner-decision report; no surviving publisher capability.
 
 - [ ] **Step 1: Obtain the unavoidable platform preconditions before mutation**
 
-Record explicit authorization and a worst-case cost/time ceiling including CodeBuild minutes/logs and ECR. Run the denylist, Public ECR, and wheel gates, then execute the infrastructure CloudFormation phase to create CodeBuild, its log group/role, private ECR, and non-Lambda dependencies. Package the immutable context and start the one ARM64 build:
+Record authorization and cost ceiling including both private repositories. The owner supplies an existing synthetic target and empty inert anchor under the same sandbox owner. Bind both IDs/full names, prove neither is production, install the authority App on exactly both, install the Checks-free operator App on target only where GitHub permits, and install Mergify only on target. The anchor receives no workflows/config/queue/checks. Run denylist, App-selection, Public ECR and wheel gates before AWS creation, then create CodeBuild/ECR dependencies and start the ARM64 build:
 
 ```bash
 python3 -m scripts.ci_rehearsal.provision package-build-context \
@@ -817,9 +839,9 @@ Expected: Lambda `GetFunction`/`GetFunctionConfiguration` reports the private EC
 
 - [ ] **Step 2: Run preflight before any scenario**
 
-First read the nonsecret sandbox node ID from the validated instance document into `D4_SANDBOX_NODE_ID`, then run: `just ci-rehearsal preflight --instance /private/tmp/bolt-v2-1016-d4-instance.toml --confirm-sandbox-node-id "$D4_SANDBOX_NODE_ID"`
+Read `D4_TARGET_NODE_ID` and `D4_ANCHOR_NODE_ID` from the validated instance, then run: `just ci-rehearsal preflight --instance /private/tmp/bolt-v2-1016-d4-instance.toml --confirm-target-node-id "$D4_TARGET_NODE_ID" --confirm-anchor-node-id "$D4_ANCHOR_NODE_ID"`
 
-Expected: sealed PASS receipt proving private/synthetic identity, exact permissions, required reads, denied writes, App and Mergify identities, ruleset baseline, managed signing, append, immutable object, and production denylist separation. Any failure stops execution and begins cleanup.
+Expected: sealed PASS receipt proving exact target/anchor IDs and full names, same sandbox owner, authority selection exactly both, target-only operator/Mergify, inert anchor, no production access, exact permissions and AWS identities. It binds the owner-user H9 endpoint and principals. Any mismatch stops execution.
 
 - [ ] **Step 3: Execute local rows, then live rows one at a time**
 
@@ -833,10 +855,13 @@ For each ID assigned to `D4_SCENARIO_ID` from `just ci-rehearsal live --list`, a
 just ci-rehearsal live "$D4_SCENARIO_ID" \
   --instance /private/tmp/bolt-v2-1016-d4-instance.toml \
   --preflight-receipt "$D4_PREFLIGHT_ROOT" \
-  --confirm-sandbox-node-id "$D4_SANDBOX_NODE_ID"
+  --confirm-target-node-id "$D4_TARGET_NODE_ID" \
+  --confirm-anchor-node-id "$D4_ANCHOR_NODE_ID"
 ```
 
 Expected: a fresh domain and terminal sealed receipt for the exact row. Stop on the first ambiguity or safety-critical failure; never convert it to a pass or widen a budget.
+
+For `stop-only-disable`, the external owner-user session must issue exactly `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}` and receive HTTP 204. The driver then re-queries selected repositories as exactly anchor-only, proves target installation lookup absent and an authority-App check creation on target rejected, and confirms no anchor check/queue/config activity. HTTP 422 (the last-repository restriction), any non-204, or a surviving target capability is `NO_GO`.
 
 - [ ] **Step 4: Repeat the complete ceremony and abort runs from clean baselines**
 
@@ -844,7 +869,7 @@ Use the immutable signed run-plan digest: two clean `full-ceremony` runs, two lo
 
 - [ ] **Step 5: Execute phase-one authority cleanup and seal it**
 
-Run: `just ci-rehearsal live cleanup-authority --instance /private/tmp/bolt-v2-1016-d4-instance.toml --confirm-sandbox-node-id "$D4_SANDBOX_NODE_ID"`
+Run: `just ci-rehearsal live cleanup-authority --instance /private/tmp/bolt-v2-1016-d4-instance.toml --confirm-target-node-id "$D4_TARGET_NODE_ID" --confirm-anchor-node-id "$D4_ANCHOR_NODE_ID"`
 
 Expected: App publication, CodeBuild project/role/logs after immutable export, Lambda/versions, fixture signer, DynamoDB writer, mutable routes/controls, derived ECR image, and private ECR repository are deleted in dependency order while the observer remains. CodeBuild/Lambda/ECR absence queries and costs are captured before sealing cleanup.
 
@@ -860,9 +885,9 @@ Expected: no network calls; offline public-key verification reconstructs at leas
 
 - [ ] **Step 7: Execute phase-two observer/evidence-writer destruction**
 
-Run: `just ci-rehearsal live cleanup-observer --instance /private/tmp/bolt-v2-1016-d4-instance.toml --cleanup-root "$D4_AGGREGATE_ROOT" --confirm-sandbox-node-id "$D4_SANDBOX_NODE_ID"`
+Run: `just ci-rehearsal live cleanup-observer --instance /private/tmp/bolt-v2-1016-d4-instance.toml --cleanup-root "$D4_AGGREGATE_ROOT" --confirm-target-node-id "$D4_TARGET_NODE_ID" --confirm-anchor-node-id "$D4_ANCHOR_NODE_ID"`
 
-Expected: command first re-verifies the signed cleanup root and offline reconstruction, then removes both sandbox-only App installations, deletes both App SSM parameters, revokes audit-signing use, deletes observer Lambda/roles and evidence-writer identity, disables S3 writes, and leaves only immutable read-only retained evidence. It does not claim to prove its own destruction.
+Expected: command first proves H9 left authority selection anchor-only and target publication impossible; owner/platform authority then removes remaining installations, deletes keys/resources, archives/deletes target followed by inert anchor, destroys observer/writers, and leaves immutable evidence. The command does not self-prove destruction.
 
 From a separate read-only GitHub owner session and AWS read-only profile named in the external operator's local config—not either rehearsal App or role—run:
 
@@ -873,7 +898,7 @@ python3 -m scripts.ci_rehearsal.provision verify-destroyed \
   --output "$D4_EVIDENCE_DIR/post-destruction-platform-capture.json"
 ```
 
-Expected: GitHub installation queries and AWS CloudTrail/CodeBuild/Logs/Lambda/ECR/IAM/SSM/KMS/DynamoDB/S3 APIs show the exact Apps, build project/build/log group, derived image/repository, keys, roles, functions, parameters, writers, and routes deleted, disabled, or denied; retained build/log evidence remains readable. The capture records provider request IDs, timestamps and response digests without credentials. Absence is `NO_GO`.
+Expected: GitHub queries show the recorded 204 target removal, anchor-only requery, target publication denial, later installation removal, and target/anchor deletion under owner authority; AWS APIs show resource deletion; retained evidence remains readable. Inventory/cost includes both repositories. Any missing provider observation is `NO_GO`.
 
 - [ ] **Step 8: Generate the evidence-based owner report**
 

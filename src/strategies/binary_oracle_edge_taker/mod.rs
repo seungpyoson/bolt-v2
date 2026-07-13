@@ -5816,23 +5816,22 @@ impl BinaryOracleEdgeTaker {
             trigger_ts_init_ms: trigger_context.ts_init_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
             exit_hysteresis_bps: self.config.exit_hysteresis_bps,
-            fair_probability_up: self
-                .current_position_fair_probability_up_for_gate_at(
-                    now_ms,
-                    realized_vol_gate_receive_ms,
-                )
+            fair_probability_up: realized_vol_gate_receive_ms
+                .and_then(|receive_ms| {
+                    self.current_position_fair_probability_up_for_gate_at(now_ms, receive_ms)
+                })
                 .map(Probability::value),
-            fair_probability_down: self
-                .current_position_fair_probability_up_for_gate_at(
-                    now_ms,
-                    realized_vol_gate_receive_ms,
-                )
+            fair_probability_down: realized_vol_gate_receive_ms
+                .and_then(|receive_ms| {
+                    self.current_position_fair_probability_up_for_gate_at(now_ms, receive_ms)
+                })
                 .map(|value| value.complement().value()),
-            uncertainty_band_probability: self
-                .current_position_uncertainty_band_probability_for_gate_at(
-                    now_ms,
-                    realized_vol_gate_receive_ms,
-                )
+            uncertainty_band_probability: realized_vol_gate_receive_ms
+                .and_then(|receive_ms| {
+                    self.current_position_uncertainty_band_probability_for_gate_at(
+                        now_ms, receive_ms,
+                    )
+                })
                 .map(Probability::value),
             up_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Up),
             down_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Down),

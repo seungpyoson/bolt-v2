@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use super::shared_fixture::{unique_log_capture_strategy_id, with_captured_strategy_logs};
 use super::*;
 use nautilus_common::messages::data::{DataCommand, SubscribeCommand};
 
@@ -105,64 +106,7 @@ fn replay_reference_update_at(
     .to_custom_data()
 }
 
-#[derive(Default)]
-struct CapturingLogger {
-    records: std::sync::Mutex<Vec<(log::Level, String)>>,
-}
-
-impl log::Log for CapturingLogger {
-    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .push((record.level(), record.args().to_string()));
-    }
-
-    fn flush(&self) {}
-}
-
-impl CapturingLogger {
-    fn reset(&self) {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .clear();
-    }
-
-    fn records(&self) -> Vec<(log::Level, String)> {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .clone()
-    }
-}
-
-static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> = std::sync::OnceLock::new();
-static CAPTURING_LOGGER_OBSERVERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-static NEXT_LOG_CAPTURE_STRATEGY_ID: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 const LOG_CAPTURE_CHILD_ENV: &str = "BOLT_TAKER_SOURCE_EVIDENCE_LOG_CAPTURE";
-
-fn unique_log_capture_strategy_id(prefix: &str) -> String {
-    let id = NEXT_LOG_CAPTURE_STRATEGY_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    format!("BINARYORACLEEDGETAKER-{prefix}-{id}")
-}
-
-fn install_capturing_logger() -> &'static CapturingLogger {
-    static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
-    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
-    assert!(
-        installed,
-        "capturing logger could not claim the global log slot; another logger is installed"
-    );
-    log::set_max_level(log::LevelFilter::Trace);
-    *logger
-}
 
 fn run_log_capture_test_in_subprocess(test_filter: &str, mode: &str) {
     let output = std::process::Command::new(
@@ -194,18 +138,10 @@ fn with_captured_error_log<R>(
     strategy_id: &str,
     action: impl FnOnce() -> R,
 ) -> R {
-    let logger = install_capturing_logger();
-    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-        .lock()
-        .expect("capturing logger observer mutex poisoned");
-    logger.reset();
-
-    let result = action();
-
-    let matching = logger
-        .records()
+    let (result, logs) = with_captured_strategy_logs(strategy_id, action);
+    let matching = logs
         .into_iter()
-        .filter(|(_, message)| message.contains(failure_message) && message.contains(strategy_id))
+        .filter(|(_, message)| message.contains(failure_message))
         .collect::<Vec<_>>();
     assert_eq!(
         matching.len(),
@@ -218,25 +154,6 @@ fn with_captured_error_log<R>(
         "{failure_message} must be surfaced at error! severity, not warn!"
     );
     result
-}
-
-fn with_captured_strategy_logs<R>(
-    strategy_id: &str,
-    action: impl FnOnce() -> R,
-) -> (R, Vec<(log::Level, String)>) {
-    let logger = install_capturing_logger();
-    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-        .lock()
-        .expect("capturing logger observer mutex poisoned");
-    logger.reset();
-
-    let result = action();
-    let matching = logger
-        .records()
-        .into_iter()
-        .filter(|(_, message)| message.contains(strategy_id))
-        .collect::<Vec<_>>();
-    (result, matching)
 }
 
 fn test_realized_volatility_engine_config()
@@ -1549,11 +1466,7 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         "without-fast-venue marker should only track admitted reference state"
     );
     let ((), logs) = with_captured_strategy_logs(&strategy_id, || {
-        strategy.log_entry_evaluation(
-            replay.evaluation_now_ms,
-            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(replay.evaluation_now_ms)),
-            &replay_decision,
-        );
+        strategy.log_entry_evaluation(replay.evaluation_now_ms, &replay_decision);
     });
     let entry_evaluation_logs = logs
         .iter()
@@ -3371,6 +3284,9 @@ fn diagnostic_exit_evaluation_holds_when_receive_time_is_structurally_absent() {
         crate::bolt_v3_decision_evidence::BoltV3ExitDecisionOutcome::Hold,
         "missing receive-domain input must hold, never liquidate by default"
     );
+    assert_eq!(record.fair_probability_up, None);
+    assert_eq!(record.fair_probability_down, None);
+    assert_eq!(record.uncertainty_band_probability, None);
 }
 
 #[test]

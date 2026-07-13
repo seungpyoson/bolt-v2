@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use super::shared_fixture::{unique_log_capture_strategy_id, with_captured_strategy_logs};
 use super::*;
 use crate::bolt_v3_binary_outcome_edge::BinaryOutcomeEdgeBlockReason;
 

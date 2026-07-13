@@ -649,7 +649,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     TEST_SURFACE_ID,
-                    Some(LocalReceiveMs::new(1_000)),
+                    LocalReceiveMs::new(1_000),
                     Some(500),
                 )
                 .is_some()
@@ -659,7 +659,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     TEST_SURFACE_ID,
-                    Some(LocalReceiveMs::new(500)),
+                    LocalReceiveMs::new(500),
                     Some(500),
                 )
                 .is_none()
@@ -669,7 +669,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     TEST_SURFACE_ID,
-                    Some(LocalReceiveMs::new(1_501)),
+                    LocalReceiveMs::new(1_501),
                     Some(500),
                 )
                 .is_none()
@@ -679,7 +679,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     "<other_surface>",
-                    Some(LocalReceiveMs::new(1_000)),
+                    LocalReceiveMs::new(1_000),
                     Some(500),
                 )
                 .is_none()

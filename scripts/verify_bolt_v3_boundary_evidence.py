@@ -1404,7 +1404,10 @@ def rust_pattern_binds_identifier(
     pattern: list[RustToken], identifier: str
 ) -> bool:
     for index, token in enumerate(pattern):
-        if token.value != identifier:
+        token_identifier = (
+            token.value[2:] if token.value.startswith("r#") else token.value
+        )
+        if token_identifier != identifier:
             continue
         predecessor = pattern[index - 1].value if index > 0 else None
         successor = pattern[index + 1].value if index + 1 < len(pattern) else None

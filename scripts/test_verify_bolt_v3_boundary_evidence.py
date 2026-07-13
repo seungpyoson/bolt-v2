@@ -1240,6 +1240,62 @@ def test_binance_timestamp_behavioral_contract_rejects_nested_binding_patterns()
         )
 
 
+def test_binance_timestamp_behavioral_contract_rejects_raw_identifier_result_fabrication() -> None:
+    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(quote.ts_event, expected_ts_event);
+    assert_eq!(quote.ts_init, adapter_ts_init);"""
+    asserted_block = """assert_ne!(expected_ts_event, adapter_ts_init);
+        assert_eq!(quote.ts_event, expected_ts_event);
+        assert_eq!(quote.ts_init, adapter_ts_init);"""
+    replacements = (
+        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let _ = &quote;
+    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
+    for (_, r#quote) in [((), fabricated_quote)] {
+        """
+        + asserted_block
+        + "\n    }",
+        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let _ = &quote;
+    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
+    let (_, r#quote) = ((), fabricated_quote);
+    """
+        + asserted_block,
+        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
+    struct Wrapper { quote: FakeQuote }
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let _ = &quote;
+    let fabricated_wrapper = Wrapper {
+        quote: FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init },
+    };
+    match fabricated_wrapper {
+        Wrapper { quote: r#quote } => {
+            """
+        + asserted_block
+        + "\n        }\n    }",
+    )
+    for replacement in replacements:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    canonical_block,
+                    replacement,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
+        )
+
+
 def test_binance_timestamp_behavioral_contract_fails_closed_on_ambiguous_binding_syntax() -> None:
     canonical = (
         "let quote = "

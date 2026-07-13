@@ -114,6 +114,24 @@ BINANCE_TIMESTAMP_TEST_CASE_RESULT_CONTRACTS = {
         "deltas",
     ),
 }
+BINANCE_TIMESTAMP_TEST_CASE_EVENT_CONTRACTS = {
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "transact_time_us",
+        "TradesStreamEvent",
+    ),
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "event_time_us",
+        "BestBidAskStreamEvent",
+    ),
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "event_time_us",
+        "DepthSnapshotStreamEvent",
+    ),
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "event_time_us",
+        "DepthDiffStreamEvent",
+    ),
+}
 BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
         (
@@ -122,21 +140,21 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "unequal event/init assertion",
-            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
         ),
         (
             "two-output assertion",
-            r"\bassert_eq\s*!\s*\(\s*trades\s*\.\s*len\s*\(\s*\)\s*,\s*2",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*trades\s*\.\s*len\s*\(\s*\)\s*,\s*2",
         ),
         ("all-output iteration", r"\bfor\s+data\s+in\s+trades\b"),
         ("TradeTick extraction", r"\bData\s*::\s*Trade\b"),
         (
             "per-trade event timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*trade\s*\.\s*ts_event\s*,\s*expected_ts_event",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*trade\s*\.\s*ts_event\s*,\s*expected_ts_event",
         ),
         (
             "per-trade initialization timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*trade\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*trade\s*\.\s*ts_init\s*,\s*adapter_ts_init",
         ),
     ),
     "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
@@ -146,15 +164,15 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "unequal event/init assertion",
-            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
         ),
         (
             "quote event timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*quote\s*\.\s*ts_event\s*,\s*expected_ts_event",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*quote\s*\.\s*ts_event\s*,\s*expected_ts_event",
         ),
         (
             "quote initialization timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*quote\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*quote\s*\.\s*ts_init\s*,\s*adapter_ts_init",
         ),
     ),
     "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
@@ -164,27 +182,27 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "unequal event/init assertion",
-            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
         ),
         (
             "three-inner-delta assertion",
-            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
         ),
         (
             "aggregate event timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_event\s*,\s*expected_ts_event",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_event\s*,\s*expected_ts_event",
         ),
         (
             "aggregate initialization timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
         ),
         (
             "all inner event timestamps assertion",
-            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_event\s*==\s*expected_ts_event",
+            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_event\s*==\s*expected_ts_event",
         ),
         (
             "all inner initialization timestamps assertion",
-            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
         ),
     ),
     "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
@@ -194,27 +212,27 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "unequal event/init assertion",
-            r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
         ),
         (
             "three-inner-delta assertion",
-            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
         ),
         (
             "aggregate event timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_event\s*,\s*expected_ts_event",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_event\s*,\s*expected_ts_event",
         ),
         (
             "aggregate initialization timestamp assertion",
-            r"\bassert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
         ),
         (
             "all inner event timestamps assertion",
-            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_event\s*==\s*expected_ts_event",
+            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_event\s*==\s*expected_ts_event",
         ),
         (
             "all inner initialization timestamps assertion",
-            r"\bassert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
         ),
     ),
 }
@@ -290,6 +308,21 @@ ALLOWED_IMDS_CONSTRUCTION_CONTEXTS = {
 
 def read(root: Path, rel: Path | str) -> str:
     return (root / rel).read_text(encoding="utf-8")
+
+
+def read_required_pin_surface(
+    root: Path,
+    surface: Path,
+    findings: list[str],
+) -> str | None:
+    try:
+        return read(root, surface)
+    except OSError as error:
+        findings.append(
+            f"{surface}: NautilusTrader pin census required pin surface could not be "
+            f"read: {error}"
+        )
+        return None
 
 
 def line_number(text: str, pos: int) -> int:
@@ -568,7 +601,10 @@ def scan_wire_boundary(root: Path, findings: list[str], source_paths: list[Path]
     if not require_nonempty(source_paths, "Bolt-v3 boundary Rust source files", findings):
         return
 
-    cargo_toml = read(root, "Cargo.toml")
+    try:
+        cargo_toml = read(root, "Cargo.toml")
+    except OSError:
+        return
     if f'rev = "{EXPECTED_NT_REV}"' not in cargo_toml:
         findings.append(f"Cargo.toml: nautilus_network rev must remain pinned to {EXPECTED_NT_REV}")
 
@@ -845,6 +881,9 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
 
 
 DEPENDENCY_SCOPE_KEYS = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
+NT_PACKAGE_IDENTITY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])nautilus-[A-Za-z0-9_-]+(?=$|[:@#/?])"
+)
 
 
 def dependency_tables(
@@ -879,13 +918,61 @@ def nt_manifest_dependencies(manifest: object) -> list[tuple[str, object]]:
     return dependencies
 
 
+def cargo_identity_references_nt(value: object) -> bool:
+    return isinstance(value, str) and (
+        NT_PACKAGE_IDENTITY_PATTERN.search(value) is not None
+        or "nautilus_trader.git" in value
+    )
+
+
+def cargo_specification_references_nt(specification: object) -> bool:
+    if not isinstance(specification, dict):
+        return False
+    return any(
+        cargo_identity_references_nt(specification.get(key))
+        for key in ("package", "git")
+    )
+
+
+def nt_manifest_overrides(manifest: object) -> list[str]:
+    if not isinstance(manifest, dict):
+        return []
+    overrides: list[str] = []
+
+    patch = manifest.get("patch")
+    if isinstance(patch, dict):
+        for source, entries in patch.items():
+            source_is_nt = cargo_identity_references_nt(source)
+            if not isinstance(entries, dict):
+                if source_is_nt:
+                    overrides.append(f"patch.{source}")
+                continue
+            for package_id, specification in entries.items():
+                if (
+                    source_is_nt
+                    or cargo_identity_references_nt(package_id)
+                    or cargo_specification_references_nt(specification)
+                ):
+                    overrides.append(f"patch.{source}.{package_id}")
+
+    replace = manifest.get("replace")
+    if isinstance(replace, dict):
+        for package_id, specification in replace.items():
+            if cargo_identity_references_nt(
+                package_id
+            ) or cargo_specification_references_nt(specification):
+                overrides.append(f"replace.{package_id}")
+
+    return overrides
+
+
 def cargo_surface_references_nt(surface: Path, text: str) -> bool:
     try:
         document = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         return "nautilus-" in text or "nautilus_trader.git" in text
     if surface.name == "Cargo.toml":
-        return bool(nt_manifest_dependencies(document))
+        return bool(nt_manifest_dependencies(document) or nt_manifest_overrides(document))
     packages = document.get("package")
     if not isinstance(packages, list):
         return False
@@ -951,6 +1038,11 @@ def scan_nt_manifest_pin(
         return
 
     dependencies = nt_manifest_dependencies(manifest)
+    for location in nt_manifest_overrides(manifest):
+        findings.append(
+            f"{surface}: NautilusTrader pin census forbids NT-relevant Cargo override "
+            f"{location}; dependencies must use the single canonical pinned Git path"
+        )
     if not dependencies:
         findings.append(f"{surface}: NautilusTrader pin census found no nautilus-* dependencies")
         return
@@ -1180,6 +1272,7 @@ RUST_TOKEN_PATTERN = re.compile(
 )
 RUST_OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}"}
 RUST_CLOSE_TO_OPEN = {value: key for key, value in RUST_OPEN_TO_CLOSE.items()}
+GOVERNED_ASSERTION_MACROS = frozenset({"assert", "assert_eq", "assert_ne"})
 
 
 def rust_tokens_and_delimiter_pairs(
@@ -1203,6 +1296,28 @@ def rust_tokens_and_delimiter_pairs(
     if stack:
         return None
     return tokens, pairs
+
+
+def binance_assertion_contract_is_canonical(masked: str) -> bool:
+    tokenized = rust_tokens_and_delimiter_pairs(masked)
+    if tokenized is None:
+        return False
+    tokens, _ = tokenized
+    for index, token in enumerate(tokens):
+        identifier = token.value[2:] if token.value.startswith("r#") else token.value
+        if identifier not in GOVERNED_ASSERTION_MACROS:
+            continue
+        if index < 3 or index + 1 >= len(tokens):
+            return False
+        if [item.value for item in tokens[index - 3 : index + 2]] != [
+            "::",
+            "core",
+            "::",
+            identifier,
+            "!",
+        ]:
+            return False
+    return True
 
 
 def rust_find_top_level_token(
@@ -1400,6 +1515,61 @@ def rust_binding_patterns(masked: str) -> tuple[list[list[RustToken]], bool]:
     return patterns, True
 
 
+@dataclasses.dataclass(frozen=True)
+class RustTopLevelLet:
+    pattern: tuple[RustToken, ...]
+    rhs: tuple[RustToken, ...]
+    start: int
+    end: int
+
+
+def rust_top_level_let_statements(
+    masked: str,
+) -> tuple[list[RustTopLevelLet], bool]:
+    tokenized = rust_tokens_and_delimiter_pairs(masked)
+    if tokenized is None:
+        return [], False
+    tokens, pairs = tokenized
+    statements: list[RustTopLevelLet] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.value in RUST_OPEN_TO_CLOSE:
+            closing = pairs.get(index)
+            if closing is None:
+                return [], False
+            index = closing + 1
+            continue
+        if token.value != "let":
+            index += 1
+            continue
+        equals = rust_find_top_level_token(
+            tokens, pairs, index + 1, len(tokens), {"=", ";"}
+        )
+        if equals is None or tokens[equals].value != "=":
+            return [], False
+        terminator = rust_find_top_level_token(
+            tokens, pairs, equals + 1, len(tokens), {";"}
+        )
+        if terminator is None:
+            return [], False
+        pattern = rust_pattern_without_top_level_type(
+            tokens, pairs, index + 1, equals
+        )
+        if pattern is None or equals + 1 == terminator:
+            return [], False
+        statements.append(
+            RustTopLevelLet(
+                pattern=tuple(pattern),
+                rhs=tuple(tokens[equals + 1 : terminator]),
+                start=token.start,
+                end=tokens[terminator].end,
+            )
+        )
+        index = terminator + 1
+    return statements, True
+
+
 def rust_pattern_binds_identifier(
     pattern: list[RustToken], identifier: str
 ) -> bool:
@@ -1419,6 +1589,122 @@ def rust_pattern_binds_identifier(
     return False
 
 
+def rust_token_values(tokens: tuple[RustToken, ...] | list[RustToken]) -> list[str]:
+    return [token.value for token in tokens]
+
+
+def rust_event_rhs_uses_provider_scalar(
+    rhs: tuple[RustToken, ...],
+    event_type: str,
+    scalar: str,
+) -> bool:
+    values = rust_token_values(rhs)
+    if len(values) < 3 or values[0:2] != [event_type, "{"]:
+        return False
+    tokenized = rust_tokens_and_delimiter_pairs(" ".join(values))
+    if tokenized is None:
+        return False
+    rebuilt, pairs = tokenized
+    if len(rebuilt) != len(rhs) or pairs.get(1) != len(rebuilt) - 1:
+        return False
+    fields = rust_split_top_level_patterns(rebuilt, pairs, 2, len(rebuilt) - 1)
+    if fields is None:
+        return False
+    return any(rust_token_values(field) == [scalar] for field in fields)
+
+
+def has_governed_expected_event_contract(
+    body: str,
+    scalar: str,
+    event_type: str,
+    parser_symbol: str,
+) -> bool:
+    statements, statements_are_valid = rust_top_level_let_statements(body)
+    binding_patterns, patterns_are_valid = rust_binding_patterns(body)
+    if not statements_are_valid or not patterns_are_valid:
+        return False
+
+    governed_names = (scalar, "expected_ts_event", "event")
+    governed_bindings = {
+        name: [
+            pattern
+            for pattern in binding_patterns
+            if rust_pattern_binds_identifier(pattern, name)
+        ]
+        for name in governed_names
+    }
+    if any(len(bindings) != 1 for bindings in governed_bindings.values()):
+        return False
+
+    top_level = {
+        name: [
+            statement
+            for statement in statements
+            if rust_token_values(statement.pattern) == [name]
+        ]
+        for name in governed_names
+    }
+    if any(len(items) != 1 for items in top_level.values()):
+        return False
+
+    scalar_statement = top_level[scalar][0]
+    expected_statement = top_level["expected_ts_event"][0]
+    event_statement = top_level["event"][0]
+    scalar_rhs = rust_token_values(scalar_statement.rhs)
+    expected_rhs = rust_token_values(expected_statement.rhs)
+    if len(scalar_rhs) != 1 or re.fullmatch(r"[0-9][0-9_]*_i64", scalar_rhs[0]) is None:
+        return False
+    if expected_rhs != [
+        "UnixNanos",
+        "::",
+        "from_micros",
+        "(",
+        scalar,
+        "as",
+        "u64",
+        ")",
+    ]:
+        return False
+    if not rust_event_rhs_uses_provider_scalar(
+        event_statement.rhs,
+        event_type,
+        scalar,
+    ):
+        return False
+
+    parser_call = re.compile(
+        rf"\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*"
+        rf"{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\s*::\s*"
+        rf"{re.escape(parser_symbol)}\s*\(\s*&\s*event\s*,\s*&\s*instrument\s*,\s*"
+        r"adapter_ts_init\s*\)"
+    )
+    parser_calls = [
+        match
+        for match in parser_call.finditer(body)
+        if rust_open_delimiters_at(body, match.start()) == ()
+    ]
+    if len(parser_calls) != 1:
+        return False
+    parser_start = parser_calls[0].start()
+    if not (
+        scalar_statement.start
+        < expected_statement.start
+        < event_statement.start
+        < parser_start
+    ):
+        return False
+
+    for name in governed_names:
+        assignments = re.findall(
+            rf"(?<![A-Za-z0-9_])(?:r#)?{re.escape(name)}\b\s*"
+            r"(?:<<=|>>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=))",
+            body,
+        )
+        if len(assignments) != 1:
+            return False
+    return True
+
+
 def has_governed_binance_parser_result_contract(
     body: str,
     parser_symbol: str,
@@ -1427,7 +1713,8 @@ def has_governed_binance_parser_result_contract(
     call = re.compile(
         rf"\blet\s+{re.escape(result_variable)}\s*=\s*"
         rf"{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\s*::\s*"
-        rf"{re.escape(parser_symbol)}\s*\("
+        rf"{re.escape(parser_symbol)}\s*\(\s*&\s*event\s*,\s*&\s*instrument\s*,\s*"
+        r"adapter_ts_init\s*\)"
     )
     direct_calls = [
         match
@@ -1535,6 +1822,11 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
         )
 
     masked_test_text = _mask_rust_non_code(test_text)
+    if not binance_assertion_contract_is_canonical(masked_test_text):
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "
+            "::core paths without local shadowing"
+        )
     import_matches = [
         match
         for match in BINANCE_TIMESTAMP_PARSER_IMPORT_PATTERN.finditer(masked_test_text)
@@ -1574,6 +1866,20 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
             parser_symbol,
             result_variable,
         ) = BINANCE_TIMESTAMP_TEST_CASE_RESULT_CONTRACTS[function_name]
+        scalar, event_type = BINANCE_TIMESTAMP_TEST_CASE_EVENT_CONTRACTS[
+            function_name
+        ]
+        if not has_governed_expected_event_contract(
+            body,
+            scalar,
+            event_type,
+            parser_symbol,
+        ):
+            findings.append(
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive "
+                "expected_ts_event once from the event's canonical provider-time "
+                "scalar before parsing"
+            )
         if not has_governed_binance_parser_result_contract(
             body,
             parser_symbol,
@@ -1618,6 +1924,8 @@ def scan_runtime_contract_pin(surface: Path, text: str, findings: list[str]) -> 
 def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
     cargo_surfaces = set(CANONICAL_CARGO_PIN_SURFACES)
     for surface in tracked_cargo_surfaces(root, findings):
+        if surface in CANONICAL_CARGO_PIN_SURFACES:
+            continue
         try:
             text = read(root, surface)
         except OSError as error:
@@ -1629,7 +1937,9 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
             cargo_surfaces.add(surface)
 
     for surface in sorted(cargo_surfaces):
-        text = read(root, surface)
+        text = read_required_pin_surface(root, surface, findings)
+        if text is None:
+            continue
         if surface.name == "Cargo.toml":
             scan_nt_manifest_pin(
                 surface,
@@ -1642,7 +1952,9 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
         scan_nt_lock_pin(surface, text, findings)
 
     for surface in NON_CARGO_PIN_SURFACES:
-        text = read(root, surface)
+        text = read_required_pin_surface(root, surface, findings)
+        if text is None:
+            continue
         if surface == RUNTIME_CONTRACT_PIN_SURFACE:
             scan_runtime_contract_pin(surface, text, findings)
             continue

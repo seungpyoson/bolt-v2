@@ -85,14 +85,14 @@ fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
 
     let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);
 
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(trades.len(), 2);
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(trades.len(), 2);
     for data in trades {
         let Data::Trade(trade) = data else {
             panic!("expected every parsed item to be trade data");
         };
-        assert_eq!(trade.ts_event, expected_ts_event);
-        assert_eq!(trade.ts_init, adapter_ts_init);
+        ::core::assert_eq!(trade.ts_event, expected_ts_event);
+        ::core::assert_eq!(trade.ts_init, adapter_ts_init);
     }
 }
 
@@ -116,9 +116,9 @@ fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
 
     let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
 
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(quote.ts_event, expected_ts_event);
-    assert_eq!(quote.ts_init, adapter_ts_init);
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_event, expected_ts_event);
+    ::core::assert_eq!(quote.ts_init, adapter_ts_init);
 }
 
 #[test]
@@ -146,17 +146,17 @@ fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps(
     let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)
         .expect("non-empty SBE depth snapshot must produce deltas");
 
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(deltas.deltas.len(), 3);
-    assert_eq!(deltas.ts_event, expected_ts_event);
-    assert_eq!(deltas.ts_init, adapter_ts_init);
-    assert!(
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(deltas.deltas.len(), 3);
+    ::core::assert_eq!(deltas.ts_event, expected_ts_event);
+    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
+    ::core::assert!(
         deltas
             .deltas
             .iter()
             .all(|delta| delta.ts_event == expected_ts_event)
     );
-    assert!(
+    ::core::assert!(
         deltas
             .deltas
             .iter()
@@ -196,17 +196,17 @@ fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
     let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)
         .expect("non-empty SBE depth diff must produce deltas");
 
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(deltas.deltas.len(), 3);
-    assert_eq!(deltas.ts_event, expected_ts_event);
-    assert_eq!(deltas.ts_init, adapter_ts_init);
-    assert!(
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(deltas.deltas.len(), 3);
+    ::core::assert_eq!(deltas.ts_event, expected_ts_event);
+    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
+    ::core::assert!(
         deltas
             .deltas
             .iter()
             .all(|delta| delta.ts_event == expected_ts_event)
     );
-    assert!(
+    ::core::assert!(
         deltas
             .deltas
             .iter()

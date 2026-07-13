@@ -36,6 +36,16 @@ BINANCE_TIMESTAMP_TEST_CASES = (
     "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
     "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
 )
+REQUIRED_PIN_SURFACES = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/backtesting-vertical-slice/Cargo.toml",
+    "crates/backtesting-vertical-slice/Cargo.lock",
+    "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+    "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
+    "scripts/verify_bolt_v3_boundary_evidence.py",
+    "scripts/test_verify_bolt_v3_boundary_evidence.py",
+)
 
 
 def load_verifier():
@@ -67,44 +77,60 @@ use ::nautilus_binance::spot::websocket::streams::parse as nt_binance_sbe_parse;
 
 #[test]
 fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let transact_time_us = 1_700_000_000_100_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(transact_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = TradesStreamEvent { transact_time_us };
     let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(trades.len(), 2);
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(trades.len(), 2);
     for data in trades {
         let Data::Trade(trade) = data else { panic!() };
-        assert_eq!(trade.ts_event, expected_ts_event);
-        assert_eq!(trade.ts_init, adapter_ts_init);
+        ::core::assert_eq!(trade.ts_event, expected_ts_event);
+        ::core::assert_eq!(trade.ts_init, adapter_ts_init);
     }
 }
 
 #[test]
 fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let event_time_us = 1_700_000_000_000_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = BestBidAskStreamEvent { event_time_us };
     let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(quote.ts_event, expected_ts_event);
-    assert_eq!(quote.ts_init, adapter_ts_init);
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_event, expected_ts_event);
+    ::core::assert_eq!(quote.ts_init, adapter_ts_init);
 }
 
 #[test]
 fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let event_time_us = 1_700_000_000_000_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = DepthSnapshotStreamEvent { event_time_us };
     let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init).unwrap();
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(deltas.deltas.len(), 3);
-    assert_eq!(deltas.ts_event, expected_ts_event);
-    assert_eq!(deltas.ts_init, adapter_ts_init);
-    assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
-    assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(deltas.deltas.len(), 3);
+    ::core::assert_eq!(deltas.ts_event, expected_ts_event);
+    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
+    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
+    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
 }
 
 #[test]
 fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
+    let event_time_us = 1_700_000_000_000_000_i64;
+    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
+    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
+    let event = DepthDiffStreamEvent { event_time_us };
     let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init).unwrap();
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(deltas.deltas.len(), 3);
-    assert_eq!(deltas.ts_event, expected_ts_event);
-    assert_eq!(deltas.ts_init, adapter_ts_init);
-    assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
-    assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(deltas.deltas.len(), 3);
+    ::core::assert_eq!(deltas.ts_event, expected_ts_event);
+    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
+    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
+    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
 }
 """
 
@@ -615,17 +641,7 @@ def test_capture_config_without_workflows_passes_boundary_scan() -> None:
 
 
 def test_pin_census_rejects_each_mismatched_surface() -> None:
-    surfaces = (
-        "Cargo.toml",
-        "Cargo.lock",
-        "crates/backtesting-vertical-slice/Cargo.toml",
-        "crates/backtesting-vertical-slice/Cargo.lock",
-        "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
-        "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
-        "scripts/verify_bolt_v3_boundary_evidence.py",
-        "scripts/test_verify_bolt_v3_boundary_evidence.py",
-    )
-    for surface in surfaces:
+    for surface in REQUIRED_PIN_SURFACES:
         def mutate(root: Path, surface: str = surface) -> None:
             path = root / surface
             path.write_text(
@@ -634,6 +650,25 @@ def test_pin_census_rejects_each_mismatched_surface() -> None:
             )
 
         assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
+
+
+def test_pin_census_reports_each_missing_required_surface_once() -> None:
+    for surface in REQUIRED_PIN_SURFACES:
+        def mutate(root: Path, surface: str = surface) -> None:
+            if surface.endswith(("Cargo.toml", "Cargo.lock")):
+                subprocess.run(repo_git_command("add", surface), cwd=root, check=True)
+            (root / surface).unlink()
+
+        findings = scan_temp(mutate)
+        matches = [
+            finding
+            for finding in findings
+            if finding.startswith(
+                f"{surface}: NautilusTrader pin census required pin surface could not be read:"
+            )
+        ]
+        if len(matches) != 1:
+            raise AssertionError((surface, findings))
 
 
 def test_manifest_pin_census_accepts_order_multiline_and_dependency_scopes() -> None:
@@ -736,6 +771,135 @@ nt-core = {{ package = "nautilus-core", git = "https://github.com/nautechsystems
         write(root, "Cargo.toml", manifest)
 
     assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
+
+
+def test_manifest_pin_census_rejects_every_nt_override_form() -> None:
+    overrides = (
+        """
+[patch.crates-io]
+nautilus-model = { path = "vendor/nautilus-model" }
+""",
+        """
+[patch.crates-io]
+nt-model = { package = "nautilus-model", path = "vendor/nautilus-model" }
+""",
+        """
+[patch."https://github.com/seungpyoson/nautilus_trader.git"]
+model-fork = { path = "vendor/nautilus-model" }
+""",
+        f"""
+[patch.crates-io]
+model-fork = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+""",
+        """
+[replace]
+"nautilus-model:0.59.0" = { path = "vendor/nautilus-model" }
+""",
+        """
+[replace]
+"nautilus-model@0.59.0" = { path = "vendor/nautilus-model" }
+""",
+        """
+[replace]
+"https://github.com/seungpyoson/nautilus_trader.git#nautilus-model@0.59.0" = { path = "vendor/nautilus-model" }
+""",
+    )
+    for override in overrides:
+        def mutate(root: Path, override: str = override) -> None:
+            manifest = root / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8") + override,
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "Cargo.toml: NautilusTrader pin census forbids NT-relevant Cargo override",
+        )
+
+
+def test_pin_census_discovers_tracked_override_only_standalone_workspace() -> None:
+    override_manifests = (
+        """
+[package]
+name = "patch-only"
+version = "0.1.0"
+
+[patch.crates-io]
+nautilus-model = { path = "../../vendor/nautilus-model" }
+""",
+        """
+[package]
+name = "replace-only"
+version = "0.1.0"
+
+[replace]
+"nautilus-model:0.59.0" = { path = "../../vendor/nautilus-model" }
+""",
+    )
+    for index, manifest_text in enumerate(override_manifests):
+        def mutate(
+            root: Path,
+            index: int = index,
+            manifest_text: str = manifest_text,
+        ) -> None:
+            manifest = f"crates/override-only-{index}/Cargo.toml"
+            write(root, manifest, manifest_text)
+            subprocess.run(repo_git_command("add", manifest), cwd=root, check=True)
+
+        assert_finding(
+            scan_temp(mutate),
+            f"crates/override-only-{index}/Cargo.toml: NautilusTrader pin census "
+            "forbids NT-relevant Cargo override",
+        )
+
+
+def test_pin_census_ignores_unrelated_cargo_overrides() -> None:
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + """
+[patch.crates-io]
+serde = { path = "vendor/serde" }
+
+[replace]
+"itoa:1.0.0" = { path = "vendor/itoa" }
+""",
+            encoding="utf-8",
+        )
+
+    assert scan_temp(mutate) == []
+
+
+def test_pin_census_uses_tracked_lockfile_as_override_backstop() -> None:
+    def mutate(root: Path) -> None:
+        manifest = "crates/lock-backstop/Cargo.toml"
+        lockfile = "crates/lock-backstop/Cargo.lock"
+        write(
+            root,
+            manifest,
+            "[package]\nname = \"lock-backstop\"\nversion = \"0.1.0\"\n",
+        )
+        write(
+            root,
+            lockfile,
+            "version = 4\n"
+            "[[package]]\n"
+            'name = "nautilus-model"\n'
+            'version = "0.59.0"\n'
+            f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
+        )
+        subprocess.run(
+            repo_git_command("add", manifest, lockfile),
+            cwd=root,
+            check=True,
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "crates/lock-backstop/Cargo.lock: NautilusTrader pin census",
+    )
 
 
 def test_pin_census_rejects_tracked_new_standalone_workspace_with_stale_nt_pin() -> None:
@@ -1071,6 +1235,182 @@ def test_binance_timestamp_behavioral_contract_requires_pinned_parser_import() -
     )
 
 
+def test_binance_timestamp_behavioral_contract_requires_core_assertion_paths() -> None:
+    mutations = (
+        ("::core::assert_ne!", "assert_ne!"),
+        ("::core::assert_eq!", "assert_eq!"),
+        ("::core::assert!", "assert!"),
+    )
+    for canonical, unqualified in mutations:
+        def mutate(
+            root: Path,
+            canonical: str = canonical,
+            unqualified: str = unqualified,
+        ) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(canonical, unqualified, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "
+            "::core paths without local shadowing",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_accepts_canonical_fixture() -> None:
+    assert scan_temp() == []
+
+
+def test_binance_timestamp_behavioral_contract_rejects_assertion_macro_shadowing() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_header = f"#[test]\nfn {function_name}() {{"
+    mutations = (
+        "macro_rules! assert_eq { ($($token:tt)*) => {}; }\n",
+        "macro_rules! assert_ne { ($($token:tt)*) => {}; }\n",
+        "macro_rules! assert { ($($token:tt)*) => {}; }\n",
+        (
+            function_header,
+            f"{function_header}\n    macro_rules! assert_eq {{ ($($token:tt)*) => {{}}; }}",
+        ),
+    )
+    for mutation in mutations:
+        def mutate(root: Path, mutation=mutation) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            text = path.read_text(encoding="utf-8")
+            if isinstance(mutation, tuple):
+                original, replacement = mutation
+                text = text.replace(original, replacement, 1)
+            else:
+                text = mutation + text
+            path.write_text(text, encoding="utf-8")
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "
+            "::core paths without local shadowing",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_requires_expected_event_provenance() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical_expected = (
+        "let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);"
+    )
+    canonical_event = "let event = BestBidAskStreamEvent { event_time_us };"
+    canonical_parser = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    mutations = (
+        (
+            canonical_expected,
+            "let expected_ts_event = UnixNanos::from(event_time_us as u64);",
+        ),
+        (
+            canonical_expected,
+            "let mut expected_ts_event = UnixNanos::from_micros(event_time_us as u64);",
+        ),
+        (
+            canonical_event,
+            "let other_time_us = event_time_us + 1;\n"
+            "    let event = BestBidAskStreamEvent { event_time_us: other_time_us };",
+        ),
+        (
+            f"{canonical_expected}\n    let adapter_ts_init",
+            "let adapter_ts_init",
+        ),
+        (
+            canonical_parser,
+            f"{canonical_parser}\n"
+            "    let expected_ts_event = quote.ts_event;",
+        ),
+    )
+    for original, replacement in mutations:
+        def mutate(
+            root: Path,
+            original: str = original,
+            replacement: str = replacement,
+        ) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(original, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive expected_ts_event "
+            "once from the event's canonical provider-time scalar before parsing",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_expected_event_shadowing() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical_parser = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    planted_patterns = (
+        "let r#expected_ts_event = quote.ts_event;",
+        "let (_, expected_ts_event) = ((), quote.ts_event);",
+        "let closure = |expected_ts_event| expected_ts_event;",
+        "for expected_ts_event in [quote.ts_event] {}",
+        "match quote.ts_event { expected_ts_event => {} }",
+        "fn helper(expected_ts_event: UnixNanos) {}",
+    )
+    for planted_pattern in planted_patterns:
+        def mutate(root: Path, planted_pattern: str = planted_pattern) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    canonical_parser,
+                    f"{canonical_parser}\n    {planted_pattern}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive expected_ts_event "
+            "once from the event's canonical provider-time scalar before parsing",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_output_derived_expected_event() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical_expected = (
+        "let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);"
+    )
+    canonical_parser = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    mutations = (
+        f"{canonical_parser}\n    let expected_ts_event = quote.ts_event;",
+        f"{canonical_parser}\n    expected_ts_event = quote.ts_event;",
+    )
+    for replacement in mutations:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            text = path.read_text(encoding="utf-8")
+            if "let expected_ts_event" in replacement:
+                text = text.replace(canonical_expected, "", 1)
+            path.write_text(
+                text.replace(canonical_parser, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive expected_ts_event "
+            "once from the event's canonical provider-time scalar before parsing",
+        )
+
+
 def test_binance_timestamp_behavioral_contract_rejects_parser_identity_shadowing() -> None:
     function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
     function_header = f"#[test]\nfn {function_name}() {{"
@@ -1162,12 +1502,12 @@ def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_c
 
 def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabrication() -> None:
     canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(quote.ts_event, expected_ts_event);
-    assert_eq!(quote.ts_init, adapter_ts_init);"""
-    asserted_block = """assert_ne!(expected_ts_event, adapter_ts_init);
-        assert_eq!(quote.ts_event, expected_ts_event);
-        assert_eq!(quote.ts_init, adapter_ts_init);"""
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_event, expected_ts_event);
+    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    asserted_block = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
+        ::core::assert_eq!(quote.ts_event, expected_ts_event);
+        ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
     replacements = (
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
     let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
@@ -1242,12 +1582,12 @@ def test_binance_timestamp_behavioral_contract_rejects_nested_binding_patterns()
 
 def test_binance_timestamp_behavioral_contract_rejects_raw_identifier_result_fabrication() -> None:
     canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    assert_ne!(expected_ts_event, adapter_ts_init);
-    assert_eq!(quote.ts_event, expected_ts_event);
-    assert_eq!(quote.ts_init, adapter_ts_init);"""
-    asserted_block = """assert_ne!(expected_ts_event, adapter_ts_init);
-        assert_eq!(quote.ts_event, expected_ts_event);
-        assert_eq!(quote.ts_init, adapter_ts_init);"""
+    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_event, expected_ts_event);
+    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    asserted_block = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
+        ::core::assert_eq!(quote.ts_event, expected_ts_event);
+        ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
     replacements = (
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
     let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);

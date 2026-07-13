@@ -34,6 +34,7 @@ use bolt_v2::{
     },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
+    bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::{
         binary_oracle_maker::{
@@ -396,6 +397,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         realized_volatility_snapshot: &realized_volatility_snapshot,
         realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
+        evaluation_receive_ms: LocalReceiveMs::new(1_500),
     };
     let quote_set_at_reference_evaluation = || {
         let mut quote_set = quote_set_inputs();

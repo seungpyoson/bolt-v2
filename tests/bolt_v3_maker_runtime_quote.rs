@@ -183,6 +183,7 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             realized_volatility_snapshot: &realized_volatility_snapshot,
             realized_volatility_max_source_age_ms: None,
             pricing_kurtosis: f64::NAN,
+            evaluation_receive_ms: LocalReceiveMs::new(1_000),
         },
     )
     .expect("reference-current-price fair value should be available");
@@ -268,12 +269,63 @@ fn maker_pricing_does_not_compare_independent_venue_clocks() {
             realized_volatility_snapshot: &realized_volatility_snapshot,
             realized_volatility_max_source_age_ms: None,
             pricing_kurtosis: f64::NAN,
+            evaluation_receive_ms: LocalReceiveMs::new(1_000),
         },
     );
 
     assert!(
         result.is_some(),
         "maker pricing must not reject an RV source venue clock that leads by one millisecond"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_maker_route_owns_explicit_evaluation_receive_time() {
+    let quote_receive_ms = LocalReceiveMs::new(1_000);
+    let snapshot_receive_ms = LocalReceiveMs::new(1_100);
+    let evaluation_receive_ms = LocalReceiveMs::new(1_150);
+    assert!(quote_receive_ms < snapshot_receive_ms);
+    assert!(snapshot_receive_ms <= evaluation_receive_ms);
+
+    let mut selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        500,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let quotes = vec![reference_quote_received_at(
+        TEST_REFERENCE_ASSET,
+        "primary",
+        0.63,
+        1_000,
+        quote_receive_ms.value(),
+    )];
+    let mut realized_volatility_snapshot = ready_realized_vol_snapshot(1_100, 1.5);
+    realized_volatility_snapshot.latest_accepted_receive_ms = Some(snapshot_receive_ms);
+
+    let result = maker_reference_current_price_fair_value_decision(
+        &mut selector,
+        evaluation_receive_ms.value(),
+        MakerRuntimeReferenceFairValueInput {
+            family_key: static_binary_event::KEY,
+            interval_start_ms: 1_000,
+            interval_end_ms: 2_000,
+            reference_quotes: &quotes,
+            strike_price: Some(0.50),
+            seconds_to_market_end: Some(0),
+            realized_volatility_snapshot: &realized_volatility_snapshot,
+            realized_volatility_max_source_age_ms: Some(100),
+            pricing_kurtosis: f64::NAN,
+            evaluation_receive_ms,
+        },
+    );
+
+    assert_eq!(result.blocked_by, None);
+    assert!(
+        result.fair_value.is_some(),
+        "maker pricing must evaluate RV freshness at the caller-owned receive stamp"
     );
 }
 
@@ -302,6 +354,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         realized_volatility_snapshot: &realized_volatility_snapshot,
         realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
+        evaluation_receive_ms: LocalReceiveMs::new(1_500),
     };
 
     let decision = maker_reference_current_price_fair_value_decision(&mut selector, 1_500, input);
@@ -368,6 +421,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
             realized_volatility_snapshot: input.realized_volatility_snapshot,
             realized_volatility_max_source_age_ms: input.realized_volatility_max_source_age_ms,
             pricing_kurtosis: input.pricing_kurtosis,
+            evaluation_receive_ms: input.evaluation_receive_ms,
         },
     );
 
@@ -1078,6 +1132,16 @@ fn reference_quote(
     price: f64,
     observed_ts_ms: u64,
 ) -> ReferenceQuote {
+    reference_quote_received_at(asset, source_id, price, observed_ts_ms, observed_ts_ms)
+}
+
+fn reference_quote_received_at(
+    asset: &str,
+    source_id: &str,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: u64,
+) -> ReferenceQuote {
     ReferenceQuote::try_new(
         asset,
         source_id,
@@ -1088,7 +1152,7 @@ fn reference_quote(
         None,
         None,
         observed_ts_ms,
-        observed_ts_ms,
+        received_ts_ms,
     )
     .expect("reference quote fixture should be valid")
 }

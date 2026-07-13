@@ -1160,6 +1160,114 @@ def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_c
         )
 
 
+def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabrication() -> None:
+    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    assert_ne!(expected_ts_event, adapter_ts_init);
+    assert_eq!(quote.ts_event, expected_ts_event);
+    assert_eq!(quote.ts_init, adapter_ts_init);"""
+    asserted_block = """assert_ne!(expected_ts_event, adapter_ts_init);
+        assert_eq!(quote.ts_event, expected_ts_event);
+        assert_eq!(quote.ts_init, adapter_ts_init);"""
+    replacements = (
+        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let _ = &quote;
+    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
+    for (_, quote) in [((), fabricated_quote)] {
+        """
+        + asserted_block
+        + "\n    }",
+        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
+    struct Wrapper { quote: FakeQuote }
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let _ = &quote;
+    let fabricated_wrapper = Wrapper {
+        quote: FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init },
+    };
+    match fabricated_wrapper {
+        Wrapper { quote } => {
+            """
+        + asserted_block
+        + "\n        }\n    }",
+    )
+    for replacement in replacements:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    canonical_block,
+                    replacement,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_nested_binding_patterns() -> None:
+    canonical = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    planted_patterns = (
+        "for (_, Some(ref mut quote)) in values {}",
+        "let (_, ref mut quote @ Some(_)) = value;",
+        "match value { Wrapper { inner: ref mut quote @ Some(_) } => {} }",
+        "let closure = |(ref mut quote, _)| quote;",
+        "fn helper((ref mut quote, _): (&mut Quote, ())) {}",
+    )
+    for planted_pattern in planted_patterns:
+        def mutate(root: Path, planted_pattern: str = planted_pattern) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    canonical,
+                    f"{canonical}\n    {planted_pattern}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_fails_closed_on_ambiguous_binding_syntax() -> None:
+    canonical = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    planted_patterns = (
+        "let (quote = value;",
+        "let closure = |quote;",
+    )
+    for planted_pattern in planted_patterns:
+        def mutate(root: Path, planted_pattern: str = planted_pattern) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    canonical,
+                    f"{canonical}\n    {planted_pattern}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
+        )
+
+
 def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attributes() -> None:
     function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
     ordinary_header = f"#[test]\nfn {function_name}()"

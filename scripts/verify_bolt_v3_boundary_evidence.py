@@ -1160,6 +1160,262 @@ def binance_parser_identity_is_shadowed(masked: str) -> bool:
     return False
 
 
+@dataclasses.dataclass(frozen=True)
+class RustToken:
+    value: str
+    start: int
+    end: int
+
+
+RUST_TOKEN_PATTERN = re.compile(
+    r"""
+    r\#[A-Za-z_][A-Za-z0-9_]*
+    |[A-Za-z_][A-Za-z0-9_]*
+    |::|=>|->|<<=|>>=|\.\.=|\.\.\.|==|!=|<=|>=|&&|\|\|
+    |\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|\.\.
+    |\d(?:[A-Za-z0-9_]|\.(?!\.))*
+    |\S
+    """,
+    re.VERBOSE,
+)
+RUST_OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}"}
+RUST_CLOSE_TO_OPEN = {value: key for key, value in RUST_OPEN_TO_CLOSE.items()}
+
+
+def rust_tokens_and_delimiter_pairs(
+    masked: str,
+) -> tuple[list[RustToken], dict[int, int]] | None:
+    tokens = [
+        RustToken(match.group(0), match.start(), match.end())
+        for match in RUST_TOKEN_PATTERN.finditer(masked)
+    ]
+    stack: list[tuple[int, str]] = []
+    pairs: dict[int, int] = {}
+    for index, token in enumerate(tokens):
+        if token.value in RUST_OPEN_TO_CLOSE:
+            stack.append((index, token.value))
+        elif token.value in RUST_CLOSE_TO_OPEN:
+            if not stack or stack[-1][1] != RUST_CLOSE_TO_OPEN[token.value]:
+                return None
+            opening_index, _ = stack.pop()
+            pairs[opening_index] = index
+            pairs[index] = opening_index
+    if stack:
+        return None
+    return tokens, pairs
+
+
+def rust_find_top_level_token(
+    tokens: list[RustToken],
+    pairs: dict[int, int],
+    start: int,
+    end: int,
+    values: set[str],
+) -> int | None:
+    index = start
+    while index < end:
+        value = tokens[index].value
+        if value in values:
+            return index
+        if value in RUST_OPEN_TO_CLOSE:
+            closing_index = pairs.get(index)
+            if closing_index is None or closing_index >= end:
+                return None
+            index = closing_index + 1
+            continue
+        if value in RUST_CLOSE_TO_OPEN:
+            return None
+        index += 1
+    return None
+
+
+def rust_split_top_level_patterns(
+    tokens: list[RustToken],
+    pairs: dict[int, int],
+    start: int,
+    end: int,
+) -> list[list[RustToken]] | None:
+    patterns: list[list[RustToken]] = []
+    segment_start = start
+    index = start
+    while index < end:
+        value = tokens[index].value
+        if value in RUST_OPEN_TO_CLOSE:
+            closing_index = pairs.get(index)
+            if closing_index is None or closing_index >= end:
+                return None
+            index = closing_index + 1
+            continue
+        if value in RUST_CLOSE_TO_OPEN:
+            return None
+        if value == ",":
+            patterns.append(tokens[segment_start:index])
+            segment_start = index + 1
+        index += 1
+    patterns.append(tokens[segment_start:end])
+    return patterns
+
+
+def rust_pattern_without_top_level_type(
+    tokens: list[RustToken],
+    pairs: dict[int, int],
+    start: int,
+    end: int,
+) -> list[RustToken] | None:
+    colon = rust_find_top_level_token(tokens, pairs, start, end, {":"})
+    pattern_end = colon if colon is not None else end
+    pattern = tokens[start:pattern_end]
+    return pattern if pattern else None
+
+
+def rust_binding_patterns(masked: str) -> tuple[list[list[RustToken]], bool]:
+    tokenized = rust_tokens_and_delimiter_pairs(masked)
+    if tokenized is None:
+        return [], False
+    tokens, pairs = tokenized
+    patterns: list[list[RustToken]] = []
+
+    for index, token in enumerate(tokens):
+        if token.value == "let":
+            terminator = rust_find_top_level_token(
+                tokens, pairs, index + 1, len(tokens), {"=", ";"}
+            )
+            if terminator is None:
+                return [], False
+            pattern = rust_pattern_without_top_level_type(
+                tokens, pairs, index + 1, terminator
+            )
+            if pattern is None:
+                return [], False
+            patterns.append(pattern)
+        elif token.value == "for":
+            terminator = rust_find_top_level_token(
+                tokens, pairs, index + 1, len(tokens), {"in"}
+            )
+            if terminator is None or terminator == index + 1:
+                return [], False
+            patterns.append(tokens[index + 1 : terminator])
+        elif token.value == "fn":
+            opening = rust_find_top_level_token(
+                tokens, pairs, index + 1, len(tokens), {"(", "{", ";"}
+            )
+            if opening is None or tokens[opening].value != "(":
+                return [], False
+            closing = pairs.get(opening)
+            if closing is None:
+                return [], False
+            parameters = rust_split_top_level_patterns(
+                tokens, pairs, opening + 1, closing
+            )
+            if parameters is None:
+                return [], False
+            parameter_start = opening + 1
+            for parameter in parameters:
+                parameter_end = parameter_start + len(parameter)
+                pattern = rust_pattern_without_top_level_type(
+                    tokens, pairs, parameter_start, parameter_end
+                )
+                if pattern:
+                    patterns.append(pattern)
+                parameter_start = parameter_end + 1
+
+    closure_closers: set[int] = set()
+    closure_opening_predecessors = {
+        "(",
+        "[",
+        "{",
+        ",",
+        "=",
+        "=>",
+        ";",
+        ":",
+        "move",
+        "async",
+        "return",
+    }
+    for index, token in enumerate(tokens):
+        if token.value != "|" or index in closure_closers:
+            continue
+        predecessor = tokens[index - 1].value if index > 0 else None
+        if predecessor not in closure_opening_predecessors:
+            continue
+        closing = rust_find_top_level_token(
+            tokens, pairs, index + 1, len(tokens), {"|"}
+        )
+        if closing is None:
+            return [], False
+        closure_closers.add(closing)
+        parameters = rust_split_top_level_patterns(
+            tokens, pairs, index + 1, closing
+        )
+        if parameters is None:
+            return [], False
+        parameter_start = index + 1
+        for parameter in parameters:
+            parameter_end = parameter_start + len(parameter)
+            pattern = rust_pattern_without_top_level_type(
+                tokens, pairs, parameter_start, parameter_end
+            )
+            if pattern:
+                patterns.append(pattern)
+            parameter_start = parameter_end + 1
+
+    for arrow, token in enumerate(tokens):
+        if token.value != "=>":
+            continue
+        containing_openers = [
+            opening
+            for opening, closing in pairs.items()
+            if tokens[opening].value in RUST_OPEN_TO_CLOSE
+            and opening < arrow < closing
+        ]
+        if not containing_openers:
+            return [], False
+        arm_opening = max(containing_openers)
+        if tokens[arm_opening].value != "{":
+            return [], False
+        pattern_start = arm_opening + 1
+        scan = pattern_start
+        while scan < arrow:
+            value = tokens[scan].value
+            if value in RUST_OPEN_TO_CLOSE:
+                closing = pairs.get(scan)
+                if closing is None or closing >= arrow:
+                    return [], False
+                scan = closing + 1
+                continue
+            if value in RUST_CLOSE_TO_OPEN:
+                return [], False
+            if value == ",":
+                pattern_start = scan + 1
+            scan += 1
+        guard = rust_find_top_level_token(
+            tokens, pairs, pattern_start, arrow, {"if"}
+        )
+        pattern_end = guard if guard is not None else arrow
+        if pattern_start >= pattern_end:
+            return [], False
+        patterns.append(tokens[pattern_start:pattern_end])
+
+    return patterns, True
+
+
+def rust_pattern_binds_identifier(
+    pattern: list[RustToken], identifier: str
+) -> bool:
+    for index, token in enumerate(pattern):
+        if token.value != identifier:
+            continue
+        predecessor = pattern[index - 1].value if index > 0 else None
+        successor = pattern[index + 1].value if index + 1 < len(pattern) else None
+        if predecessor == "::" or successor == "::":
+            continue
+        if successor == ":":
+            continue
+        return True
+    return False
+
+
 def has_governed_binance_parser_result_contract(
     body: str,
     parser_symbol: str,
@@ -1175,12 +1431,11 @@ def has_governed_binance_parser_result_contract(
         for match in call.finditer(body)
         if rust_open_delimiters_at(body, match.start()) == ()
     ]
-    let_bindings = [
-        match
-        for match in re.finditer(r"\blet\s+(?P<pattern>[^=;]+?)\s*=(?!=)", body)
-        if re.search(
-            rf"\b{re.escape(result_variable)}\b", match.group("pattern")
-        )
+    binding_patterns, patterns_are_valid = rust_binding_patterns(body)
+    result_bindings = [
+        pattern
+        for pattern in binding_patterns
+        if rust_pattern_binds_identifier(pattern, result_variable)
     ]
     assignments = list(
         re.finditer(
@@ -1189,25 +1444,11 @@ def has_governed_binance_parser_result_contract(
             body,
         )
     )
-    closure_bindings = [
-        match
-        for match in re.finditer(r"\|(?P<parameters>[^|\n]*)\|", body)
-        if re.search(
-            rf"\b{re.escape(result_variable)}\b", match.group("parameters")
-        )
-    ]
-    other_binding_patterns = (
-        rf"\bfor\s+(?:ref\s+|mut\s+)?{re.escape(result_variable)}\b",
-        rf"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\b{re.escape(result_variable)}\b[^)]*\)",
-        rf"(?:^|[{{,])\s*(?:ref\s+|mut\s+)?{re.escape(result_variable)}\s*(?:@[^=]+)?=>",
-        rf"\b[A-Z][A-Za-z0-9_]*\s*\(\s*(?:ref\s+|mut\s+)?{re.escape(result_variable)}\b[^)]*\)\s*=>",
-    )
     return (
-        len(direct_calls) == 1
-        and len(let_bindings) == 1
+        patterns_are_valid
+        and len(direct_calls) == 1
+        and len(result_bindings) == 1
         and len(assignments) == 1
-        and not closure_bindings
-        and not any(re.search(pattern, body, re.MULTILINE) for pattern in other_binding_patterns)
     )
 
 

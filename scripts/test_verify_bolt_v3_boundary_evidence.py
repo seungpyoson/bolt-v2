@@ -822,6 +822,54 @@ model-fork = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev 
         )
 
 
+def test_manifest_pin_census_ignores_package_metadata_dependency_decoys() -> None:
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + f'''
+[package.metadata.dependencies]
+nautilus-binance = {{ package = "parser-shim", path = "parser-shim" }}
+old-nt-decoy = {{ package = "nautilus-binance", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}
+
+[package.metadata.target.'cfg(unix)'.dev-dependencies]
+nautilus_binance = {{ package = "parser-shim", path = "parser-shim" }}
+''',
+            encoding="utf-8",
+        )
+
+    assert scan_temp(mutate) == []
+
+
+def test_manifest_pin_census_governs_actual_cargo_dependency_scopes() -> None:
+    scopes = (
+        "[dependencies]",
+        "[dev-dependencies]",
+        "[build-dependencies]",
+        "[workspace.dependencies]",
+        "[target.'cfg(unix)'.dependencies]",
+        "[target.'cfg(unix)'.dev-dependencies]",
+        "[target.'cfg(unix)'.build-dependencies]",
+    )
+    for index, scope in enumerate(scopes):
+        def mutate(root: Path, index: int = index, scope: str = scope) -> None:
+            surface = f"tools/actual-scope-{index}/Cargo.toml"
+            write(
+                root,
+                surface,
+                '[package]\nname = "actual-scope"\nversion = "0.1.0"\n\n'
+                + scope
+                + "\n"
+                + f'nt-binance = {{ package = "nautilus-binance", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+            )
+            subprocess.run(repo_git_command("add", surface), cwd=root, check=True)
+
+        assert_finding(
+            scan_temp(mutate),
+            f"tools/actual-scope-{index}/Cargo.toml: NautilusTrader pin census",
+        )
+
+
 def test_pin_census_discovers_tracked_override_only_standalone_workspace() -> None:
     override_manifests = (
         """
@@ -1647,28 +1695,57 @@ def test_binance_timestamp_behavioral_contract_rejects_fake_crate_identity_acros
 
 
 def test_binance_timestamp_behavioral_contract_ignores_non_test_crate_identity_namespaces() -> None:
+    for exposed_key in ("nautilus-binance", "nautilus_binance"):
+        def mutate(root: Path, exposed_key: str = exposed_key) -> None:
+            manifest = root / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8")
+                + f'\n[build-dependencies]\n{exposed_key} = '
+                + '{ package = "parser-shim", path = "parser-shim" }\n',
+                encoding="utf-8",
+            )
+            unrelated = "tools/parser-helper/Cargo.toml"
+            write(
+                root,
+                unrelated,
+                '[package]\nname = "parser-helper"\nversion = "0.1.0"\n'
+                + f'[dependencies]\n{exposed_key} = '
+                + '{ package = "parser-shim", path = "parser-shim" }\n',
+            )
+            subprocess.run(repo_git_command("add", unrelated), cwd=root, check=True)
+            harness = root / BINANCE_TIMESTAMP_TEST_PATH
+            harness.write_text(
+                "mod nautilus_binance {}\n" + harness.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+        assert scan_temp(mutate) == []
+
+
+def test_manifest_pin_census_governs_real_nt_build_dependency_alias() -> None:
     def mutate(root: Path) -> None:
         manifest = root / "Cargo.toml"
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
-            + '\n[build-dependencies]\nnautilus_binance = { package = "parser-shim", path = "parser-shim" }\n',
-            encoding="utf-8",
-        )
-        unrelated = "tools/parser-helper/Cargo.toml"
-        write(
-            root,
-            unrelated,
-            '[package]\nname = "parser-helper"\nversion = "0.1.0"\n'
-            '[dependencies]\nnautilus_binance = { package = "parser-shim", path = "parser-shim" }\n',
-        )
-        subprocess.run(repo_git_command("add", unrelated), cwd=root, check=True)
-        harness = root / BINANCE_TIMESTAMP_TEST_PATH
-        harness.write_text(
-            "mod nautilus_binance {}\n" + harness.read_text(encoding="utf-8"),
+            + '\n[build-dependencies]\nparser-shim = '
+            + f'{{ package = "nautilus-binance", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
             encoding="utf-8",
         )
 
-    assert scan_temp(mutate) == []
+    assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
+
+
+def test_binance_timestamp_behavioral_contract_accepts_builtin_lint_attributes() -> None:
+    for lint_level in ("allow", "warn", "deny", "forbid"):
+        def mutate(root: Path, lint_level: str = lint_level) -> None:
+            harness = root / BINANCE_TIMESTAMP_TEST_PATH
+            harness.write_text(
+                f"#[{lint_level}(dead_code)]\nfn harmless_helper() {{}}\n"
+                + harness.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+        assert scan_temp(mutate) == []
 
 
 def test_binance_timestamp_behavioral_contract_rejects_crate_root_extern_aliases() -> None:
@@ -1697,6 +1774,10 @@ def test_binance_timestamp_behavioral_contract_rejects_crate_root_identity_injec
         ),
         (
             "#[inject_crate_identity]\n",
+            None,
+        ),
+        (
+            "#[cfg_attr(all(), allow(dead_code))]\n",
             None,
         ),
     )

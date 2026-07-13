@@ -890,7 +890,7 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
             findings.append(f"{workflow_path}: missing {needle}")
 
 
-DEPENDENCY_SCOPE_KEYS = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
+DEPENDENCY_SCOPES = ("dependencies", "dev-dependencies", "build-dependencies")
 TEST_VISIBLE_DEPENDENCY_SCOPE_KEYS = frozenset({"dependencies", "dev-dependencies"})
 BINANCE_TIMESTAMP_CRATE_PACKAGE = "nautilus-binance"
 BINANCE_TIMESTAMP_CRATE_EXTERN = "nautilus_binance"
@@ -910,17 +910,31 @@ class CargoDependencyEntry:
 
 
 def dependency_tables(
-    value: object,
-    path: tuple[str, ...] = (),
+    manifest: object,
 ) -> list[tuple[tuple[str, ...], dict[str, object]]]:
-    if not isinstance(value, dict):
+    if not isinstance(manifest, dict):
         return []
     tables: list[tuple[tuple[str, ...], dict[str, object]]] = []
-    for key, child in value.items():
-        child_path = (*path, str(key))
-        if key in DEPENDENCY_SCOPE_KEYS and isinstance(child, dict):
-            tables.append((child_path, child))
-        tables.extend(dependency_tables(child, child_path))
+    for scope in DEPENDENCY_SCOPES:
+        table = manifest.get(scope)
+        if isinstance(table, dict):
+            tables.append(((scope,), table))
+
+    workspace = manifest.get("workspace")
+    if isinstance(workspace, dict):
+        table = workspace.get("dependencies")
+        if isinstance(table, dict):
+            tables.append((("workspace", "dependencies"), table))
+
+    target = manifest.get("target")
+    if isinstance(target, dict):
+        for selector, target_configuration in target.items():
+            if not isinstance(target_configuration, dict):
+                continue
+            for scope in DEPENDENCY_SCOPES:
+                table = target_configuration.get(scope)
+                if isinstance(table, dict):
+                    tables.append((("target", str(selector), scope), table))
     return tables
 
 
@@ -956,8 +970,7 @@ def nt_manifest_dependencies(manifest: object) -> list[tuple[str, object]]:
             else None
         )
         if (
-            entry.exposed_key.startswith("nautilus-")
-            or entry.package_name.startswith("nautilus-")
+            entry.package_name.startswith("nautilus-")
             or (isinstance(git, str) and "nautilus_trader.git" in git)
         ):
             dependencies.append((entry.location, entry.specification))
@@ -1441,6 +1454,7 @@ RUST_TOKEN_PATTERN = re.compile(
 RUST_OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}"}
 RUST_CLOSE_TO_OPEN = {value: key for key, value in RUST_OPEN_TO_CLOSE.items()}
 GOVERNED_ASSERTION_MACROS = frozenset({"assert", "assert_eq", "assert_ne"})
+INERT_BUILTIN_LINT_ATTRIBUTES = frozenset({"allow", "warn", "deny", "forbid"})
 
 
 def rust_tokens_and_delimiter_pairs(
@@ -1466,6 +1480,26 @@ def rust_tokens_and_delimiter_pairs(
     return tokens, pairs
 
 
+def binance_crate_root_attribute_is_inert(
+    tokens: list[RustToken],
+    pairs: dict[int, int],
+    opening: int,
+    closing: int,
+) -> bool:
+    contents = [token.value for token in tokens[opening + 1 : closing]]
+    if contents == ["test"]:
+        return True
+    attribute_name = tokens[opening + 1].value if opening + 1 < closing else None
+    arguments = opening + 2
+    return (
+        attribute_name in INERT_BUILTIN_LINT_ATTRIBUTES
+        and arguments < closing
+        and tokens[arguments].value == "("
+        and pairs.get(arguments) == closing - 1
+        and arguments + 1 < closing - 1
+    )
+
+
 def binance_crate_root_identity_substitution_is_possible(masked: str) -> bool:
     tokenized = rust_tokens_and_delimiter_pairs(masked)
     if tokenized is None:
@@ -1478,9 +1512,9 @@ def binance_crate_root_identity_substitution_is_possible(masked: str) -> bool:
             if index + 1 >= len(tokens) or tokens[index + 1].value != "[":
                 return True
             closing = pairs.get(index + 1)
-            if closing is None or [
-                token.value for token in tokens[index + 2 : closing]
-            ] != ["test"]:
+            if closing is None or not binance_crate_root_attribute_is_inert(
+                tokens, pairs, index + 1, closing
+            ):
                 return True
             index = closing + 1
             continue

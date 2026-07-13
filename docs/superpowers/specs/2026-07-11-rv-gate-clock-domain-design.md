@@ -73,6 +73,11 @@ receive-domain classifier.
   reviewed pin, boundary registry, source fence, and differentials. Structurally
   missing signal receive context remains fail-closed. A genuinely local trigger uses
   a distinct typed constructor that captures strategy time once at handler entry.
+- Signal-triggered exits capture one local strategy-clock timestamp at `on_quote`
+  handler entry and use it for lifecycle, expiry, and refresh evaluation. The quote's
+  venue `ts_event` remains trigger-event evidence, while `ts_init` remains the
+  receive-domain stamp for RV classification and provenance. Valid and invalid signal
+  observations use the same three-domain ownership.
 - `MissingEvaluationEventTime` remains fail-closed only for a structurally absent
   receive stamp. No production trigger is allowed to construct that shape.
 
@@ -241,6 +246,9 @@ the same clock-domain ownership defect, but it is separable from the RV correcti
   2,001 ms changes behavior even when both inputs are receive-fresh. The incident's
   1-347 ms measurement covered a different clock pair and does not bound this path;
   present production frequency remains unmeasured.
+
+The existing defect currently fails closed; it remains tracked in this section for a
+separate follow-up and is not changed by the signal lifecycle correction.
 
 The follow-up ownership rule is evaluation receive time compared only with each
 input's receive time. Venue event timestamps remain available for same-source

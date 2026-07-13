@@ -50,7 +50,8 @@
 The read-only review gate is complete at exact head `f572791db`: independently
 clocked signal/reference event timestamps are directly compared on the live taker
 entry path. This is a confirmed, separable defect. Do not change reference-price
-behavior in #1354.
+behavior in #1354. The current behavior fails closed and remains tracked in the
+design's confirmed separate-defect section and this task for its own follow-up.
 
 **Files to inspect:**
 - `src/strategies/binary_oracle_edge_taker/mod.rs`
@@ -156,6 +157,7 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 - [x] Structurally missing receive context uses the test-only diagnostic constructor and retains `MissingEvaluationEventTime → Hold` without making production pricing stamps optional.
 - [x] Using the authoritative NT pin landed on `main` through #1367, add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
 - [x] Production signal handling requires typed `QuoteTick.ts_init`; no strategy-clock fallback remains. Genuine local selection evaluation uses the distinct typed local-handler constructor.
+- [x] Signal-triggered exits capture one local timestamp at `on_quote` handler entry for lifecycle, expiry, and refresh evaluation; venue `ts_event` remains event evidence and `ts_init` remains receive/RV provenance for both valid and invalid signal observations.
 - [ ] Verify the fresh-port six-tick, mixed-trigger, and missing-context tests GREEN through exact-head remote verification and cite their historical RED transcripts; do not recreate RED or treat `2b83f512a` as authoritative proof.
 
 ### Task 4: Pin entry and maker blast radius

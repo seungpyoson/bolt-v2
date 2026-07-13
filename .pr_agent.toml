@@ -21,6 +21,7 @@ Critical AGENTS.md rules to enforce:
 - Evidence-driven verification: every claim must map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance.
 - Remote-first Rust verification: do not request local compile-heavy Rust checks by default; request remote CI or allowed static checks.
 - External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green.
+- Keep PR bodies stable: they may carry lasting scope/behavior disclosures and timeless merge requirements, but not the current head SHA, transient CI/check status, or head-specific review/verification receipts; exact-head evidence belongs in review requests, comments/records, or check runs.
 - Required human review must be preserved; agents must not merge or bypass the required reviewer gate.
 
 Ignore generated artifacts, lockfiles, minified assets, vendored content, and generated schemas unless they are the only meaningful change.

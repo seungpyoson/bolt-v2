@@ -42,13 +42,22 @@ const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(RvClockDomainAmendmentSnapshot, u64, bo
 fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     rv_clock_domain_amendment_configure_surface(&mut strategy);
+    rv_clock_domain_amendment_prepare_non_rv_inputs(&mut strategy);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    assert_rv_clock_domain_amendment_non_rv_entry_gate_open(&strategy);
+    strategy
+}
+
+fn rv_clock_domain_amendment_prepare_non_rv_inputs(strategy: &mut BinaryOracleEdgeTaker) {
     strategy.active.last_reference_ts_ms = Some(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS);
     strategy.pricing.set_selected_pricing_spot(Some(fast_spot(
         "bybit",
         3_100.5,
         RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
     )));
-    register_test_strategy_with_active_instruments(&mut strategy);
+}
+
+fn assert_rv_clock_domain_amendment_non_rv_entry_gate_open(strategy: &BinaryOracleEdgeTaker) {
     assert!(
         strategy
             .entry_gate_decision_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS)
@@ -56,7 +65,6 @@ fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
             .is_empty(),
         "the amendment fixture's ordinary non-RV entry gate must be open before testing RV receive-time classification"
     );
-    strategy
 }
 
 fn rv_clock_domain_amendment_configure_surface(strategy: &mut BinaryOracleEdgeTaker) {
@@ -136,31 +144,6 @@ fn rv_clock_domain_amendment_set_snapshot(
             "the negative fixture must be a present RejectedNotReady snapshot"
         );
     }
-}
-
-fn production_callsite(source: &str, anchor: &str) -> String {
-    let start = source
-        .find(anchor)
-        .unwrap_or_else(|| panic!("production call-site anchor missing: {anchor}"));
-    source[start..]
-        .lines()
-        .take(18)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-#[test]
-fn rv_clock_domain_amendment_sized_production_callsite_forwards_evaluation_receive_ms() {
-    let source = include_str!("../mod.rs");
-    let callsite = production_callsite(source, "let sized_fee_uncertainty_bps =");
-    assert!(callsite.contains("now_ms,\n                                receive_context,"));
-}
-
-#[test]
-fn rv_clock_domain_amendment_resized_production_callsite_forwards_evaluation_receive_ms() {
-    let source = include_str!("../mod.rs");
-    let callsite = production_callsite(source, "let resized_fee_uncertainty_bps =");
-    assert!(callsite.contains("now_ms,\n                                receive_context,"));
 }
 
 impl FeeProvider for PriceSensitiveEntryFeeProvider {
@@ -353,6 +336,7 @@ fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
         submit_admission,
     );
     rv_clock_domain_amendment_configure_surface(&mut strategy);
+    rv_clock_domain_amendment_prepare_non_rv_inputs(&mut strategy);
     strategy.active.warmup_count = 0;
     let strategy_id = unique_log_capture_strategy_id("rv-context-skip");
     strategy.config.strategy_id = strategy_id.clone();
@@ -393,8 +377,10 @@ fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
         submit_admission,
     );
     rv_clock_domain_amendment_configure_surface(&mut strategy);
+    rv_clock_domain_amendment_prepare_non_rv_inputs(&mut strategy);
     set_shadow_order_execution_policy(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
+    assert_rv_clock_domain_amendment_non_rv_entry_gate_open(&strategy);
     let strategy_id = unique_log_capture_strategy_id("rv-context-submit");
     strategy.config.strategy_id = strategy_id.clone();
 
@@ -424,6 +410,59 @@ fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
             && message.contains(&strategy_id)
             && message.contains("realized_vol=Some(1.5)")
     }));
+}
+
+#[test]
+fn rv_clock_domain_amendment_book_route_uses_init_stamp_for_entry_gate() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    rv_clock_domain_amendment_configure_surface(&mut strategy);
+    set_shadow_order_execution_policy(&mut strategy);
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let lifecycle_now_ms = 1_200;
+    let book_event_ms = 1_701;
+    let book_receive_ms = 1_200;
+    clock.borrow_mut().set_time(UnixNanos::from(
+        lifecycle_now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+    let instrument_id = selected_entry_instrument(&strategy);
+    let stamped_deltas = book_deltas_with_stamps(
+        instrument_id,
+        &[(BookAction::Update, OrderSide::Sell, 0.50, 5_000.0)],
+        book_event_ms,
+        book_receive_ms,
+    );
+    assert_ne!(stamped_deltas.ts_event, stamped_deltas.ts_init);
+
+    strategy
+        .on_book_deltas(&stamped_deltas)
+        .expect("unequal-stamped book deltas must stay inside the actor loop");
+
+    let snapshots = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        snapshots[0].realized_volatility_gate_result,
+        Some(BoltV3RvGateResult::Accepted),
+        "entry must use OrderBookDeltas.ts_init; the venue event stamp is deliberately stale"
+    );
+    assert_eq!(
+        snapshots[0].realized_volatility_receive_watermark_ms,
+        Some(LocalReceiveMs::new(book_receive_ms))
+    );
 }
 
 #[test]
@@ -789,13 +828,16 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
         (3_000, 3_102.0, 3_103.0),
         (4_000, 3_103.0, 3_104.0),
     ] {
-        strategy.observe_reference_snapshot(&ReferenceSnapshot {
-            ts_ms,
-            topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
-            confidence: 1.0,
-            venues: vec![orderbook_venue("bybit", 0.9, fast_spot_price, ts_ms)],
-        });
+        strategy.observe_reference_snapshot(
+            &ReferenceSnapshot {
+                ts_ms,
+                topic: "platform.reference.test.spot".to_string(),
+                fair_value: Some(fair_value),
+                confidence: 1.0,
+                venues: vec![orderbook_venue("bybit", 0.9, fast_spot_price, ts_ms)],
+            },
+            LocalReceiveMs::new(ts_ms),
+        );
     }
     strategy
         .pricing
@@ -1988,16 +2030,19 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
 fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 1_200,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_100.5),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_100.5, 1_200),
-            orderbook_venue("bybit", 0.9, 3_101.0, 1_200),
-        ],
-    });
+    strategy.observe_reference_snapshot(
+        &ReferenceSnapshot {
+            ts_ms: 1_200,
+            topic: "platform.reference.test.spot".to_string(),
+            fair_value: Some(3_100.5),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("reference", 1.0, 3_100.5, 1_200),
+                orderbook_venue("bybit", 0.9, 3_101.0, 1_200),
+            ],
+        },
+        LocalReceiveMs::new(1_200),
+    );
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);

@@ -301,19 +301,21 @@ fn freeze_continues_reference_preparation_without_opening_entries() {
     market.price_to_beat = Some(3_100.0);
     strategy.apply_selection_snapshot(snapshot);
 
-    strategy.observe_reference_snapshot(&reference_tick(900, 3_099.0));
+    strategy.observe_reference_snapshot(&reference_tick(900, 3_099.0), LocalReceiveMs::new(900));
     assert!(strategy.active.interval_open.is_none());
     assert_eq!(strategy.active.last_reference_ts_ms, None);
     assert_eq!(strategy.active.warmup_count, 0);
 
-    strategy.observe_reference_snapshot(&reference_tick(1_000, 3_100.0));
+    strategy
+        .observe_reference_snapshot(&reference_tick(1_000, 3_100.0), LocalReceiveMs::new(1_000));
     assert_eq!(strategy.active.interval_open, Some(3_100.0));
     assert_eq!(strategy.active.last_reference_ts_ms, Some(1_000));
     assert_eq!(strategy.active.warmup_count, 1);
     assert!(!strategy.active.warmup_complete());
     assert!(strategy.active.forced_flat);
 
-    strategy.observe_reference_snapshot(&reference_tick(1_100, 3_101.0));
+    strategy
+        .observe_reference_snapshot(&reference_tick(1_100, 3_101.0), LocalReceiveMs::new(1_100));
     assert_eq!(strategy.active.last_reference_ts_ms, Some(1_100));
     assert_eq!(strategy.active.warmup_count, 2);
     assert!(strategy.active.warmup_complete());
@@ -680,11 +682,14 @@ fn warmup_requires_consecutive_fresh_ticks() {
     market.price_to_beat = Some(3_100.0);
     strategy.apply_selection_snapshot(snapshot);
 
-    strategy.observe_reference_snapshot(&reference_tick(1_000, 3_100.0));
-    strategy.observe_reference_snapshot(&reference_tick(1_100, 3_101.0));
+    strategy
+        .observe_reference_snapshot(&reference_tick(1_000, 3_100.0), LocalReceiveMs::new(1_000));
+    strategy
+        .observe_reference_snapshot(&reference_tick(1_100, 3_101.0), LocalReceiveMs::new(1_100));
     assert!(!strategy.active.warmup_complete());
 
-    strategy.observe_reference_snapshot(&reference_tick(1_200, 3_102.0));
+    strategy
+        .observe_reference_snapshot(&reference_tick(1_200, 3_102.0), LocalReceiveMs::new(1_200));
     assert!(strategy.active.warmup_complete());
 }
 

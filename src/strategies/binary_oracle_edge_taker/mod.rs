@@ -1532,28 +1532,35 @@ impl BinaryOracleEdgeTaker {
     fn observe_signal_quote(
         &mut self,
         quote: &FastSpotObservation,
+        lifecycle_now_ms: u64,
         evaluation_receive_ms: LocalReceiveMs,
     ) {
         self.latest_signal_quote = Some(quote.clone());
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
-        self.after_signal_quote_observed(quote.observed_ts_ms, evaluation_receive_ms);
+        self.after_signal_quote_observed(
+            lifecycle_now_ms,
+            quote.observed_ts_ms,
+            evaluation_receive_ms,
+        );
     }
 
     fn observe_invalid_signal_quote(
         &mut self,
         venue: &str,
         observed_ts_ms: u64,
+        lifecycle_now_ms: u64,
         evaluation_receive_ms: LocalReceiveMs,
     ) {
         self.latest_signal_quote = None;
         self.pricing
             .observe_invalid_signal_quote(venue, observed_ts_ms);
-        self.after_signal_quote_observed(observed_ts_ms, evaluation_receive_ms);
+        self.after_signal_quote_observed(lifecycle_now_ms, observed_ts_ms, evaluation_receive_ms);
     }
 
     fn after_signal_quote_observed(
         &mut self,
+        lifecycle_now_ms: u64,
         observed_ts_ms: u64,
         evaluation_receive_ms: LocalReceiveMs,
     ) {
@@ -1562,7 +1569,7 @@ impl BinaryOracleEdgeTaker {
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
-                observed_ts_ms,
+                lifecycle_now_ms,
                 ExitEvaluationTriggerContext::from_market_data(
                     BoltV3ExitTriggerSource::SignalQuote,
                     observed_ts_ms,
@@ -1581,7 +1588,11 @@ impl BinaryOracleEdgeTaker {
     }
 
     #[cfg(test)]
-    fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
+    fn observe_reference_snapshot(
+        &mut self,
+        snapshot: &ReferenceSnapshot,
+        receive_ms: LocalReceiveMs,
+    ) {
         self.active.observe_reference_snapshot(snapshot);
         self.pricing.observe_reference_snapshot(
             snapshot,
@@ -1593,11 +1604,11 @@ impl BinaryOracleEdgeTaker {
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
-                snapshot.ts_ms,
+                receive_ms.value(),
                 ExitEvaluationTriggerContext::from_market_data(
                     BoltV3ExitTriggerSource::ReferenceUpdate,
                     snapshot.ts_ms,
-                    LocalReceiveMs::new(snapshot.ts_ms),
+                    receive_ms,
                 ),
             )
         {
@@ -7774,6 +7785,7 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
+        let lifecycle_now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         for snapshot in self.context.observe_realized_volatility_quote(quote) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
         }
@@ -7783,11 +7795,12 @@ impl DataActor for BinaryOracleEdgeTaker {
         {
             let receive_ms = LocalReceiveMs::new(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64);
             if let Some(signal_quote) = self.signal_quote_from_tick(quote, receive_ms) {
-                self.observe_signal_quote(&signal_quote, receive_ms);
+                self.observe_signal_quote(&signal_quote, lifecycle_now_ms, receive_ms);
             } else if let Some(signal_venue) = self.config.signal_venue.clone() {
                 self.observe_invalid_signal_quote(
                     &signal_venue,
                     quote.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+                    lifecycle_now_ms,
                     receive_ms,
                 );
             }

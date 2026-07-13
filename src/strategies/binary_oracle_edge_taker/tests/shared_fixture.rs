@@ -2239,6 +2239,15 @@ pub(super) fn book_deltas(
     instrument_id: InstrumentId,
     deltas: &[(BookAction, OrderSide, f64, f64)],
 ) -> nautilus_model::data::OrderBookDeltas {
+    book_deltas_with_stamps(instrument_id, deltas, 0, 0)
+}
+
+pub(super) fn book_deltas_with_stamps(
+    instrument_id: InstrumentId,
+    deltas: &[(BookAction, OrderSide, f64, f64)],
+    ts_event_ms: u64,
+    ts_init_ms: u64,
+) -> nautilus_model::data::OrderBookDeltas {
     let deltas = deltas
         .iter()
         .map(|(action, side, price, size)| {
@@ -2253,8 +2262,8 @@ pub(super) fn book_deltas(
                 ),
                 0,
                 0,
-                0.into(),
-                0.into(),
+                UnixNanos::from(ts_event_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+                UnixNanos::from(ts_init_ms.saturating_mul(NANOS_PER_MILLI_U64)),
             )
             .expect("test order book delta should build")
         })

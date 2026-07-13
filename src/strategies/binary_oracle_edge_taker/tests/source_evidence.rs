@@ -497,10 +497,11 @@ fn interval_open_captures_source_bound_price_to_beat_at_or_after_market_start() 
     market.price_to_beat = Some(3_099.0);
     strategy.apply_selection_snapshot(snapshot);
 
-    strategy.observe_reference_snapshot(&reference_tick(900, 3_100.0));
+    strategy.observe_reference_snapshot(&reference_tick(900, 3_100.0), LocalReceiveMs::new(900));
     assert!(strategy.active.interval_open.is_none());
 
-    strategy.observe_reference_snapshot(&reference_tick(1_000, 3_101.0));
+    strategy
+        .observe_reference_snapshot(&reference_tick(1_000, 3_101.0), LocalReceiveMs::new(1_000));
     assert_eq!(strategy.active.interval_open, Some(3_099.0));
 }
 
@@ -509,16 +510,19 @@ fn interval_open_does_not_use_reference_price_without_source_bound_price_to_beat
     let mut strategy = test_strategy();
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 1_000,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_107.0),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_100.0, 1_000),
-            orderbook_venue("bybit", 0.9, 3_120.0, 1_000),
-        ],
-    });
+    strategy.observe_reference_snapshot(
+        &ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.spot".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("reference", 1.0, 3_100.0, 1_000),
+                orderbook_venue("bybit", 0.9, 3_120.0, 1_000),
+            ],
+        },
+        LocalReceiveMs::new(1_000),
+    );
 
     assert_eq!(strategy.active.interval_open, None);
     assert_eq!(strategy.active.last_reference_ts_ms, None);
@@ -535,16 +539,19 @@ fn interval_open_uses_source_bound_price_to_beat_over_reference() {
     market.price_to_beat = Some(3_099.0);
     strategy.apply_selection_snapshot(snapshot);
 
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 1_000,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_107.0),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_100.0, 1_000),
-            orderbook_venue("bybit", 0.9, 3_120.0, 1_000),
-        ],
-    });
+    strategy.observe_reference_snapshot(
+        &ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.spot".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("reference", 1.0, 3_100.0, 1_000),
+                orderbook_venue("bybit", 0.9, 3_120.0, 1_000),
+            ],
+        },
+        LocalReceiveMs::new(1_000),
+    );
 
     assert_eq!(strategy.active.interval_open, Some(3_099.0));
 }
@@ -554,13 +561,16 @@ fn interval_open_does_not_use_fused_reference_without_source_bound_price_to_beat
     let mut strategy = test_strategy();
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 1_000,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_107.0),
-        confidence: 1.0,
-        venues: vec![],
-    });
+    strategy.observe_reference_snapshot(
+        &ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.spot".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![],
+        },
+        LocalReceiveMs::new(1_000),
+    );
 
     assert_eq!(strategy.active.interval_open, None);
     assert_eq!(strategy.active.last_reference_ts_ms, None);
@@ -903,16 +913,19 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
     strategy.pricing.last_fast_venue_jitter_ms = Some(3);
     strategy.pricing.last_lead_agreement_corr = Some(probability(0.99));
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 1_200,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_100.5),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_100.5, 1_200),
-            orderbook_venue("bybit", 0.9, 3_100.5, 1_200),
-        ],
-    });
+    strategy.observe_reference_snapshot(
+        &ReferenceSnapshot {
+            ts_ms: 1_200,
+            topic: "platform.reference.test.spot".to_string(),
+            fair_value: Some(3_100.5),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("reference", 1.0, 3_100.5, 1_200),
+                orderbook_venue("bybit", 0.9, 3_100.5, 1_200),
+            ],
+        },
+        LocalReceiveMs::new(1_200),
+    );
     strategy.pricing.last_fast_venue_age_ms = Some(17);
     strategy.pricing.last_fast_venue_jitter_ms = Some(3);
     strategy.pricing.last_lead_agreement_corr = Some(probability(0.99));
@@ -2883,8 +2896,17 @@ fn recorded_exit_decisions(
 #[test]
 fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let signal_event_ms = 1_200;
+    let lifecycle_now_ms = 1_200;
+    let position_interval_end_ms = strategy
+        .managed_position()
+        .and_then(|managed| managed.position.lifecycle.interval_end_ms())
+        .expect("exit fixture must retain the position's interval end");
+    let signal_event_ms = position_interval_end_ms.saturating_add(1);
     let signal_receive_ms = 1_220;
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock.borrow_mut().set_time(UnixNanos::from(
+        lifecycle_now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+    ));
     strategy.pricing.seed_ready_realized_vol(
         Some("<SOURCE_ID>".to_string()),
         1.5,
@@ -2913,6 +2935,7 @@ fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
 
     let records = recorded_exit_evaluations(&evidence);
     assert_eq!(records.len(), 1);
+    assert_eq!(records[0].exit_eval_now_ms, lifecycle_now_ms as i64);
     assert_eq!(records[0].trigger_ts_event_ms, Some(signal_event_ms as i64));
     assert_eq!(
         records[0].trigger_ts_init_ms,
@@ -2921,8 +2944,10 @@ fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
     assert_eq!(
         records[0].rv_gate_result,
         crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
-        "signal evaluation must use QuoteTick.ts_init, not its venue event stamp or strategy clock"
+        "signal RV evaluation must use QuoteTick.ts_init, not its venue event stamp or strategy clock"
     );
+    assert_eq!(records[0].exit_decision, BoltV3ExitDecisionOutcome::Exit);
+    assert_eq!(records[0].submission_blocked_reason, None);
 }
 
 #[test]

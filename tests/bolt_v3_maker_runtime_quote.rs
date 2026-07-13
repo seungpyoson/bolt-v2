@@ -284,8 +284,13 @@ fn rv_clock_domain_amendment_maker_route_owns_explicit_evaluation_receive_time()
     let quote_receive_ms = LocalReceiveMs::new(1_000);
     let snapshot_receive_ms = LocalReceiveMs::new(1_100);
     let evaluation_receive_ms = LocalReceiveMs::new(1_150);
+    let lifecycle_now_ms = 1_251;
     assert!(quote_receive_ms < snapshot_receive_ms);
     assert!(snapshot_receive_ms <= evaluation_receive_ms);
+    assert!(
+        evaluation_receive_ms.value() < lifecycle_now_ms,
+        "the differential must distinguish caller-owned receive time from lifecycle wall time"
+    );
 
     let mut selector = ReferencePriceSelector::new(
         TEST_REFERENCE_ASSET,
@@ -307,7 +312,7 @@ fn rv_clock_domain_amendment_maker_route_owns_explicit_evaluation_receive_time()
 
     let result = maker_reference_current_price_fair_value_decision(
         &mut selector,
-        evaluation_receive_ms.value(),
+        lifecycle_now_ms,
         MakerRuntimeReferenceFairValueInput {
             family_key: static_binary_event::KEY,
             interval_start_ms: 1_000,

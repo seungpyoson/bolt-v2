@@ -732,6 +732,8 @@ fn probability_wire_fields_remain_string_payload_bytes() {
             r#""reference_current_price":"3100.5","fast_venue_available":true,"#,
             r#""reference_current_price_available":true,"realized_vol":"2.5","#,
             r#""realized_vol_source_venue":"fast-source","realized_vol_source_ts_ms":1100,"#,
+            r#""realized_vol_gate_result":"accepted","realized_vol_receive_watermark_ms":1099,"#,
+            r#""realized_vol_snapshot":null,"#,
             r#""fair_probability_up":"0.6","fair_probability_down":"0.4","selected_side":"up","#,
             r#""sized_notional":"25","sized_worst_case_ev_bps":"12.5","#,
             r#""sized_edge_cents_per_share":"1.25","theta_scaled_min_edge_bps":"10","#,

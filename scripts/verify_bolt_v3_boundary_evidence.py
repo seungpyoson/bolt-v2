@@ -891,9 +891,22 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
 
 
 DEPENDENCY_SCOPE_KEYS = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
+TEST_VISIBLE_DEPENDENCY_SCOPE_KEYS = frozenset({"dependencies", "dev-dependencies"})
+BINANCE_TIMESTAMP_CRATE_PACKAGE = "nautilus-binance"
+BINANCE_TIMESTAMP_CRATE_EXTERN = "nautilus_binance"
 NT_PACKAGE_IDENTITY_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])nautilus-[A-Za-z0-9_-]+(?=$|[:@#/?])"
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class CargoDependencyEntry:
+    location: str
+    scope: tuple[str, ...]
+    exposed_key: str
+    extern_name: str
+    package_name: str
+    specification: object
 
 
 def dependency_tables(
@@ -911,21 +924,113 @@ def dependency_tables(
     return tables
 
 
+def cargo_dependency_entries(manifest: object) -> list[CargoDependencyEntry]:
+    entries: list[CargoDependencyEntry] = []
+    for path, table in dependency_tables(manifest):
+        for raw_name, specification in table.items():
+            exposed_key = str(raw_name)
+            package_name = exposed_key
+            if isinstance(specification, dict) and isinstance(
+                specification.get("package"), str
+            ):
+                package_name = specification["package"]
+            entries.append(
+                CargoDependencyEntry(
+                    location=f"{'.'.join(path)}.{exposed_key}",
+                    scope=path,
+                    exposed_key=exposed_key,
+                    extern_name=exposed_key.replace("-", "_"),
+                    package_name=package_name,
+                    specification=specification,
+                )
+            )
+    return entries
+
+
 def nt_manifest_dependencies(manifest: object) -> list[tuple[str, object]]:
     dependencies: list[tuple[str, object]] = []
-    for path, table in dependency_tables(manifest):
-        for name, specification in table.items():
-            package_name = (
-                specification.get("package") if isinstance(specification, dict) else None
-            )
-            git = specification.get("git") if isinstance(specification, dict) else None
-            if (
-                name.startswith("nautilus-")
-                or (isinstance(package_name, str) and package_name.startswith("nautilus-"))
-                or (isinstance(git, str) and "nautilus_trader.git" in git)
-            ):
-                dependencies.append((f"{'.'.join(path)}.{name}", specification))
+    for entry in cargo_dependency_entries(manifest):
+        git = (
+            entry.specification.get("git")
+            if isinstance(entry.specification, dict)
+            else None
+        )
+        if (
+            entry.exposed_key.startswith("nautilus-")
+            or entry.package_name.startswith("nautilus-")
+            or (isinstance(git, str) and "nautilus_trader.git" in git)
+        ):
+            dependencies.append((entry.location, entry.specification))
     return dependencies
+
+
+def dependency_scope_is_visible_to_integration_tests(scope: tuple[str, ...]) -> bool:
+    if scope in (("dependencies",), ("dev-dependencies",)):
+        return True
+    return (
+        len(scope) == 3
+        and scope[0] == "target"
+        and scope[-1] in TEST_VISIBLE_DEPENDENCY_SCOPE_KEYS
+    )
+
+
+def binance_timestamp_dependency_identity_errors(manifest: object) -> list[str]:
+    entries = [
+        entry
+        for entry in cargo_dependency_entries(manifest)
+        if dependency_scope_is_visible_to_integration_tests(entry.scope)
+    ]
+    errors: list[str] = []
+    canonical_entries = [
+        entry
+        for entry in entries
+        if entry.extern_name == BINANCE_TIMESTAMP_CRATE_EXTERN
+    ]
+    if not canonical_entries:
+        return [
+            f"missing canonical {BINANCE_TIMESTAMP_CRATE_PACKAGE!r} dependency exposed as "
+            f"{BINANCE_TIMESTAMP_CRATE_EXTERN!r}"
+        ]
+
+    for entry in canonical_entries:
+        specification = entry.specification
+        canonical_source = (
+            isinstance(specification, dict)
+            and specification.get("git") == EXPECTED_NT_GIT
+            and specification.get("rev") == EXPECTED_NT_REV
+            and not any(
+                key in specification
+                for key in (
+                    "branch",
+                    "tag",
+                    "path",
+                    "version",
+                    "registry",
+                    "workspace",
+                )
+            )
+        )
+        if (
+            entry.exposed_key != BINANCE_TIMESTAMP_CRATE_PACKAGE
+            or entry.package_name != BINANCE_TIMESTAMP_CRATE_PACKAGE
+            or not canonical_source
+        ):
+            errors.append(
+                f"{entry.location} exposes {entry.extern_name!r} from package "
+                f"{entry.package_name!r}; it must be the canonical "
+                f"{BINANCE_TIMESTAMP_CRATE_PACKAGE!r} Git dependency"
+            )
+
+    for entry in entries:
+        if (
+            entry.package_name == BINANCE_TIMESTAMP_CRATE_PACKAGE
+            and entry.exposed_key != BINANCE_TIMESTAMP_CRATE_PACKAGE
+        ):
+            errors.append(
+                f"{entry.location} renames {BINANCE_TIMESTAMP_CRATE_PACKAGE!r}; the proof "
+                "dependency must retain its canonical exposed key"
+            )
+    return errors
 
 
 def cargo_identity_references_nt(value: object) -> bool:
@@ -1359,6 +1464,45 @@ def rust_tokens_and_delimiter_pairs(
     if stack:
         return None
     return tokens, pairs
+
+
+def binance_crate_root_identity_substitution_is_possible(masked: str) -> bool:
+    tokenized = rust_tokens_and_delimiter_pairs(masked)
+    if tokenized is None:
+        return True
+    tokens, pairs = tokenized
+    index = 0
+    while index < len(tokens):
+        value = tokens[index].value
+        if value == "#":
+            if index + 1 >= len(tokens) or tokens[index + 1].value != "[":
+                return True
+            closing = pairs.get(index + 1)
+            if closing is None or [
+                token.value for token in tokens[index + 2 : closing]
+            ] != ["test"]:
+                return True
+            index = closing + 1
+            continue
+        if value in RUST_OPEN_TO_CLOSE:
+            closing = pairs.get(index)
+            if closing is None:
+                return True
+            index = closing + 1
+            continue
+        identifier = value[2:] if value.startswith("r#") else value
+        if (
+            identifier == "extern"
+            and index + 1 < len(tokens)
+            and tokens[index + 1].value == "crate"
+        ):
+            return True
+        if value == "!" and index > 0:
+            predecessor = tokens[index - 1].value
+            if re.fullmatch(r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*", predecessor):
+                return True
+        index += 1
+    return False
 
 
 def binance_assertion_contract_is_canonical(masked: str) -> bool:
@@ -1891,6 +2035,12 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
         )
         return
 
+    for error in binance_timestamp_dependency_identity_errors(manifest):
+        findings.append(
+            f"{manifest_surface}: required Binance SBE timestamp proof dependency identity: "
+            f"{error}"
+        )
+
     test_entries = manifest.get("test", [])
     if not isinstance(test_entries, list):
         findings.append(
@@ -1960,6 +2110,11 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
         )
 
     masked_test_text = _mask_rust_non_code(test_text)
+    if binance_crate_root_identity_substitution_is_possible(masked_test_text):
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-root identity substitution is forbidden; "
+            "the proof harness must not contain extern crate items or item-producing macros"
+        )
     if not binance_assertion_contract_is_canonical(masked_test_text):
         findings.append(
             f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "

@@ -142,6 +142,7 @@ def clean_files(root: Path) -> None:
         root,
         "Cargo.toml",
         "[dependencies]\n"
+        f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
         f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
         "[[test]]\n"
         f'name = "{BINANCE_TIMESTAMP_TEST_TARGET}"\n'
@@ -676,6 +677,7 @@ def test_pin_census_reports_one_pin_finding_for_each_missing_required_surface() 
 def test_manifest_pin_census_accepts_order_multiline_and_dependency_scopes() -> None:
     manifest = f'''
 [dependencies]
+nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 nautilus-common = {{ rev = "{EXPECTED_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}
 
 [dev-dependencies.nautilus-core]
@@ -1595,6 +1597,128 @@ def test_binance_timestamp_behavioral_contract_rejects_parser_identity_shadowing
         assert_finding(
             scan_temp(mutate),
             f"{BINANCE_TIMESTAMP_TEST_PATH}: governed NautilusTrader parser identity must not be shadowed",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_fake_crate_identity_across_test_scopes() -> None:
+    canonical = (
+        f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", '
+        f'rev = "{EXPECTED_NT_REV}" }}'
+    )
+    renamed_pin = (
+        'pinned-binance = { package = "nautilus-binance", '
+        'git = "https://github.com/seungpyoson/nautilus_trader.git", '
+        f'rev = "{EXPECTED_NT_REV}" }}'
+    )
+    mutations = [
+        renamed_pin
+        + '\nnautilus_binance = { package = "parser-shim", path = "parser-shim" }',
+        renamed_pin
+        + '\nnautilus-binance = { package = "parser-shim", path = "parser-shim" }',
+    ]
+    for scope in (
+        "[dev-dependencies]",
+        "[target.'cfg(unix)'.dependencies]",
+        "[target.'cfg(unix)'.dev-dependencies]",
+    ):
+        for exposed_key in ("nautilus-binance", "nautilus_binance"):
+            mutations.append(
+                f"{canonical}\n\n{scope}\n{exposed_key} = "
+                '{ package = "parser-shim", path = "parser-shim" }'
+            )
+    mutations.append(
+        renamed_pin
+        + '\n\n[workspace.dependencies]\n'
+        + 'nautilus-binance = { package = "parser-shim", path = "parser-shim" }\n'
+        + '\n[dev-dependencies]\nnautilus-binance = { workspace = true }'
+    )
+    for replacement in mutations:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            manifest = root / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8").replace(canonical, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "Cargo.toml: required Binance SBE timestamp proof dependency identity",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_ignores_non_test_crate_identity_namespaces() -> None:
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + '\n[build-dependencies]\nnautilus_binance = { package = "parser-shim", path = "parser-shim" }\n',
+            encoding="utf-8",
+        )
+        unrelated = "tools/parser-helper/Cargo.toml"
+        write(
+            root,
+            unrelated,
+            '[package]\nname = "parser-helper"\nversion = "0.1.0"\n'
+            '[dependencies]\nnautilus_binance = { package = "parser-shim", path = "parser-shim" }\n',
+        )
+        subprocess.run(repo_git_command("add", unrelated), cwd=root, check=True)
+        harness = root / BINANCE_TIMESTAMP_TEST_PATH
+        harness.write_text(
+            "mod nautilus_binance {}\n" + harness.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    assert scan_temp(mutate) == []
+
+
+def test_binance_timestamp_behavioral_contract_rejects_crate_root_extern_aliases() -> None:
+    aliases = (
+        "extern crate parser_shim as nautilus_binance;\n",
+        "extern crate self as nautilus_binance;\n",
+    )
+    for alias in aliases:
+        def mutate(root: Path, alias: str = alias) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(alias + path.read_text(encoding="utf-8"), encoding="utf-8")
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-root identity substitution is forbidden",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_crate_root_identity_injection() -> None:
+    mutations = (
+        ('include!("crate_identity.rs");\n', 'extern crate parser_shim as nautilus_binance;\n'),
+        (
+            "macro_rules! install_crate_alias { () => { extern crate self as nautilus_binance; }; }\n"
+            "install_crate_alias!();\n",
+            None,
+        ),
+        (
+            "#[inject_crate_identity]\n",
+            None,
+        ),
+    )
+    for injected, sidecar in mutations:
+        def mutate(
+            root: Path,
+            injected: str = injected,
+            sidecar: str | None = sidecar,
+        ) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            text = path.read_text(encoding="utf-8")
+            if injected.startswith("#["):
+                text = text.replace(BINANCE_TIMESTAMP_PARSER_IMPORT, injected + BINANCE_TIMESTAMP_PARSER_IMPORT, 1)
+            else:
+                text = injected + text
+            path.write_text(text, encoding="utf-8")
+            if sidecar is not None:
+                write(root, "tests/crate_identity.rs", sidecar)
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-root identity substitution is forbidden",
         )
 
 

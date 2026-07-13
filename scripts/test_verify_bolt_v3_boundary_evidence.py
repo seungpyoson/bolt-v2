@@ -652,7 +652,7 @@ def test_pin_census_rejects_each_mismatched_surface() -> None:
         assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
 
 
-def test_pin_census_reports_each_missing_required_surface_once() -> None:
+def test_pin_census_reports_one_pin_finding_for_each_missing_required_surface() -> None:
     for surface in REQUIRED_PIN_SURFACES:
         def mutate(root: Path, surface: str = surface) -> None:
             if surface.endswith(("Cargo.toml", "Cargo.lock")):
@@ -1291,6 +1291,114 @@ def test_binance_timestamp_behavioral_contract_rejects_assertion_macro_shadowing
             scan_temp(mutate),
             f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "
             "::core paths without local shadowing",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_unreachable_assertions() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_event, expected_ts_event);
+    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    wrappers = (
+        "if false {\n        " + canonical.replace("\n", "\n        ") + "\n    }",
+        "if quote.ts_event != expected_ts_event {\n        "
+        + canonical.replace("\n", "\n        ")
+        + "\n    }",
+        "{\n        " + canonical.replace("\n", "\n        ") + "\n    }",
+        "for _ in 0..0 {\n        " + canonical.replace("\n", "\n        ") + "\n    }",
+        "match false {\n        true => {\n            "
+        + canonical.replace("\n", "\n            ")
+        + "\n        }\n        false => {}\n    }",
+        "let _proof = || {\n        "
+        + canonical.replace("\n", "\n        ")
+        + "\n    };",
+    )
+    for wrapper in wrappers:
+        def mutate(root: Path, wrapper: str = wrapper) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(canonical, wrapper, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+            "must remain at its canonical control-flow depth",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_preserves_trade_per_item_shape() -> None:
+    function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);
+        ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
+    mutations = (
+        "if false {\n            " + canonical.replace("\n", "\n            ") + "\n        }",
+        "{\n            " + canonical.replace("\n", "\n            ") + "\n        }",
+    )
+    for replacement in mutations:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+            "must remain inside the canonical per-item trade loop",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_early_exit_bypasses() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical_parser = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    bypasses = (
+        "return;",
+        "if quote.ts_event == expected_ts_event { return; }",
+        "fallible()?;",
+        "::std::process::exit(0);",
+        "#[cfg(any())]",
+    )
+    for bypass in bypasses:
+        def mutate(root: Path, bypass: str = bypass) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    canonical_parser,
+                    f"{canonical_parser}\n    {bypass}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must not contain "
+            "early-exit or conditional-compilation proof bypasses",
+        )
+
+    trade_assertion = "::core::assert_eq!(trade.ts_event, expected_ts_event);"
+    for bypass in ("break;", "continue;"):
+        def mutate(root: Path, bypass: str = bypass) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    trade_assertion,
+                    f"{bypass}\n        {trade_assertion}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
+            "must not contain early-exit or conditional-compilation proof bypasses",
         )
 
 

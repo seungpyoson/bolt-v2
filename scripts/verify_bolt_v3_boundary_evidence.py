@@ -132,6 +132,12 @@ BINANCE_TIMESTAMP_TEST_CASE_EVENT_CONTRACTS = {
         "DepthDiffStreamEvent",
     ),
 }
+BINANCE_TIMESTAMP_TRADE_PER_ITEM_ASSERTIONS = frozenset(
+    {
+        "per-trade event timestamp assertion",
+        "per-trade initialization timestamp assertion",
+    }
+)
 BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
         (
@@ -1214,6 +1220,55 @@ def rust_ordinary_test_function_body(
     return None, True
 
 
+def rust_top_level_block_span(
+    masked: str,
+    header_pattern: re.Pattern[str],
+) -> tuple[int, int] | None:
+    matches = [
+        match
+        for match in header_pattern.finditer(masked)
+        if rust_open_delimiters_at(masked, match.start()) == ()
+    ]
+    if len(matches) != 1:
+        return None
+    opening = masked.find("{", matches[0].start(), matches[0].end())
+    if opening < 0:
+        return None
+    depth = 0
+    for index in range(opening, len(masked)):
+        char = masked[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return opening + 1, index
+    return None
+
+
+def binance_trade_loop_span(body: str) -> tuple[int, int] | None:
+    return rust_top_level_block_span(
+        body,
+        re.compile(r"\bfor\s+data\s+in\s+trades\s*\{"),
+    )
+
+
+def binance_test_has_early_exit_bypass(body: str) -> bool:
+    if re.search(r"#\s*!?\s*\[", body) is not None:
+        return True
+    tokenized = rust_tokens_and_delimiter_pairs(body)
+    if tokenized is None:
+        return True
+    tokens, _ = tokenized
+    for index, token in enumerate(tokens):
+        identifier = token.value[2:] if token.value.startswith("r#") else token.value
+        if identifier in {"return", "break", "continue"} or token.value == "?":
+            return True
+        if identifier == "exit" and index + 1 < len(tokens) and tokens[index + 1].value == "(":
+            return True
+    return False
+
+
 def binance_parser_identity_is_shadowed(masked: str) -> bool:
     import_matches = [
         match
@@ -1857,10 +1912,66 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
                     f"{function_name}"
                 )
             continue
+        if binance_test_has_early_exit_bypass(body):
+            findings.append(
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must not contain "
+                "early-exit or conditional-compilation proof bypasses"
+            )
+        trade_loop_span = (
+            binance_trade_loop_span(body)
+            if function_name
+            == "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
+            else None
+        )
         for description, pattern in requirements:
-            if re.search(pattern, body) is None:
+            matches = list(re.finditer(pattern, body))
+            if not matches:
                 findings.append(
                     f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} missing {description}"
+                )
+                continue
+            if not description.endswith("assertion"):
+                continue
+            if description in BINANCE_TIMESTAMP_TRADE_PER_ITEM_ASSERTIONS:
+                assertion_is_canonical = (
+                    len(matches) == 1
+                    and trade_loop_span is not None
+                    and trade_loop_span[0] <= matches[0].start() < trade_loop_span[1]
+                    and rust_open_delimiters_at(body, matches[0].start()) == ("{",)
+                )
+                if not assertion_is_canonical:
+                    findings.append(
+                        f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed "
+                        "assertion must remain inside the canonical per-item trade loop"
+                    )
+                continue
+            if len(matches) != 1 or rust_open_delimiters_at(
+                body, matches[0].start()
+            ) != ():
+                findings.append(
+                    f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+                    "must remain at its canonical control-flow depth"
+                )
+        if trade_loop_span is None and function_name.startswith("sbe_multi_trade_"):
+            findings.append(
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+                "must remain inside the canonical per-item trade loop"
+            )
+        elif trade_loop_span is not None:
+            trade_extractions = list(re.finditer(r"\bData\s*::\s*Trade\b", body))
+            if (
+                len(trade_extractions) != 1
+                or not (
+                    trade_loop_span[0]
+                    <= trade_extractions[0].start()
+                    < trade_loop_span[1]
+                )
+                or rust_open_delimiters_at(body, trade_extractions[0].start())
+                != ("{",)
+            ):
+                findings.append(
+                    f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must extract each "
+                    "trade inside the canonical per-item trade loop"
                 )
         (
             parser_symbol,

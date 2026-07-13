@@ -422,6 +422,9 @@ def test_h9_requires_204_and_anchor_only_requery() -> None:
     receipt = stop_control.remove_target(INSTALLATION_ID, TARGET_REPOSITORY_ID)
     self.assertEqual(receipt.status, 204)
     self.assertEqual(receipt.remaining_repository_ids, (ANCHOR_REPOSITORY_ID,))
+    self.assertEqual(receipt.membership_evidence_source, "owner-user-selected-repositories-get")
+    self.assertEqual(receipt.target_checks_create_result, "provider-rejected")
+    self.assertTrue(receipt.anchor_unchanged)
     with self.assertRaisesRegex(StopControlError, "provider returned 422"):
         stop_control.remove_target(last_repository_installation(), TARGET_REPOSITORY_ID)
 ```
@@ -444,7 +447,7 @@ Fetch repository node ID, ref/object/tree/parents, PR constituents, reviews, rul
 
 `SandboxOperator` uses its dedicated target-only App and is denied anchor/production IDs and Checks write. Its closed operations cover target refs/config/PRs/queue/ruleset/Mergify controls and exclude H9. Every attempted anchor operation fails before API dispatch.
 
-H9 uses a separate existing GitHub owner-user session outside both Apps/services; no credential or gate is stored. Preflight binds the principal, authority installation, target and inert anchor and proves the selected set is exactly both. Its sole mutation is `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}`. Live proof requires HTTP 204; 422 or ambiguity is `NO_GO`. Re-query must show selected repositories exactly `{anchor}`, target installation lookup absent, anchor unchanged/inert, and an attempted new authority check on target impossible. The interface cannot remove the anchor during H9, create checks, approve, restore, rotate, bootstrap, or publish to anchor.
+H9 uses a separate existing GitHub owner-user session outside both Apps/services; no credential or gate is stored. Preflight binds the principal, authority installation, target and inert anchor and proves the selected set is exactly both. Its sole mutation is `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}`. Live proof requires HTTP 204; 422 or ambiguity is `NO_GO`. The independent owner-user selected-repositories GET must return exactly `{anchor}` with target absent; that list is authoritative membership evidence, so no separate target-installation lookup is required. An authority-App Checks create on target must be provider-rejected and recorded, and anchor must remain unchanged/inert. The interface cannot remove anchor during H9, approve, restore, rotate, bootstrap, or publish to anchor.
 
 `FaultProxy` sits between the authority service and its Checks create/read transport and may delay or drop a create response, hide a bounded number of reads, return a proven pre-acceptance failure, duplicate inbound webhook/rerequest delivery, or cancel the disposable invocation; it cannot edit GitHub responses, forge App identity, alter signed results, or write a check itself. Every arm/disarm is append-only evidence and scoped to one run/scenario/domain.
 
@@ -861,7 +864,7 @@ just ci-rehearsal live "$D4_SCENARIO_ID" \
 
 Expected: a fresh domain and terminal sealed receipt for the exact row. Stop on the first ambiguity or safety-critical failure; never convert it to a pass or widen a budget.
 
-For `stop-only-disable`, the external owner-user session must issue exactly `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}` and receive HTTP 204. The driver then re-queries selected repositories as exactly anchor-only, proves target installation lookup absent and an authority-App check creation on target rejected, and confirms no anchor check/queue/config activity. HTTP 422 (the last-repository restriction), any non-204, or a surviving target capability is `NO_GO`.
+For `stop-only-disable`, the external owner-user session must issue exactly `DELETE /user/installations/{installation_id}/repositories/{target_repository_id}` and receive HTTP 204. Its selected-repositories GET must then return exactly anchor-only with target absent; no separate target-installation lookup is required. The authority App must receive and record a provider rejection when it attempts Checks create on target, and anchor check/queue/config state must remain unchanged. HTTP 422, any non-204, or a surviving target publication capability is `NO_GO`.
 
 - [ ] **Step 4: Repeat the complete ceremony and abort runs from clean baselines**
 

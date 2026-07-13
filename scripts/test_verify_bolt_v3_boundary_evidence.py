@@ -1118,8 +1118,46 @@ def test_binance_timestamp_behavioral_contract_requires_direct_top_level_parser_
     assert_finding(
         scan_temp(mutate),
         "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
-        "must call pinned parse_trades_event directly from the top-level test body",
+        "must bind trades directly to pinned parse_trades_event exactly once without "
+        "rebinding or reassignment",
     )
+
+
+def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_call() -> None:
+    canonical = (
+        "let quote = "
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+    )
+    mutations = (
+        (
+            "struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }\n"
+            "    let _real_quote = "
+            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);\n"
+            "    let quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };"
+        ),
+        (
+            f"{canonical}\n"
+            "    let quote = quote;"
+        ),
+        (
+            "let mut quote = "
+            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);\n"
+            "    quote = quote;"
+        ),
+    )
+    for replacement in mutations:
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
+        )
 
 
 def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attributes() -> None:

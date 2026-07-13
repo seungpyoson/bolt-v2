@@ -96,11 +96,23 @@ BINANCE_TIMESTAMP_PARSER_SYMBOLS = (
     "parse_depth_snapshot",
     "parse_depth_diff",
 )
-BINANCE_TIMESTAMP_TEST_CASE_PARSERS = {
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": "parse_trades_event",
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": "parse_bbo_event",
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": "parse_depth_snapshot",
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": "parse_depth_diff",
+BINANCE_TIMESTAMP_TEST_CASE_RESULT_CONTRACTS = {
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "parse_trades_event",
+        "trades",
+    ),
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "parse_bbo_event",
+        "quote",
+    ),
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "parse_depth_snapshot",
+        "deltas",
+    ),
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
+        "parse_depth_diff",
+        "deltas",
+    ),
 }
 BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
@@ -1148,15 +1160,54 @@ def binance_parser_identity_is_shadowed(masked: str) -> bool:
     return False
 
 
-def has_top_level_binance_parser_call(body: str, parser_symbol: str) -> bool:
+def has_governed_binance_parser_result_contract(
+    body: str,
+    parser_symbol: str,
+    result_variable: str,
+) -> bool:
     call = re.compile(
-        rf"\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*"
+        rf"\blet\s+{re.escape(result_variable)}\s*=\s*"
         rf"{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\s*::\s*"
         rf"{re.escape(parser_symbol)}\s*\("
     )
-    return any(
-        rust_open_delimiters_at(body, match.start()) == ()
+    direct_calls = [
+        match
         for match in call.finditer(body)
+        if rust_open_delimiters_at(body, match.start()) == ()
+    ]
+    let_bindings = [
+        match
+        for match in re.finditer(r"\blet\s+(?P<pattern>[^=;]+?)\s*=(?!=)", body)
+        if re.search(
+            rf"\b{re.escape(result_variable)}\b", match.group("pattern")
+        )
+    ]
+    assignments = list(
+        re.finditer(
+            rf"\b{re.escape(result_variable)}\b\s*"
+            r"(?:<<=|>>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=))",
+            body,
+        )
+    )
+    closure_bindings = [
+        match
+        for match in re.finditer(r"\|(?P<parameters>[^|\n]*)\|", body)
+        if re.search(
+            rf"\b{re.escape(result_variable)}\b", match.group("parameters")
+        )
+    ]
+    other_binding_patterns = (
+        rf"\bfor\s+(?:ref\s+|mut\s+)?{re.escape(result_variable)}\b",
+        rf"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\b{re.escape(result_variable)}\b[^)]*\)",
+        rf"(?:^|[{{,])\s*(?:ref\s+|mut\s+)?{re.escape(result_variable)}\s*(?:@[^=]+)?=>",
+        rf"\b[A-Z][A-Za-z0-9_]*\s*\(\s*(?:ref\s+|mut\s+)?{re.escape(result_variable)}\b[^)]*\)\s*=>",
+    )
+    return (
+        len(direct_calls) == 1
+        and len(let_bindings) == 1
+        and len(assignments) == 1
+        and not closure_bindings
+        and not any(re.search(pattern, body, re.MULTILINE) for pattern in other_binding_patterns)
     )
 
 
@@ -1275,11 +1326,19 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
                 findings.append(
                     f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} missing {description}"
                 )
-        parser_symbol = BINANCE_TIMESTAMP_TEST_CASE_PARSERS[function_name]
-        if not has_top_level_binance_parser_call(body, parser_symbol):
+        (
+            parser_symbol,
+            result_variable,
+        ) = BINANCE_TIMESTAMP_TEST_CASE_RESULT_CONTRACTS[function_name]
+        if not has_governed_binance_parser_result_contract(
+            body,
+            parser_symbol,
+            result_variable,
+        ):
             findings.append(
-                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must call pinned "
-                f"{parser_symbol} directly from the top-level test body"
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must bind "
+                f"{result_variable} directly to pinned {parser_symbol} exactly once without "
+                "rebinding or reassignment"
             )
 
 

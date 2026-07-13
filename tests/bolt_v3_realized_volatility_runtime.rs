@@ -393,12 +393,88 @@ fn routed_cross_source_update_recomputes_at_surface_clock_when_event_time_skews_
         .last()
         .expect("accepted skewed source update should publish diagnostics");
     assert_eq!(latest.as_of_ms, 4_000);
+    assert_eq!(
+        latest.latest_accepted_receive_ms.map(|stamp| stamp.value()),
+        Some(4_000),
+        "the ready surface watermark follows accepted quorum contributors"
+    );
     let source_b = latest
         .source_diagnostics
         .iter()
         .find(|diagnostic| diagnostic.source_id == SOURCE_B)
         .expect("source B should remain diagnostic-visible");
     assert_eq!(source_b.raw_sample_count, 1);
+}
+
+#[test]
+fn rejected_routed_observation_does_not_advance_the_surface_watermark() {
+    let instrument_a = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
+    let instrument_b = "<INSTRUMENT_B>.<DATA_CLIENT_ID>";
+    let mut surface_config = config(SURFACE_A, SOURCE_A, instrument_a);
+    let mut disabled_source = source(SOURCE_B, instrument_b);
+    disabled_source.enabled = false;
+    disabled_source.counts_toward_quorum = false;
+    surface_config.sources.push(disabled_source);
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        surface_config,
+    )]))
+    .expect("runtime should build");
+
+    for (index, (bid, ask)) in [
+        (99.0, 101.0),
+        (100.0, 102.0),
+        (101.0, 103.0),
+        (102.0, 104.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let ts_ms = (index as u64 + 1) * 1_000;
+        runtime.observe_quote(&quote_tick_with_receive_ms(
+            instrument_a,
+            *bid,
+            *ask,
+            ts_ms,
+            ts_ms,
+        ));
+    }
+    assert_eq!(
+        runtime
+            .snapshot(SURFACE_A)
+            .map(|snapshot| snapshot.as_of_ms),
+        Some(4_000)
+    );
+
+    let snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+        instrument_b,
+        200.0,
+        202.0,
+        50_000,
+        50_000,
+    ));
+    let latest = snapshots
+        .last()
+        .expect("rejected routed observations should republish diagnostics");
+
+    assert_eq!(
+        latest.as_of_ms, 4_000,
+        "a rejected observation must not refresh the causal surface watermark"
+    );
+    assert_eq!(
+        latest.latest_accepted_receive_ms.map(|stamp| stamp.value()),
+        Some(4_000),
+        "a rejected observation must not refresh the accepted receive watermark"
+    );
+    let diagnostic = latest
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("disabled source rejection should remain diagnostic-visible");
+    assert_eq!(
+        diagnostic.last_rejected_reason,
+        Some(RealizedVolSourceRejectReason::DisabledSource)
+    );
 }
 
 #[test]

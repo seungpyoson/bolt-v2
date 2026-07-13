@@ -1606,6 +1606,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: strategy.config.realized_volatility_surface_id.clone(),
             as_of_ms: future_as_of_ms,
+            latest_accepted_receive_ms: Some(LocalReceiveMs::new(future_as_of_ms)),
             annualized_realized_vol_decimal: Some(realized_vol),
             measured_annualized_realized_vol_decimal: Some(realized_vol),
             noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
@@ -1795,6 +1796,7 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: TEST_SURFACE_ID.to_string(),
             as_of_ms: 1_200,
+            latest_accepted_receive_ms: Some(LocalReceiveMs::new(1_200)),
             annualized_realized_vol_decimal: Some(1.5),
             measured_annualized_realized_vol_decimal: Some(1.5),
             noise_robust_annualized_realized_vol_decimal: Some(1.5),
@@ -1851,6 +1853,7 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: TEST_SURFACE_ID.to_string(),
             as_of_ms: 1_200,
+            latest_accepted_receive_ms: Some(LocalReceiveMs::new(1_200)),
             annualized_realized_vol_decimal: Some(0.0),
             measured_annualized_realized_vol_decimal: Some(0.0),
             noise_robust_annualized_realized_vol_decimal: Some(0.0),
@@ -1906,6 +1909,7 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
     let initial_snapshot = crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
         surface_id: TEST_SURFACE_ID.to_string(),
         as_of_ms: 1_200,
+        latest_accepted_receive_ms: Some(LocalReceiveMs::new(1_200)),
         annualized_realized_vol_decimal: None,
         measured_annualized_realized_vol_decimal: None,
         noise_robust_annualized_realized_vol_decimal: None,
@@ -2661,7 +2665,7 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
             ExitEvaluationTriggerContext::new(
                 crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
                 1_200,
-                Some(1_180),
+                Some(1_220),
             ),
         )
         .expect("control exit evaluation should not error with a ready realized-vol surface");
@@ -2678,7 +2682,7 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
             ExitEvaluationTriggerContext::new(
                 crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
                 1_200,
-                Some(1_180),
+                Some(1_220),
             ),
         )
         .expect("a failing exit-evaluation sink must be swallowed, not propagated");
@@ -2792,7 +2796,7 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
             ExitEvaluationTriggerContext::new(
                 crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
                 1_200,
-                Some(1_180),
+                Some(1_220),
             ),
         )
         .expect("exit evaluation should not error with a ready realized-vol surface");
@@ -2821,7 +2825,7 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         "the durable record must preserve the triggering runtime path"
     );
     assert_eq!(record.trigger_ts_event_ms, Some(1_200));
-    assert_eq!(record.trigger_ts_init_ms, Some(1_180));
+    assert_eq!(record.trigger_ts_init_ms, Some(1_220));
     assert_eq!(record.spot_price.as_deref(), Some("3099.75"));
     assert_eq!(record.spot_venue_name.as_deref(), Some("bybit"));
     assert!(record.fast_venue_available);
@@ -2909,9 +2913,8 @@ fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
 #[test]
 fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    // Re-seed the realized-vol snapshot in the FUTURE relative to the book-delta
-    // event clock (the 2026-06-20 incident's root cause shape): as_of 2_000
-    // while the triggering venue event is 1_190.
+    // A future receive watermark is still rejected within the one valid clock
+    // domain. The independent venue-event delta remains diagnostic only.
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
@@ -2922,7 +2925,7 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
             ExitEvaluationTriggerContext::new(
                 crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
                 1_190,
-                None,
+                Some(1_190),
             ),
         )
         .expect("exit evaluation should not error with a future-dated realized-vol surface");
@@ -2949,16 +2952,16 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
 }
 
 #[test]
-fn exit_evaluation_evidence_holds_on_local_clock_trigger_without_rv_event_time() {
+fn exit_evaluation_evidence_accepts_local_trigger_with_receive_time() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     strategy.active.phase = SelectionPhase::Active;
     strategy
         .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
 
     strategy
         .try_submit_exit_order_for_trigger(1_200, ExitEvaluationTriggerContext::unknown(1_200))
-        .expect("exit evaluation should not error when the trigger has no RV event clock");
+        .expect("exit evaluation should not error when a local trigger has receive time");
 
     let records = recorded_exit_evaluations(&evidence);
     assert_eq!(
@@ -2969,15 +2972,116 @@ fn exit_evaluation_evidence_holds_on_local_clock_trigger_without_rv_event_time()
     let record = &records[0];
     assert_eq!(
         record.rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::MissingEvaluationEventTime,
-        "local-clock triggers must not compare venue RV as_of against local now"
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
+        "local triggers must use their receive-domain evaluation timestamp"
     );
-    assert_eq!(record.rv_as_of_ms, Some(2_000));
+    assert_eq!(record.rv_as_of_ms, Some(1_200));
     assert_eq!(record.rv_as_of_minus_now_ms, None);
+}
+
+#[test]
+fn exit_evaluation_evidence_holds_when_receive_time_is_structurally_absent() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy.active.phase = SelectionPhase::Active;
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+
+    strategy
+        .try_submit_exit_order_for_trigger(
+            1_200,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::Other,
+                1_200,
+                None,
+            ),
+        )
+        .expect("missing receive context should fail closed without an error");
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(
+        record.rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::MissingEvaluationEventTime
+    );
     assert_eq!(
         record.exit_decision,
         crate::bolt_v3_decision_evidence::BoltV3ExitDecisionOutcome::Hold,
-        "missing RV event-clock input must hold, never liquidate by default"
+        "missing receive-domain input must hold, never liquidate by default"
+    );
+}
+
+#[test]
+fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    let decision = minimal_exit_submission_decision();
+
+    for trigger_context in [
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            1_200,
+            Some(1_210),
+        ),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            1_220,
+            Some(1_220),
+        ),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            1_200,
+            Some(1_230),
+        ),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            1_240,
+            Some(1_240),
+        ),
+    ] {
+        strategy.record_exit_evaluation_evidence(1_240, &decision, trigger_context, false);
+    }
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "unchanged pricing state must produce one exit-evaluation transition across book, signal, and selection triggers"
+    );
+}
+
+#[test]
+fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    let decision = minimal_exit_submission_decision();
+
+    for (index, event_ts_ms) in [1_200, 1_199, 1_200, 1_199, 1_200, 1_199]
+        .into_iter()
+        .enumerate()
+    {
+        strategy.record_exit_evaluation_evidence(
+            1_300,
+            &decision,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                event_ts_ms,
+                Some(1_210 + index as u64),
+            ),
+            false,
+        );
+    }
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "six unchanged book evaluations must collapse even when an independent venue clock alternately leads and trails the RV venue clock"
     );
 }
 
@@ -2995,7 +3099,7 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
             ExitEvaluationTriggerContext::new(
                 crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
                 1_200,
-                None,
+                Some(1_200),
             ),
         )
         .expect("first shadow exit should pass evidence and admission");
@@ -3012,7 +3116,7 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
                     ExitEvaluationTriggerContext::new(
                         crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
                         tick,
-                        None,
+                        Some(tick),
                     ),
                 )
                 .expect("latched exit evaluation should not error"),

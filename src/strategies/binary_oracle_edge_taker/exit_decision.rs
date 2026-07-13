@@ -13,7 +13,7 @@ use crate::{
     },
     bolt_v3_feed_health::ForcedFlatReason,
     bolt_v3_market_families::OutcomeSide,
-    bolt_v3_timestamp_domain::VenueEventMs,
+    bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
 };
 
 use super::{
@@ -85,7 +85,17 @@ impl ExitEvaluationTriggerContext {
 
     #[cfg(test)]
     pub(super) const fn unknown(now_ms: u64) -> Self {
-        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
+        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, Some(now_ms))
+    }
+
+    /// Every runtime trigger is evaluated after it enters the process, so
+    /// `ts_init` is the universal clock for pricing freshness regardless of
+    /// whether the trigger also owns a venue event timestamp.
+    pub(super) const fn receive_ms(self) -> Option<LocalReceiveMs> {
+        match self.ts_init_ms {
+            Some(value) => Some(LocalReceiveMs::new(value)),
+            None => None,
+        }
     }
 
     pub(super) const fn venue_event_ms(self) -> Option<VenueEventMs> {

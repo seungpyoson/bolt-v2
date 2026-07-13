@@ -16,8 +16,13 @@
 - Do not add tolerance windows, rate caps, sampling, byte-limit changes, venue policy, or symbol policy.
 - Preserve all action, lifecycle, settlement, and recovery evidence.
 - Keep dedupe-key and `position_id=None` findings report-only.
-- Treat the root-fix tests and recovery-boundary tests delivered at `2b83f512a` as landed scope: verify them GREEN at the final head and cite their existing RED transcripts; do not revert production code to manufacture new RED output.
-- Capture RED only for review-amendment tests not present at `2b83f512a`. The owner
+- Treat the root-fix tests and recovery-boundary tests at `2b83f512a` only as
+  historical, provisional evidence from the superseded branch, not as scope landed
+  on `main`. Their fresh-port equivalents require authoritative GREEN proof from the
+  final exact head through remote verification. Cite the historical RED transcripts;
+  do not revert production code to manufacture new RED output.
+- Capture RED only for review-amendment tests not present in the historical
+  `2b83f512a` checkpoint. The owner
   explicitly approves one exceptional scoped local break-glass command for those new
   Bolt RED tests:
   `BOLT_ALLOW_LOCAL_RUST=1 cargo nextest run --locked rv_clock_domain_amendment_`.
@@ -29,9 +34,12 @@
 - Use cheap local gates plus reviewer-operated exact-head remote Rust verification
   for GREEN. Automatic draft checks and draft-time `just verify-remote` do not run
   nextest and are not Rust evidence.
-- Treat `2b83f512a` only as immutable historical RED/GREEN evidence. The final
-  implementation is rebuilt from authoritative `main` and must preserve #1367's
-  parser proof, pin census, and Binance same-event-millisecond regression unchanged.
+- Treat `2b83f512a` only as immutable historical RED/GREEN evidence from a
+  superseded branch. It is not an ancestor of the authoritative base or this fresh
+  head and is not merge proof. The final implementation is rebuilt from authoritative
+  `main`; its proof must come from the fresh final head and exact-head remote
+  verification, while preserving #1367's parser proof, pin census, and Binance
+  same-event-millisecond regression unchanged.
 - Keep PR-body verification statements head-neutral. Never embed a mutable current
   PR head SHA; merge proof always means the then-current exact PR head.
 
@@ -109,10 +117,10 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 - Consumes: `RealizedVolSnapshot` and `LocalReceiveMs`.
 - Produces: `classify_rv_gate(snapshot, evaluation_receive_ms, max_source_age_ms)` with same-domain freshness semantics.
 
-- [x] Landed at `2b83f512a`: event `as_of_ms` leads and lags an unrelated venue trigger while snapshot receive time and evaluation receive time remain ordered; both evaluations are `Accepted`.
-- [x] Landed at `2b83f512a`: stale and missing-receive cases preserve `RejectedStale` and `MissingEvaluationEventTime` respectively.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: event `as_of_ms` leads and lags an unrelated venue trigger while snapshot receive time and evaluation receive time remain ordered; both evaluations are `Accepted`.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: stale and missing-receive cases preserve `RejectedStale` and `MissingEvaluationEventTime` respectively.
 - [x] Production fair-value/taker requests and RV-consuming helpers require `LocalReceiveMs`; optionality remains only at the lower diagnostic classifier boundary.
-- [ ] Verify the landed classifier tests remain GREEN at the final head and cite the existing `2b83f512a` RED transcript; do not recreate RED.
+- [ ] Verify the fresh-port classifier tests GREEN through exact-head remote verification and cite the historical `2b83f512a` RED transcript; do not recreate RED or treat the checkpoint as authoritative proof.
 
 ### Task 2: Pin accepted-only RV watermarks
 
@@ -125,8 +133,8 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 - Produces: a typed receive watermark on `RealizedVolSnapshot` derived only from accepted contributing samples.
 - Preserves: rejection diagnostics without allowing a rejected event timestamp to advance the surface clock.
 
-- [x] Landed at `2b83f512a`: a rejected far-future observation advances neither event `as_of_ms` nor the accepted receive watermark.
-- [x] Landed at `2b83f512a`: the ready snapshot watermark follows accepted quorum-contributing sources.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: a rejected far-future observation advances neither event `as_of_ms` nor the accepted receive watermark.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: the ready snapshot watermark follows accepted quorum-contributing sources.
 - [x] Route an unequal-stamped Binance-shaped quote through RV observation; assert surface `as_of_ms` follows `ts_event` and `latest_accepted_receive_ms` follows `ts_init`.
 - [x] Add a cutoff differential with an accepted observation after the final selected grid point; assert that eligible-but-unused input does not advance the watermark.
 - [x] Add a contributing-set differential with ascending event times and a larger receive timestamp on an earlier selected observation; assert that the watermark is the maximum receive timestamp over every observation used by the base, coarse, and subsampled computation.
@@ -143,12 +151,12 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 - Produces: receive-domain evaluation context for production book, signal, and selection trigger constructors; test-only reference and structurally absent unknown/other constructors retain explicit test coverage.
 - Consumes: the shared pricing-layer classifier from Task 1.
 
-- [x] Landed at `2b83f512a`: the six-tick alternating-book differential retains one record after the original six-record RED.
-- [x] Landed at `2b83f512a`: the mixed book/signal/selection differential retains one record after the original four-record RED.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: the six-tick alternating-book differential retains one record after the original six-record RED.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: the mixed book/signal/selection differential retains one record after the original four-record RED.
 - [x] Structurally missing receive context uses the test-only diagnostic constructor and retains `MissingEvaluationEventTime → Hold` without making production pricing stamps optional.
-- [x] Using the landed NT pin, add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
+- [x] Using the authoritative NT pin landed on `main` through #1367, add an `on_quote`/evidence differential proving stored `trigger_ts_event_ms`, `trigger_ts_init_ms`, and `rv_gate_result` follow their owning domains and do not reproduce the #1354 signal flap.
 - [x] Production signal handling requires typed `QuoteTick.ts_init`; no strategy-clock fallback remains. Genuine local selection evaluation uses the distinct typed local-handler constructor.
-- [ ] Verify the landed six-tick, mixed-trigger, and missing-context tests remain GREEN at the final head and cite their existing RED transcripts; do not recreate RED.
+- [ ] Verify the fresh-port six-tick, mixed-trigger, and missing-context tests GREEN through exact-head remote verification and cite their historical RED transcripts; do not recreate RED or treat `2b83f512a` as authoritative proof.
 
 ### Task 4: Pin entry and maker blast radius
 
@@ -196,8 +204,8 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 - Consumes: existing `recovery_evidence_max_bytes` and settlement/open-position bootstrap.
 - Produces: proof that a valid open-position recovery stream succeeds at or below the bound and fails into existing blind recovery above it.
 
-- [x] Landed at `2b83f512a`: boundary tests prove exactly 1 MiB recovers managed exposure and 1 MiB + 1 enters `SettlementEvidenceRecoveryFailed` blind recovery.
-- [ ] Verify both landed boundary tests remain GREEN at the final head.
+- [x] Historical provisional evidence at superseded checkpoint `2b83f512a`: boundary tests prove exactly 1 MiB recovers managed exposure and 1 MiB + 1 enters `SettlementEvidenceRecoveryFailed` blind recovery.
+- [ ] Verify both fresh-port boundary tests GREEN through exact-head remote verification; the historical checkpoint is not authoritative proof.
 
 ### Task 7: Capacity evidence and completion gates
 
@@ -232,7 +240,7 @@ right: 1
 
 - [x] Run the saved read-only dedupe-and-capacity recipe against `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz` (or its byte-identical local copy); report recipe digest `af2704f6c85201c4d51c0d530800176d63f839d46750f54fb023f81abe4ad226`, the explicit receive-fresh assumption, and the deterministic 166,086 records / 760,791,685 bytes to 106 records / 199,023 bytes result.
 - [x] State the replay limit exactly: the archive cannot reproduce final receive-domain `classify_rv_gate` results because it lacks `latest_accepted_receive_ms`, and the historical Binance adapter never produced genuine local receive stamps. Use production-shaped differentials as classifier proof; do not relabel the capacity counterfactual as a final-classifier replay.
-- [x] Report open-position bytes/hour, bytes per genuine phase transition, projected bytes at the planned restart, and retain #1275 item 13 as a pre-soak requirement. #763 remains later and depends on #883; do not promote S3 archival into the soak blockers.
+- [x] Report only the measured open-position counterfactual window: 47,551 bytes over 939.354 seconds. Do not extrapolate or project a future restart size; it remains unmeasured and subject to the 1 MiB fail-closed boundary and #1275 item 13 pre-soak requirement. #763 remains later and depends on #883; do not promote S3 archival into the soak blockers.
 - [x] Run cheap local formatting, deny, workflow-lint, and source-fence-static gates.
 - [ ] Commit and publish the fresh branch with `just sandbox-safe-push`, then open a replacement draft PR without closing keywords. Do not force-update or reuse the stale #1361 branch, and do not mark the replacement ready.
 - [ ] Detach after publishing the draft head. The user/reviewer owns ready-state exact-head CI, external review, required approval, and merge queue.

@@ -169,13 +169,12 @@ gate result to `accepted`, and then replays the exact last-key dedupe guards. Th
 leaves four archived exit-evaluation transitions: two `exit_hold` entries and two
 `position_interval_ended` entries. Together with v0.1.12 blocked-snapshot dedupe and
 all preserved action/lifecycle evidence, the captured session counterfactual is
-199,023 bytes. The open-position window contains 47,551 bytes over 939.354 seconds,
-an observed amortized 182,236 bytes/hour; it is a per-position transition cost, not a
-continuing steady-state writer. A fresh file remains below 1 MiB for the planned first
-open-position restart. Repeated legitimate position lifecycles can still exceed the
-whole-file limit over a long unattended run, so #1275 item 13 segmented recovery
-remains a pre-soak requirement but is not bundled into this change. #763 S3 archival
-remains later and depends on #883 redaction; it is not a soak blocker.
+199,023 bytes. The captured open-position window contains 47,551 bytes over exactly
+939.354 seconds. No future-restart size is measured or projected from this window.
+Any future restart remains subject to the existing 1 MiB fail-closed boundary, and
+#1275 item 13 segmented recovery remains a pre-soak requirement but is not bundled
+into this change. #763 S3 archival remains later and depends on #883 redaction; it is
+not a soak blocker.
 
 ## Verification Contract
 

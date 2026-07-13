@@ -1121,6 +1121,294 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
 }
 
 #[test]
+fn rv_clock_domain_amendment_entry_log_uses_admitted_receipt_after_snapshot_replacement() {
+    let (mut strategy, _) = admitted_entry_strategy_for_rv_receipt();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must admit the entry"
+    );
+
+    replace_rv_with_distinguishable_snapshot(&mut strategy);
+
+    let fields = strategy.entry_evaluation_log_fields_at(1_300, &decision);
+    assert_eq!(fields.realized_vol, Some(1.5));
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some(TEST_SOURCE_ID)
+    );
+    assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
+    assert_eq!(
+        fields.realized_vol_gate_result,
+        BoltV3RvGateResult::Accepted
+    );
+    assert_eq!(
+        fields.realized_vol_receive_watermark_ms,
+        Some(LocalReceiveMs::new(1_200))
+    );
+    assert_admitted_a_snapshot_fields(&fields.realized_volatility_evidence);
+}
+
+#[test]
+fn rv_clock_domain_amendment_entry_skip_uses_admitted_receipt_after_snapshot_replacement() {
+    let (mut strategy, evidence) = admitted_entry_strategy_for_rv_receipt();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must admit the entry"
+    );
+
+    replace_rv_with_distinguishable_snapshot(&mut strategy);
+    strategy
+        .record_entry_skip_once(
+            1_300,
+            &decision,
+            BoltV3EntrySkipReasonCategory::NoSideSelected,
+            None,
+        )
+        .expect("skip evidence should record from the admitted receipt");
+
+    let events = evidence.events();
+    let Some(RecordedDecisionEvidenceEvent::EntrySkip(skip)) = events.first() else {
+        panic!("expected entry-skip evidence; got {events:#?}");
+    };
+    assert_eq!(skip.realized_vol.as_deref(), Some("1.5"));
+    assert_eq!(
+        skip.realized_vol_source_venue.as_deref(),
+        Some(TEST_SOURCE_ID)
+    );
+    assert_eq!(skip.realized_vol_source_ts_ms, Some(1_200));
+    assert_eq!(
+        skip.realized_vol_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
+    assert_eq!(
+        skip.realized_vol_receive_watermark_ms,
+        Some(LocalReceiveMs::new(1_200))
+    );
+    let snapshot = skip
+        .realized_vol_snapshot
+        .as_ref()
+        .expect("durable skip must independently identify admitted snapshot A");
+    assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.as_of_ms, Some(1_200));
+    assert_eq!(snapshot.annualized_decimal, "1.5");
+    assert_eq!(snapshot.measured_annualized_decimal, "1.5");
+    assert_eq!(snapshot.noise_robust_annualized_decimal, "1.5");
+    assert_eq!(snapshot.continuous_annualized_decimal, "1.5");
+    assert_eq!(snapshot.jump_annualized_decimal, "0");
+    assert_eq!(snapshot.forecast_annualized_decimal, "");
+    assert_eq!(snapshot.pricing_component, "measured");
+    assert_eq!(snapshot.seconds_per_annum, "31536000");
+    assert_eq!(snapshot.aggregation, "upper_quantile");
+    assert_eq!(snapshot.sources_used, vec![TEST_SOURCE_ID.to_string()]);
+    assert!(snapshot.source_diagnostics.is_empty());
+    assert!(snapshot.unknown_source_rejections.is_empty());
+    assert!(snapshot.blockers.is_empty());
+    assert!(snapshot.config_fingerprint.is_empty());
+}
+
+#[test]
+fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
+    let (mut strategy, evidence) = admitted_entry_strategy_for_rv_receipt();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must admit the entry"
+    );
+    replace_rv_with_distinguishable_snapshot(&mut strategy);
+
+    let submitted = strategy
+        .submit_admitted_entry_decision(9_000, decision)
+        .expect("later wall time and replacement must not veto admitted submit");
+    assert!(
+        submitted.is_some(),
+        "the admitted order must reach submit routing"
+    );
+    assert!(
+        matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
+        "submitted routing must retain pending entry exposure"
+    );
+    let events = evidence.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_))),
+        "actual submit routing must persist an order intent"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission)
+                if admission.outcome
+                    == crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted
+        )),
+        "actual submit routing must persist accepted submit admission"
+    );
+    let snapshot = events
+        .into_iter()
+        .find_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("actual submit route must persist strategy-input evidence");
+    assert_eq!(snapshot.realized_volatility, "1.5");
+    assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
+    assert_eq!(
+        snapshot.realized_volatility_sources_used,
+        vec![TEST_SOURCE_ID.to_string()]
+    );
+    assert_eq!(
+        snapshot.realized_volatility_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
+    assert_eq!(
+        snapshot.realized_volatility_receive_watermark_ms,
+        Some(LocalReceiveMs::new(1_200))
+    );
+    assert_eq!(snapshot.realized_volatility_annualized_decimal, "1.5");
+    assert_eq!(
+        snapshot.realized_volatility_measured_annualized_decimal,
+        "1.5"
+    );
+    assert_eq!(
+        snapshot.realized_volatility_noise_robust_annualized_decimal,
+        "1.5"
+    );
+    assert_eq!(
+        snapshot.realized_volatility_continuous_annualized_decimal,
+        "1.5"
+    );
+    assert_eq!(snapshot.realized_volatility_jump_annualized_decimal, "0");
+    assert_eq!(snapshot.realized_volatility_forecast_annualized_decimal, "");
+    assert_eq!(snapshot.realized_volatility_pricing_component, "measured");
+    assert_eq!(snapshot.realized_volatility_seconds_per_annum, "31536000");
+    assert_eq!(snapshot.realized_volatility_aggregation, "upper_quantile");
+    assert!(snapshot.realized_volatility_source_diagnostics.is_empty());
+    assert!(
+        snapshot
+            .realized_volatility_unknown_source_rejections
+            .is_empty()
+    );
+    assert!(snapshot.realized_volatility_blockers.is_empty());
+    assert!(snapshot.realized_volatility_config_fingerprint.is_empty());
+}
+
+fn assert_admitted_a_snapshot_fields(fields: &RealizedVolatilityEvidenceFields) {
+    assert_eq!(fields.surface_id, TEST_SURFACE_ID);
+    assert_eq!(fields.as_of_ms, Some(1_200));
+    assert_eq!(fields.annualized_decimal, "1.5");
+    assert_eq!(fields.measured_annualized_decimal, "1.5");
+    assert_eq!(fields.noise_robust_annualized_decimal, "1.5");
+    assert_eq!(fields.continuous_annualized_decimal, "1.5");
+    assert_eq!(fields.jump_annualized_decimal, "0");
+    assert_eq!(fields.forecast_annualized_decimal, "");
+    assert_eq!(fields.pricing_component, "measured");
+    assert_eq!(fields.seconds_per_annum, "31536000");
+    assert_eq!(fields.aggregation, "upper_quantile");
+    assert_eq!(fields.sources_used, vec![TEST_SOURCE_ID.to_string()]);
+    assert!(fields.source_diagnostics.is_empty());
+    assert!(fields.unknown_source_rejections.is_empty());
+    assert!(fields.blockers.is_empty());
+    assert!(fields.config_fingerprint.is_empty());
+}
+
+fn replace_rv_with_distinguishable_snapshot(strategy: &mut BinaryOracleEdgeTaker) {
+    let mut replacement = strategy
+        .pricing
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
+        .expect("fixture must contain admitted snapshot")
+        .clone();
+    replacement.as_of_ms = 1_300;
+    replacement.latest_accepted_receive_ms = Some(LocalReceiveMs::new(1_301));
+    replacement.annualized_realized_vol_decimal = Some(9.5);
+    replacement.measured_annualized_realized_vol_decimal = Some(9.4);
+    replacement.noise_robust_annualized_realized_vol_decimal = Some(9.3);
+    replacement.continuous_annualized_realized_vol_decimal = Some(9.2);
+    replacement.jump_annualized_realized_vol_decimal = Some(9.1);
+    replacement.forecast_annualized_realized_vol_decimal = Some(9.0);
+    replacement.pricing_component =
+        crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Forecast;
+    replacement.seconds_per_annum = 31_535_999.0;
+    replacement.aggregate_method =
+        crate::bolt_v3_realized_volatility::RealizedVolAggregation::TrimmedMean {
+            trim_fraction: 0.1,
+        };
+    replacement.sources_used = vec![TEST_SOURCE_ID_B.to_string()];
+    replacement.source_diagnostics = vec![
+        crate::bolt_v3_realized_volatility::RealizedVolSourceDiagnostic {
+            source_id: TEST_SOURCE_ID_B.to_string(),
+            source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::Trade,
+            sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Trade,
+            enabled: false,
+            counts_toward_quorum: false,
+            status: crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::Blocked,
+            annualized_realized_vol_decimal: Some(8.9),
+            measured_annualized_realized_vol_decimal: Some(8.8),
+            noise_robust_annualized_realized_vol_decimal: Some(8.7),
+            continuous_annualized_realized_vol_decimal: Some(8.6),
+            jump_annualized_realized_vol_decimal: Some(8.5),
+            first_sample_ts_ms: Some(1_250),
+            last_sample_ts_ms: Some(1_300),
+            raw_sample_count: 7,
+            grid_sample_count: 6,
+            coverage_ratio: 0.75,
+            max_inter_sample_gap_ms: Some(50),
+            last_rejected_reason: Some(
+                crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::InvalidPrice,
+            ),
+            last_rejected_event_ts_ms: Some(1_299),
+            last_rejected_recv_ts_ms: Some(1_301),
+            rejection_counters: [(
+                crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::InvalidPrice,
+                3,
+            )]
+            .into_iter()
+            .collect(),
+            block_reason: Some(
+                crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale,
+            ),
+        },
+    ];
+    replacement
+        .unknown_source_rejections
+        .insert(TEST_SOURCE_ID_B.to_string(), 7);
+    replacement.blocked_reasons =
+        vec![crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady];
+    replacement.config_fingerprint = "replacement-fingerprint".to_string();
+    strategy.pricing.observe_realized_vol_snapshot(replacement);
+}
+
+fn admitted_entry_strategy_for_rv_receipt() -> (
+    BinaryOracleEdgeTaker,
+    Arc<RecordingSequencedDecisionEvidenceWriter>,
+) {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    (strategy, evidence)
+}
+
+#[test]
 fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     let replay = strategy_input_quote_replay();
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -1261,7 +1549,11 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         "without-fast-venue marker should only track admitted reference state"
     );
     let ((), logs) = with_captured_strategy_logs(&strategy_id, || {
-        strategy.log_entry_evaluation(replay.evaluation_now_ms, &replay_decision);
+        strategy.log_entry_evaluation(
+            replay.evaluation_now_ms,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(replay.evaluation_now_ms)),
+            &replay_decision,
+        );
     });
     let entry_evaluation_logs = logs
         .iter()
@@ -2457,6 +2749,31 @@ fn forced_flat_evidence_filters_non_finite_liquidity_values() {
 fn minimal_entry_evaluation() -> EntryEvaluation {
     EntryEvaluation {
         gate: EntryGateDecision { blocked_by: vec![] },
+        realized_volatility_receipt: EntryRealizedVolatilityReceipt {
+            gate_result: BoltV3RvGateResult::MissingSnapshot,
+            receive_watermark_ms: None,
+            realized_vol: None,
+            source_venue: None,
+            source_ts_ms: None,
+            evidence: RealizedVolatilityEvidenceFields {
+                surface_id: String::new(),
+                as_of_ms: None,
+                annualized_decimal: String::new(),
+                measured_annualized_decimal: String::new(),
+                noise_robust_annualized_decimal: String::new(),
+                continuous_annualized_decimal: String::new(),
+                jump_annualized_decimal: String::new(),
+                forecast_annualized_decimal: String::new(),
+                pricing_component: String::new(),
+                seconds_per_annum: String::new(),
+                aggregation: String::new(),
+                sources_used: Vec::new(),
+                source_diagnostics: Vec::new(),
+                unknown_source_rejections: BTreeMap::new(),
+                blockers: Vec::new(),
+                config_fingerprint: String::new(),
+            },
+        },
         pricing_blocked_by: vec![],
         fair_probability_up: None,
         uncertainty_band_probability: None,

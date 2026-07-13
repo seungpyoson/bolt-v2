@@ -46,6 +46,7 @@ use bolt_v2::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
         RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
+    bolt_v3_timestamp_domain::LocalReceiveMs,
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
 };
@@ -176,6 +177,8 @@ fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3Strategy
         realized_volatility: "2.5".to_string(),
         realized_volatility_surface_id: "<surface_id>".to_string(),
         realized_volatility_as_of_ms: Some(1200),
+        realized_volatility_gate_result: Some(BoltV3RvGateResult::Accepted),
+        realized_volatility_receive_watermark_ms: Some(LocalReceiveMs::new(1_199)),
         realized_volatility_annualized_decimal: "2.5".to_string(),
         realized_volatility_measured_annualized_decimal: "2.5".to_string(),
         realized_volatility_noise_robust_annualized_decimal: "2.4".to_string(),
@@ -996,6 +999,9 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
         realized_vol: Some("2.5".to_string()),
         realized_vol_source_venue: Some("fast-source".to_string()),
         realized_vol_source_ts_ms: Some(1_100),
+        realized_vol_gate_result: Some(BoltV3RvGateResult::Accepted),
+        realized_vol_receive_watermark_ms: Some(LocalReceiveMs::new(1_099)),
+        realized_vol_snapshot: None,
         fair_probability_up: Some("0.6".to_string()),
         fair_probability_down: Some("0.4".to_string()),
         selected_side: Some(BoltV3OutcomeSide::Up),
@@ -1014,6 +1020,67 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
         metadata_matches_selection: true,
         fast_venue_incoherent: false,
     }
+}
+
+#[test]
+fn entry_rv_receipt_fields_deserialize_from_legacy_evidence() {
+    let mut accepted_skip =
+        serde_json::to_value(sample_entry_skip_evidence()).expect("serialize skip");
+    let accepted_skip_object = accepted_skip
+        .as_object_mut()
+        .expect("skip must serialize as object");
+    accepted_skip_object.remove("realized_vol_gate_result");
+    accepted_skip_object.remove("realized_vol_receive_watermark_ms");
+    accepted_skip_object.remove("realized_vol_snapshot");
+    let skip: BoltV3EntrySkipEvidence =
+        serde_json::from_value(accepted_skip.clone()).expect("accepted legacy skip");
+    assert_eq!(
+        skip.realized_vol_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
+    assert_eq!(skip.realized_vol_receive_watermark_ms, None);
+    assert_eq!(skip.realized_vol_snapshot, None);
+
+    let unclassifiable_skip_object = accepted_skip
+        .as_object_mut()
+        .expect("skip must remain an object");
+    unclassifiable_skip_object.insert(
+        "realized_vol_source_venue".to_string(),
+        serde_json::Value::Null,
+    );
+    let skip: BoltV3EntrySkipEvidence =
+        serde_json::from_value(accepted_skip).expect("unclassifiable legacy skip");
+    assert_eq!(skip.realized_vol_gate_result, None);
+
+    let mut snapshot =
+        serde_json::to_value(strategy_input_snapshot_with_realized_volatility_snapshot())
+            .expect("serialize strategy input");
+    let snapshot_object = snapshot
+        .as_object_mut()
+        .expect("strategy input must serialize as object");
+    snapshot_object.remove("realized_volatility_gate_result");
+    snapshot_object.remove("realized_volatility_receive_watermark_ms");
+    let accepted_snapshot: BoltV3StrategyInputEvidenceSnapshot =
+        serde_json::from_value(snapshot.clone()).expect("accepted legacy strategy input");
+    assert_eq!(
+        accepted_snapshot.realized_volatility_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
+    assert_eq!(
+        accepted_snapshot.realized_volatility_receive_watermark_ms,
+        None
+    );
+
+    snapshot
+        .as_object_mut()
+        .expect("strategy input must remain an object")
+        .insert(
+            "realized_volatility_sources_used".to_string(),
+            serde_json::json!([]),
+        );
+    let snapshot: BoltV3StrategyInputEvidenceSnapshot =
+        serde_json::from_value(snapshot).expect("unclassifiable legacy strategy input");
+    assert_eq!(snapshot.realized_volatility_gate_result, None);
 }
 
 fn sample_exit_decision_evidence() -> BoltV3ExitDecisionEvidence {
@@ -1119,6 +1186,8 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         realized_volatility: "1.5".to_string(),
         realized_volatility_surface_id: String::new(),
         realized_volatility_as_of_ms: None,
+        realized_volatility_gate_result: Some(BoltV3RvGateResult::MissingSnapshot),
+        realized_volatility_receive_watermark_ms: None,
         realized_volatility_annualized_decimal: "1.5".to_string(),
         realized_volatility_measured_annualized_decimal: String::new(),
         realized_volatility_noise_robust_annualized_decimal: String::new(),

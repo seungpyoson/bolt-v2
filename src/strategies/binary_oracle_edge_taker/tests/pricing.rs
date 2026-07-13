@@ -20,6 +20,135 @@ const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
 
 struct PriceSensitiveEntryFeeProvider;
 
+const RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS: u64 = 3_201;
+#[derive(Clone, Copy, Debug)]
+enum RvClockDomainAmendmentSnapshot {
+    Ready(u64),
+    NotReady(u64),
+}
+
+const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(RvClockDomainAmendmentSnapshot, u64, bool); 4] = [
+    (RvClockDomainAmendmentSnapshot::Ready(1_200), 1_200, true),
+    (RvClockDomainAmendmentSnapshot::Ready(1_201), 1_200, false),
+    (RvClockDomainAmendmentSnapshot::Ready(1_200), 1_701, false),
+    (
+        RvClockDomainAmendmentSnapshot::NotReady(1_200),
+        1_200,
+        false,
+    ),
+];
+
+fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    rv_clock_domain_amendment_configure_surface(&mut strategy);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy
+}
+
+fn rv_clock_domain_amendment_configure_surface(strategy: &mut BinaryOracleEdgeTaker) {
+    let surface_id = strategy.config.realized_volatility_surface_id.clone();
+    let mut surfaces = std::collections::BTreeMap::new();
+    surfaces.insert(
+        surface_id.clone(),
+        crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
+            surface_id,
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            estimator: crate::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
+            sources: vec![
+                crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+                    source_id: "rv_clock_domain_amendment_source".to_string(),
+                    data_client_id: "rv_clock_domain_amendment_client".to_string(),
+                    instrument_id: "RV-CLOCK-DOMAIN-AMENDMENT.TEST".to_string(),
+                    source_class:
+                        crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+                    sample_kind:
+                        crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+                    enabled: true,
+                    counts_toward_quorum: true,
+                    canonical_base_asset: "RVTEST".to_string(),
+                    canonical_quote_asset: "USD".to_string(),
+                },
+            ],
+        },
+    );
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_realized_volatility_surfaces(surfaces);
+}
+
+fn rv_clock_domain_amendment_set_snapshot(
+    strategy: &mut BinaryOracleEdgeTaker,
+    snapshot: RvClockDomainAmendmentSnapshot,
+) {
+    strategy.pricing.clear_latest_realized_vol_snapshot();
+    let snapshot_receive_ms = match snapshot {
+        RvClockDomainAmendmentSnapshot::Ready(receive_ms)
+        | RvClockDomainAmendmentSnapshot::NotReady(receive_ms) => receive_ms,
+    };
+    strategy.pricing.seed_ready_realized_vol(
+        Some("<SOURCE_ID>".to_string()),
+        1.5,
+        snapshot_receive_ms,
+    );
+    if matches!(snapshot, RvClockDomainAmendmentSnapshot::NotReady(_)) {
+        let mut not_ready = strategy
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(
+                &strategy.config.realized_volatility_surface_id,
+            )
+            .expect("seeded snapshot must be present before marking it not ready")
+            .clone();
+        not_ready.ready = false;
+        strategy.pricing.observe_realized_vol_snapshot(not_ready);
+        assert_eq!(
+            strategy.pricing.classify_realized_vol_gate(
+                &strategy.config.realized_volatility_surface_id,
+                Some(LocalReceiveMs::new(snapshot_receive_ms)),
+                strategy.realized_volatility_max_source_age_ms(),
+            ),
+            BoltV3RvGateResult::RejectedNotReady,
+            "the negative fixture must be a present RejectedNotReady snapshot"
+        );
+    }
+}
+
+fn production_callsite(source: &str, anchor: &str) -> String {
+    let start = source
+        .find(anchor)
+        .unwrap_or_else(|| panic!("production call-site anchor missing: {anchor}"));
+    source[start..]
+        .lines()
+        .take(18)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn rv_clock_domain_amendment_sized_production_callsite_forwards_evaluation_receive_ms() {
+    let source = include_str!("../mod.rs");
+    let callsite = production_callsite(source, "let sized_fee_uncertainty_bps =");
+    assert!(callsite.contains("now_ms,\n                                receive_context,"));
+}
+
+#[test]
+fn rv_clock_domain_amendment_resized_production_callsite_forwards_evaluation_receive_ms() {
+    let source = include_str!("../mod.rs");
+    let callsite = production_callsite(source, "let resized_fee_uncertainty_bps =");
+    assert!(callsite.contains("now_ms,\n                                receive_context,"));
+}
+
 impl FeeProvider for PriceSensitiveEntryFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         Some(Decimal::ZERO)
@@ -44,6 +173,243 @@ impl FeeProvider for PriceSensitiveEntryFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async move { Ok(()) }.boxed()
     }
+}
+
+#[test]
+fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let evaluation = strategy.entry_evaluation_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(evaluation_receive_ms)),
+        );
+
+        assert_eq!(
+            evaluation.uncertainty_band_probability.is_some(),
+            expected_available,
+            "initial uncertainty classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}: {evaluation:#?}"
+        );
+    }
+}
+
+#[test]
+fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
+    let strategy = rv_clock_domain_amendment_ready_entry();
+    let evaluation = strategy.entry_evaluation_for_receive_at(
+        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+        EntryEvaluationReceiveContext::new(LocalReceiveMs::new(1_200)),
+    );
+
+    assert_eq!(evaluation.selected_side, Some(OutcomeSide::Up));
+    assert!(
+        evaluation
+            .sized_executable_edge
+            .is_some_and(|edge| edge.trade_allowed)
+    );
+    assert!(evaluation.sized_notional.is_some_and(is_positive_finite));
+}
+
+#[test]
+fn rv_clock_domain_amendment_resized_fee_adjustment_uses_entry_receive_stamp() {
+    let mut admitted_resized = None;
+    for deep_ask_cents in 51..=75 {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        strategy.config.order_notional_target = 10.0;
+        strategy.config.maximum_position_notional = 10.0;
+        strategy.config.risk_lambda = 0.5;
+        strategy.config.sizing_ev_reference_bps = 500;
+        strategy.config.vwap_depth_limit_bps = 5_000;
+        strategy.config.book_impact_cap_bps = 5_000;
+        strategy.config.edge_threshold_basis_points = 0;
+        strategy.config.slippage_buffer_bps = 0;
+        set_configured_books_depth(
+            &mut strategy,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+                (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.50, 4.0),
+                (
+                    BookAction::Add,
+                    OrderSide::Sell,
+                    deep_ask_cents as f64 / 100.0,
+                    100.0,
+                ),
+            ],
+        );
+        let evaluation = strategy.entry_evaluation_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(1_200)),
+        );
+        let Some(final_notional) = evaluation.sized_notional else {
+            continue;
+        };
+        let Some(preliminary_ev) = evaluation.up_worst_case_ev_bps else {
+            continue;
+        };
+        let Some(impact_cap_notional) = evaluation.book_impact_cap_notional else {
+            continue;
+        };
+        let preliminary_notional = choose_robust_size(&RobustSizingInputs {
+            expected_ev_per_notional: preliminary_ev / BPS_DENOMINATOR,
+            ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64
+                / BPS_DENOMINATOR,
+            risk_lambda: strategy.config.risk_lambda,
+            order_notional_target: strategy.config.order_notional_target,
+            maximum_position_notional: strategy.config.maximum_position_notional,
+            impact_cap_notional,
+        });
+        if evaluation.selected_side == Some(OutcomeSide::Up)
+            && (final_notional - preliminary_notional).abs()
+                > notional_float_tolerance(preliminary_notional)
+        {
+            admitted_resized = Some(evaluation);
+            break;
+        }
+    }
+    assert!(
+        admitted_resized.is_some(),
+        "an actual resized branch must remain admitted with stale wall time and fresh evaluation receive time"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_log_and_skip_evidence_use_entry_receive_stamp() {
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let decision = strategy.entry_submission_decision_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(evaluation_receive_ms)),
+        );
+        let fields = strategy
+            .entry_evaluation_log_fields_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS, &decision);
+
+        assert_eq!(fields.realized_vol.is_some(), expected_available);
+        assert_eq!(
+            fields.realized_vol_source_ts_ms.is_some(),
+            expected_available,
+            "log/skip classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}"
+        );
+    }
+}
+
+#[test]
+fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
+    for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
+        RV_CLOCK_DOMAIN_AMENDMENT_CASES
+    {
+        let mut strategy = rv_clock_domain_amendment_ready_entry();
+        rv_clock_domain_amendment_set_snapshot(&mut strategy, snapshot_receive_ms);
+        let decision = strategy.entry_submission_decision_for_receive_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(evaluation_receive_ms)),
+        );
+        let price = Price::new(0.50, 2);
+        let quantity = Quantity::new(strategy.config.order_notional_target, 2);
+
+        let snapshot = strategy.entry_strategy_input_evidence_snapshot_at(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            &decision,
+            ClientOrderId::from("RV-CLOCK-DOMAIN-AMENDMENT"),
+            &price,
+            &quantity,
+        );
+
+        assert_eq!(
+            snapshot.is_ok(),
+            expected_available,
+            "submit-evidence classification mismatch for snapshot={snapshot_receive_ms:?} evaluation_receive_ms={evaluation_receive_ms}: {snapshot:?}"
+        );
+    }
+}
+
+#[test]
+fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    rv_clock_domain_amendment_configure_surface(&mut strategy);
+    strategy.active.warmup_count = 0;
+    let strategy_id = unique_log_capture_strategy_id("rv-context-skip");
+    strategy.config.strategy_id = strategy_id.clone();
+
+    let (result, logs) = with_captured_strategy_logs(&strategy_id, || {
+        strategy.try_submit_entry_order_for_receive(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(1_200)),
+        )
+    });
+
+    assert_eq!(result.expect("blocked entry must persist its skip"), None);
+    let skips = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(skips.len(), 1);
+    assert_eq!(skips[0].realized_vol.as_deref(), Some("1.5"));
+    assert!(logs.iter().any(|(_, message)| {
+        message.contains("binary_oracle_edge_taker entry evaluation:")
+            && message.contains(&strategy_id)
+            && message.contains("realized_vol=Some(1.5)")
+    }));
+}
+
+#[test]
+fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    rv_clock_domain_amendment_configure_surface(&mut strategy);
+    set_shadow_order_execution_policy(&mut strategy);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let strategy_id = unique_log_capture_strategy_id("rv-context-submit");
+    strategy.config.strategy_id = strategy_id.clone();
+
+    let (submit_result, logs) = with_captured_strategy_logs(&strategy_id, || {
+        strategy.try_submit_entry_order_for_receive(
+            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(1_200)),
+        )
+    });
+    let client_order_id = submit_result
+        .expect("entry route must preserve the trigger receive context")
+        .expect("fresh evaluation receive time must admit a shadow submit");
+    let events = evidence.events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RecordedDecisionEvidenceEvent::StrategyInput(snapshot)
+            if snapshot.client_order_id == client_order_id.to_string()
+                && snapshot.realized_volatility == "1.5"
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+    );
+    assert!(logs.iter().any(|(_, message)| {
+        message.contains("binary_oracle_edge_taker entry evaluation:")
+            && message.contains(&strategy_id)
+            && message.contains("realized_vol=Some(1.5)")
+    }));
 }
 
 #[test]

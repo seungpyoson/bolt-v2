@@ -375,6 +375,19 @@ impl TakerPricingState {
         )
     }
 
+    pub(crate) fn classify_realized_vol_snapshot(
+        &self,
+        surface_id: &str,
+        evaluation_receive_ms: Option<LocalReceiveMs>,
+        max_source_age_ms: Option<u64>,
+    ) -> crate::bolt_v3_fair_value_pricing::RealizedVolGateClassification {
+        self.fair_value.classify_realized_vol_snapshot(
+            surface_id,
+            evaluation_receive_ms,
+            max_source_age_ms,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn clear_latest_realized_vol_snapshot(&mut self) {
         self.fair_value.clear_latest_realized_vol_snapshot();

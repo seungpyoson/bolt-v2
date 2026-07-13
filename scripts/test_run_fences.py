@@ -61,6 +61,18 @@ def assert_discovers_paired_and_standalone_test_modules() -> None:
         raise AssertionError(discovered)
 
 
+def assert_nt_pin_census_is_wired_with_paired_self_test() -> None:
+    runner = load_runner()
+    fence_paths = runner.discover_fence_paths()
+    fence_names = {path.name for path in fence_paths}
+    if runner.PIN_CENSUS_FENCE_FILENAME not in fence_names:
+        raise AssertionError(fence_names)
+    test_names = {path.name for path in runner.discover_test_paths(fence_paths)}
+    expected_test = f"test_{runner.PIN_CENSUS_FENCE_FILENAME}"
+    if expected_test not in test_names:
+        raise AssertionError(test_names)
+
+
 def assert_reports_raised_fence_and_continues() -> None:
     runner = load_runner()
     with tempfile.TemporaryDirectory() as tmp:
@@ -335,6 +347,7 @@ def assert_mixed_unittest_and_bare_tests_fail_loud() -> None:
 def main() -> int:
     assert_discovers_static_verify_modules_by_name()
     assert_discovers_paired_and_standalone_test_modules()
+    assert_nt_pin_census_is_wired_with_paired_self_test()
     assert_reports_raised_fence_and_continues()
     assert_shared_filesystem_cache_spans_fences()
     assert_runner_argv_does_not_leak_to_fences()

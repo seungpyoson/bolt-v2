@@ -210,9 +210,9 @@ fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_resized_fee_adjustment_uses_entry_receive_stamp() {
-    let mut admitted_resized = None;
-    for deep_ask_cents in 51..=75 {
+fn rv_clock_domain_amendment_resized_fee_regate_uses_entry_receive_stamp_before_fixed_point_rejection()
+ {
+    fn cliff_strategy() -> BinaryOracleEdgeTaker {
         let mut strategy = rv_clock_domain_amendment_ready_entry();
         strategy.config.order_notional_target = 10.0;
         strategy.config.maximum_position_notional = 10.0;
@@ -222,54 +222,121 @@ fn rv_clock_domain_amendment_resized_fee_adjustment_uses_entry_receive_stamp() {
         strategy.config.book_impact_cap_bps = 5_000;
         strategy.config.edge_threshold_basis_points = 0;
         strategy.config.slippage_buffer_bps = 0;
-        set_configured_books_depth(
-            &mut strategy,
+        strategy
+    }
+    fn set_side_books(strategy: &mut BinaryOracleEdgeTaker, up_asks: &[(f64, f64)], up_bid: f64) {
+        let up_instrument_id = strategy
+            .instrument_id_for_side(OutcomeSide::Up)
+            .expect("UP instrument should be configured");
+        let down_instrument_id = strategy
+            .instrument_id_for_side(OutcomeSide::Down)
+            .expect("DOWN instrument should be configured");
+        let mut up_deltas = vec![
+            (BookAction::Clear, OrderSide::Buy, up_bid, 100.0),
+            (BookAction::Add, OrderSide::Buy, up_bid, 100.0),
+        ];
+        for (price, shares) in up_asks {
+            up_deltas.push((BookAction::Add, OrderSide::Sell, *price, *shares));
+        }
+        assert!(
+            strategy
+                .active
+                .books
+                .update_from_deltas(&book_deltas(up_instrument_id, &up_deltas))
+        );
+        assert!(strategy.active.books.update_from_deltas(&book_deltas(
+            down_instrument_id,
             &[
-                (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-                (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-                (BookAction::Add, OrderSide::Sell, 0.50, 4.0),
-                (
-                    BookAction::Add,
-                    OrderSide::Sell,
-                    deep_ask_cents as f64 / 100.0,
-                    100.0,
-                ),
+                (BookAction::Clear, OrderSide::Buy, 0.48, 100.0),
+                (BookAction::Add, OrderSide::Buy, 0.48, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
             ],
-        );
-        let evaluation = strategy.entry_evaluation_for_receive_at(
-            RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
-            EntryEvaluationReceiveContext::new(LocalReceiveMs::new(1_200)),
-        );
-        let Some(final_notional) = evaluation.sized_notional else {
-            continue;
-        };
-        let Some(preliminary_ev) = evaluation.up_worst_case_ev_bps else {
-            continue;
-        };
-        let Some(impact_cap_notional) = evaluation.book_impact_cap_notional else {
-            continue;
-        };
-        let preliminary_notional = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: preliminary_ev / BPS_DENOMINATOR,
-            ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64
-                / BPS_DENOMINATOR,
-            risk_lambda: strategy.config.risk_lambda,
-            order_notional_target: strategy.config.order_notional_target,
-            maximum_position_notional: strategy.config.maximum_position_notional,
-            impact_cap_notional,
-        });
-        if evaluation.selected_side == Some(OutcomeSide::Up)
-            && (final_notional - preliminary_notional).abs()
-                > notional_float_tolerance(preliminary_notional)
-        {
-            admitted_resized = Some(evaluation);
+        )));
+    }
+
+    let receive_context = EntryEvaluationReceiveContext::new(LocalReceiveMs::new(1_200));
+    let mut calibration = cliff_strategy();
+    set_side_books(&mut calibration, &[(0.50, 100.0)], 0.49);
+    let calibration_evaluation = calibration
+        .entry_evaluation_for_receive_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS, receive_context);
+    assert_eq!(
+        calibration_evaluation
+            .realized_volatility_receipt
+            .gate_result,
+        BoltV3RvGateResult::Accepted,
+        "fresh receive time must admit the RV snapshot during calibration"
+    );
+    assert_eq!(
+        calibration_evaluation.selected_side,
+        Some(OutcomeSide::Up),
+        "calibration book must select UP: {calibration_evaluation:#?}"
+    );
+    let fair_probability = calibration_evaluation
+        .fair_probability_up
+        .expect("calibration must expose the fair probability");
+    let band_probability = calibration_evaluation
+        .uncertainty_band_probability
+        .expect("calibration must expose the uncertainty band");
+    let worst_case_probability = fair_probability.narrowed(band_probability).value();
+    assert!(
+        (0.12..=0.97).contains(&worst_case_probability),
+        "calibration produced an unusable worst-case probability \
+         {worst_case_probability}: {calibration_evaluation:#?}"
+    );
+
+    let target_notional = 10.0;
+    let thin_notional = 2.0;
+    let cheap_cents = ((worst_case_probability - 0.10) * 100.0).floor();
+    let cheap = cheap_cents / 100.0;
+    let mut deep = None;
+    for cents in (cheap_cents as i64 + 1)..=99 {
+        let price = cents as f64 / 100.0;
+        let full_vwap =
+            target_notional / (thin_notional / cheap + (target_notional - thin_notional) / price);
+        let preliminary_ev = (worst_case_probability - full_vwap) / full_vwap;
+        if preliminary_ev > 0.0005 && preliminary_ev < 0.0100 {
+            deep = Some(price);
             break;
         }
     }
-    assert!(
-        admitted_resized.is_some(),
-        "an actual resized branch must remain admitted with stale wall time and fresh evaluation receive time"
+    let deep = deep.expect("a 2-decimal deep level must express the sizing cliff");
+
+    let mut strategy = cliff_strategy();
+    set_side_books(
+        &mut strategy,
+        &[(cheap, thin_notional / cheap), (deep, 100.0)],
+        cheap - 0.01,
     );
+    let evaluation = strategy
+        .entry_evaluation_for_receive_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS, receive_context);
+
+    assert_eq!(
+        evaluation.realized_volatility_receipt.gate_result,
+        BoltV3RvGateResult::Accepted,
+        "fresh receive time must keep the RV snapshot admitted through resized pricing"
+    );
+    assert!(
+        evaluation
+            .sized_executable_edge
+            .is_some_and(|edge| edge.trade_allowed),
+        "the resized fee re-gate must complete before the fixed-point guard: {evaluation:#?}"
+    );
+    assert!(
+        evaluation
+            .pricing_blocked_by
+            .contains(&EntryPricingBlockReason::SizedNotionalUnsupported(
+                OutcomeSide::Up
+            )),
+        "the calibrated cliff must reach the downstream fixed-point rejection: {evaluation:#?}"
+    );
+    assert!(
+        !evaluation
+            .pricing_blocked_by
+            .contains(&EntryPricingBlockReason::UncertaintyBandUnavailable),
+        "fresh receive time must prevent a resized RV uncertainty re-gate failure: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, None);
+    assert_eq!(evaluation.sized_notional, None);
 }
 
 #[test]

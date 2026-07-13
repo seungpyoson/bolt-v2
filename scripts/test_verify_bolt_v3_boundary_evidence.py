@@ -109,7 +109,8 @@ fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps(
     let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = DepthSnapshotStreamEvent { event_time_us };
-    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init).unwrap();
+    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)
+        .expect("non-empty SBE depth snapshot must produce deltas");
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(deltas.deltas.len(), 3);
     ::core::assert_eq!(deltas.ts_event, expected_ts_event);
@@ -124,7 +125,8 @@ fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
     let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = DepthDiffStreamEvent { event_time_us };
-    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init).unwrap();
+    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)
+        .expect("non-empty SBE depth diff must produce deltas");
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(deltas.deltas.len(), 3);
     ::core::assert_eq!(deltas.ts_event, expected_ts_event);
@@ -1654,6 +1656,133 @@ def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_c
             "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
             "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
         )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_postfix_result_laundering_for_every_parser() -> None:
+    cases = (
+        (
+            "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
+            "trades",
+            "parse_trades_event",
+            "nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init)",
+            "",
+            "fabricated_trades()",
+        ),
+        (
+            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
+            "quote",
+            "parse_bbo_event",
+            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init)",
+            "",
+            "fabricated_quote()",
+        ),
+        (
+            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+            "deltas",
+            "parse_depth_snapshot",
+            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)",
+            '.expect("non-empty SBE depth snapshot must produce deltas")',
+            "fabricated_deltas()",
+        ),
+        (
+            "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+            "deltas",
+            "parse_depth_diff",
+            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)",
+            '.expect("non-empty SBE depth diff must produce deltas")',
+            "fabricated_deltas()",
+        ),
+    )
+    for function_name, result_variable, parser_symbol, parser_call, tail, fabricated in cases:
+        canonical_separator = "\n        " if tail else ""
+        canonical = (
+            f"let {result_variable} = {parser_call}{canonical_separator}{tail};"
+        )
+        mutations = (
+            f"let {result_variable} = {parser_call}{tail}.clone();",
+            (
+                f"let {result_variable} = {parser_call}.map(|_| {fabricated})"
+                f"{tail};"
+            ),
+            (
+                f"let {result_variable} = {parser_call}"
+                ".fabricate(expected_ts_event, adapter_ts_init)"
+                f"{tail};"
+            ),
+        )
+        for replacement in mutations:
+            def mutate(root: Path, canonical: str = canonical, replacement: str = replacement) -> None:
+                path = root / BINANCE_TIMESTAMP_TEST_PATH
+                text = path.read_text(encoding="utf-8")
+                if canonical not in text:
+                    raise AssertionError(f"missing canonical parser initializer: {canonical}")
+                path.write_text(
+                    text.replace(
+                        canonical,
+                        replacement,
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+
+            assert_finding(
+                scan_temp(mutate),
+                f"{function_name} must bind {result_variable} directly to pinned "
+                f"{parser_symbol} exactly once without rebinding or reassignment",
+            )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_noncanonical_depth_expect_chain() -> None:
+    cases = (
+        (
+            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+            "parse_depth_snapshot",
+            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)",
+            "non-empty SBE depth snapshot must produce deltas",
+        ),
+        (
+            "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+            "parse_depth_diff",
+            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)",
+            "non-empty SBE depth diff must produce deltas",
+        ),
+    )
+    for function_name, parser_symbol, parser_call, message in cases:
+        canonical = (
+            f"let deltas = {parser_call}\n"
+            f'        .expect("{message}");'
+        )
+        mutations = (
+            f'let deltas = {parser_call}.expect("altered proof message");',
+            (
+                f'let deltas = {parser_call}.expect("{message}")'
+                f'.expect("{message}");'
+            ),
+            (
+                f'let deltas = {parser_call}.expect("{message}")'
+                ".fabricate(expected_ts_event, adapter_ts_init);"
+            ),
+        )
+        for replacement in mutations:
+            def mutate(root: Path, canonical: str = canonical, replacement: str = replacement) -> None:
+                path = root / BINANCE_TIMESTAMP_TEST_PATH
+                text = path.read_text(encoding="utf-8")
+                if canonical not in text:
+                    raise AssertionError(f"missing canonical parser initializer: {canonical}")
+                path.write_text(
+                    text.replace(
+                        canonical,
+                        replacement,
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+
+            assert_finding(
+                scan_temp(mutate),
+                f"{function_name} must bind deltas directly to pinned {parser_symbol} "
+                "exactly once without rebinding or reassignment",
+            )
 
 
 def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabrication() -> None:

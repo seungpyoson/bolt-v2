@@ -114,6 +114,10 @@ BINANCE_TIMESTAMP_TEST_CASE_RESULT_CONTRACTS = {
         "deltas",
     ),
 }
+BINANCE_TIMESTAMP_DEPTH_EXPECT_MESSAGES = {
+    "parse_depth_snapshot": "non-empty SBE depth snapshot must produce deltas",
+    "parse_depth_diff": "non-empty SBE depth diff must produce deltas",
+}
 BINANCE_TIMESTAMP_TEST_CASE_EVENT_CONTRACTS = {
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
         "transact_time_us",
@@ -1179,24 +1183,24 @@ def rust_crate_inner_attributes(text: str) -> list[str]:
 
 def rust_ordinary_test_function_body(
     text: str, function_name: str
-) -> tuple[str | None, bool]:
+) -> tuple[str | None, str | None, bool]:
     masked = _mask_rust_non_code(text)
     function_header = re.compile(
         rf"\bfn\s+{re.escape(function_name)}\s*\([^)]*\)\s*\{{"
     )
     matches = list(function_header.finditer(masked))
     if len(matches) != 1:
-        return None, False
+        return None, None, False
 
     if rust_open_delimiters_at(masked, matches[0].start()) != ():
-        return None, True
+        return None, None, True
 
     attribute_cluster = re.search(
         r"(?P<attributes>(?:#\s*\[[^\[\]]+\]\s*)+)$",
         masked[: matches[0].start()],
     )
     if attribute_cluster is None:
-        return None, True
+        return None, None, True
     attributes = [
         re.sub(r"\s+", "", attribute)
         for attribute in re.findall(
@@ -1205,7 +1209,7 @@ def rust_ordinary_test_function_body(
         )
     ]
     if attributes != ["test"]:
-        return None, True
+        return None, None, True
 
     opening_brace = masked.find("{", matches[0].start(), matches[0].end())
     depth = 0
@@ -1216,8 +1220,12 @@ def rust_ordinary_test_function_body(
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return masked[opening_brace + 1 : index], True
-    return None, True
+                return (
+                    masked[opening_brace + 1 : index],
+                    text[opening_brace + 1 : index],
+                    True,
+                )
+    return None, None, True
 
 
 def rust_top_level_block_span(
@@ -1800,20 +1808,58 @@ def has_governed_expected_event_contract(
 
 def has_governed_binance_parser_result_contract(
     body: str,
+    original_body: str,
     parser_symbol: str,
     result_variable: str,
 ) -> bool:
-    call = re.compile(
-        rf"\blet\s+{re.escape(result_variable)}\s*=\s*"
-        rf"{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\s*::\s*"
-        rf"{re.escape(parser_symbol)}\s*\(\s*&\s*event\s*,\s*&\s*instrument\s*,\s*"
-        r"adapter_ts_init\s*\)"
-    )
-    direct_calls = [
-        match
-        for match in call.finditer(body)
-        if rust_open_delimiters_at(body, match.start()) == ()
+    statements, statements_are_valid = rust_top_level_let_statements(body)
+    result_statements = [
+        statement
+        for statement in statements
+        if rust_token_values(statement.pattern) == [result_variable]
     ]
+    if not statements_are_valid or len(result_statements) != 1:
+        return False
+
+    result_statement = result_statements[0]
+    if not result_statement.rhs:
+        return False
+    binding_tokens = rust_tokens_and_delimiter_pairs(
+        body[result_statement.start : result_statement.rhs[0].start]
+    )
+    if binding_tokens is None or rust_token_values(binding_tokens[0]) != [
+        "let",
+        result_variable,
+        "=",
+    ]:
+        return False
+
+    expected_rhs = [
+        BINANCE_TIMESTAMP_PARSER_ALIAS,
+        "::",
+        parser_symbol,
+        "(",
+        "&",
+        "event",
+        ",",
+        "&",
+        "instrument",
+        ",",
+        "adapter_ts_init",
+        ")",
+    ]
+    expect_message = BINANCE_TIMESTAMP_DEPTH_EXPECT_MESSAGES.get(parser_symbol)
+    if expect_message is not None:
+        expected_rhs.extend([".", "expect", "(", ")"])
+    if rust_token_values(result_statement.rhs) != expected_rhs:
+        return False
+    if expect_message is not None:
+        expect_argument = original_body[
+            result_statement.rhs[-2].end : result_statement.rhs[-1].start
+        ].strip()
+        if expect_argument != f'"{expect_message}"':
+            return False
+
     binding_patterns, patterns_are_valid = rust_binding_patterns(body)
     result_bindings = [
         pattern
@@ -1829,7 +1875,6 @@ def has_governed_binance_parser_result_contract(
     )
     return (
         patterns_are_valid
-        and len(direct_calls) == 1
         and len(result_bindings) == 1
         and len(assignments) == 1
     )
@@ -1935,7 +1980,7 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
         )
 
     for function_name, requirements in BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS.items():
-        body, has_named_function = rust_ordinary_test_function_body(
+        body, original_body, has_named_function = rust_ordinary_test_function_body(
             test_text, function_name
         )
         if body is None:
@@ -1949,6 +1994,12 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
                     f"{BINANCE_TIMESTAMP_TEST_PATH}: missing required #[test] function "
                     f"{function_name}"
                 )
+            continue
+        if original_body is None:
+            findings.append(
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} original function body "
+                "could not be verified"
+            )
             continue
         if binance_test_has_early_exit_bypass(body):
             findings.append(
@@ -2037,6 +2088,7 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
             )
         if not has_governed_binance_parser_result_contract(
             body,
+            original_body,
             parser_symbol,
             result_variable,
         ):

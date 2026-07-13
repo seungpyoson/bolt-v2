@@ -384,6 +384,8 @@ def assert_cache_prune_dry_run_lists_stale_candidates_without_deleting() -> None
             raise AssertionError(payload)
         if payload["reclaimable_bytes"] != expected_debug_bytes:
             raise AssertionError(payload)
+        if payload.get("reclaimability_measured") is not True:
+            raise AssertionError(payload)
         candidates = {entry["relative_path"]: entry for entry in payload["candidates"]}
         if set(candidates) != {"debug"}:
             raise AssertionError(payload)
@@ -450,6 +452,8 @@ def assert_cache_prune_dry_run_preserves_stale_cache_below_thresholds() -> None:
             raise AssertionError((result.returncode, result.stdout, result.stderr))
         payload = json.loads(result.stdout)
         if payload["candidates"] or payload["reclaimable_bytes"] != 0:
+            raise AssertionError(payload)
+        if payload.get("reclaimability_measured") is not True:
             raise AssertionError(payload)
         if payload.get("pressure") is not False:
             raise AssertionError(payload)
@@ -2052,6 +2056,37 @@ def assert_all_managed_cache_policies_are_bounded_to_30_gib() -> None:
             raise AssertionError(f"{path.relative_to(REPO_ROOT)} does not declare {expected}")
 
 
+def assert_disk_preflight_reports_measured_target_without_fabricated_reclaimability() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=1, soft_limit_bytes=1)
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        oversize = target / "debug" / "oversize.bin"
+        oversize.parent.mkdir(parents=True)
+        oversize.write_bytes(b"oversize")
+        old_root_base = os.environ.get("RUST_VERIFICATION_ROOT_BASE")
+        try:
+            os.environ["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            payload = owner.disk_preflight_refusal_payload(repo, owner.load_policy(repo))
+        finally:
+            if old_root_base is None:
+                os.environ.pop("RUST_VERIFICATION_ROOT_BASE", None)
+            else:
+                os.environ["RUST_VERIFICATION_ROOT_BASE"] = old_root_base
+        if payload is None or payload.get("refusal_code") != "disk_pressure":
+            raise AssertionError(payload)
+        if payload.get("total_bytes") != disk_bytes(oversize):
+            raise AssertionError(payload)
+        if payload.get("reclaimability_measured") is not False:
+            raise AssertionError(payload)
+        if payload.get("reclaimable_bytes") is not None:
+            raise AssertionError(payload)
+
+
 def assert_cache_prune_recipe_sweeps_all_managed_cache_namespaces() -> None:
     source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     recipe_start = source.index("cache-prune *args:")
@@ -3603,6 +3638,7 @@ def main() -> int:
     assert_cache_prune_rejects_conflicting_modes()
     assert_repo_policy_declares_cache_retention()
     assert_all_managed_cache_policies_are_bounded_to_30_gib()
+    assert_disk_preflight_reports_measured_target_without_fabricated_reclaimability()
     assert_cache_prune_recipe_sweeps_all_managed_cache_namespaces()
     assert_v6_regression_cargo_process_names_stay_visible()
     assert_managed_env_scrubs_build_target_dir_and_routes_target_dir()

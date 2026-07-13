@@ -3959,8 +3959,8 @@ def assert_runner_config_floor_handles_missing_and_empty_inputs() -> None:
 
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     workflows = (
-        (".github/workflows/flaky-test-detection.yml", 2),
-        (".github/workflows/flaky-test-smoke.yml", 2),
+        ".github/workflows/flaky-test-detection.yml",
+        ".github/workflows/flaky-test-smoke.yml",
     )
     pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
     expected_job_names = (
@@ -3973,7 +3973,7 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
         "MERGIFY_TEST_JOB_NAME: bvs-test archive",
         "MERGIFY_TEST_JOB_NAME: bvs-test issue-789",
     )
-    for workflow_path, expected_bvs_count in workflows:
+    for workflow_path in workflows:
         workflow = repo_workflow_text(workflow_path)
         if workflow.count(pinned_v14_action) != 3:
             raise AssertionError(f"{workflow_path} must pin all Mergify uploads to the v14 action SHA")
@@ -3989,12 +3989,10 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
                 raise AssertionError(f"{workflow_path} missing current Mergify CLI env {job_env!r}")
         if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
             raise AssertionError(f"{workflow_path} must pass test runner exit codes to Mergify")
-        if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != expected_bvs_count:
-            raise AssertionError(f"{workflow_path} BVS jobs must use the shared backtester cache digest")
-        if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
-            raise AssertionError(f"{workflow_path} BVS target cache keys must not use inline hashFiles")
-        if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != expected_bvs_count:
-            raise AssertionError(f"{workflow_path} BVS target cache keys must use the shared digest")
+        if "python3 scripts/ci_input_sets.py hash backtester_cache" in workflow:
+            raise AssertionError(f"{workflow_path} must not compute a dead BVS target-cache digest")
+        if "managed-target-bvs-" in workflow:
+            raise AssertionError(f"{workflow_path} must not restore a BVS whole-target cache")
         if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
             raise AssertionError(f"{workflow_path} must restore from production cache namespaces")
 
@@ -4333,6 +4331,7 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     workflows = {
         ".github/workflows/debug-test.yml": repo_workflow_text(".github/workflows/debug-test.yml"),
         ".github/workflows/rust-probe.yml": repo_workflow_text(".github/workflows/rust-probe.yml"),
+        ".github/workflows/flaky-test-detection.yml": repo_workflow_text(".github/workflows/flaky-test-detection.yml"),
         ".github/workflows/flaky-test-smoke.yml": repo_workflow_text(".github/workflows/flaky-test-smoke.yml"),
     }
     bvs_policy = repo_source_text("crates/backtesting-vertical-slice/ci/rust-verification.toml")
@@ -4354,6 +4353,250 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
     errors = verifier.verify_debug_lane_compile_cache_parity(workflows, bvs_policy)
     if errors:
         raise AssertionError(f"debug lanes must satisfy compile-cache parity, got: {errors}")
+
+    flaky_jobs = (
+        (".github/workflows/flaky-test-detection.yml", "flaky-detection-rust-backtester"),
+        (".github/workflows/flaky-test-detection.yml", "flaky-detection-rust-backtester-issue-789"),
+        (".github/workflows/flaky-test-smoke.yml", "flaky-smoke-rust-backtester"),
+        (".github/workflows/flaky-test-smoke.yml", "flaky-smoke-rust-backtester-issue-789"),
+    )
+    setup_block = (
+        "      - name: Setup read-only sccache\n"
+        "        id: sccache\n"
+        "        uses: ./.github/actions/sccache-setup\n"
+        "        with:\n"
+        "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n"
+    )
+    for workflow_name, job_name in flaky_jobs:
+        workflow = workflows[workflow_name]
+        anchor = f"  {job_name}:\n"
+        mutations = [
+            replace_once_after(workflow, anchor, setup_block, ""),
+            replace_once_after(
+                workflow,
+                anchor,
+                "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+                'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Print sccache stats\n",
+                "      - name: Omit sccache stats\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Restore forbidden BVS target cache\n"
+                "        uses: actions/cache/restore@example\n"
+                "        with:\n"
+                "          path: crates/backtesting-vertical-slice/target\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Block-scalar third-party BVS target cache\n"
+                "        uses: buildjet/cache@example\n"
+                "        with:\n"
+                "          path: |\n"
+                "            ./crates/backtesting-vertical-slice/target/\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Third-party forbidden BVS target cache\n"
+                "        uses: buildjet/cache@example\n"
+                "        with:\n"
+                "          path: ${{ steps.crate_target.outputs.dir }}\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Save forbidden BVS target cache\n"
+                "        uses: actions/cache/save@example\n"
+                "        with:\n"
+                "          path: crates/backtesting-vertical-slice/target\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Combined forbidden BVS target cache\n"
+                "        uses: actions/cache@example\n"
+                "        with:\n"
+                "          path: crates/backtesting-vertical-slice/target\n"
+                "          key: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Inject forbidden BVS target key\n"
+                "        env:\n"
+                "          FORBIDDEN_KEY: managed-target-bvs-evil\n"
+                "        run: echo forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Inject forbidden broad restore prefix\n"
+                "        uses: example/cache@example\n"
+                "        with:\n"
+                "          restore-keys: forbidden\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+            replace_once_after(
+                workflow,
+                anchor,
+                "      - name: Install cargo-nextest\n",
+                "      - name: Compute BVS cache input hash\n"
+                "        id: bvs_cache_inputs\n"
+                "        run: echo digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)\n"
+                "      - name: Install cargo-nextest\n",
+            ),
+        ]
+        expected_substrings = [
+            "must route read-only sccache through the shared sccache action",
+            "must use only the PR-readonly sccache role",
+            "compile step must opt into managed sccache conditionally",
+            "must print sccache stats after compile",
+            "must not restore or save a BVS whole-target cache",
+            "must not pass the BVS target directory to an action",
+            "must not pass the BVS target directory to an action",
+            "must not restore or save a BVS whole-target cache",
+            "must not restore or save a BVS whole-target cache",
+            "must not contain BVS target-cache fragment 'managed-target-bvs-'",
+            "must not contain BVS target-cache fragment 'restore-keys:'",
+            "must not contain BVS target-cache fragment 'bvs_cache_inputs'",
+        ]
+        for field, replacement, expected_substring in (
+            ("          cache-targets: false\n", "          cache-targets: true\n", "must set cache-targets: false"),
+            ("          cache-bin: false\n", "          cache-bin: true\n", "must set cache-bin: false"),
+            (
+                "          cache-targets: false\n",
+                '          cache-targets: false\n          "cache-directories": crates/backtesting-vertical-slice/target\n',
+                "must not set cache-directories",
+            ),
+        ):
+            mutations.append(replace_once_after(workflow, anchor, field, replacement))
+            expected_substrings.append(expected_substring)
+        for forbidden_env in (
+            "RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_INCREMENTAL",
+        ):
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                    f'          {forbidden_env}: "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env: {"
+                    f'{forbidden_env}: "forbidden"'
+                    "}\n",
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                    f'          {forbidden_env} : "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                    "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                    f'          "{forbidden_env}": "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env:\n"
+                    f'      "{forbidden_env}": "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env:\n"
+                    f'      {forbidden_env}: "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+            mutations.append(
+                replace_once_after(
+                    workflow,
+                    anchor,
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+                    "    env:\n"
+                    f'      {forbidden_env} : "forbidden"\n',
+                )
+            )
+            expected_substrings.append(f"must not bypass managed_env with {forbidden_env}")
+        for mutation_index, (mutated, expected_substring) in enumerate(zip(mutations, expected_substrings, strict=True)):
+            mutated_workflows = {**workflows, workflow_name: mutated}
+            mutation_errors = verifier.verify_debug_lane_compile_cache_parity(mutated_workflows, bvs_policy)
+            mutation_errors.extend(
+                verifier.flaky_test_detection_workflow_errors(
+                    mutated,
+                    verifier.FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[workflow_name],
+                )
+            )
+            if not any(expected_substring in error for error in mutation_errors):
+                raise AssertionError(
+                    f"{workflow_name} {job_name} sccache mutation {mutation_index} did not emit "
+                    f"{expected_substring!r}: {mutation_errors!r}"
+                )
 
     cases = (
         (
@@ -4935,16 +5178,6 @@ def assert_security_key_public_prefix_is_validated() -> None:
 def assert_backtester_detect_uses_ci_input_set() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
-    missing_bootstrap_output = replace_once(
-        workflow,
-        "      bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}\n",
-        "",
-    )
-    bootstrap_output_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": missing_bootstrap_output}
-    )
-    if not any("backtester detect must expose CI input-set bootstrap changes" in error for error in bootstrap_output_errors):
-        raise AssertionError(f"backtester detector must reject missing bootstrap output, got: {bootstrap_output_errors}")
     validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
     missing_validate = replace_once(workflow, f"          {validate_required}\n", "")
     validate_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_validate})
@@ -4955,15 +5188,12 @@ def assert_backtester_detect_uses_ci_input_set() -> None:
     bootstrap_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_bootstrap})
     if not any("backtester detect must force-run on CI input-set bootstrap changes" in error for error in bootstrap_errors):
         raise AssertionError(f"backtester detector must reject missing bootstrap guard, got: {bootstrap_errors}")
-    missing_bootstrap_marker = replace_once(
+    missing_bootstrap_marker = replace_once_after(
         workflow,
-        '            echo "CI input-set bootstrap paths changed:"\n'
-        '            cat "$bootstrap_changed_path"\n'
+        '          if [[ -s "$bootstrap_changed_path" ]]; then\n',
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
-        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
-        '            echo "CI input-set bootstrap paths changed:"\n'
-        '            cat "$bootstrap_changed_path"\n'
-        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n',
+        "            exit 0\n",
+        "            exit 0\n",
     )
     bootstrap_marker_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": missing_bootstrap_marker}
@@ -7918,7 +8148,8 @@ def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
 def assert_v6_red_workflow_policy_gaps() -> None:
     checks = [
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
-        assert_v6_red_backtester_cache_keys_include_crate_sources,
+        assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract,
+        assert_backtester_primary_sccache_contract,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
         assert_v6_red_backtester_test_uses_nextest_archive,
         assert_cache_as_same_run_transport_is_banned,
@@ -7934,98 +8165,382 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         raise AssertionError("v6 RED workflow policy coverage failures: " + " | ".join(failures))
 
 
-def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
+def assert_backtester_bvs_target_cache_removal_and_artifact_identity_contract() -> None:
     verifier = load_verifier()
-    bad = """jobs:
-  clippy:
-    steps:
-      - uses: actions/cache@example
-        with:
-          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml') }}
-"""
-    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    assert any("backtester cache key must use ci_input_sets digest" in error for error in errors), errors
-    assert any("backtester cache key must include steps.bvs_cache_inputs.outputs.digest" in error for error in errors), errors
-    flaky_bad = """jobs:
-  flaky-detection-rust-backtester:
-    steps:
-      - uses: actions/cache/restore@example
-        with:
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock') }}
-"""
-    flaky_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/flaky-test-detection.yml": flaky_bad}
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+
+    def errors(mutated: str) -> list[str]:
+        return verifier.backtester_managed_target_cache_errors(
+            ".github/workflows/backtester-ci.yml", mutated
+        ) + verifier.backtester_test_shard_errors(
+            ".github/workflows/backtester-ci.yml", mutated
+        )
+
+    clean = [error for error in errors(workflow) if "BVS_TEST_ARCHIVE_JOB_SHA256" not in error]
+    if clean:
+        raise AssertionError(f"real backtester workflow violates BVS cache-removal contract: {clean}")
+
+    target_input_forms = (
+        "          path: crates/backtesting-vertical-slice/target",
+        "          path: ./crates/backtesting-vertical-slice/target/",
+        "          path: ${{steps.crate_target.outputs.dir}}",
+        "          path: [crates/backtesting-vertical-slice/target]",
+        "          path: |\n            crates/backtesting-vertical-slice/target",
     )
-    assert any("backtester cache key must use ci_input_sets digest" in error for error in flaky_errors), flaky_errors
-    assert any(
-        "backtester cache key digest must come from ci_input_sets backtester_cache" in error
-        for error in flaky_errors
-    ), flaky_errors
-    assert not any(
-        "backtester cache key digest must use exact-head namespace" in error
-        for error in flaky_errors
-    ), flaky_errors
-    good = """jobs:
-  clippy:
-    steps:
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
-        run: |
-          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
-            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/cache@example
-        with:
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
-"""
-    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
-    assert not [
-        error for error in good_errors if "backtester cache key" in error
-    ], good_errors
-    missing_bootstrap_namespace = good.replace(
-        '          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then\n'
-        '            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"\n'
-        "          else\n"
-        '            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"\n'
-        "          fi",
-        '          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
+    for rendered_input in target_input_forms:
+        block = (
+            "      - uses: buildjet/cache@example\n"
+            "        with:\n"
+            f"{rendered_input}\n"
+        ).splitlines()
+        if not verifier.block_references_bvs_target_input(block):
+            raise AssertionError(f"BVS target input normalization missed {rendered_input!r}")
+    allowed_subpath = (
+        "      - uses: actions/upload-artifact@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json\n"
+    ).splitlines()
+    if verifier.block_references_bvs_target_input(allowed_subpath):
+        raise AssertionError("BVS target input normalization rejected the issue-789 artifact subpath")
+
+    injected_target_key = workflow + "\n# managed-target-bvs-v99-forbidden\n"
+    if not any("must not contain managed-target-bvs-" in error for error in errors(injected_target_key)):
+        raise AssertionError("managed-target-bvs injection was not rejected")
+
+    injected_bootstrap = workflow + "\n# bootstrap-${GITHUB_SHA}\n"
+    if not any("must not contain bootstrap-${GITHUB_SHA}" in error for error in errors(injected_bootstrap)):
+        raise AssertionError("bootstrap SHA identity injection was not rejected")
+
+    missing_digest = replace_once(
+        workflow,
+        "python3 scripts/ci_input_sets.py hash backtester_cache",
+        "python3 scripts/ci_input_sets.py hash backtester_detect",
     )
-    namespace_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": missing_bootstrap_namespace}
+    if not any("must compute one full-source BVS artifact digest" in error for error in errors(missing_digest)):
+        raise AssertionError("missing full-source artifact digest was not rejected")
+
+    cross_wired = replace_once(
+        workflow,
+        "${{ steps.bvs_artifact_inputs.outputs.digest }}",
+        "${{ github.sha }}",
     )
-    assert any(
-        "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
-        for error in namespace_errors
-    ), namespace_errors
-    missing_per_job_namespace = """jobs:
-  clippy:
-    steps:
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
-        run: |
-          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
-            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/cache@example
-        with:
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
-  test-archive:
-    steps:
-      - uses: actions/cache@example
-        with:
-          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-"""
-    per_job_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": missing_per_job_namespace}
+    if not any("must consistently use the BVS artifact digest" in error for error in errors(cross_wired)):
+        raise AssertionError("cross-wired artifact identity was not rejected")
+
+    injected_restore = replace_once(
+        workflow,
+        "      - name: Install cargo-nextest\n",
+        "      - name: Restore forbidden BVS target\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          path: ${{ steps.crate_target.outputs.dir }}\n"
+        "          key: forbidden\n"
+        "      - name: Install cargo-nextest\n",
     )
-    assert any(
-        "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
-        for error in per_job_errors
-    ), per_job_errors
+    if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(injected_restore)):
+        raise AssertionError("BVS managed-target restore injection was not rejected")
+
+    sneaky_clippy_restore = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Restore disguised BVS whole target\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target\n"
+        "          key: sneaky-bvs-whole-target-${{ github.sha }}\n"
+        "          restore-keys: sneaky-bvs-whole-target-\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(sneaky_clippy_restore)):
+        raise AssertionError("disguised BVS clippy target restore was not rejected")
+
+    combined_cache = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Combined forbidden BVS target cache\n"
+        "        uses: actions/cache@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target\n"
+        "          key: sneaky-bvs-whole-target-${{ github.sha }}\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not use Actions cache restore/save in a BVS workflow" in error for error in errors(combined_cache)):
+        raise AssertionError("combined BVS target cache action was not rejected")
+
+    third_party_cache = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Third-party forbidden BVS target cache\n"
+        "        uses: buildjet/cache@example\n"
+        "        with:\n"
+        "          path: crates/backtesting-vertical-slice/target\n"
+        "          key: novel-bvs-target-${{ github.sha }}\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not pass the BVS target directory to an action" in error for error in errors(third_party_cache)):
+        raise AssertionError("third-party BVS target cache action was not rejected")
+
+    for label, rendered_inputs in (
+        (
+            "spaced with key",
+            "        with :\n"
+            "          path: |\n"
+            "            crates/backtesting-vertical-slice/target\n",
+        ),
+        (
+            "quoted with key",
+            "        \"with\":\n"
+            "          path: ./crates/backtesting-vertical-slice/target/\n",
+        ),
+        (
+            "single-quoted with key",
+            "        'with':\n"
+            "          path: ${{steps.crate_target.outputs.dir}}\n",
+        ),
+        (
+            "flow-list target path",
+            "        with:\n"
+            "          path: [allowed/path, 'crates/backtesting-vertical-slice/target']\n",
+        ),
+    ):
+        normalized_workflow_cache = replace_once(
+            workflow,
+            "      - name: clippy\n",
+            "      - name: Normalized forbidden BVS target cache\n"
+            "        uses: buildjet/cache@example\n"
+            f"{rendered_inputs}"
+            "      - name: clippy\n",
+        )
+        if not any(
+            "backtester clippy must not pass the BVS target directory to an action" in error
+            for error in errors(normalized_workflow_cache)
+        ):
+            raise AssertionError(f"{label} did not emit the BVS target-directory diagnostic")
+
+    issue_789_third_party_cache = replace_once_after(
+        workflow,
+        "  issue_789:\n    name: bvs-test issue-789\n",
+        "      - name: Build issue #789 lib archive\n",
+        "      - name: Third-party forbidden BVS target cache\n"
+        "        uses: buildjet/cache@example\n"
+        "        with:\n"
+        "          path: ${{ steps.crate_target.outputs.dir }}\n"
+        "          key: novel-bvs-target-${{ github.sha }}\n"
+        "      - name: Build issue #789 lib archive\n",
+    )
+    if not any(
+        "backtester issue_789 must not pass the BVS target directory to an action" in error
+        for error in errors(issue_789_third_party_cache)
+    ):
+        raise AssertionError("issue-789 third-party BVS target cache action was not rejected")
+
+    issue_789_block_scalar_cache = replace_once_after(
+        workflow,
+        "  issue_789:\n    name: bvs-test issue-789\n",
+        "      - name: Build issue #789 lib archive\n",
+        "      - name: Block-scalar third-party BVS target cache\n"
+        "        uses: buildjet/cache@example\n"
+        "        with:\n"
+        "          path: |\n"
+        "            ${{steps.crate_target.outputs.dir}}\n"
+        "      - name: Build issue #789 lib archive\n",
+    )
+    if not any(
+        "backtester issue_789 must not pass the BVS target directory to an action" in error
+        for error in errors(issue_789_block_scalar_cache)
+    ):
+        raise AssertionError("issue-789 block-scalar BVS target cache action was not rejected")
+
+    obsolete_clippy_digest = replace_once(
+        workflow,
+        "      - name: clippy\n",
+        "      - name: Compute obsolete BVS cache digest\n"
+        "        id: bvs_cache_inputs\n"
+        "        run: python3 scripts/ci_input_sets.py hash backtester_cache\n"
+        "      - name: clippy\n",
+    )
+    if not any("must not contain bvs_cache_inputs" in error for error in errors(obsolete_clippy_digest)):
+        raise AssertionError("obsolete clippy BVS digest step was not rejected")
+
+    for field, replacement, expected in (
+        ("          cache-targets: false\n", "          cache-targets: true\n", "must set cache-targets: false"),
+        ("          cache-bin: false\n", "          cache-bin: true\n", "must set cache-bin: false"),
+        (
+            "          cache-targets: false\n",
+            '          cache-targets: false\n          "cache-directories": crates/backtesting-vertical-slice/target\n',
+            "must not set cache-directories",
+        ),
+    ):
+        mutated = replace_once(workflow, field, replacement)
+        if not any(expected in error for error in errors(mutated)):
+            raise AssertionError(f"BVS registry cache mutation was not rejected with {expected!r}")
+
+
+def assert_backtester_primary_sccache_contract() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+
+    def errors(mutated: str) -> list[str]:
+        return [
+            error
+            for error in (
+                verifier.backtester_managed_target_cache_errors(
+                    ".github/workflows/backtester-ci.yml", mutated
+                )
+                + verifier.backtester_test_shard_errors(
+                    ".github/workflows/backtester-ci.yml", mutated
+                )
+            )
+            if "BVS_TEST_ARCHIVE_JOB_SHA256" not in error
+        ]
+
+    required = (
+        "      - name: Setup governed sccache\n",
+        "          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}\n",
+        "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+        "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+        "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+        "      - name: Print sccache stats\n",
+    )
+    missing = [fragment for fragment in required if fragment not in workflow]
+    if missing:
+        raise AssertionError(f"primary BVS sccache contract missing: {missing}")
+
+    mutations = [
+        (
+            replace_once(workflow, "      - name: Setup governed sccache\n", "      - name: Omit governed sccache\n"),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(
+            workflow,
+            "          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}\n",
+            '          active: "true"\n',
+            ),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(workflow, "          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n", ""),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(workflow, "          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n", ""),
+            "governed sccache setup must include",
+        ),
+        (
+            replace_once(
+            workflow,
+            "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+            'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+            ),
+            "compile must opt into managed sccache conditionally",
+        ),
+        (
+            replace_once(workflow, "      - name: Print sccache stats\n", "      - name: Omit sccache stats\n"),
+            "must print governed sccache stats after both compile opportunities",
+        ),
+    ]
+    for step_name in ("Build BVS nextest archive", "Build BVS binary sidecars"):
+        for profile_env in ("CARGO_PROFILE_TEST_DEBUG", "CARGO_PROFILE_DEV_DEBUG"):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        f"      - name: {step_name}\n",
+                        f'          {profile_env}: "0"\n',
+                        "",
+                    ),
+                    f"compile must preserve {profile_env}",
+                )
+            )
+        for forbidden_env in (
+            "RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_INCREMENTAL",
+        ):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        f"      - name: {step_name}\n",
+                        "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                        "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                        f'          {forbidden_env}: "forbidden"\n',
+                    ),
+                    f"compile must not set {forbidden_env}",
+                )
+            )
+            for rendered_key in (f'"{forbidden_env}"', f"{forbidden_env} "):
+                mutations.append(
+                    (
+                        replace_once_after(
+                            workflow,
+                            f"      - name: {step_name}\n",
+                            "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n",
+                            "          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}\n"
+                            f'          {rendered_key}: "forbidden"\n',
+                        ),
+                        f"compile must not set {forbidden_env}",
+                    )
+                )
+    for forbidden_env in (
+        "RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_INCREMENTAL",
+    ):
+        for rendered_env in (
+            "    env:\n" + f'      {forbidden_env}: "forbidden"\n',
+            "    env:\n" + f'      "{forbidden_env}": "forbidden"\n',
+            "    env:\n" + f'      {forbidden_env} : "forbidden"\n',
+            "    env: {" + f'{forbidden_env}: "forbidden"' + "}\n",
+        ):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        "  clippy:\n",
+                        "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n",
+                        "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n" + rendered_env,
+                    ),
+                    f"backtester clippy must not set {forbidden_env}",
+                )
+            )
+        for rendered_key in (forbidden_env, f'"{forbidden_env}"', f"{forbidden_env} "):
+            mutations.append(
+                (
+                    replace_once_after(
+                        workflow,
+                        "  test-archive:\n",
+                        "    env:\n",
+                        "    env:\n" + f'      {rendered_key}: "forbidden"\n',
+                    ),
+                    f"backtester test-archive must not set {forbidden_env}",
+                )
+            )
+        mutations.append(
+            (
+                replace_once_after(
+                    workflow,
+                    "  issue_789:\n    name: bvs-test issue-789\n",
+                    "    env:\n",
+                    "    env:\n" + f'      {forbidden_env}: "forbidden"\n',
+                ),
+                f"backtester issue_789 must not set {forbidden_env}",
+            )
+        )
+    for mutation_index, (mutated, expected_substring) in enumerate(mutations):
+        mutation_errors = errors(mutated)
+        if not any(expected_substring in error for error in mutation_errors):
+            raise AssertionError(
+                f"primary BVS sccache mutation {mutation_index} did not emit {expected_substring!r}: "
+                f"{mutation_errors!r}"
+            )
 
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
@@ -8128,14 +8643,10 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
       NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
-      - name: Compute BVS cache input hash
-        id: bvs_cache_inputs
+      - name: Compute BVS artifact input hash
+        id: bvs_artifact_inputs
         run: |
-          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
-            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
-          fi
+          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
       - name: Resolve BVS nextest artifact cache eligibility
         id: bvs-nextest-artifact-cache
         continue-on-error: true
@@ -8175,8 +8686,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: bvs-nextest-archive-cache
         if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
         env:
-          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_artifact_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_artifact_inputs.outputs.digest }}
         run: |
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
           metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
@@ -8193,8 +8704,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: bvs-bin-sidecars-cache
         if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
         env:
-          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
-          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_artifact_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_artifact_inputs.outputs.digest }}
         run: |
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
           metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
@@ -8252,14 +8763,19 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - uses: Swatinem/rust-cache@example
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
-      - name: Restore archive build target cache
-        id: test-target-cache
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Setup governed sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
         with:
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
+          active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
           printf 'BVS archive args: %s\\n' "${archive_args[*]}"
@@ -8281,10 +8797,19 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           fi
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
           tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
       - name: Save BVS binary sidecars
         id: bvs-bin-sidecars-cache-save
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}
@@ -8300,11 +8825,6 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
             echo "save-status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-      - name: Save archive build target cache
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Summarize BVS S3 save outcomes
         if: always()
         run: |
@@ -8432,7 +8952,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "        uses: actions/cache/restore@example\n"
         "        with:\n"
         "          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}\n"
-        "          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}\n"
+        "          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_artifact_inputs.outputs.digest }}\n"
         "      - name: Restore BVS nextest archive from S3\n",
     )
     github_artifact_cache_errors = bvs_cache_errors(github_artifact_cache)
@@ -8781,17 +9301,6 @@ permissions:
         "backtester bvs-test archive must emit explicit binary sidecars S3 save status" in error
         for error in missing_bvs_sidecar_save_status_errors
     ), missing_bvs_sidecar_save_status_errors
-
-    weakened_target_save = replace_once(
-        good,
-        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
-        "        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
-    )
-    weakened_target_save_errors = bvs_cache_errors(weakened_target_save)
-    assert any(
-        "backtester managed target cache saves must be push-to-main only" in error
-        for error in weakened_target_save_errors
-    ), weakened_target_save_errors
 
     fanout = good.replace(
         "      - name: Require BVS local payload\n",

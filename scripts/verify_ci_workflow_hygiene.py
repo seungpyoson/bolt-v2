@@ -1256,7 +1256,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "352d88a330e83f8d8374781a5f62f995398dae692df12d76194e291d57f9e178"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "1bb777d049341b37a59f360d456d79928491ebbef422d0f8c8acbcb2692b208d"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -2371,7 +2371,7 @@ def segment_persists_event_sender_id_override(segment: list[str]) -> bool:
 def yaml_structural_key_count(lines: list[str], key: str) -> int:
     count = 0
     skip_scalar_indent: int | None = None
-    key_re = re.compile(rf"^\s*{re.escape(key)}\s*:")
+    key_re = re.compile(rf"^\s*({YAML_KEY_PATTERN})\s*:")
     for line in lines:
         clean = strip_comment(line).rstrip()
         if skip_scalar_indent is not None:
@@ -2385,8 +2385,14 @@ def yaml_structural_key_count(lines: list[str], key: str) -> int:
         if run_match is not None and run_match.group(2).strip().startswith(("|", ">")):
             skip_scalar_indent = len(run_match.group(1))
             continue
-        if key_re.match(clean):
+        match = key_re.match(clean)
+        if match is not None and unquote_yaml_scalar(match.group(1)) == key:
             count += 1
+        flow_mapping = re.match(rf"^\s*{YAML_KEY_PATTERN}\s*:\s*\{{([^{{}}]*)\}}\s*$", clean)
+        for flow_body in (() if flow_mapping is None else (flow_mapping.group(1),)):
+            for flow_item in re.finditer(rf"(?:^|,)\s*({YAML_KEY_PATTERN})\s*:", flow_body):
+                if unquote_yaml_scalar(flow_item.group(1)) == key:
+                    count += 1
     return count
 
 
@@ -2638,6 +2644,80 @@ def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
     )
 
 
+def block_uses_action(block: list[str]) -> bool:
+    return any(re.match(r"^\s*(?:-\s*)?uses:\s*", strip_comment(line)) for line in block)
+
+
+def block_input_entries(block: list[str]) -> list[str]:
+    entries: list[str] = []
+    with_indent: int | None = None
+    input_indent: int | None = None
+    line_index = 0
+    while line_index < len(block):
+        clean = strip_comment(block[line_index]).rstrip()
+        if with_indent is None:
+            match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*$", clean)
+            if match is not None and unquote_yaml_scalar(match.group(2)) == "with":
+                with_indent = len(match.group(1))
+                input_indent = with_indent + 2
+            line_index += 1
+            continue
+        if not clean.strip():
+            line_index += 1
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent <= with_indent:
+            break
+        if indent != input_indent:
+            line_index += 1
+            continue
+        match = re.match(rf"^\s{{{input_indent}}}({YAML_KEY_PATTERN})\s*:\s*(.*)$", clean)
+        if match is None:
+            line_index += 1
+            continue
+        value = match.group(2).strip()
+        if value.startswith(("|", ">")):
+            line_index += 1
+            while line_index < len(block):
+                nested = strip_comment(block[line_index]).rstrip()
+                if not nested.strip():
+                    line_index += 1
+                    continue
+                nested_indent = len(nested) - len(nested.lstrip(" "))
+                if nested_indent <= input_indent:
+                    break
+                entries.append(nested.strip())
+                line_index += 1
+            continue
+        if value.startswith("[") and value.endswith("]"):
+            entries.extend(item.strip() for item in value[1:-1].split(",") if item.strip())
+        else:
+            entries.append(value)
+        line_index += 1
+    return entries
+
+
+def normalize_bvs_target_action_input(value: str) -> str:
+    normalized = unquote_yaml_scalar(value).strip()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.rstrip("/")
+    if re.fullmatch(r"\$\{\{\s*steps\.crate_target\.outputs\.dir\s*\}\}", normalized):
+        return "${{ steps.crate_target.outputs.dir }}"
+    return normalized
+
+
+def block_references_bvs_target_input(block: list[str]) -> bool:
+    forbidden_roots = {
+        "crates/backtesting-vertical-slice/target",
+        "${{ steps.crate_target.outputs.dir }}",
+    }
+    return any(
+        normalize_bvs_target_action_input(value) in forbidden_roots
+        for value in block_input_entries(block)
+    )
+
+
 def block_run_command_count(block: list[str], command: str) -> int:
     for index, line in enumerate(block):
         clean = strip_comment(line)
@@ -2761,8 +2841,8 @@ def block_input_items(block: list[str]) -> list[tuple[str, str]]:
         if not clean.strip():
             continue
         if with_indent is None:
-            match = re.match(r"^(\s*)with:\s*$", clean)
-            if match is not None:
+            match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*$", clean)
+            if match is not None and unquote_yaml_scalar(match.group(2)) == "with":
                 with_indent = len(match.group(1))
                 input_indent = with_indent + 2
             continue
@@ -2772,9 +2852,9 @@ def block_input_items(block: list[str]) -> list[tuple[str, str]]:
             break
         if indent != input_indent:
             continue
-        match = re.match(rf"^\s{{{input_indent}}}([A-Za-z0-9_.-]+):\s*(.*)$", clean)
+        match = re.match(rf"^\s{{{input_indent}}}({YAML_KEY_PATTERN})\s*:\s*(.*)$", clean)
         if match is not None:
-            items.append((match.group(1), match.group(2).strip()))
+            items.append((unquote_yaml_scalar(match.group(1)), match.group(2).strip()))
     return items
 
 
@@ -5426,10 +5506,8 @@ def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) ->
     )
 
 
-def backtester_detect_forced_events_use_exact_head_namespace(job_lines: list[str]) -> bool:
-    # Events that bypass the PR diff detector must not trust the head-controlled
-    # cache input helper/config for opaque archive cache keys. They run the proof
-    # lanes and use the exact-head bootstrap namespace instead.
+def backtester_detect_forced_events_run_proof(job_lines: list[str]) -> bool:
+    # Events that bypass the PR diff detector must still run the proof lanes.
     text = uncommented_text(job_lines)
     for branch_type, condition in (
         ("if", '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"'),
@@ -5439,8 +5517,6 @@ def backtester_detect_forced_events_use_exact_head_namespace(job_lines: list[str
         if branch is None:
             return False
         if 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
-            return False
-        if 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
             return False
         if not body_exits_zero(branch):
             return False
@@ -7102,41 +7178,38 @@ def repo_automation_source_build_errors(text: str) -> list[str]:
 
 
 def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[str]:
-    if not any(prefix in text for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+    if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
-    for _job_id, job_lines in parse_jobs(text).items():
-        job_text = "\n".join(job_lines)
-        cache_key_seen = False
-        for line in job_text.splitlines():
-            if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
-                continue
-            if "key:" not in line:
-                continue
-            cache_key_seen = True
-            if "hashFiles(" in line:
-                errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
-            if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
-                errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
-        if not cache_key_seen:
-            continue
-        if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
-            errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
-        if file_name.endswith("backtester-ci.yml") and (
-            'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
-            or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
-        ):
-            errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
-        for block in action_blocks(job_lines, "actions/cache@"):
-            block_text = uncommented_text(block)
-            if "managed-target-bvs-v" in block_text:
-                errors.append("backtester managed target cache saves must be push-to-main only")
-        for block in action_blocks(job_lines, "actions/cache/save@"):
-            block_text = uncommented_text(block)
-            if "managed-target-bvs-v" not in block_text:
-                continue
-            if "github.event_name == 'push'" not in block_text or "github.ref == 'refs/heads/main'" not in block_text:
-                errors.append("backtester managed target cache saves must be push-to-main only")
+    for forbidden in ("managed-target-bvs-", "bootstrap-${GITHUB_SHA}", "bvs_cache_inputs"):
+        if forbidden in text:
+            errors.append(f"backtester BVS contract must not contain {forbidden}")
+    for job_id, job_lines in parse_jobs(text).items():
+        for block in github_cache_blocks(job_lines):
+            errors.append(f"backtester {job_id} must not use Actions cache restore/save in a BVS workflow")
+        for block in step_blocks(job_lines):
+            if block_uses_action(block) and block_references_bvs_target_input(block):
+                errors.append(
+                    f"backtester {job_id} must not pass the BVS target directory to an action"
+                )
+        for block in action_blocks(job_lines, "Swatinem/rust-cache@"):
+            if not block_has_input(block, "cache-targets", "false"):
+                errors.append(f"backtester {job_id} BVS registry cache must set cache-targets: false")
+            if not block_has_input(block, "cache-bin", "false"):
+                errors.append(f"backtester {job_id} BVS registry cache must set cache-bin: false")
+            if block_has_input(block, "cache-directories"):
+                errors.append(f"backtester {job_id} BVS registry cache must not set cache-directories")
+        if job_id in {"clippy", "test-archive", "issue_789"}:
+            for forbidden_env in (
+                "RUSTFLAGS",
+                "CARGO_BUILD_RUSTFLAGS",
+                "CARGO_ENCODED_RUSTFLAGS",
+                "RUSTC_WRAPPER",
+                "RUSTC_WORKSPACE_WRAPPER",
+                "CARGO_INCREMENTAL",
+            ):
+                if yaml_structural_key_count(job_lines, forbidden_env) > 0:
+                    errors.append(f"backtester {job_id} must not set {forbidden_env}")
     return errors
 
 
@@ -7412,13 +7485,6 @@ def missing_nextest_junit_stage_lines(report_path: str) -> tuple[str, ...]:
 
 
 BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
-    "Resolve crate managed target dir": (
-        'dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"',
-        'echo "dir=$dir" >> "$GITHUB_OUTPUT"',
-    ),
-    "Compute BVS cache input hash": (
-        'echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
-    ),
     "Configure nextest JUnit output": (
         "printf '%s\\n' \\",
         "'[profile.default.junit]' \\",
@@ -7441,7 +7507,6 @@ BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
         ("Setup read-only sccache", SCCACHE_SETUP_ACTION_PATH),
         ("Print sccache stats", SCCACHE_STATS_ACTION_PATH),
         (None, "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4"),
-        ("Restore test target cache", "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"),
         ("Install cargo-nextest", "taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538"),
         ("Setup BVS MinIO S3 smoke", BVS_MINIO_SETUP_ACTION),
         ("Upload test results to Mergify", "mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3"),
@@ -7645,6 +7710,30 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             errors.append(f"flaky-test-detection missing {label} {job_id}")
             continue
         job_text = job_texts[job_id]
+        if "backtester" in job_id:
+            for block in github_cache_blocks(jobs[job_id]):
+                errors.append(f"flaky-test-detection {label} must not restore or save a BVS whole-target cache")
+            for block in step_blocks(jobs[job_id]):
+                if block_uses_action(block) and block_references_bvs_target_input(block):
+                    errors.append(
+                        f"flaky-test-detection {label} must not pass the BVS target directory to an action"
+                    )
+            for forbidden in (
+                "managed-target-bvs-",
+                "restore-keys:",
+                "bvs_cache_inputs",
+                "Compute BVS cache input hash",
+                "python3 scripts/ci_input_sets.py hash backtester_cache",
+            ):
+                if forbidden in job_text:
+                    errors.append(f"flaky-test-detection {label} must not contain BVS target-cache fragment {forbidden!r}")
+            for block in action_blocks(jobs[job_id], "Swatinem/rust-cache@"):
+                if not block_has_input(block, "cache-targets", "false"):
+                    errors.append(f"flaky-test-detection {label} BVS registry cache must set cache-targets: false")
+                if not block_has_input(block, "cache-bin", "false"):
+                    errors.append(f"flaky-test-detection {label} BVS registry cache must set cache-bin: false")
+                if block_has_input(block, "cache-directories"):
+                    errors.append(f"flaky-test-detection {label} BVS registry cache must not set cache-directories")
         run_block = named_step_run_block(job_text, "Run tests")
         run_lines = simple_shell_lines(run_block or "")
         if 'printf \'MERGIFY_TEST_EXIT_CODE=%s\\n\' "$rc" >> "$GITHUB_ENV"' not in run_lines:
@@ -8017,8 +8106,16 @@ def debug_lane_sccache_job_errors(
         errors.append(f"{label} must print sccache stats after compile")
     elif not step_block_has_field(stats_block, "if", "always()") or not step_occurs_after(job_lines, "Print sccache stats", compile_step_name):
         errors.append(f"{label} must print sccache stats after compile")
-    if "RUSTC_WRAPPER:" in job_text:
-        errors.append(f"{label} must not bypass managed_env with a direct RUSTC_WRAPPER env")
+    for forbidden_env in (
+        "RUSTFLAGS:",
+        "CARGO_BUILD_RUSTFLAGS:",
+        "CARGO_ENCODED_RUSTFLAGS:",
+        "RUSTC_WRAPPER:",
+        "RUSTC_WORKSPACE_WRAPPER:",
+        "CARGO_INCREMENTAL:",
+    ):
+        if yaml_structural_key_count(job_lines, forbidden_env[:-1]) > 0:
+            errors.append(f"{label} must not bypass managed_env with {forbidden_env[:-1]}")
     return errors
 
 
@@ -8086,6 +8183,13 @@ def verify_debug_lane_compile_cache_parity(
                 ("flaky-smoke-rust-root", "Run tests", True, False),
                 ("flaky-smoke-rust-backtester", "Run tests", False, False),
                 ("flaky-smoke-rust-backtester-issue-789", "Run tests", False, False),
+            ),
+        ),
+        (
+            ".github/workflows/flaky-test-detection.yml",
+            (
+                ("flaky-detection-rust-backtester", "Run tests", False, False),
+                ("flaky-detection-rust-backtester-issue-789", "Run tests", False, False),
             ),
         ),
     )
@@ -8173,6 +8277,74 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     gate_text = uncommented_text(gate_job) if gate_job is not None else ""
     consumer_text = f"{job_text}\n{issue_text}"
     combined_text = f"{archive_text}\n{consumer_text}"
+    artifact_digest_block = named_step_block(archive_job, "Compute BVS artifact input hash")
+    artifact_digest_text = uncommented_text(artifact_digest_block) if artifact_digest_block is not None else ""
+    if (
+        artifact_digest_block is None
+        or "id: bvs_artifact_inputs" not in artifact_digest_text
+        or "python3 scripts/ci_input_sets.py hash backtester_cache" not in artifact_digest_text
+    ):
+        errors.append("backtester bvs-test archive must compute one full-source BVS artifact digest")
+    if "bootstrap-${GITHUB_SHA}" in archive_text or "bvs_cache_inputs" in archive_text:
+        errors.append("backtester bvs-test artifact identity must use only the head full-source digest")
+    artifact_digest_ref = "${{ steps.bvs_artifact_inputs.outputs.digest }}"
+    artifact_identity_lines = [
+        line
+        for line in archive_text.splitlines()
+        if "CACHE_KEY: bvs-nextest-archive-" in line
+        or "CACHE_KEY: bvs-bin-sidecars-" in line
+        or line.strip().startswith("DIGEST:")
+    ]
+    if not artifact_identity_lines or any(artifact_digest_ref not in line for line in artifact_identity_lines):
+        errors.append("backtester bvs-test S3 keys and metadata must consistently use the BVS artifact digest")
+    sccache_setup_block = named_step_block(archive_job, "Setup governed sccache")
+    sccache_setup_text = uncommented_text(sccache_setup_block) if sccache_setup_block is not None else ""
+    sccache_active = (
+        "active: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || "
+        "steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && 'true' || 'false' }}"
+    )
+    for fragment in (
+        f"uses: {SCCACHE_SETUP_ACTION_PATH}",
+        "id: sccache",
+        sccache_active,
+        "role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
+        "write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}",
+    ):
+        if fragment not in sccache_setup_text:
+            errors.append(f"backtester bvs-test archive governed sccache setup must include {fragment!r}")
+    build_archive_block = named_step_block(archive_job, "Build BVS nextest archive")
+    build_sidecars_block = named_step_block(archive_job, "Build BVS binary sidecars")
+    for block, label in (
+        (build_archive_block, "archive"),
+        (build_sidecars_block, "sidecar"),
+    ):
+        block_text = uncommented_text(block) if block is not None else ""
+        if DEBUG_LANE_SCCACHE_OPT_IN not in block_text:
+            errors.append(f"backtester bvs-test {label} compile must opt into managed sccache conditionally")
+        for profile_fragment in (DEBUG_LANE_TEST_PROFILE_ENV, DEBUG_LANE_DEV_PROFILE_ENV):
+            if profile_fragment not in block_text:
+                errors.append(f"backtester bvs-test {label} compile must preserve {profile_fragment}")
+        for forbidden in (
+            "RUSTFLAGS:",
+            "CARGO_BUILD_RUSTFLAGS:",
+            "CARGO_ENCODED_RUSTFLAGS:",
+            "RUSTC_WRAPPER:",
+            "RUSTC_WORKSPACE_WRAPPER:",
+            "CARGO_INCREMENTAL:",
+        ):
+            if yaml_structural_key_count(block or [], forbidden[:-1]) > 0:
+                errors.append(f"backtester bvs-test {label} compile must not set {forbidden[:-1]}")
+    stats_block = named_step_block(archive_job, "Print sccache stats")
+    stats_text = uncommented_text(stats_block) if stats_block is not None else ""
+    if (
+        stats_block is None
+        or f"uses: {SCCACHE_STATS_ACTION_PATH}" not in stats_text
+        or not step_block_has_field(stats_block, "if", "always()")
+        or "enabled: ${{ steps.sccache.outputs.enabled || 'false' }}" not in stats_text
+        or not step_occurs_after(archive_job, "Print sccache stats", "Build BVS nextest archive")
+        or not step_occurs_after(archive_job, "Print sccache stats", "Build BVS binary sidecars")
+    ):
+        errors.append("backtester bvs-test archive must print governed sccache stats after both compile opportunities")
     if archive_text.count(f"uses: {BVS_MINIO_SETUP_ACTION}") != 1:
         errors.append("backtester bvs-test archive must set up MinIO through the shared action exactly once")
     if "just bte-test --partition" in combined_text:
@@ -8355,7 +8527,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
+            "CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_artifact_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
@@ -8363,7 +8535,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
+            "CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_artifact_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test sidecars must restore from S3",
@@ -8444,14 +8616,6 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         (
             "backtester bvs-test archive must summarize BVS S3 save outcomes",
             "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
-        ),
-        (
-            "backtester bvs-test archive must restore target cache only while producing caches",
-            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
-        ),
-        (
-            "backtester bvs-test archive must save target cache only after archive/sidecar misses",
-            "if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
         ),
         (
             "backtester bvs-test archive must fail closed on missing local payload",
@@ -8844,8 +9008,6 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     detect_job = parse_jobs(text).get("detect", [])
     errors: list[str] = []
     detect_text = "\n".join(detect_job)
-    if "bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}" not in detect_text:
-        errors.append("backtester detect must expose CI input-set bootstrap changes")
     validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
     if validate_required not in detect_text:
         errors.append("backtester detect must validate CI input sets before skip decisions")
@@ -8856,7 +9018,6 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     if (
         bootstrap_branch is None
         or 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
-        or 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
         or "exit 0" not in bootstrap_branch
     ):
         errors.append("backtester detect must mark CI input-set bootstrap changes")
@@ -9144,9 +9305,9 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 errors.append(
                     f"{file_name}: backtester detect must force bvs_changed=true for merge_group"
                 )
-            if "detect" in jobs and not backtester_detect_forced_events_use_exact_head_namespace(jobs["detect"]):
+            if "detect" in jobs and not backtester_detect_forced_events_run_proof(jobs["detect"]):
                 errors.append(
-                    f"{file_name}: backtester forced detect events must use exact-head cache namespace"
+                    f"{file_name}: backtester forced detect events must run proof lanes"
                 )
             add_unique_errors(
                 errors,

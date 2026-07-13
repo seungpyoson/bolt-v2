@@ -4,9 +4,9 @@
 
 **Goal:** Build, run, measure, and completely dismantle a disposable rehearsal that proves the D3 GitHub App authority protocol against a private synthetic repository without implementing or changing production CI.
 
-**Architecture:** A small Python harness owns canonical records, deterministic fixture results, scenario orchestration, evidence reconstruction, and cleanup verification. Live-only adapters use one authority GitHub App, one sandbox-operator GitHub App, one private disposable repository, Mergify, AWS Lambda, asymmetric AWS KMS signing, DynamoDB conditional append/state, and S3 Object Lock evidence. The operator App is installed only on the sandbox repository and can mutate rehearsal controls but is denied Checks write; an external read-only operator session verifies its eventual destruction from GitHub/AWS platform records.
+**Architecture:** A small Python harness owns canonical records, deterministic fixture results, scenario orchestration, evidence reconstruction, and cleanup verification. Live-only adapters use two sandbox-only GitHub Apps, Mergify, AWS Lambda, one disposable ARM64 CodeBuild project, a private ECR repository containing one digest-pinned derived image, asymmetric KMS signing, DynamoDB state, and S3 Object Lock evidence. The operator App can mutate only rehearsal controls and is denied Checks write; an external read-only operator verifies eventual destruction from platform records.
 
-**Tech Stack:** Python 3 standard library (`argparse`, `dataclasses`, `hashlib`, `hmac`, `http.client`, `json`, `sqlite3`, `tomllib`, `unittest`), `cryptography==48.0.1` with `cffi==2.0.0` and `pycparser==3.0` (versions verified in the approved local environment on 2026-07-13), GitHub REST/GraphQL APIs, Mergify, AWS Lambda/KMS/DynamoDB/S3 Object Lock, TOML, `just` cheap gates.
+**Tech Stack:** Python 3 standard library, pinned Python wheels, OCI/Dockerfile, GitHub REST APIs, Mergify, AWS Lambda/CodeBuild/ECR/KMS/DynamoDB/S3 Object Lock, TOML, `just` cheap gates.
 
 ## Global Constraints
 
@@ -32,7 +32,8 @@ All executable rehearsal files live under `scripts/ci_rehearsal/` so the final c
 | Path | Responsibility | Owning task |
 | --- | --- | --- |
 | `ci/1016-rehearsal-resources.toml` | Committed permission/resource contract; contains no live IDs or secrets | 3 |
-| `scripts/ci_rehearsal/cloudformation.yaml` | Reproducible AWS Lambda/KMS/DynamoDB/S3/SSM/IAM stack | 3 |
+| `scripts/ci_rehearsal/cloudformation.yaml` | Reproducible AWS Lambda/CodeBuild/ECR/KMS/DynamoDB/S3/SSM/IAM stack | 3 |
+| `scripts/ci_rehearsal/Dockerfile` | Derived Lambda image from the exact verified public-base digest | 3 |
 | `scripts/ci_rehearsal/provision.py` | Denylist-first preflight, GitHub App manifest flow, AWS deploy, and resource inventory | 3 |
 | `scripts/ci_rehearsal/requirements.in` | Exact direct/transitive Python versions verified in the approved environment | 3 |
 | `scripts/ci_rehearsal/requirements.lock` | Generated hash-locked wheels for the exact Lambda platform | 3 |
@@ -173,7 +174,7 @@ git commit -m "test: add policy-free rehearsal fixtures"
 
 **Interfaces:**
 - Consumes: canonical digest helpers from Task 1.
-- Produces: `ResourceContract`, `InstanceConfig`, `load_contract(path)`, `load_instance(path, contract)`, and `render_preflight(config) -> dict[str, object]`.
+- Produces: `ResourceContract`, `InstanceConfig`, `BuildReceipt(build_id: str, project_arn: str, context_digest: str, managed_image_id: str, derived_image: DerivedImageReceipt)`, `DerivedImageReceipt(private_uri: str, manifest_digest: str, base_digest: str, lock_digest: str)`, `verify_public_ecr(...)`, `start_codebuild(...) -> BuildReceipt`, `deploy_lambda(receipt: DerivedImageReceipt) -> DeploymentReceipt`, `verify_live_lambda(...) -> RuntimeReceipt`, and strict config/preflight loaders.
 
 - [ ] **Step 1: Write configuration rejection tests**
 
@@ -191,12 +192,41 @@ def test_contract_denies_mutating_app_permissions() -> None:
 def test_aws_authority_and_operator_roles_are_disjoint() -> None:
     self.assertFalse(contract().authority_actions & contract().operator_actions)
     self.assertNotIn("checks:write", contract().operator_capabilities)
-    self.assertEqual(contract().aws_services, {"lambda", "kms", "dynamodb", "s3"})
+    self.assertEqual(contract().aws_services, {"lambda", "codebuild", "ecr", "kms", "dynamodb", "s3", "ssm", "logs"})
 
 def test_preflight_blocks_every_create_until_ids_are_separate() -> None:
     with self.assertRaisesRegex(ProvisionError, "production denylist"):
         provision.preflight(instance_with_repository_node_id(PRODUCTION_NODE_ID))
     self.assertEqual(provider.create_calls, [])
+
+def test_lambda_accepts_only_private_ecr_derived_digest() -> None:
+    with self.assertRaisesRegex(ConfigError, "private ECR derived digest"):
+        load_instance(instance_with_image("public.ecr.aws/lambda/python:3.12-arm64"), contract())
+    with self.assertRaisesRegex(ConfigError, "private ECR derived digest"):
+        load_instance(instance_with_image(PUBLIC_BASE_DIGEST_URI), contract())
+    self.assertTrue(load_instance(instance_with_image(PRIVATE_ECR_DERIVED_DIGEST_URI), contract()))
+
+def test_ecr_permissions_are_exact_and_cleanup_owned() -> None:
+    self.assertEqual(contract().ecr_repository_arns, {SANDBOX_ECR_ARN})
+    self.assertNotIn("ecr:*", contract().build_actions)
+    self.assertIn("delete-ecr-repository", contract().cleanup_steps)
+
+def test_codebuild_is_arm64_sandbox_only_and_cleanup_owned() -> None:
+    build = contract().codebuild
+    self.assertEqual((build.environment_type, build.compute_type), ("ARM_CONTAINER", "BUILD_GENERAL1_SMALL"))
+    self.assertEqual(build.image, "aws/codebuild/amazonlinux2-aarch64-standard:3.0")
+    self.assertEqual(build.source_type, "NO_SOURCE")
+    self.assertEqual(build.allowed_context_arn, SANDBOX_BUILD_CONTEXT_ARN)
+    self.assertEqual(build.push_repository_arn, SANDBOX_ECR_ARN)
+    self.assertFalse(build.resource_arns & PRODUCTION_RESOURCE_ARNS)
+    self.assertIn("delete-codebuild-project", contract().cleanup_steps)
+
+def test_codebuild_rejects_override_or_ambiguous_managed_image() -> None:
+    for override in ("imageOverride", "computeTypeOverride", "serviceRoleOverride", "sourceLocationOverride", "buildspecOverride"):
+        with self.subTest(override=override), self.assertRaises(BuildError):
+            start_codebuild(overrides={override: "changed"})
+    with self.assertRaisesRegex(BuildError, "managed image provenance"):
+        verify_build(build_with_unrecorded_image_identity())
 ```
 
 - [ ] **Step 2: Run and observe import failure**
@@ -207,13 +237,13 @@ Expected: import failure for `ci_rehearsal.config`.
 
 - [ ] **Step 3: Add the exact committed resource contract**
 
-The TOML must declare: private sandbox repository only; protected ref `main`; contexts `trusted-ci-verifier-rehearsal` and `trusted-ci-verifier-rehearsal-feedback`; authority App permissions Checks write plus required reads and no repository mutation; and a separate operator App installed only on the exact sandbox repository node ID with `metadata: read`, `administration: write`, `contents: write`, and `pull_requests: write`, but no Checks permission at all. Operator Contents writes own synthetic refs and `.mergify.yml`; Mergify configuration changes occur only through those sandbox commits, not a broad PAT or unspecified Mergify API token. Declare Lambda authority/observer deployments, two ECC KMS keys, DynamoDB conditional append, S3 Object Lock, exact SSM parameter ARNs for the two rehearsal App private keys, and cleanup probes. Each Lambda execution role may read only its exact SSM parameter; operator IAM is limited to exact sandbox resources/fault fixtures and cannot access authority KMS, DynamoDB authority writes, S3 evidence writes, or the authority App parameter. Both Apps/roles deny every identity in the production denylist.
+The TOML must declare the sandbox repository/Apps plus Lambda, one private ECR repository, two ECC KMS keys, DynamoDB, S3 Object Lock, SSM paths, and one CodeBuild project with environment `ARM_CONTAINER`, compute `BUILD_GENERAL1_SMALL`, managed image `aws/codebuild/amazonlinux2-aarch64-standard:3.0`, source `NO_SOURCE`, privileged Docker mode only for this build, and exact log group. The build role may read only the exact immutable S3 build-context object/version and locked-wheel objects, obtain an ECR authorization token, push layers/manifests only to the exact private repository, describe only its own build/project/repository, and write only its exact log stream. It has no GitHub, KMS-sign, DynamoDB-write, SSM-secret, Lambda-mutate, other S3-prefix, other ECR-repository, or production-resource access. Every resource, build minute, log byte/retention, ECR scan/storage/transfer, and cleanup call is inventoried under the owner-approved worst-case cost/time ceiling.
 
 The committed `[run_plan]` is deliberately small and makes no statistical claim: two clean full ceremonies, two lost-create/delayed-read runs, two pre-precursor abort/restore runs at each relevant cut point, and one run of every deterministic negative row. It reports every raw observation plus min/max where a row has two samples; it does not compute or claim p90, p95, convergence, confidence, or operational budgets. The exact expanded order, fault seeds, and repetition counts are signed before the first live mutation. Additional runs require a separate owner-approved worst-case cost/time ceiling and a new immutable run-plan digest; they never rewrite the first run's evidence.
 
 - [ ] **Step 4: Add denylist-first reproducible provisioning**
 
-`cloudformation.yaml` defines the exact Lambda functions/roles, ECC_NIST_P256 KMS keys, DynamoDB table, S3 bucket with versioning/Object Lock, SSM resource policies/paths, log groups, and outputs. It accepts only `RunId`, `SandboxRepositoryNodeId`, `SandboxRepositoryFullName`, and `ProductionDenylistDigest`; IAM resources use those exact values and explicit denies.
+`cloudformation.yaml` defines Lambda, the exact CodeBuild ARM64 project/service role/log group, private ECR, KMS, DynamoDB, S3 Object Lock, SSM, and IAM. The CodeBuild buildspec downloads the exact S3 object version, verifies its canonical build-context digest, extracts only allowlisted paths, builds `linux/arm64` from the exact public-base digest, installs only predownloaded hash-locked wheels, and pushes the derived manifest to private ECR. If `BatchGetProjects`/build metadata exposes a resolved digest for the managed CodeBuild image, record and require it; otherwise record the exact image identifier plus AWS region/build ID/start time and classify provider mutability as an explicit live evidence risk. If the managed image changes incompatibly, cannot reproduce the build, or makes the derived provenance ambiguous, the run is `NO_GO` rather than treating the name as immutable.
 
 Before any create call, run:
 
@@ -229,12 +259,13 @@ Then deploy reproducibly:
 
 ```bash
 python3 -m scripts.ci_rehearsal.provision aws-deploy \
+  --phase infrastructure \
   --template scripts/ci_rehearsal/cloudformation.yaml \
   --instance /private/tmp/bolt-v2-1016-d4-instance.toml \
   --preflight-receipt "$D4_PROVISION_PREFLIGHT_ROOT"
 ```
 
-The command uses CloudFormation `CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, and `DescribeStacks`, records the exact template/change-set digests, and refuses replacements or resources outside the run prefix. Create each App through GitHub's App Manifest flow with `provision github-app --kind authority` and `--kind operator`; the local callback exchanges the one-time code at `POST /app-manifests/{code}/conversions`, validates the returned permission manifest, sends the private key directly to the exact SSM SecureString parameter, never logs or persists the response, and exits after printing only App/installation IDs and digests. Install each App solely on the exact sandbox repository and verify the operator App has no Checks permission. No broad PAT is accepted.
+The command uses CloudFormation `CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, and `DescribeStacks`, records exact template/change-set digests, and refuses replacements or resources outside the run prefix. After `build-derived-image`, run the same command with `--phase lambda --derived-image-uri "$D4_DERIVED_IMAGE_URI"`; it rejects tags, public ECR, and digests absent from the inventoried private repository. Create each App through GitHub's App Manifest flow as already specified. No broad PAT is accepted.
 
 - [ ] **Step 5: Pin the verification dependency and immutable Lambda base**
 
@@ -246,7 +277,24 @@ cffi==2.0.0
 pycparser==3.0
 ```
 
-Generate `requirements.lock` for the selected Lambda Python platform with one `--hash=sha256:...` entry for every allowed wheel, using only artifacts downloaded from the approved package index. Before implementation continues, select an AWS-supported Lambda Python base image, record its immutable image digest, and execute `python -c 'import boto3,botocore; print(boto3.__version__, botocore.__version__)'` inside that exact image. If the embedded SDK versions or image digest cannot be verified and recorded, stop: do not invent versions or use a floating Lambda tag. Package `cryptography`, `cffi`, and `pycparser` from the hash-locked wheels; the AWS SDK remains the version proven inside the immutable base image and the service asserts those exact observed versions at startup.
+Generate `requirements.lock` for the Lambda Python 3.12 arm64 platform with one `--hash=sha256:...` entry for every allowed wheel. The rehearsal-only approved index is exactly `https://pypi.org/simple`; require valid TLS, pass `--index-url https://pypi.org/simple`, prohibit `--extra-index-url` and alternate indexes, download the exact wheels, and compare every wheel byte hash before packaging. This is not a production or repository-wide dependency-policy change.
+
+Local image verification does not require executing a Linux container. `provision verify-public-ecr` anonymously reads the official AWS Public ECR OCI manifest and blobs, requires Lambda Python 3.12 arm64 manifest digest `sha256:0e2be5716ccf48b2e2ad8a9f91e5aee0fae5fae75979b3be1178398988a8da7c`, downloads the SDK-containing layer and verifies its compressed byte digest `sha256:f24dfbefedbfe20fe8223203a3c1597a978328fbb675a85da46eee66bcfec31d`, then inspects package `METADATA` inside that verified layer and requires `boto3==1.42.97` and `botocore==1.42.97`. It records the registry host, repository, architecture, media types, manifest bytes/digest, layer bytes/digest, exact METADATA paths/bytes/digests, and parsed versions. TLS failure, redirect to a non-AWS registry, digest mismatch, missing/duplicate METADATA, or version mismatch fails closed. These exact values were rescued from separately captured official-image evidence because no `.superpowers` report is present or readable in this design worktree; they become trusted only after the implementer independently reproduces the anonymous OCI and layer checks.
+
+Run the local gate as:
+
+```bash
+python3 -m scripts.ci_rehearsal.provision verify-public-ecr \
+  --image public.ecr.aws/lambda/python@sha256:0e2be5716ccf48b2e2ad8a9f91e5aee0fae5fae75979b3be1178398988a8da7c \
+  --architecture arm64 \
+  --sdk-layer-sha256 f24dfbefedbfe20fe8223203a3c1597a978328fbb675a85da46eee66bcfec31d \
+  --expected-boto3 1.42.97 \
+  --expected-botocore 1.42.97
+```
+
+Expected: a canonical PASS receipt containing the independently recomputed manifest, layer, METADATA, and version evidence; no container execution and no AWS credential are required. Because later OCI layers can shadow Python packages, the single verified SDK-layer METADATA is preliminary build evidence only unless the implementer reconstructs and inspects the complete ordered root filesystem overlay. It is never the final SDK-version authority.
+
+`Dockerfile` declares `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` and installs only the exact offline locked wheels. `provision package-build-context` creates one canonical archive containing exact harness source, Dockerfile, lock, wheels, and their digests; writes it to the run's Object Lock bucket prefix; records S3 key, version ID, object digest and retention; and binds them into the CodeBuild environment override. `provision start-codebuild` starts only the inventoried project, prohibits source/buildspec/role/image/compute overrides, polls `BatchGetBuilds`, requires `SUCCEEDED`, records build ID/times/environment image identifier (and provider-resolved digest if exposed), input digests/log digest, and resolves the derived manifest through ECR `BatchGetImage`/`DescribeImages`. Lambda accepts only the returned private `repository@sha256:digest`. The running Lambda report remains final authority for actual derived-image SDK versions.
 
 - [ ] **Step 6: Implement strict instance loading**
 
@@ -265,7 +313,7 @@ Expected: no matches.
 - [ ] **Step 8: Commit the resource-contract slice**
 
 ```bash
-git add ci/1016-rehearsal-resources.toml scripts/ci_rehearsal/cloudformation.yaml scripts/ci_rehearsal/provision.py scripts/ci_rehearsal/requirements.in scripts/ci_rehearsal/requirements.lock scripts/ci_rehearsal/config.py scripts/test_ci_rehearsal_config.py
+git add ci/1016-rehearsal-resources.toml scripts/ci_rehearsal/cloudformation.yaml scripts/ci_rehearsal/Dockerfile scripts/ci_rehearsal/provision.py scripts/ci_rehearsal/requirements.in scripts/ci_rehearsal/requirements.lock scripts/ci_rehearsal/config.py scripts/test_ci_rehearsal_config.py
 git commit -m "test: define disposable rehearsal resources"
 ```
 
@@ -603,6 +651,10 @@ git commit -m "test: integrate disposable control-plane rehearsal"
 def test_cleanup_revokes_publication_before_deleting_observability() -> None:
     names = [step.name for step in CleanupPlanner.authority_phase(config)]
     self.assertLess(names.index("disable-app-installation"), names.index("remove-webhook"))
+    self.assertLess(names.index("delete-codebuild-project"), names.index("delete-authority-lambda"))
+    self.assertLess(names.index("delete-authority-lambda"), names.index("delete-derived-ecr-image"))
+    self.assertLess(names.index("delete-derived-ecr-image"), names.index("delete-private-ecr-repository"))
+    self.assertLess(names.index("export-codebuild-log-evidence"), names.index("delete-codebuild-log-group"))
     self.assertNotIn("destroy-observer", names)
     self.assertEqual(CleanupPlanner.observer_phase(config)[-1].name, "destroy-evidence-writer")
 
@@ -624,7 +676,7 @@ Expected: import failure for `ci_rehearsal.cleanup`.
 
 - [ ] **Step 3: Implement phase one: disable authority while preserving observation**
 
-Phase one preserves an independently credentialed observer/evidence writer while it: stops new triggers; disables App installation/check publication; revokes fixture signing; disables the authority Lambda and schedules; destroys the authority DynamoDB writer; removes webhook and authority mutable routes; removes sandbox ruleset, Mergify routes, Freeze, protections, exclusions, and required contexts or archives the sandbox repository according to the instance retention choice; and deletes every non-observer disposable resource. The observer records exact before/after provider and GitHub responses. Every step is idempotent, and the executor refuses production node IDs, names, App IDs, AWS accounts/resources, and endpoints from the denylist.
+Phase one stops triggers/publication and any active CodeBuild build, captures `BatchGetBuilds` plus complete log bytes/digest into immutable evidence, deletes the CodeBuild project/role, deletes Lambda and proves no image reference remains, deletes the derived ECR image then empty repository, deletes the CodeBuild log group after its immutable export, and removes remaining non-observer resources. The observer records CodeBuild project/build absence, Lambda `GetFunction`, ECR `DescribeImages`/`DescribeRepositories`, Logs, CloudFormation, cost, and GitHub responses. Every step is idempotent and refuses production identities.
 
 - [ ] **Step 4: Implement negative probes and the final immutable checkpoint**
 
@@ -724,7 +776,44 @@ git commit -m "test: report rehearsal evidence and owner decisions"
 
 - [ ] **Step 1: Obtain the unavoidable platform preconditions before mutation**
 
-Record explicit authorization and a worst-case cost/time ceiling for initial provisioning and the fixed small run plan. The owner supplies an already-existing empty private sandbox repository, an existing Mergify sandbox integration for that repository, and a separate sandbox AWS account/region; write their nonsecret IDs to the `0600` instance file and the production identities to the separate `0600` denylist. Run Task 3's read-only provisioning preflight before creating any App or AWS resource. Only after it passes, execute the reproducible CloudFormation and two GitHub App Manifest commands from Task 3, install both Apps solely on the sandbox repository, and verify exact App/Mergify outputs and permissions. Mergify behavior is configured only by operator-App commits to the sandbox `.mergify.yml`. Do not copy production secrets, workflows, source, rulesets, Mergify configuration, or App installation. No resource may be created until the Lambda image/SDK, dependency, denylist, separate-account, separate-repository, and Mergify-sandbox gates pass.
+Record explicit authorization and a worst-case cost/time ceiling including CodeBuild minutes/logs and ECR. Run the denylist, Public ECR, and wheel gates, then execute the infrastructure CloudFormation phase to create CodeBuild, its log group/role, private ECR, and non-Lambda dependencies. Package the immutable context and start the one ARM64 build:
+
+```bash
+python3 -m scripts.ci_rehearsal.provision package-build-context \
+  --instance /private/tmp/bolt-v2-1016-d4-instance.toml \
+  --dockerfile scripts/ci_rehearsal/Dockerfile \
+  --base-image public.ecr.aws/lambda/python@sha256:0e2be5716ccf48b2e2ad8a9f91e5aee0fae5fae75979b3be1178398988a8da7c \
+  --requirements-lock scripts/ci_rehearsal/requirements.lock
+
+python3 -m scripts.ci_rehearsal.provision start-codebuild \
+  --instance /private/tmp/bolt-v2-1016-d4-instance.toml \
+  --context-receipt "$D4_BUILD_CONTEXT_ROOT"
+```
+
+Expected: `StartBuild` uses the fixed project with no role/image/compute/source/buildspec override; `BatchGetBuilds` reaches `SUCCEEDED`; the receipt contains build ID, exact input/context/S3 version, managed image identifier/resolved digest when exposed, ARM_CONTAINER/compute, logs, costs, base/lock/wheel digests, and prints `D4_DERIVED_IMAGE_URI` as the exact private ECR digest. Provider image mutability or provenance ambiguity is `NO_GO`. Then execute:
+
+```bash
+python3 -m scripts.ci_rehearsal.provision aws-deploy \
+  --phase lambda \
+  --template scripts/ci_rehearsal/cloudformation.yaml \
+  --instance /private/tmp/bolt-v2-1016-d4-instance.toml \
+  --preflight-receipt "$D4_PROVISION_PREFLIGHT_ROOT" \
+  --derived-image-uri "$D4_DERIVED_IMAGE_URI"
+```
+
+Expected: the second CloudFormation change set creates/updates Lambda with exactly that private digest; tags, public ECR, or a digest absent from the inventoried private repository are rejected.
+
+Before scenario preflight, invoke the deployed Lambda version-report endpoint and independently query its resolved image:
+
+```bash
+python3 -m scripts.ci_rehearsal.provision verify-live-lambda \
+  --instance /private/tmp/bolt-v2-1016-d4-instance.toml \
+  --expected-derived-image-uri "$D4_DERIVED_IMAGE_URI" \
+  --expected-boto3 1.42.97 \
+  --expected-botocore 1.42.97
+```
+
+Expected: Lambda `GetFunction`/`GetFunctionConfiguration` reports the private ECR resolved image digest exactly equal to `D4_DERIVED_IMAGE_URI`, and an independent `Invoke` of the version-report endpoint returns `boto3=1.42.97` and `botocore=1.42.97` from the running derived image. Record provider request IDs, resolved image URI/digest, invocation payload digest, and version output. This live derived-image result—not the preliminary single-layer METADATA—is final authority. A mismatch, package shadowing, tag, public ImageUri, or inability to invoke is `NO_GO`.
 
 - [ ] **Step 2: Run preflight before any scenario**
 
@@ -757,7 +846,7 @@ Use the immutable signed run-plan digest: two clean `full-ceremony` runs, two lo
 
 Run: `just ci-rehearsal live cleanup-authority --instance /private/tmp/bolt-v2-1016-d4-instance.toml --confirm-sandbox-node-id "$D4_SANDBOX_NODE_ID"`
 
-Expected: App publication, authority Lambda, fixture signer, DynamoDB writer, webhooks/schedulers, mutable authority routes, sandbox merge controls, and all other authority capabilities are disabled or deleted while the independent observer/evidence writer remains. Negative probes fail, resource deletion is observed, and the observer uses the still-live audit-signing boundary to seal the final immutable cleanup checkpoint plus phase-two plan.
+Expected: App publication, CodeBuild project/role/logs after immutable export, Lambda/versions, fixture signer, DynamoDB writer, mutable routes/controls, derived ECR image, and private ECR repository are deleted in dependency order while the observer remains. CodeBuild/Lambda/ECR absence queries and costs are captured before sealing cleanup.
 
 - [ ] **Step 6: Build the final aggregate and independently reconstruct before observer destruction**
 
@@ -784,7 +873,7 @@ python3 -m scripts.ci_rehearsal.provision verify-destroyed \
   --output "$D4_EVIDENCE_DIR/post-destruction-platform-capture.json"
 ```
 
-Expected: GitHub installation queries and AWS CloudTrail/Lambda/IAM/SSM/KMS/DynamoDB/S3 APIs show the exact Apps, keys, roles, functions, parameters, mutable writers, and routes deleted, disabled, or denied; retained evidence remains readable. The capture records provider request IDs, timestamps and response digests without credentials. The final report labels provider audit/API records plus owner/operator capture as the post-destruction trust boundary; absence of an external capture is `NO_GO`.
+Expected: GitHub installation queries and AWS CloudTrail/CodeBuild/Logs/Lambda/ECR/IAM/SSM/KMS/DynamoDB/S3 APIs show the exact Apps, build project/build/log group, derived image/repository, keys, roles, functions, parameters, writers, and routes deleted, disabled, or denied; retained build/log evidence remains readable. The capture records provider request IDs, timestamps and response digests without credentials. Absence is `NO_GO`.
 
 - [ ] **Step 8: Generate the evidence-based owner report**
 

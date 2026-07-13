@@ -426,7 +426,7 @@ fn rv_clock_domain_amendment_book_route_uses_init_stamp_for_entry_gate() {
     set_shadow_order_execution_policy(&mut strategy);
     let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
-    let lifecycle_now_ms = 1_200;
+    let lifecycle_now_ms: u64 = 1_200;
     let book_event_ms = 1_701;
     let book_receive_ms = 1_200;
     clock.borrow_mut().set_time(UnixNanos::from(

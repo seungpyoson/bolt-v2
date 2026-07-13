@@ -2896,7 +2896,7 @@ fn recorded_exit_decisions(
 #[test]
 fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let lifecycle_now_ms = 1_200;
+    let lifecycle_now_ms: u64 = 1_200;
     let position_interval_end_ms = strategy
         .managed_position()
         .and_then(|managed| managed.position.lifecycle.interval_end_ms())
@@ -2948,6 +2948,53 @@ fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
     );
     assert_eq!(records[0].exit_decision, BoltV3ExitDecisionOutcome::Exit);
     assert_eq!(records[0].submission_blocked_reason, None);
+}
+
+#[test]
+fn invalid_signal_quote_exit_preserves_lifecycle_event_and_receive_domains() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    let lifecycle_now_ms: u64 = 1_200;
+    let position_interval_end_ms = strategy
+        .managed_position()
+        .and_then(|managed| managed.position.lifecycle.interval_end_ms())
+        .expect("exit fixture must retain the position's interval end");
+    let signal_event_ms = position_interval_end_ms.saturating_add(1);
+    let signal_receive_ms = 1_220;
+    assert_ne!(lifecycle_now_ms, signal_event_ms);
+    assert_ne!(lifecycle_now_ms, signal_receive_ms);
+    assert_ne!(signal_event_ms, signal_receive_ms);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock.borrow_mut().set_time(UnixNanos::from(
+        lifecycle_now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+    strategy.pricing.seed_ready_realized_vol(
+        Some("<SOURCE_ID>".to_string()),
+        1.5,
+        signal_receive_ms,
+    );
+    let signal_instrument_id = strategy
+        .config
+        .signal_instrument_id
+        .as_deref()
+        .expect("exit fixture must configure a signal instrument")
+        .to_string();
+
+    strategy
+        .on_quote(&invalid_quote_tick_with_stamps(
+            &signal_instrument_id,
+            signal_event_ms,
+            signal_receive_ms,
+        ))
+        .expect("invalid unequal-stamped signal quote must reach exit evaluation");
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].exit_eval_now_ms, lifecycle_now_ms as i64);
+    assert_eq!(records[0].trigger_ts_event_ms, Some(signal_event_ms as i64));
+    assert_eq!(
+        records[0].trigger_ts_init_ms,
+        Some(signal_receive_ms as i64)
+    );
 }
 
 #[test]

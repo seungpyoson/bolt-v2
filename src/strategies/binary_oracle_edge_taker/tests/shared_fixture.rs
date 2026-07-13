@@ -1370,6 +1370,14 @@ pub(super) fn quote_tick_with_stamps(
 }
 
 pub(super) fn invalid_quote_tick(instrument_id: &str, ts_ms: u64) -> QuoteTick {
+    invalid_quote_tick_with_stamps(instrument_id, ts_ms, ts_ms)
+}
+
+pub(super) fn invalid_quote_tick_with_stamps(
+    instrument_id: &str,
+    ts_event_ms: u64,
+    ts_init_ms: u64,
+) -> QuoteTick {
     let invalid_price = Price::from_raw(nautilus_model::types::PRICE_ERROR, 0);
     QuoteTick::new_checked(
         InstrumentId::from(instrument_id),
@@ -1377,8 +1385,8 @@ pub(super) fn invalid_quote_tick(instrument_id: &str, ts_ms: u64) -> QuoteTick {
         invalid_price,
         Quantity::new(1.0, 0),
         Quantity::new(1.0, 0),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_event_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_init_ms.saturating_mul(NANOS_PER_MILLI_U64)),
     )
     .expect("test invalid quote tick should preserve sentinel prices")
 }

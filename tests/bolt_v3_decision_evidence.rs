@@ -1053,6 +1053,23 @@ fn entry_rv_receipt_fields_deserialize_from_legacy_evidence() {
         Some(BoltV3RvGateResult::Accepted)
     );
 
+    for invalid_wire_value in ["-1", "NaN", "inf", "-inf"] {
+        let mut invalid_rv_skip = accepted_skip.clone();
+        invalid_rv_skip
+            .as_object_mut()
+            .expect("invalid-RV skip must remain an object")
+            .insert(
+                "realized_vol".to_string(),
+                serde_json::json!(invalid_wire_value),
+            );
+        let invalid_rv_skip: BoltV3EntrySkipEvidence = serde_json::from_value(invalid_rv_skip)
+            .expect("invalid RV string must remain readable legacy skip evidence");
+        assert_eq!(
+            invalid_rv_skip.realized_vol_gate_result, None,
+            "invalid legacy skip RV must not infer admission: {invalid_wire_value}"
+        );
+    }
+
     let unclassifiable_skip_object = accepted_skip
         .as_object_mut()
         .expect("skip must remain an object");
@@ -1095,6 +1112,24 @@ fn entry_rv_receipt_fields_deserialize_from_legacy_evidence() {
         zero_rv_snapshot.realized_volatility_gate_result,
         Some(BoltV3RvGateResult::Accepted)
     );
+
+    for invalid_wire_value in ["-1", "NaN", "inf", "-inf"] {
+        let mut invalid_rv_snapshot = snapshot.clone();
+        invalid_rv_snapshot
+            .as_object_mut()
+            .expect("invalid-RV strategy input must remain an object")
+            .insert(
+                "realized_volatility".to_string(),
+                serde_json::json!(invalid_wire_value),
+            );
+        let invalid_rv_snapshot: BoltV3StrategyInputEvidenceSnapshot =
+            serde_json::from_value(invalid_rv_snapshot)
+                .expect("invalid RV string must remain readable legacy strategy-input evidence");
+        assert_eq!(
+            invalid_rv_snapshot.realized_volatility_gate_result, None,
+            "invalid legacy strategy-input RV must not infer admission: {invalid_wire_value}"
+        );
+    }
 
     snapshot
         .as_object_mut()

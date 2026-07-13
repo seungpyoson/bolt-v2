@@ -1328,6 +1328,54 @@ def test_binance_timestamp_behavioral_contract_rejects_unreachable_assertions() 
         )
 
 
+def test_binance_timestamp_behavioral_contract_rejects_bare_closure_assertions() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_event, expected_ts_event);
+    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    closure_prefixes = ("||", "move ||", "|_ignored: ()|")
+    for closure_prefix in closure_prefixes:
+        replacement = (
+            f"let _a = {closure_prefix} ::core::assert_ne!(expected_ts_event, adapter_ts_init);\n"
+            f"    let _b = {closure_prefix} ::core::assert_eq!(quote.ts_event, expected_ts_event);\n"
+            f"    let _c = {closure_prefix} ::core::assert_eq!(quote.ts_init, adapter_ts_init);"
+        )
+
+        def mutate(root: Path, replacement: str = replacement) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+            "must be a complete expression statement in its canonical control-flow block",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_trade_bare_closure_assertions() -> None:
+    function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
+    canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);
+        ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
+    replacement = """let _event_proof = || ::core::assert_eq!(trade.ts_event, expected_ts_event);
+        let _init_proof = move || ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
+
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+        "must be a complete expression statement in its canonical control-flow block",
+    )
+
+
 def test_binance_timestamp_behavioral_contract_preserves_trade_per_item_shape() -> None:
     function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
     canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);

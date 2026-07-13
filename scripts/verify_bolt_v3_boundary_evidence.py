@@ -1375,6 +1375,44 @@ def binance_assertion_contract_is_canonical(masked: str) -> bool:
     return True
 
 
+def rust_assertion_is_complete_expression_statement(
+    masked: str, assertion_start: int
+) -> bool:
+    tokenized = rust_tokens_and_delimiter_pairs(masked)
+    if tokenized is None:
+        return False
+    tokens, pairs = tokenized
+    assertion_index = next(
+        (
+            index
+            for index, token in enumerate(tokens)
+            if token.start == assertion_start
+        ),
+        None,
+    )
+    if assertion_index is None or assertion_index + 5 >= len(tokens):
+        return False
+
+    macro_name = tokens[assertion_index + 3].value
+    if (
+        macro_name not in GOVERNED_ASSERTION_MACROS
+        or [token.value for token in tokens[assertion_index : assertion_index + 6]]
+        != ["::", "core", "::", macro_name, "!", "("]
+    ):
+        return False
+
+    closing_parenthesis = pairs.get(assertion_index + 5)
+    if closing_parenthesis is None or closing_parenthesis + 1 >= len(tokens):
+        return False
+    if tokens[closing_parenthesis + 1].value != ";":
+        return False
+
+    predecessor = (
+        tokens[assertion_index - 1].value if assertion_index > 0 else None
+    )
+    return predecessor in {None, ";", "{"}
+
+
 def rust_find_top_level_token(
     tokens: list[RustToken],
     pairs: dict[int, int],
@@ -1944,13 +1982,19 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
                         f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed "
                         "assertion must remain inside the canonical per-item trade loop"
                     )
-                continue
-            if len(matches) != 1 or rust_open_delimiters_at(
+            elif len(matches) != 1 or rust_open_delimiters_at(
                 body, matches[0].start()
             ) != ():
                 findings.append(
                     f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
                     "must remain at its canonical control-flow depth"
+                )
+            if len(matches) == 1 and not rust_assertion_is_complete_expression_statement(
+                body, matches[0].start()
+            ):
+                findings.append(
+                    f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
+                    "must be a complete expression statement in its canonical control-flow block"
                 )
         if trade_loop_span is None and function_name.startswith("sbe_multi_trade_"):
             findings.append(

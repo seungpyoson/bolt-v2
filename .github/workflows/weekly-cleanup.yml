@@ -42,7 +42,8 @@ jobs:
             - Remove dead code and unused imports.
             - Reduce obvious duplication without changing behavior.
             - Simplify small local functions when tests or static checks can verify the change.
-            - Keep changes scoped and include verification evidence in the draft PR body.
+            - Keep changes scoped; the draft PR body may state stable scope/behavior and timeless merge requirements.
+            - Put exact head SHAs, transient CI/check status, and head-specific review/verification receipts in the durable Jules session output or a review request, PR comment, or check record instead of the PR body; do not rewrite the body as heads move.
         run: |
           jq -n \
             --arg repo_full_name "$GITHUB_REPOSITORY" \

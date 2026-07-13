@@ -1041,6 +1041,18 @@ fn entry_rv_receipt_fields_deserialize_from_legacy_evidence() {
     assert_eq!(skip.realized_vol_receive_watermark_ms, None);
     assert_eq!(skip.realized_vol_snapshot, None);
 
+    let mut zero_rv_skip = accepted_skip.clone();
+    zero_rv_skip
+        .as_object_mut()
+        .expect("zero-RV skip must remain an object")
+        .insert("realized_vol".to_string(), serde_json::json!("0"));
+    let zero_rv_skip: BoltV3EntrySkipEvidence =
+        serde_json::from_value(zero_rv_skip).expect("zero RV is valid legacy skip evidence");
+    assert_eq!(
+        zero_rv_skip.realized_vol_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
+
     let unclassifiable_skip_object = accepted_skip
         .as_object_mut()
         .expect("skip must remain an object");
@@ -1069,6 +1081,19 @@ fn entry_rv_receipt_fields_deserialize_from_legacy_evidence() {
     assert_eq!(
         accepted_snapshot.realized_volatility_receive_watermark_ms,
         None
+    );
+
+    let mut zero_rv_snapshot = snapshot.clone();
+    zero_rv_snapshot
+        .as_object_mut()
+        .expect("zero-RV strategy input must remain an object")
+        .insert("realized_volatility".to_string(), serde_json::json!("0"));
+    let zero_rv_snapshot: BoltV3StrategyInputEvidenceSnapshot =
+        serde_json::from_value(zero_rv_snapshot)
+            .expect("zero RV is valid legacy strategy-input evidence");
+    assert_eq!(
+        zero_rv_snapshot.realized_volatility_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
     );
 
     snapshot

@@ -42,7 +42,20 @@ const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(RvClockDomainAmendmentSnapshot, u64, bo
 fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     rv_clock_domain_amendment_configure_surface(&mut strategy);
+    strategy.active.last_reference_ts_ms = Some(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS);
+    strategy.pricing.set_selected_pricing_spot(Some(fast_spot(
+        "bybit",
+        3_100.5,
+        RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
+    )));
     register_test_strategy_with_active_instruments(&mut strategy);
+    assert!(
+        strategy
+            .entry_gate_decision_at(RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS)
+            .blocked_by
+            .is_empty(),
+        "the amendment fixture's ordinary non-RV entry gate must be open before testing RV receive-time classification"
+    );
     strategy
 }
 

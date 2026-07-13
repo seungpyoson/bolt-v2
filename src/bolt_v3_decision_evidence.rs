@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
 use crate::bolt_v3_config::LoadedBoltV3Config;
-use crate::bolt_v3_numeric::{Probability, is_positive_finite};
+use crate::bolt_v3_numeric::Probability;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 use crate::bolt_v3_realized_volatility::{
     RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
     RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceDiagnostic,
-    RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    RealizedVolSourceRejectReason, RealizedVolSourceStatus, ValidRealizedVol,
 };
 use crate::bolt_v3_timestamp_domain::LocalReceiveMs;
 #[cfg(test)]
@@ -865,7 +865,9 @@ fn legacy_admitted_rv_fields(
 }
 
 fn valid_legacy_rv_value(value: &str) -> bool {
-    value.parse::<f64>().is_ok_and(is_positive_finite)
+    value
+        .parse::<f64>()
+        .is_ok_and(|value| ValidRealizedVol::new(value).is_some())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4978,7 +4980,15 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            64
+            66
+        );
+        assert_eq!(
+            snapshot_field["realized_volatility_gate_result"],
+            "missing_snapshot"
+        );
+        assert_eq!(
+            snapshot_field["realized_volatility_receive_watermark_ms"],
+            serde_json::Value::Null
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
         assert_eq!(snapshot_field["up_worst_case_edge_basis_points"], "11");

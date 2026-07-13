@@ -47,16 +47,25 @@ REQUIRED_BINANCE_WS_REGISTRY_ENTRIES = {
     ("BINANCE_SPOT_SBE_ADAPTER_ID", "WebSocketFrame", "RealizedVolatilityObservation"),
     ("BINANCE_SPOT_SBE_ADAPTER_ID", "WebSocketFrame", "StrategySignalObservation"),
 }
-PIN_SURFACES = (
+CANONICAL_CARGO_PIN_SURFACES = (
     Path("Cargo.toml"),
     Path("Cargo.lock"),
     Path("crates/backtesting-vertical-slice/Cargo.toml"),
     Path("crates/backtesting-vertical-slice/Cargo.lock"),
-    Path("docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"),
-    Path("docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"),
+)
+RUNTIME_CONTRACT_PIN_SURFACE = Path(
+    "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
+)
+NT_NAMING_LEDGER_PIN_SURFACE = Path(
+    "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"
+)
+NON_CARGO_PIN_SURFACES = (
+    RUNTIME_CONTRACT_PIN_SURFACE,
+    NT_NAMING_LEDGER_PIN_SURFACE,
     Path("scripts/verify_bolt_v3_boundary_evidence.py"),
     Path("scripts/test_verify_bolt_v3_boundary_evidence.py"),
 )
+PIN_SURFACES = (*CANONICAL_CARGO_PIN_SURFACES, *NON_CARGO_PIN_SURFACES)
 BINANCE_SOURCE_SYMBOLS = (
     "BinanceSpotDataClient::handle_ws_message",
     "handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init",
@@ -76,9 +85,29 @@ BINANCE_TIMESTAMP_TEST_PATH = Path("tests/binance_sbe_quote_timestamps.rs")
 BINANCE_TIMESTAMP_TEST_SAFE_TARGET_FIELDS = frozenset(
     {"name", "path", "harness", "test"}
 )
+BINANCE_TIMESTAMP_PARSER_ALIAS = "nt_binance_sbe_parse"
+BINANCE_TIMESTAMP_PARSER_IMPORT_PATTERN = re.compile(
+    r"\buse\s+::\s*nautilus_binance\s*::\s*spot\s*::\s*websocket\s*::\s*streams\s*::\s*parse"
+    r"\s+as\s+(?P<alias>nt_binance_sbe_parse)\s*;"
+)
+BINANCE_TIMESTAMP_PARSER_SYMBOLS = (
+    "parse_trades_event",
+    "parse_bbo_event",
+    "parse_depth_snapshot",
+    "parse_depth_diff",
+)
+BINANCE_TIMESTAMP_TEST_CASE_PARSERS = {
+    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": "parse_trades_event",
+    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": "parse_bbo_event",
+    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": "parse_depth_snapshot",
+    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": "parse_depth_diff",
+}
 BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
-        ("parse_trades_event call", r"\bparse_trades_event\s*\("),
+        (
+            "pinned parse_trades_event call",
+            r"\bnt_binance_sbe_parse\s*::\s*parse_trades_event\s*\(",
+        ),
         (
             "unequal event/init assertion",
             r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
@@ -99,7 +128,10 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
     ),
     "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
-        ("parse_bbo_event call", r"\bparse_bbo_event\s*\("),
+        (
+            "pinned parse_bbo_event call",
+            r"\bnt_binance_sbe_parse\s*::\s*parse_bbo_event\s*\(",
+        ),
         (
             "unequal event/init assertion",
             r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
@@ -114,7 +146,10 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
     ),
     "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
-        ("parse_depth_snapshot call", r"\bparse_depth_snapshot\s*\("),
+        (
+            "pinned parse_depth_snapshot call",
+            r"\bnt_binance_sbe_parse\s*::\s*parse_depth_snapshot\s*\(",
+        ),
         (
             "unequal event/init assertion",
             r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
@@ -141,7 +176,10 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
     ),
     "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
-        ("parse_depth_diff call", r"\bparse_depth_diff\s*\("),
+        (
+            "pinned parse_depth_diff call",
+            r"\bnt_binance_sbe_parse\s*::\s*parse_depth_diff\s*\(",
+        ),
         (
             "unequal event/init assertion",
             r"\bassert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
@@ -169,7 +207,7 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     ),
 }
 PIN_TEXT_PATTERNS = {
-    PIN_SURFACES[5]: (
+    NT_NAMING_LEDGER_PIN_SURFACE: (
         re.compile(r'^nautilus_trader_revision:\s*"([0-9a-f]{40})"$', re.MULTILINE),
     ),
 }
@@ -812,23 +850,95 @@ def dependency_tables(
     return tables
 
 
-def scan_nt_manifest_pin(surface: Path, text: str, findings: list[str]) -> None:
-    try:
-        manifest = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        findings.append(f"{surface}: NautilusTrader pin census could not parse TOML: {error}")
-        return
-
+def nt_manifest_dependencies(manifest: object) -> list[tuple[str, object]]:
     dependencies: list[tuple[str, object]] = []
     for path, table in dependency_tables(manifest):
         for name, specification in table.items():
             package_name = (
                 specification.get("package") if isinstance(specification, dict) else None
             )
-            if name.startswith("nautilus-") or (
-                isinstance(package_name, str) and package_name.startswith("nautilus-")
+            git = specification.get("git") if isinstance(specification, dict) else None
+            if (
+                name.startswith("nautilus-")
+                or (isinstance(package_name, str) and package_name.startswith("nautilus-"))
+                or (isinstance(git, str) and "nautilus_trader.git" in git)
             ):
                 dependencies.append((f"{'.'.join(path)}.{name}", specification))
+    return dependencies
+
+
+def cargo_surface_references_nt(surface: Path, text: str) -> bool:
+    try:
+        document = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return "nautilus-" in text or "nautilus_trader.git" in text
+    if surface.name == "Cargo.toml":
+        return bool(nt_manifest_dependencies(document))
+    packages = document.get("package")
+    if not isinstance(packages, list):
+        return False
+    return any(
+        isinstance(package, dict)
+        and (
+            (
+                isinstance(package.get("name"), str)
+                and package["name"].startswith("nautilus-")
+            )
+            or (
+                isinstance(package.get("source"), str)
+                and "nautilus_trader.git" in package["source"]
+            )
+        )
+        for package in packages
+    )
+
+
+def tracked_cargo_surfaces(root: Path, findings: list[str]) -> set[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--cached", "-z"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        findings.append(
+            "NautilusTrader pin census could not discover tracked Cargo surfaces: "
+            f"{detail or f'git ls-files exited {result.returncode}'}"
+        )
+        return set()
+
+    surfaces: set[Path] = set()
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        decoded = os.fsdecode(raw_path)
+        surface = Path(decoded)
+        if (
+            surface.is_absolute()
+            or ".." in surface.parts
+            or "target" in surface.parts
+            or surface.name not in {"Cargo.toml", "Cargo.lock"}
+        ):
+            continue
+        surfaces.add(surface)
+    return surfaces
+
+
+def scan_nt_manifest_pin(
+    surface: Path,
+    text: str,
+    findings: list[str],
+    *,
+    allow_workspace_inheritance: bool = False,
+) -> None:
+    try:
+        manifest = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        findings.append(f"{surface}: NautilusTrader pin census could not parse TOML: {error}")
+        return
+
+    dependencies = nt_manifest_dependencies(manifest)
     if not dependencies:
         findings.append(f"{surface}: NautilusTrader pin census found no nautilus-* dependencies")
         return
@@ -838,6 +948,24 @@ def scan_nt_manifest_pin(surface: Path, text: str, findings: list[str]) -> None:
             findings.append(
                 f"{surface}: NautilusTrader pin census {location} must use the canonical pinned Git table"
             )
+            continue
+        if specification.get("workspace") is True:
+            if not allow_workspace_inheritance:
+                findings.append(
+                    f"{surface}: NautilusTrader pin census {location} must own the canonical "
+                    "pinned Git table rather than inherit it"
+                )
+                continue
+            source_selectors = sorted(
+                key
+                for key in ("git", "rev", "branch", "tag")
+                if key in specification
+            )
+            if source_selectors:
+                findings.append(
+                    f"{surface}: NautilusTrader pin census {location} workspace inheritance "
+                    f"must not also set source selector(s): {', '.join(source_selectors)}"
+                )
             continue
         git = specification.get("git")
         rev = specification.get("rev")
@@ -982,6 +1110,56 @@ def rust_ordinary_test_function_body(
     return None, True
 
 
+def binance_parser_identity_is_shadowed(masked: str) -> bool:
+    import_matches = [
+        match
+        for match in BINANCE_TIMESTAMP_PARSER_IMPORT_PATTERN.finditer(masked)
+        if rust_open_delimiters_at(masked, match.start()) == ()
+    ]
+    if len(import_matches) != 1:
+        return True
+
+    allowed_alias_spans = {
+        (import_matches[0].start("alias"), import_matches[0].end("alias"))
+    }
+    allowed_symbol_spans: set[tuple[int, int]] = set()
+    qualified_parser = re.compile(
+        rf"\b(?P<alias>{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)})\s*::\s*"
+        rf"(?P<symbol>{'|'.join(map(re.escape, BINANCE_TIMESTAMP_PARSER_SYMBOLS))})\b"
+    )
+    for match in qualified_parser.finditer(masked):
+        allowed_alias_spans.add((match.start("alias"), match.end("alias")))
+        allowed_symbol_spans.add((match.start("symbol"), match.end("symbol")))
+
+    if any(
+        (match.start(), match.end()) not in allowed_alias_spans
+        for match in re.finditer(
+            rf"\b{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\b", masked
+        )
+    ):
+        return True
+
+    for symbol in BINANCE_TIMESTAMP_PARSER_SYMBOLS:
+        if any(
+            (match.start(), match.end()) not in allowed_symbol_spans
+            for match in re.finditer(rf"\b{re.escape(symbol)}\b", masked)
+        ):
+            return True
+    return False
+
+
+def has_top_level_binance_parser_call(body: str, parser_symbol: str) -> bool:
+    call = re.compile(
+        rf"\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*"
+        rf"{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\s*::\s*"
+        rf"{re.escape(parser_symbol)}\s*\("
+    )
+    return any(
+        rust_open_delimiters_at(body, match.start()) == ()
+        for match in call.finditer(body)
+    )
+
+
 def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) -> None:
     manifest_surface = Path("Cargo.toml")
     try:
@@ -1061,6 +1239,21 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
             f"{attribute}"
         )
 
+    masked_test_text = _mask_rust_non_code(test_text)
+    import_matches = [
+        match
+        for match in BINANCE_TIMESTAMP_PARSER_IMPORT_PATTERN.finditer(masked_test_text)
+        if rust_open_delimiters_at(masked_test_text, match.start()) == ()
+    ]
+    if len(import_matches) != 1:
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: required pinned NautilusTrader parser import is missing"
+        )
+    if binance_parser_identity_is_shadowed(masked_test_text):
+        findings.append(
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed NautilusTrader parser identity must not be shadowed"
+        )
+
     for function_name, requirements in BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS.items():
         body, has_named_function = rust_ordinary_test_function_body(
             test_text, function_name
@@ -1082,6 +1275,12 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
                 findings.append(
                     f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} missing {description}"
                 )
+        parser_symbol = BINANCE_TIMESTAMP_TEST_CASE_PARSERS[function_name]
+        if not has_top_level_binance_parser_call(body, parser_symbol):
+            findings.append(
+                f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must call pinned "
+                f"{parser_symbol} directly from the top-level test body"
+            )
 
 
 def scan_runtime_contract_pin(surface: Path, text: str, findings: list[str]) -> None:
@@ -1114,18 +1313,37 @@ def scan_runtime_contract_pin(surface: Path, text: str, findings: list[str]) -> 
 
 
 def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
-    for surface in PIN_SURFACES:
+    cargo_surfaces = set(CANONICAL_CARGO_PIN_SURFACES)
+    for surface in tracked_cargo_surfaces(root, findings):
+        try:
+            text = read(root, surface)
+        except OSError as error:
+            findings.append(
+                f"{surface}: NautilusTrader pin census could not read tracked Cargo surface: {error}"
+            )
+            continue
+        if cargo_surface_references_nt(surface, text):
+            cargo_surfaces.add(surface)
+
+    for surface in sorted(cargo_surfaces):
         text = read(root, surface)
         if surface.name == "Cargo.toml":
-            scan_nt_manifest_pin(surface, text, findings)
+            scan_nt_manifest_pin(
+                surface,
+                text,
+                findings,
+                allow_workspace_inheritance=surface
+                not in CANONICAL_CARGO_PIN_SURFACES,
+            )
             continue
-        if surface.name == "Cargo.lock":
-            scan_nt_lock_pin(surface, text, findings)
-            continue
-        if surface == PIN_SURFACES[4]:
+        scan_nt_lock_pin(surface, text, findings)
+
+    for surface in NON_CARGO_PIN_SURFACES:
+        text = read(root, surface)
+        if surface == RUNTIME_CONTRACT_PIN_SURFACE:
             scan_runtime_contract_pin(surface, text, findings)
             continue
-        elif surface.suffix == ".py":
+        if surface.suffix == ".py":
             revisions = python_expected_nt_revisions(surface, text, findings)
         else:
             revisions = [

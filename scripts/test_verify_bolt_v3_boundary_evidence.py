@@ -25,6 +25,11 @@ EXPECTED_NT_REV = "afc014a55b51463641cc19c68bffe25cdac6588a"
 OLD_NT_REV = "0000000000000000000000000000000000000000"
 BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"
+BINANCE_TIMESTAMP_PARSER_ALIAS = "nt_binance_sbe_parse"
+BINANCE_TIMESTAMP_PARSER_IMPORT = (
+    "use ::nautilus_binance::spot::websocket::streams::parse "
+    f"as {BINANCE_TIMESTAMP_PARSER_ALIAS};"
+)
 BINANCE_TIMESTAMP_TEST_CASES = (
     "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
     "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
@@ -58,9 +63,11 @@ def digest(root: Path, rel: str) -> str:
 
 def binance_timestamp_test_source() -> str:
     return """
+use ::nautilus_binance::spot::websocket::streams::parse as nt_binance_sbe_parse;
+
 #[test]
 fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let trades = parse_trades_event(&event, &instrument, adapter_ts_init);
+    let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);
     assert_ne!(expected_ts_event, adapter_ts_init);
     assert_eq!(trades.len(), 2);
     for data in trades {
@@ -72,7 +79,7 @@ fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
 
 #[test]
 fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let quote = parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
     assert_ne!(expected_ts_event, adapter_ts_init);
     assert_eq!(quote.ts_event, expected_ts_event);
     assert_eq!(quote.ts_init, adapter_ts_init);
@@ -80,7 +87,7 @@ fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
 
 #[test]
 fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let deltas = parse_depth_snapshot(&event, &instrument, adapter_ts_init).unwrap();
+    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init).unwrap();
     assert_ne!(expected_ts_event, adapter_ts_init);
     assert_eq!(deltas.deltas.len(), 3);
     assert_eq!(deltas.ts_event, expected_ts_event);
@@ -91,7 +98,7 @@ fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps(
 
 #[test]
 fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let deltas = parse_depth_diff(&event, &instrument, adapter_ts_init).unwrap();
+    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init).unwrap();
     assert_ne!(expected_ts_event, adapter_ts_init);
     assert_eq!(deltas.deltas.len(), 3);
     assert_eq!(deltas.ts_event, expected_ts_event);
@@ -731,6 +738,106 @@ nt-core = {{ package = "nautilus-core", git = "https://github.com/nautechsystems
     assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
 
 
+def test_pin_census_rejects_tracked_new_standalone_workspace_with_stale_nt_pin() -> None:
+    def mutate(root: Path) -> None:
+        manifest = "crates/stale-standalone/Cargo.toml"
+        lockfile = "crates/stale-standalone/Cargo.lock"
+        write(
+            root,
+            manifest,
+            "[dependencies]\n"
+            f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+        )
+        write(
+            root,
+            lockfile,
+            "version = 4\n"
+            "[[package]]\n"
+            'name = "nautilus-model"\n'
+            'version = "0.59.0"\n'
+            f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
+        )
+        subprocess.run(
+            repo_git_command("add", manifest, lockfile),
+            cwd=root,
+            check=True,
+        )
+
+    findings = scan_temp(mutate)
+    assert_finding(
+        findings,
+        "crates/stale-standalone/Cargo.toml: NautilusTrader pin census",
+    )
+    assert_finding(
+        findings,
+        "crates/stale-standalone/Cargo.lock: NautilusTrader pin census",
+    )
+
+
+def test_pin_census_ignores_tracked_non_nt_cargo_surfaces() -> None:
+    def mutate(root: Path) -> None:
+        manifest = "tools/local-helper/Cargo.toml"
+        lockfile = "tools/local-helper/Cargo.lock"
+        write(
+            root,
+            manifest,
+            "[package]\nname = \"local-helper\"\nversion = \"0.1.0\"\n"
+            "[dependencies]\nserde = \"1\"\n",
+        )
+        write(
+            root,
+            lockfile,
+            "version = 4\n"
+            "[[package]]\n"
+            'name = "serde"\n'
+            'version = "1.0.0"\n',
+        )
+        subprocess.run(
+            repo_git_command("add", manifest, lockfile),
+            cwd=root,
+            check=True,
+        )
+
+    assert scan_temp(mutate) == []
+
+
+def test_pin_census_accepts_tracked_workspace_inherited_nt_dependency() -> None:
+    def mutate(root: Path) -> None:
+        manifest = "crates/inherited-member/Cargo.toml"
+        write(
+            root,
+            manifest,
+            "[package]\nname = \"inherited-member\"\nversion = \"0.1.0\"\n"
+            "[dependencies]\nnautilus-model = { workspace = true }\n",
+        )
+        subprocess.run(repo_git_command("add", manifest), cwd=root, check=True)
+
+    assert scan_temp(mutate) == []
+
+
+def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> None:
+    def mutate(root: Path) -> None:
+        for manifest in (
+            "Cargo.toml",
+            "crates/backtesting-vertical-slice/Cargo.toml",
+        ):
+            path = root / manifest
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    f'{{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                    "{ workspace = true }",
+                ),
+                encoding="utf-8",
+            )
+
+    findings = scan_temp(mutate)
+    assert_finding(findings, "Cargo.toml: NautilusTrader pin census")
+    assert_finding(
+        findings,
+        "crates/backtesting-vertical-slice/Cargo.toml: NautilusTrader pin census",
+    )
+
+
 def test_lock_pin_census_accepts_reordered_package_fields() -> None:
     source = (
         "git+https://github.com/seungpyoson/nautilus_trader.git"
@@ -917,9 +1024,9 @@ def test_binance_timestamp_behavioral_contract_requires_every_case() -> None:
 def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
     mutations = (
         (
-            "parse_depth_snapshot(&event",
+            "nt_binance_sbe_parse::parse_depth_snapshot(&event",
             "removed_depth_snapshot_parser(&event",
-            "missing parse_depth_snapshot call",
+            "missing pinned parse_depth_snapshot call",
         ),
         (
             "delta.ts_init == adapter_ts_init",
@@ -944,6 +1051,75 @@ def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
             "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps "
             f"{expected_finding}",
         )
+
+
+def test_binance_timestamp_behavioral_contract_requires_pinned_parser_import() -> None:
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                BINANCE_TIMESTAMP_PARSER_IMPORT,
+                f"use crate::fake_parse as {BINANCE_TIMESTAMP_PARSER_ALIAS};",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        f"{BINANCE_TIMESTAMP_TEST_PATH}: required pinned NautilusTrader parser import is missing",
+    )
+
+
+def test_binance_timestamp_behavioral_contract_rejects_parser_identity_shadowing() -> None:
+    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_header = f"#[test]\nfn {function_name}() {{"
+    mutations = (
+        f"mod {BINANCE_TIMESTAMP_PARSER_ALIAS} {{}}",
+        f"use crate::fake_parse as {BINANCE_TIMESTAMP_PARSER_ALIAS};",
+        f"let {BINANCE_TIMESTAMP_PARSER_ALIAS} = fake_parse;",
+        "fn parse_bbo_event() {}",
+        "let parse_bbo_event = || ();",
+        "use crate::fake_parse::parse_bbo_event;",
+    )
+    for planted_shadow in mutations:
+        def mutate(root: Path, planted_shadow: str = planted_shadow) -> None:
+            path = root / BINANCE_TIMESTAMP_TEST_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    function_header,
+                    f"{function_header}\n    {planted_shadow}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed NautilusTrader parser identity must not be shadowed",
+        )
+
+
+def test_binance_timestamp_behavioral_contract_requires_direct_top_level_parser_call() -> None:
+    def mutate(root: Path) -> None:
+        path = root / BINANCE_TIMESTAMP_TEST_PATH
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);",
+                "let parse = || {\n"
+                "        nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init)\n"
+                "    };\n"
+                "    let trades = parse();",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
+        "must call pinned parse_trades_event directly from the top-level test body",
+    )
 
 
 def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attributes() -> None:

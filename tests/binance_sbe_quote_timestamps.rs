@@ -1,3 +1,4 @@
+use ::nautilus_binance::spot::websocket::streams::parse as nt_binance_sbe_parse;
 use nautilus_binance::{
     common::parse::parse_spot_instrument_sbe,
     spot::{
@@ -8,9 +9,6 @@ use nautilus_binance::{
         sbe::stream::{
             BestBidAskStreamEvent, DepthDiffStreamEvent, DepthSnapshotStreamEvent, PriceLevel,
             Trade, TradesStreamEvent,
-        },
-        websocket::streams::parse::{
-            parse_bbo_event, parse_depth_diff, parse_depth_snapshot, parse_trades_event,
         },
     },
 };
@@ -85,7 +83,7 @@ fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
         symbol: Ustr::from("BTCUSDT"),
     };
 
-    let trades = parse_trades_event(&event, &instrument, adapter_ts_init);
+    let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);
 
     assert_ne!(expected_ts_event, adapter_ts_init);
     assert_eq!(trades.len(), 2);
@@ -116,7 +114,7 @@ fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
         symbol: Ustr::from("BTCUSDT"),
     };
 
-    let quote = parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
 
     assert_ne!(expected_ts_event, adapter_ts_init);
     assert_eq!(quote.ts_event, expected_ts_event);
@@ -145,7 +143,7 @@ fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps(
         symbol: Ustr::from("BTCUSDT"),
     };
 
-    let deltas = parse_depth_snapshot(&event, &instrument, adapter_ts_init)
+    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)
         .expect("non-empty SBE depth snapshot must produce deltas");
 
     assert_ne!(expected_ts_event, adapter_ts_init);
@@ -195,7 +193,7 @@ fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
         symbol: Ustr::from("BTCUSDT"),
     };
 
-    let deltas = parse_depth_diff(&event, &instrument, adapter_ts_init)
+    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)
         .expect("non-empty SBE depth diff must produce deltas");
 
     assert_ne!(expected_ts_event, adapter_ts_init);

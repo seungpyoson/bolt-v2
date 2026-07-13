@@ -1743,13 +1743,21 @@ mod tests {
     }
 
     fn observation(price: f64, ts_ms: u64) -> RealizedVolObservation {
+        observation_with_receive(price, ts_ms, ts_ms)
+    }
+
+    fn observation_with_receive(
+        price: f64,
+        event_ts_ms: u64,
+        recv_ts_ms: u64,
+    ) -> RealizedVolObservation {
         RealizedVolObservation {
             source_id: SOURCE_ID.to_string(),
             source_class: RealizedVolSourceClass::SpotQuote,
             sample_kind: RealizedVolSampleKind::Midpoint,
             price,
-            event_ts_ms: ts_ms,
-            recv_ts_ms: ts_ms,
+            event_ts_ms,
+            recv_ts_ms,
         }
     }
 
@@ -1786,5 +1794,55 @@ mod tests {
         let expected_bound =
             (retention_horizon_ms / engine.config.sampling_interval_ms) as usize + 1;
         assert!(source.samples.len() <= expected_bound);
+    }
+
+    #[test]
+    fn same_event_millisecond_uses_receive_order_for_duplicate_or_replacement() {
+        let mut engine = RealizedVolEngine::from_config(config()).unwrap();
+        for (price, event_ts_ms) in [
+            (100.0, 1_000),
+            (101.0, 2_000),
+            (102.0, 3_000),
+            (103.0, 4_000),
+        ] {
+            assert!(engine.observe(observation(price, event_ts_ms)));
+        }
+
+        let initial_snapshot = engine.snapshot_at(4_000);
+        let initial_rv = initial_snapshot
+            .annualized_realized_vol_decimal
+            .expect("four exact-grid samples must produce realized volatility");
+
+        assert!(!engine.observe(observation_with_receive(130.0, 4_000, 4_000)));
+        let retained_after_duplicate = engine
+            .sources
+            .get(SOURCE_ID)
+            .and_then(|source| source.samples.back())
+            .expect("accepted source sample must remain retained");
+        assert_eq!(retained_after_duplicate.price, 103.0);
+        assert_eq!(retained_after_duplicate.recv_ts_ms, 4_000);
+        let duplicate_snapshot = engine.snapshot_at(4_000);
+        assert_eq!(
+            duplicate_snapshot.annualized_realized_vol_decimal,
+            Some(initial_rv)
+        );
+        assert_eq!(
+            duplicate_snapshot.source_diagnostics[0].last_rejected_reason,
+            Some(RealizedVolSourceRejectReason::DuplicateTimestamp)
+        );
+
+        assert!(engine.observe(observation_with_receive(130.0, 4_000, 4_001)));
+        let retained_after_later_receive = engine
+            .sources
+            .get(SOURCE_ID)
+            .and_then(|source| source.samples.back())
+            .expect("later-received same-event sample must be retained");
+        assert_eq!(retained_after_later_receive.price, 130.0);
+        assert_eq!(retained_after_later_receive.recv_ts_ms, 4_001);
+        let replaced_rv = engine
+            .snapshot_at(4_000)
+            .annualized_realized_vol_decimal
+            .expect("replacement at the final grid point must preserve readiness");
+        assert!(replaced_rv > initial_rv);
     }
 }

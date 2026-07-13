@@ -984,11 +984,9 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
         let exit_client_order_id = strategy
             .try_submit_exit_order_for_trigger(
                 1_200,
-                ExitEvaluationTriggerContext::new(
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
                     1_200,
-                    None,
-                ),
+                )),
             )
             .expect("forced-flat exit submit should not fail")
             .expect("forced-flat exit should submit");
@@ -2273,11 +2271,9 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
         strategy
             .try_submit_exit_order_for_trigger(
                 1_200,
-                ExitEvaluationTriggerContext::new(
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
                     1_200,
-                    None,
-                ),
+                )),
             )
             .expect("forced-flat exit must not error in shadow mode");
 

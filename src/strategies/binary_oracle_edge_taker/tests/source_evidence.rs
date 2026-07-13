@@ -1676,11 +1676,7 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     let first_client_order_id = strategy
         .try_submit_exit_order_for_trigger(
             1_200,
-            ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-                1_200,
-                None,
-            ),
+            ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(1_200)),
         )
         .expect("first shadow exit should pass evidence and admission")
         .expect("first shadow exit should produce a would-be client order id");
@@ -1698,11 +1694,9 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         strategy
             .try_submit_exit_order_for_trigger(
                 1_201,
-                ExitEvaluationTriggerContext::new(
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
                     1_201,
-                    None,
-                ),
+                )),
             )
             .expect("latched shadow exit should not fail"),
         None,

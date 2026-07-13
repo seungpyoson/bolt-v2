@@ -49,13 +49,13 @@ fn switch_resets_only_active_market_state() {
     assert_eq!(
         strategy
             .pricing
-            .current_realized_vol_at(Some(LocalReceiveMs::new(1_200)), None),
+            .current_realized_vol_at(LocalReceiveMs::new(1_200), None),
         Some(1.5)
     );
     assert_eq!(
         strategy
             .pricing
-            .current_realized_vol_source_at(Some(LocalReceiveMs::new(1_200)), None),
+            .current_realized_vol_source_at(LocalReceiveMs::new(1_200), None),
         (Some("<SOURCE_ID>".to_string()), Some(1_200))
     );
 }

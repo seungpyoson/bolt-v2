@@ -44,7 +44,7 @@ pub struct TakerPricingConfig<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TakerPricingRequest {
     pub now_ms: u64,
-    pub realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+    pub realized_vol_gate_receive_ms: LocalReceiveMs,
     pub reference_gate_event_ms: Option<VenueEventMs>,
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
@@ -333,7 +333,7 @@ impl TakerPricingState {
 
     pub fn current_realized_vol_at(
         &self,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<f64> {
         self.fair_value
@@ -342,7 +342,7 @@ impl TakerPricingState {
 
     pub fn current_realized_vol_source_at(
         &self,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> (Option<String>, Option<u64>) {
         self.fair_value
@@ -378,7 +378,7 @@ impl TakerPricingState {
     pub(crate) fn classify_realized_vol_snapshot(
         &self,
         surface_id: &str,
-        evaluation_receive_ms: Option<LocalReceiveMs>,
+        evaluation_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> crate::bolt_v3_fair_value_pricing::RealizedVolGateClassification {
         self.fair_value.classify_realized_vol_snapshot(
@@ -507,7 +507,7 @@ impl TakerPricingState {
     fn pricing_result_from_inputs(
         &self,
         config: &TakerPricingConfig<'_>,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         inputs: TakerPricingInputs,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let fair_value = self
@@ -577,7 +577,7 @@ impl TakerPricingState {
     fn fair_value_pricing_from_inputs(
         &self,
         config: &TakerPricingConfig<'_>,
-        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         self.fair_value.fair_value_pricing_from_inputs(
@@ -826,7 +826,7 @@ mod tests {
                 &config,
                 TakerPricingRequest {
                     now_ms: 1_000,
-                    realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(1_000)),
+                    realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
                     reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
                     strike_price: Some(100.0),
                     seconds_to_market_end: Some(300),
@@ -922,7 +922,7 @@ mod tests {
                 &config,
                 TakerPricingRequest {
                     now_ms: 3_001,
-                    realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(3_001)),
+                    realized_vol_gate_receive_ms: LocalReceiveMs::new(3_001),
                     reference_gate_event_ms: Some(VenueEventMs::new(3_001)),
                     strike_price: Some(100.0),
                     seconds_to_market_end: Some(300),
@@ -959,7 +959,7 @@ mod tests {
                 &config,
                 TakerPricingRequest {
                     now_ms: 3_001,
-                    realized_vol_gate_receive_ms: Some(LocalReceiveMs::new(3_001)),
+                    realized_vol_gate_receive_ms: LocalReceiveMs::new(3_001),
                     reference_gate_event_ms: Some(VenueEventMs::new(3_001)),
                     strike_price: Some(100.0),
                     seconds_to_market_end: Some(300),

@@ -1270,14 +1270,24 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
+    quote_tick_with_stamps(instrument_id, bid, ask, ts_ms, ts_ms)
+}
+
+pub(super) fn quote_tick_with_stamps(
+    instrument_id: &str,
+    bid: f64,
+    ask: f64,
+    ts_event_ms: u64,
+    ts_init_ms: u64,
+) -> QuoteTick {
     QuoteTick::new_checked(
         InstrumentId::from(instrument_id),
         Price::new(bid, 2),
         Price::new(ask, 2),
         Quantity::new(1.0, 0),
         Quantity::new(1.0, 0),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_event_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_init_ms.saturating_mul(NANOS_PER_MILLI_U64)),
     )
     .expect("test quote tick should be valid")
 }

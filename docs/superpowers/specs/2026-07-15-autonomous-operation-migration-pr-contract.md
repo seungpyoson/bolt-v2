@@ -736,10 +736,11 @@ Generate disjoint ledgers
 `N_main = native-thread guard/VMA/page-table metadata (resident stack pages excluded) + ELF PT_LOAD + pinned DSO PT_LOAD +
 loader/vDSO/static TLS/mappings + VMAs/page tables from declared virtual mappings +
 fixed allocator arenas/metadata + recovery/config page cache + declared
-runtime/control objects + process-attributed nonsocket kernel objects` and
+runtime/control objects + process-attributed nonsocket kernel objects +
+main-cgroup retained socket rows` and
 `K_host = signed-AMI pinned base/kernel static + ceil(memtotal_max/base_page)*BTF
 struct-page bytes + perCPU + per-device + global network/fs/cgroup + uncharged-only
-journal/filesystem cache + retained socket states`. Every coefficient
+journal/filesystem cache + root/unmanaged retained socket states`. Every coefficient
 comes from TOML, build/kernel manifest, or signed AMI manifest, the two ownership
 sets are disjoint, and their generated sums must fit the fixed caps. Missing terms
 block; measured current charge is only drift evidence and never reduces pre-open
@@ -754,8 +755,9 @@ project-quota, or journald setting lands here. Relation: blocked by `AO-0`; bloc
 charged/touched arena and ballast, release/consume/retouch of each typed claim,
 hard native-thread 127/128/129 and independent async-task boundaries, and exact FD
 sum `80+136+64+32+64+48+88=512`. Prove every network cap/population, full pre-open
-ordinary/protected reservation, per-term `C` sum with no slab, close transfer to
-`K_host`, lifetime residue formula at `limit-1/limit/limit+1`, ephemeral-port safety,
+ordinary/protected reservation, per-term `C` sum with no slab, charge-owner close
+transfer to `N_main.net_retained` or `K_host`, lifetime residue formula at
+`limit-1/limit/limit+1`, ephemeral-port safety,
 and closed HTTP/SDK pools. Verify HTTP/1.1 serial dial, zero idle/redirect/proxy/
 library retry, exact disjoint `N_main`/`K_host` manifest derivation, swap-disabled
 cgroup/unit, saturation while protected work runs, and source-fence every allocation,
@@ -1099,8 +1101,8 @@ Render and verify the signed AMI/build/kernel coefficients for disjoint `N_main`
 pages excluded), ELF/DSO/loader mappings, VMAs/page
 tables, allocator metadata, recovery/config page cache, process kernel objects,
 signed base/RAM-page/per-CPU/per-device/global network/fs/cgroup terms,
-route/neighbour and DNS UDP/TLS caches, uncharged-only journal/filesystem cache, and
-retained socket states. Reject `MemTotal` outside
+route/neighbour and DNS UDP/TLS caches, main-cgroup retained socket rows in
+`N_main`, and root/unmanaged retained socket states in `K_host`. Reject `MemTotal` outside
 `[8,053,063,680,8,589,934,592]`. Missing terms or
 sum overflow blocks; observed current usage cannot reduce the claim.
 

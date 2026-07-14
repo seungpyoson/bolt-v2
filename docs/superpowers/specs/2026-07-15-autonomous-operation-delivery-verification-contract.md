@@ -239,7 +239,8 @@ contract:
   bounds. Retained objects satisfy
   `retained <= concurrency * (ceil(H/min_dial) + 1)`. Each of 30 protected sockets
   reserves full `C=6,291,456` from ballast and four ordinary sockets reserve full
-  `C` from Ordinary before open. On close, retained kernel ownership transfers to
+  `C` from Ordinary before open. On close, the signed charge map transfers
+  main-cgroup residue to `N_main.net_retained` and only root/unmanaged residue to
   `K_host` before `C` can be retouched. Observation is drift evidence only. IMDSv2
   is the sole AWS credential path;
 - the protected FD proof is exactly
@@ -248,11 +249,12 @@ contract:
   `N_main = native-thread guard/VMA/page-table metadata (resident stack pages excluded) + ELF PT_LOAD + pinned DSO PT_LOAD +
   loader/vDSO/static TLS/mappings + VMAs/page-table bound from declared virtual
   mappings + fixed-arena allocator metadata + recovery/config page cache + declared
-  runtime/control objects + process-attributed nonsocket kernel objects` and
+  runtime/control objects + process-attributed nonsocket kernel objects +
+  main-cgroup retained socket rows` and
   `K_host = signed-AMI pinned base/kernel static + ceil(memtotal_max/base_page)*BTF
   struct-page bytes + perCPU + per-device + global network/fs/cgroup state +
   route/neighbour and DNS UDP/TLS caches + uncharged-only journal/filesystem cache +
-  retained socket states`. Their ownership sets are disjoint and each
+  root/unmanaged retained socket states`. Their ownership sets are disjoint and each
   generated sum must fit its fixed cap. Every coefficient comes from
   resolved TOML, the build/kernel manifest, or signed AMI manifest; a missing term
   blocks. The 6,291,456-byte socket charge remains valid only when every buffer and
@@ -1110,16 +1112,18 @@ The publishable head must include all of the following:
   Retain the 6,291,456-byte per-socket charge only
   if effective kernel buffers, TLS/user buffers, and every kernel-object summand are
   enumerated with no opaque slab. Thirty protected sockets reserve full `C` from
-  ballast and four ordinary sockets reserve full `C` from Ordinary before open; on
-  close, retained ownership moves to `K_host` before `C` is retouched. Generate
+  ballast and four ordinary sockets reserve full `C` from Ordinary before open. On
+  close, main-cgroup residue moves to `N_main.net_retained` and only
+  root/unmanaged residue moves to `K_host` before `C` is retouched. Generate
   `N_main = native-thread guard/VMA/page-table metadata (resident stack pages excluded) + ELF PT_LOAD + pinned DSO PT_LOAD +
   loader/vDSO/static TLS/mappings + VMAs/page-table bound from declared virtual
   mappings + fixed-arena allocator metadata + recovery/config page cache + declared
-  runtime/control objects + process-attributed nonsocket kernel objects` and
+  runtime/control objects + process-attributed nonsocket kernel objects +
+  main-cgroup retained socket rows` and
   `K_host = signed-AMI pinned base/kernel static + ceil(memtotal_max/base_page)*BTF
   struct-page bytes + perCPU + per-device + global network/fs/cgroup state +
   route/neighbour and DNS UDP/TLS caches + uncharged-only journal/filesystem cache +
-  retained socket states`. Prove disjoint ownership and derive every coefficient and the
+  root/unmanaged retained socket states`. Prove disjoint ownership and derive every coefficient and the
   536,870,912-byte non-pool allowance from resolved TOML, build/kernel manifest, and
   signed AMI manifest; missing terms block and runtime observations are drift checks
   only. Then cross the 256-MiB guard, kill/recharge the 1-GiB host reserve,
@@ -1223,9 +1227,12 @@ For each issue-bound PR:
 
 The final integration PR must be ready, not draft, and pass exact-head root CI,
 backtester CI, provider source fences, all autonomous property/crash tests, and the
-repository's required native review. The primary GPT-5.6 Sol Max session performs
-an internal adversarial audit of the publishable SHA. An independent external
-review is requested only after that SHA is green and all local findings are closed.
+repository's required native review. The primary orchestration session performs an
+internal adversarial audit of the publishable SHA using the reviewer source and
+model selected by `ci/ai-review.toml`; the immutable receipt records the exact
+configured source and model without embedding either value in workflow or prompt
+text. An independent external review is requested only after that SHA is green and
+all local findings are closed.
 All valid comments are resolved at a new exact head. Merge uses repository
 governance and merge queue; agents do not merge manually.
 

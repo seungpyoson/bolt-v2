@@ -286,7 +286,9 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   evaluation evidence's historically misnamed `rv_as_of_minus_now_ms` and
   positive-only to decision future-delta evidence. `trigger_ts_init_ms` comes from
   the receipt's evaluation receive input, never `exit_eval_now_ms`.
-- Preserve each path's current complete non-RV dedupe key exactly. Store only
+- Preserve each path's current existing dedupe key without the newly added RV
+  novelty dimension exactly; it may already contain RV diagnostic fields whose churn
+  and evidence volume remain unmeasured. Store only
   `{ current_existing_key, rv_seen_mask: u16 }`; never retain prior keys. Map six
   gate results x watermark presence to bits 0..11. Current-key change clears the
   mask, so returning to a prior key emits again. For one fixed key each RV bit emits
@@ -337,10 +339,14 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Add `rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits` and
     `rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits`.
     For each fixed current existing key, visit all twelve category/presence bits once
-    and assert twelve emissions plus `rv_seen_mask.count_ones() == 12`.
+    and assert twelve emissions. During RED, derive a test-local observed `u16` mask
+    from emitted records and assert `count_ones() == 12`; do not reference a
+    nonexistent production `rv_seen_mask`. Direct production-state assertions may be
+    added only after implementation, while behavior remains the primary contract.
   - Add `rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats`: run more
-    than 100 repeats and `A -> B -> A` oscillations after all bits are seen; keep
-    `count_ones() == 12`. Suppress raw `Some(1_200) -> Some(1_201)` churn, but require
+    than 100 repeats and `A -> B -> A` oscillations after all bits are seen; keep the
+    test-local observed mask at `count_ones() == 12`. Suppress raw
+    `Some(1_200) -> Some(1_201)` churn, but require
     `Some -> None` to select the paired presence bit.
   - Add `rv_clock_domain_amendment_existing_key_changes_reset_rv_mask` for both paths.
     Mutate every field of each current existing key independently and require a reset
@@ -348,8 +354,9 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     historical-key retention and preserving adjacent-change semantics.
   - Add `rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen` and
     `rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries`: entry-skip
-    marks seen even when its writer error is swallowed; blocked-snapshot marks only
-    after a successful write and retries after a propagated failure.
+    marks seen even when its writer error is swallowed. For blocked snapshot, require
+    the exact sequence `A recorded -> B write fails -> A remains suppressed -> B
+    retries and emits`; failed B must not replace the current key or clear A's mask.
   - Exercise both existing reset sites and assert they clear current key plus mask.
     Emitted records retain exact raw watermark values and gate categories.
 
@@ -405,16 +412,21 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Keep production startup/exit wrappers on their existing `Result` paths. Test helpers may unwrap those same paths only after supplying a real fixture surface policy and matching required config age; no test-only `None`, unlimited-age or alternate fallback path is allowed.
 
 - [ ] **Step 5: Implement current-key RV-mask entry dedupe.**
-  - Preserve each existing non-RV key type byte-for-byte in meaning. For each path,
-    store only its current existing key plus `rv_seen_mask: u16`; retain no key
-    history and introduce no `BTreeSet`/Cartesian semantic-state store.
+  - Preserve each current existing dedupe key without the newly added RV novelty
+    dimension byte-for-byte in meaning. It may contain RV diagnostic fields; their
+    churn and evidence volume remain unmeasured. For each path, store only that
+    current key plus `rv_seen_mask: u16`; retain no key history and introduce no
+    `BTreeSet`/Cartesian semantic-state store.
   - Build semantic state directly from `decision.evaluation.realized_volatility_receipt`; never recover required state from optional serialized fields.
   - Map gate category/presence to bits 0..11. A current-key change replaces the key
     and clears the mask; returning to an older key therefore emits. For one fixed key,
     emit only the first occurrence of each bit. Ignore raw `Some` watermark movement.
-  - Preserve existing resets and writer timing exactly. Do not change `ExitOutcomeKey`
-    or `ExitDecisionDedupeKey`. Claim only constant memory and twelve-state RV novelty
-    per current key; evidence volume under existing key churn remains unmeasured.
+  - Entry skip mutates key/mask before its swallowed-error write. Blocked snapshot
+    stages a candidate key/mask without mutation, performs the propagating write, and
+    commits both only on success. Preserve existing resets. Do not change
+    `ExitOutcomeKey` or `ExitDecisionDedupeKey`. Claim only constant memory and
+    twelve-state RV novelty per current key; evidence volume under existing-key churn,
+    including RV diagnostics, remains unmeasured.
 
 - [ ] **Step 6: Complete implementation and cheap local verification.**
   - Update `valid_raw_config`, the direct `BinaryOracleEdgeTakerConfig` fixture, and every surface-attaching helper in `pricing.rs`, `source_evidence.rs` and `reference_price.rs` with the matching configured surface age so unrelated exit tests remain on their intended paths.

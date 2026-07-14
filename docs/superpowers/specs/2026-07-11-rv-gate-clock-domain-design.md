@@ -259,10 +259,12 @@ states that lock precedence: not-ready plus future, not-ready plus stale, and bl
 plus stale, as well as missing snapshot/evaluation/watermark and a valid zero RV.
 Assertions for each record stop at the fields that record's schema owns.
 
-The two entry flood guards preserve their current complete non-RV dedupe keys
-exactly; this amendment neither shrinks them nor retains historical keys. Each path
+The two entry flood guards preserve their current existing dedupe key without the
+newly added RV novelty dimension exactly; this amendment neither shrinks that key nor
+retains historical keys. The existing key may itself contain RV diagnostic fields,
+whose churn and evidence volume remain unmeasured. Each path
 stores only `{ current_existing_key, rv_seen_mask: u16 }`. A key change replaces the
-current key and clears the mask. Consequently, returning to an older non-RV key is a
+current key and clears the mask. Consequently, returning to an older existing key is a
 new adjacent change and emits again, preserving existing behavior.
 
 For a fixed current key, the six gate results crossed with watermark absence/presence
@@ -275,14 +277,18 @@ watermark presence selects the paired bit and does. The existing admitted-entry 
 left-RV-not-ready reset sites clear both current key and mask.
 
 Entry-skip preserves mark-before-swallowed-writer-error behavior. Blocked-snapshot
-sets the bit only after its propagating write succeeds, so a failure remains
-retryable. Tests cover all twelve bits once, more than 100 repeats/oscillations with
-`count_ones() == 12`, raw-watermark churn, every field of each existing key,
+stages the candidate `{ current_existing_key, rv_seen_mask }` without mutating stored
+state, attempts its propagating write, and commits both key and mask only after
+success. Tests prove `A recorded -> B write fails -> A remains suppressed -> B
+retries and emits`; failed B neither replaces the key nor clears A's mask. RED tests
+derive a test-local twelve-bit observed mask from emitted records rather than naming
+a nonexistent production field. Tests cover all twelve bits once, more than 100
+repeats/oscillations with test-local `count_ones() == 12`, raw-watermark churn, every field of each existing key,
 returning to a prior key, both resets, and both writer semantics. This precisely
 answers `discussion_r3571669050`: it distinguishes gate diagnoses without retaining
-every historical non-RV combination. Memory is constant and RV novelty is bounded to
-twelve states per current key; evidence-record volume under existing non-RV or
-RV-diagnostic key churn remains unmeasured.
+every historical existing-key value. Memory is constant and RV novelty is bounded to
+twelve states per current key; evidence-record volume under existing-key churn,
+including its RV diagnostic fields, remains unmeasured.
 
 This is the user-approved exception to the earlier report-only dedupe ruling. Other
 dedupe-key findings and the `position_id=None` finding remain report-only under
@@ -406,13 +412,14 @@ watermarks, thresholds, or readiness inputs that they never captured.
 - Rejected observations cannot advance the event or receive watermark.
 - Restart bootstrap with an open position succeeds at or below 1 MiB and enters existing
   blind recovery above 1 MiB.
-- The two approved entry guards preserve their existing non-RV keys and add only a
-  twelve-bit RV category/presence mask for the current key. Repeats and raw `Some`
+- The two approved entry guards preserve each current existing dedupe key without the
+  newly added RV novelty dimension and add only a twelve-bit RV category/presence
+  mask. That existing key may include RV diagnostic fields. Repeats and raw `Some`
   watermark churn are suppressed; presence changes select another bit; every current
   key-field change clears the mask and emits, including a return to a prior key. The
   existing real reset sites clear key and mask. Other dedupe-key and
   `position_id=None` findings remain report-only under #1354; total evidence volume
-  under non-RV/RV-diagnostic key churn remains unmeasured.
+  under existing-key churn, including RV diagnostics, remains unmeasured.
 - The archived replay reads the existing incident artifact in place; this PR creates
   no new archive upload. Classification and handling of that pre-#883 artifact remain
   with #883/#763.

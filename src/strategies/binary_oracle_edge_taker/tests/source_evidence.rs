@@ -1398,7 +1398,7 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     strategy.pricing.seed_ready_realized_vol(
         Some("fixture_replay".to_string()),
         replay.realized_vol,
-        replay.reference.observed_ts_ms,
+        replay.evaluation_now_ms,
     );
 
     let (cache, clock) = register_test_strategy_with_clock(&mut strategy);

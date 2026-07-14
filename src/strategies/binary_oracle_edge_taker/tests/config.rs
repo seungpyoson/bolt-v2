@@ -791,9 +791,10 @@ fn rv_clock_domain_amendment_runtime_config_requires_positive_surface_age() {
         .remove(field);
     let error = BinaryOracleEdgeTakerBuilder::parse_config(&missing)
         .expect_err("direct parser must reject a missing derived RV policy age");
+    let rendered = format!("{error:#}");
     assert!(
-        error.to_string().contains(field),
-        "missing-field error must name `{field}`: {error:#}"
+        rendered.contains(field),
+        "missing-field error must name `{field}`: {rendered}"
     );
 
     for (label, value, expected) in [

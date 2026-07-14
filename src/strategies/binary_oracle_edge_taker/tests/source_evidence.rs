@@ -3790,39 +3790,27 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
         assert!(receipt.snapshot_has_ready_realized_vol);
     }
 
-    let writer_should_record = |decision: &ExitSubmissionDecision| {
-        let action_chosen = decision.blocked_reason.is_none()
-            && decision.instrument_id.is_some()
-            && decision.order_side.is_some()
-            && decision.price.is_some()
-            && decision.quantity.is_some();
-        (action_chosen
-            || !decision.forced_flat_reasons.is_empty()
-            || decision.blocked_reason.is_some())
-            && !(decision.blocked_reason == Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
-                && decision.forced_flat_reasons.is_empty())
-    };
-    let non_recordable = decisions
-        .iter()
-        .filter(|decision| !writer_should_record(decision))
-        .collect::<Vec<_>>();
     assert_eq!(
-        non_recordable.len(),
-        1,
-        "no_open_position without forced-flat reasons must be the sole non-recordable decision"
+        decisions.len(),
+        12,
+        "the fixture must cover all early returns"
     );
+    let intentionally_non_recordable = &decisions[0];
     assert_eq!(
-        non_recordable[0].blocked_reason,
+        intentionally_non_recordable.blocked_reason,
         Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
     );
-    assert!(non_recordable[0].forced_flat_reasons.is_empty());
-    let recordable_count = decisions
-        .iter()
-        .filter(|decision| writer_should_record(decision))
-        .count();
+    assert!(intentionally_non_recordable.forced_flat_reasons.is_empty());
     assert_eq!(
-        recordable_count, 11,
-        "the named recordable subset must retain every early return except no_open_position"
+        decisions
+            .iter()
+            .filter(|decision| {
+                decision.blocked_reason == Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+                    && decision.forced_flat_reasons.is_empty()
+            })
+            .count(),
+        1,
+        "no_open_position without forced-flat reasons must be the sole non-recordable decision"
     );
 
     for (index, decision) in decisions.iter().enumerate() {
@@ -3833,7 +3821,28 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
     }
 
     let records = recorded_exit_decisions(&evidence);
-    assert_eq!(records.len(), recordable_count);
+    let persisted_blocked_reasons = records
+        .iter()
+        .map(|record| {
+            record
+                .blocked_reason
+                .expect("every recordable early return must persist its blocked reason")
+        })
+        .collect::<Vec<_>>();
+    let expected_blocked_reasons = vec![
+        BoltV3ExitBlockedReason::ExitAlreadyPending,
+        BoltV3ExitBlockedReason::PositionIntervalEnded,
+        BoltV3ExitBlockedReason::PositionIntervalUnknown,
+        BoltV3ExitBlockedReason::EntryOrderStillWorking,
+        BoltV3ExitBlockedReason::ExitDecisionUnavailable,
+        BoltV3ExitBlockedReason::ExitHold,
+        BoltV3ExitBlockedReason::OpenPositionMissing,
+        BoltV3ExitBlockedReason::ExitOrderConfigInvalid,
+        BoltV3ExitBlockedReason::ExitQuoteQuantityUnsupported,
+        BoltV3ExitBlockedReason::ExitPriceMissing,
+        BoltV3ExitBlockedReason::ExitQuantityNotPositive,
+    ];
+    assert_eq!(persisted_blocked_reasons, expected_blocked_reasons);
     for record in records {
         let value = serde_json::to_value(record).unwrap();
         assert_eq!(

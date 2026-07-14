@@ -2483,6 +2483,9 @@ fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_second
     );
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.interval_end_ms = Some(301_999);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 2_000);
 
     strategy
         .try_submit_entry_order(2_000)
@@ -2513,6 +2516,9 @@ fn strategy_input_evidence_records_next_market_selection_outcome() {
     );
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.market_selection_outcome = MarketSelectionOutcome::Next;
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 2_000);
 
     strategy
         .try_submit_entry_order(2_000)

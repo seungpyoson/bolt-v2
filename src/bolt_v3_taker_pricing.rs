@@ -361,6 +361,7 @@ impl TakerPricingState {
 
     /// Classify the realized-vol staleness gate for a surface at the evaluation receive stamp,
     /// using the same shared single-source classifier as pricing (#885 RCA evidence).
+    #[cfg(test)]
     pub(crate) fn classify_realized_vol_gate(
         &self,
         surface_id: &str,

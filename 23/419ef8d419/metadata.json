@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "23419ef8d419",
+  "strategy": "manual-commit",
+  "branch": "chore/nt-v1-230-pin-refresh",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/Cargo.toml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/23/419ef8d419/0/metadata.json",
+      "transcript": "/23/419ef8d419/0/full.jsonl",
+      "compact_transcript": "/23/419ef8d419/0/transcript.jsonl",
+      "content_hash": "/23/419ef8d419/0/content_hash.txt",
+      "prompt": "/23/419ef8d419/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 56171,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4812032,
+    "output_tokens": 13227,
+    "api_call_count": 36
+  }
+}

@@ -756,6 +756,10 @@ fn validate_table_allowlist_is_single_sourced_from_config_struct() {
         serde_ssot.contains("resolution_instrument_id"),
         "a known optional field must be part of the serde SSOT field set: {serde_ssot:?}"
     );
+    assert!(
+        serde_ssot.contains("realized_volatility_max_source_age_ms"),
+        "the derived RV policy age must be emitted by the config-field SSOT: {serde_ssot:?}"
+    );
 
     let validate_accepted = validate_table_accepted_top_level_fields(&serde_ssot);
 
@@ -774,6 +778,45 @@ fn validate_table_allowlist_is_single_sourced_from_config_struct() {
         validate_only.is_empty(),
         "validate_table accepts fields the struct SSOT does not define: {validate_only:?}"
     );
+}
+
+#[test]
+fn rv_clock_domain_amendment_runtime_config_requires_positive_surface_age() {
+    let field = "realized_volatility_max_source_age_ms";
+
+    let mut missing = valid_raw_config();
+    missing
+        .as_table_mut()
+        .expect("valid raw config should be a table")
+        .remove(field);
+    let error = BinaryOracleEdgeTakerBuilder::parse_config(&missing)
+        .expect_err("direct parser must reject a missing derived RV policy age");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains(field),
+        "missing-field error must name `{field}`: {rendered}"
+    );
+
+    for (label, value, expected) in [
+        (
+            "wrong_type",
+            Value::String("500".to_string()),
+            "expected u64",
+        ),
+        ("zero", Value::Integer(0), "positive"),
+    ] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("valid raw config should be a table")
+            .insert(field.to_string(), value);
+        let error = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("invalid derived RV policy age must fail direct parsing");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(field) && rendered.contains(expected),
+            "{label} `{field}` must be rejected as a required positive {expected}: {rendered}"
+        );
+    }
 }
 
 #[test]

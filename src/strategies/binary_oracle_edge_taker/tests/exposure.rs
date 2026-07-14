@@ -984,11 +984,9 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
         let exit_client_order_id = strategy
             .try_submit_exit_order_for_trigger(
                 1_200,
-                ExitEvaluationTriggerContext::new(
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
                     1_200,
-                    None,
-                ),
+                )),
             )
             .expect("forced-flat exit submit should not fail")
             .expect("forced-flat exit should submit");
@@ -2273,11 +2271,9 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
         strategy
             .try_submit_exit_order_for_trigger(
                 1_200,
-                ExitEvaluationTriggerContext::new(
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
                     1_200,
-                    None,
-                ),
+                )),
             )
             .expect("forced-flat exit must not error in shadow mode");
 
@@ -3426,8 +3422,12 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
     assert_eq!(fields.seconds_to_expiry, Some(299));
     assert_eq!(fields.fair_probability_up, None);
     assert_eq!(fields.hold_ev_bps, None);
-    assert_eq!(fields.realized_vol_source_venue, None);
-    assert_eq!(fields.realized_vol_source_ts_ms, None);
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID>"),
+        "receive-fresh RV source evidence remains available after market rotation"
+    );
+    assert_eq!(fields.realized_vol_source_ts_ms, Some(2_000));
     assert_eq!(fields.up_fee_bps, Some(1.0));
     assert_eq!(fields.down_fee_bps, Some(2.0));
 }

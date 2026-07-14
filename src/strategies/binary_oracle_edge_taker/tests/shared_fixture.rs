@@ -12,6 +12,83 @@ pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
 pub(super) const TEST_TRADE_SIZE_PRECISION: u8 = 0;
 const TEST_IDENTIFIER_TOKEN_LIMIT: usize = 8;
 
+#[derive(Default)]
+struct CapturingLogger {
+    records: std::sync::Mutex<Vec<(log::Level, String)>>,
+}
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
+}
+
+impl CapturingLogger {
+    fn reset(&self) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clear();
+    }
+
+    fn records(&self) -> Vec<(log::Level, String)> {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clone()
+    }
+}
+
+static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> = std::sync::OnceLock::new();
+static CAPTURING_LOGGER_OBSERVERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static NEXT_LOG_CAPTURE_STRATEGY_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(super) fn unique_log_capture_strategy_id(prefix: &str) -> String {
+    let id = NEXT_LOG_CAPTURE_STRATEGY_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("BINARYORACLEEDGETAKER-{prefix}-{id}")
+}
+
+fn install_capturing_logger() -> &'static CapturingLogger {
+    static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+    assert!(
+        installed,
+        "capturing logger could not claim the global log slot; another logger is installed"
+    );
+    log::set_max_level(log::LevelFilter::Trace);
+    *logger
+}
+
+pub(super) fn with_captured_strategy_logs<R>(
+    strategy_id: &str,
+    action: impl FnOnce() -> R,
+) -> (R, Vec<(log::Level, String)>) {
+    let logger = install_capturing_logger();
+    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+        .lock()
+        .expect("capturing logger observer mutex poisoned");
+    logger.reset();
+
+    let result = action();
+    let matching = logger
+        .records()
+        .into_iter()
+        .filter(|(_, message)| message.contains(strategy_id))
+        .collect::<Vec<_>>();
+    (result, matching)
+}
+
 pub(super) fn find_error<'a>(
     errors: &'a [ValidationError],
     field: &str,
@@ -67,6 +144,7 @@ pub(super) fn valid_raw_config() -> Value {
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         realized_volatility_surface_id = "<surface_id>"
+        realized_volatility_max_source_age_ms = 500
         trade_flow_window_secs = 30
         trade_flow_max_samples = 100
         spike_guard_return_threshold = 0.05
@@ -587,14 +665,30 @@ pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
 pub(super) struct RecordingSequencedDecisionEvidenceWriter {
     events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
     fail_standalone_order_lifecycle: bool,
+    strategy_input_attempts: Mutex<usize>,
+    fail_strategy_input_attempt: Option<usize>,
 }
 
 impl RecordingSequencedDecisionEvidenceWriter {
     pub(super) fn with_failing_standalone_order_lifecycle() -> Self {
         Self {
-            events: Mutex::new(Vec::new()),
             fail_standalone_order_lifecycle: true,
+            ..Self::default()
         }
+    }
+
+    pub(super) fn with_failing_strategy_input_attempt(attempt: usize) -> Self {
+        Self {
+            fail_strategy_input_attempt: Some(attempt),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn strategy_input_attempts(&self) -> usize {
+        *self
+            .strategy_input_attempts
+            .lock()
+            .expect("recording evidence writer strategy-input counter poisoned")
     }
 
     pub(super) fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
@@ -619,6 +713,17 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
     ) -> Result<()> {
+        let attempt = {
+            let mut attempts = self
+                .strategy_input_attempts
+                .lock()
+                .expect("recording evidence writer strategy-input counter poisoned");
+            *attempts += 1;
+            *attempts
+        };
+        if self.fail_strategy_input_attempt == Some(attempt) {
+            anyhow::bail!("strategy input snapshot write failed on attempt {attempt}");
+        }
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")
@@ -1165,6 +1270,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
             resolution_instrument_id: Some("CONFIGURED_ASSET-USD.CHAINLINK".to_string()),
             realized_volatility_surface_id: "<surface_id>".to_string(),
+            realized_volatility_max_source_age_ms: 500,
             static_condition_id: None,
             static_yes_outcome: None,
             static_no_outcome: None,
@@ -1270,19 +1376,37 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
+    quote_tick_with_stamps(instrument_id, bid, ask, ts_ms, ts_ms)
+}
+
+pub(super) fn quote_tick_with_stamps(
+    instrument_id: &str,
+    bid: f64,
+    ask: f64,
+    ts_event_ms: u64,
+    ts_init_ms: u64,
+) -> QuoteTick {
     QuoteTick::new_checked(
         InstrumentId::from(instrument_id),
         Price::new(bid, 2),
         Price::new(ask, 2),
         Quantity::new(1.0, 0),
         Quantity::new(1.0, 0),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_event_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_init_ms.saturating_mul(NANOS_PER_MILLI_U64)),
     )
     .expect("test quote tick should be valid")
 }
 
 pub(super) fn invalid_quote_tick(instrument_id: &str, ts_ms: u64) -> QuoteTick {
+    invalid_quote_tick_with_stamps(instrument_id, ts_ms, ts_ms)
+}
+
+pub(super) fn invalid_quote_tick_with_stamps(
+    instrument_id: &str,
+    ts_event_ms: u64,
+    ts_init_ms: u64,
+) -> QuoteTick {
     let invalid_price = Price::from_raw(nautilus_model::types::PRICE_ERROR, 0);
     QuoteTick::new_checked(
         InstrumentId::from(instrument_id),
@@ -1290,8 +1414,8 @@ pub(super) fn invalid_quote_tick(instrument_id: &str, ts_ms: u64) -> QuoteTick {
         invalid_price,
         Quantity::new(1.0, 0),
         Quantity::new(1.0, 0),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_event_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_init_ms.saturating_mul(NANOS_PER_MILLI_U64)),
     )
     .expect("test invalid quote tick should preserve sentinel prices")
 }
@@ -2152,6 +2276,15 @@ pub(super) fn book_deltas(
     instrument_id: InstrumentId,
     deltas: &[(BookAction, OrderSide, f64, f64)],
 ) -> nautilus_model::data::OrderBookDeltas {
+    book_deltas_with_stamps(instrument_id, deltas, 0, 0)
+}
+
+pub(super) fn book_deltas_with_stamps(
+    instrument_id: InstrumentId,
+    deltas: &[(BookAction, OrderSide, f64, f64)],
+    ts_event_ms: u64,
+    ts_init_ms: u64,
+) -> nautilus_model::data::OrderBookDeltas {
     let deltas = deltas
         .iter()
         .map(|(action, side, price, size)| {
@@ -2166,8 +2299,8 @@ pub(super) fn book_deltas(
                 ),
                 0,
                 0,
-                0.into(),
-                0.into(),
+                UnixNanos::from(ts_event_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+                UnixNanos::from(ts_init_ms.saturating_mul(NANOS_PER_MILLI_U64)),
             )
             .expect("test order book delta should build")
         })

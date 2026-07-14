@@ -18,7 +18,7 @@ use crate::{
     bolt_v3_taker_updown_signal::{
         ThetaScalerInputs, compute_theta_scaler, price_agreement_corr, price_gap_probability,
     },
-    bolt_v3_timestamp_domain::VenueEventMs,
+    bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
 };
 
 pub use crate::bolt_v3_fair_value_pricing::FastSpotObservation;
@@ -44,7 +44,8 @@ pub struct TakerPricingConfig<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TakerPricingRequest {
     pub now_ms: u64,
-    pub realized_vol_gate_event_ms: Option<VenueEventMs>,
+    pub realized_vol_gate_receive_ms: LocalReceiveMs,
+    pub reference_gate_event_ms: Option<VenueEventMs>,
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
 }
@@ -332,24 +333,24 @@ impl TakerPricingState {
 
     pub fn current_realized_vol_at(
         &self,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<f64> {
         self.fair_value
-            .current_realized_vol_at(realized_vol_gate_event_ms, max_source_age_ms)
+            .current_realized_vol_at(realized_vol_gate_receive_ms, max_source_age_ms)
     }
 
     pub fn current_realized_vol_source_at(
         &self,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> (Option<String>, Option<u64>) {
         self.fair_value
-            .current_realized_vol_source_at(realized_vol_gate_event_ms, max_source_age_ms)
+            .current_realized_vol_source_at(realized_vol_gate_receive_ms, max_source_age_ms)
     }
 
     /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit. Use the
-    /// readiness-gating path for entry decisions, which also enforces `as_of_ms <= now_ms`.
+    /// readiness-gating path for entry decisions, which enforces receive-domain freshness.
     pub(crate) fn latest_realized_vol_snapshot_for_surface(
         &self,
         surface_id: &str,
@@ -358,18 +359,32 @@ impl TakerPricingState {
             .latest_realized_vol_snapshot_for_surface(surface_id)
     }
 
-    /// Classify the realized-vol staleness gate for a surface at `now_ms`, using the same
-    /// shared single-source classifier as the pricing gate (#885 RCA evidence).
+    /// Classify the realized-vol staleness gate for a surface at the evaluation receive stamp,
+    /// using the same shared single-source classifier as pricing (#885 RCA evidence).
+    #[cfg(test)]
     pub(crate) fn classify_realized_vol_gate(
         &self,
         surface_id: &str,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
         max_source_age_ms: Option<u64>,
     ) -> crate::bolt_v3_decision_evidence::BoltV3RvGateResult {
         crate::bolt_v3_fair_value_pricing::classify_rv_gate(
             self.fair_value
                 .latest_realized_vol_snapshot_for_surface(surface_id),
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
+            max_source_age_ms,
+        )
+    }
+
+    pub(crate) fn classify_realized_vol_snapshot(
+        &self,
+        surface_id: &str,
+        evaluation_receive_ms: LocalReceiveMs,
+        max_source_age_ms: Option<u64>,
+    ) -> crate::bolt_v3_fair_value_pricing::RealizedVolGateClassification {
+        self.fair_value.classify_realized_vol_snapshot(
+            surface_id,
+            evaluation_receive_ms,
             max_source_age_ms,
         )
     }
@@ -417,7 +432,7 @@ impl TakerPricingState {
                 self.reference_current_price_stale_at(
                     VenueEventMs::new(spot.observed_ts_ms),
                     config,
-                    request.realized_vol_gate_event_ms,
+                    request.reference_gate_event_ms,
                 )
             });
 
@@ -428,7 +443,7 @@ impl TakerPricingState {
                         self.reference_current_price_stale_at(
                             VenueEventMs::new(ts_ms),
                             config,
-                            request.realized_vol_gate_event_ms,
+                            request.reference_gate_event_ms,
                         )
                     })
             });
@@ -487,19 +502,19 @@ impl TakerPricingState {
         request: TakerPricingRequest,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let inputs = self.entry_pricing_inputs_at(config, request)?;
-        self.pricing_result_from_inputs(config, request.realized_vol_gate_event_ms, inputs)
+        self.pricing_result_from_inputs(config, request.realized_vol_gate_receive_ms, inputs)
     }
 
     fn pricing_result_from_inputs(
         &self,
         config: &TakerPricingConfig<'_>,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         inputs: TakerPricingInputs,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let fair_value = self
             .fair_value_pricing_from_inputs(
                 config,
-                realized_vol_gate_event_ms,
+                realized_vol_gate_receive_ms,
                 FairValuePricingInputs {
                     spot_price: inputs.spot_price,
                     strike_price: inputs.strike_price,
@@ -537,7 +552,7 @@ impl TakerPricingState {
             &fair_value_config(config),
             FairValuePricingRequest {
                 now_ms: request.now_ms,
-                realized_vol_gate_event_ms: request.realized_vol_gate_event_ms,
+                realized_vol_gate_receive_ms: request.realized_vol_gate_receive_ms,
                 strike_price: request.strike_price,
                 seconds_to_market_end: request.seconds_to_market_end,
             },
@@ -553,7 +568,7 @@ impl TakerPricingState {
             &fair_value_config(config),
             FairValuePricingRequest {
                 now_ms: request.now_ms,
-                realized_vol_gate_event_ms: request.realized_vol_gate_event_ms,
+                realized_vol_gate_receive_ms: request.realized_vol_gate_receive_ms,
                 strike_price: request.strike_price,
                 seconds_to_market_end: request.seconds_to_market_end,
             },
@@ -563,12 +578,12 @@ impl TakerPricingState {
     fn fair_value_pricing_from_inputs(
         &self,
         config: &TakerPricingConfig<'_>,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         self.fair_value.fair_value_pricing_from_inputs(
             &fair_value_config(config),
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
             inputs,
         )
     }
@@ -812,7 +827,8 @@ mod tests {
                 &config,
                 TakerPricingRequest {
                     now_ms: 1_000,
-                    realized_vol_gate_event_ms: Some(VenueEventMs::new(1_000)),
+                    realized_vol_gate_receive_ms: LocalReceiveMs::new(1_000),
+                    reference_gate_event_ms: Some(VenueEventMs::new(1_000)),
                     strike_price: Some(100.0),
                     seconds_to_market_end: Some(300),
                 },
@@ -907,7 +923,8 @@ mod tests {
                 &config,
                 TakerPricingRequest {
                     now_ms: 3_001,
-                    realized_vol_gate_event_ms: Some(VenueEventMs::new(3_001)),
+                    realized_vol_gate_receive_ms: LocalReceiveMs::new(3_001),
+                    reference_gate_event_ms: Some(VenueEventMs::new(3_001)),
                     strike_price: Some(100.0),
                     seconds_to_market_end: Some(300),
                 },
@@ -943,7 +960,8 @@ mod tests {
                 &config,
                 TakerPricingRequest {
                     now_ms: 3_001,
-                    realized_vol_gate_event_ms: Some(VenueEventMs::new(3_001)),
+                    realized_vol_gate_receive_ms: LocalReceiveMs::new(3_001),
+                    reference_gate_event_ms: Some(VenueEventMs::new(3_001)),
                     strike_price: Some(100.0),
                     seconds_to_market_end: Some(300),
                 },

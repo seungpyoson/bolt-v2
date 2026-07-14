@@ -19,8 +19,12 @@ Critical AGENTS.md rules to enforce:
 - SSM is the single secret source for product/runtime credentials; GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN` only for GitHub API operations. `JULES_API_KEY` may live in GitHub Actions secrets only for repository code-maintenance advisory workflows; it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token, and must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs. Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends in product code.
 - Provider/runtime boundary evidence is registered: every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry and source-fence guarded or issue-bound, expiring non-WebSocket deferral; WebSocket-frame evidence must not be deferred.
 - Evidence-driven verification: every claim must map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance.
+- Approved lean-CI end state: zero required CI statuses; CI is visible evidence, not merge authority. Native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory. Until the governed Task 7 cutover, existing required statuses, Mergify predicates, exact-head review gates, queue preflight, and verifier behavior remain authoritative; flag any premature weakening.
+- Advisory reviewers may emit only a top-level PR comment or non-required check summary. They must not create inline review threads, submit `REQUEST_CHANGES`, or otherwise acquire a merge-blocking edge. Native human threads remain governed by required resolution.
+- A temporarily red or broken `main` is accepted repository risk after approved merge, but never deploy or trading permission. Only the exact manifest-bound immutable executable completing its in-process `ops launch` pre-arm phase may construct the one-use Rust `LiveReadinessPermit` consumed by Start.
+- The trusted-App/precursor/control-plane rehearsal is superseded and must not merge. Flag any fallback, compatibility adapter, inherited result, alternate installer, mutable-copy route, persisted authority, or dual path.
 - Remote-first Rust verification: do not request local compile-heavy Rust checks by default; request remote CI or allowed static checks.
-- External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green.
+- External review happens only after local findings are resolved. Before Task 7 cutover, exact-head required CI or a user-approved equivalent must also be green; after cutover, applicable exact-head evidence is still required for claims but advisory CI cannot authorize or veto review or merge.
 - Keep PR bodies stable: they may carry lasting scope/behavior disclosures and timeless merge requirements, but not the current head SHA, transient CI/check status, or head-specific review/verification receipts; exact-head evidence belongs in review requests, comments/records, or check runs.
 - Required human review must be preserved; agents must not merge or bypass the required reviewer gate.
 
@@ -32,7 +36,7 @@ If there are no hard-evidence findings, write `No hard-evidence findings` and in
 Every published review must explicitly identify the reviewer source and exact model; the workflow stamps the authoritative configured source/model from `ci/ai-review.toml`.
 Base every finding on hard evidence from the diff, repo files, workflow logs/checks, or explicitly supplied PR context. Quote the smallest relevant evidence snippet or line reference, then explain the implication. If hard evidence is missing, do not report the issue; ask for the specific evidence needed instead.
 Do not request local compile-heavy Rust checks; request remote CI or allowed static checks consistent with AGENTS.md.
-This is advisory review only; do not approve, merge, or suggest bypassing required human review.
+This is advisory review only. Publish only a top-level comment or non-required check summary; do not create inline threads, submit `REQUEST_CHANGES`, approve, merge, or suggest bypassing required human review.
 """
 
 num_max_findings = 6

@@ -1,9 +1,11 @@
 <!--
 Sync Impact Report
-Version change: 2.0.0 -> 2.0.1
-Modified principles: III. Single Path And Config-Controlled Runtime clarified for Jules advisory token;
-Additional Constraints secret source clarified for Jules advisory token
-Added sections: v2.0.1 migration note
+Version change: 2.0.1 -> 2.1.0
+Modified principles: III. Single Path And Config-Controlled Runtime adds the one immutable install/launch path;
+IV. Evidence-Driven Verification Gates separates CI evidence from merge authority and names the in-process permit boundary;
+V. Evidence Before Claims makes exact-head CI review gating conditional on the governed cutover state
+Additional Constraints: live proof boundary clarified for exact installed bytes and fresh in-process readiness
+Added sections: v2.1.0 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
@@ -32,7 +34,7 @@ Adding a venue, market family, or strategy MUST NOT require changing core build,
 
 ### III. Single Path And Config-Controlled Runtime
 
-There is one config format, one secret source, one production build path, and one live submit admission path. Every runtime value comes from TOML configuration. Product/runtime credentials resolve only from AWS SSM through the Rust AWS SDK. Environment variable fallbacks, Python runtime layers, hardcoded IDs, hardcoded quantities, hardcoded timeouts, and alternate submit paths are forbidden. `JULES_API_KEY` is allowed only as a GitHub Actions secret for repository code-maintenance advisory workflows; it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token, and must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs.
+There is one config format, one secret source, one production build path, one manifest-bound content-addressed immutable install path, and one live submit admission path through the exact installed binary's `ops launch`. Every runtime value comes from TOML configuration. Product/runtime credentials resolve only from AWS SSM through the Rust AWS SDK. Environment variable fallbacks, Python runtime layers, hardcoded IDs, hardcoded quantities, hardcoded timeouts, alternate installers, mutable-copy launch targets, install/launch compatibility adapters, and alternate submit paths are forbidden. `JULES_API_KEY` is allowed only as a GitHub Actions secret for repository code-maintenance advisory workflows; it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token, and must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs.
 
 Changing a wallet, credential set, venue, target market, strategy, notional cap, timing bound, or approval token must require editing one coherent TOML section, not scattered code or multiple config locations.
 
@@ -43,7 +45,9 @@ often useful, but it is not mandatory unless the user, active spec, or risk
 analysis explicitly requires it. Every change MUST have current evidence before
 readiness is claimed. Detailed agent workflow belongs in `AGENTS.md`.
 
-Live trading stays fail-closed. No live submit may occur unless production entrypoint, live canary gate, submit admission, mandatory decision evidence, no-submit readiness evidence, configured caps, and explicit operator approval all pass on the exact head being run.
+The approved merge-governance end state has zero required CI statuses. CI is visible evidence, not merge authority; native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory. The repository accepts temporarily red or broken `main` as repository risk, never as deploy or trading permission. Until the governed zero-status cutover is complete, current required statuses, Mergify predicates, queue preflight, and exact-head review gates remain authoritative.
+
+Live trading stays fail-closed. No live submit may occur unless production entrypoint, live canary gate, submit admission, mandatory decision evidence, no-submit readiness evidence, configured caps, and explicit operator approval all pass on the exact head being run. The exact installed executable must also validate its selected manifest and config bundle and complete its finite in-process pre-arm phase. Only complete success may construct the opaque, non-serializable, non-cloneable, one-use Rust `LiveReadinessPermit` consumed by the sole Start entrypoint. Installation, advisory CI, prior results, caches, tags, same-SHA evidence, and persisted receipts cannot authorize Start. Every start or restart requires a fresh permit.
 
 ### V. Evidence Before Claims
 
@@ -52,7 +56,7 @@ exact SHAs, exact PR/check state, or live run artifacts. Passing tests, static
 checks, reviews, or local mocks are not readiness evidence unless the checked
 behavior covers the stated requirement.
 
-External review is requested only after the branch is clean, pushed, all local findings are resolved, and exact-head CI is green. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
+External review is requested only after the branch is clean, pushed, and all local findings are resolved. Before the governed zero-status cutover, exact-head required CI must also be green. After cutover, applicable exact-head evidence remains required for claims, but advisory CI cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
 
 ### VI. Minimal Slice Discipline
 
@@ -77,7 +81,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 - Runtime config: TOML only.
 - Research/backtest config: TOML or NT-native run config only, with direct field mapping and lineage.
 - Current repo source of truth: `main` after merge.
-- Current live proof boundary: real SSM and real venue artifacts, not mock-only tests.
+- Current live proof boundary: real SSM and real venue artifacts, exact installed bytes, and a fresh in-process readiness permit, not mock-only tests, advisory results, inherited evidence, or persisted authority.
 - Old Bolt v1 repository is forbidden as a source.
 - Raw secrets, private keys, and credential values must never be printed in docs, logs, test output, PRs, or chat.
 
@@ -87,7 +91,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
 3. Plan: decompose into independently reviewable slices with a named verification approach.
 4. Implementation: collect current evidence before claiming completion.
-5. Review: no external review request until local branch is clean, pushed, exact-head checks are green, and known findings are resolved.
+5. Review: no external review request until the local branch is clean, pushed, and known findings are resolved; before the governed zero-status cutover, required exact-head checks must also be green.
 6. Merge: no merge without explicit user approval.
 
 ## Governance
@@ -97,6 +101,14 @@ repo governance and agent workflow source. Any PR that violates a MUST rule in
 this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
+
+Migration note for v2.1.0: the approved lean-CI architecture selects zero
+required CI statuses, native human merge authority, one informational exact-
+binary lane, and one manifest-bound immutable `ops launch` path whose fresh
+in-process permit alone can cross Start. The historical trusted-App/precursor
+control-plane design is superseded. Existing required statuses and queue gates
+remain authoritative until the governed cutover; this amendment alone changes
+no workflow, ruleset, Mergify, deploy, launch, or trading state.
 
 Migration note for v2.0.1: Jules advisory workflow planning may use `JULES_API_KEY`
 only as a GitHub Actions code-maintenance automation token. This amendment does
@@ -120,4 +132,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 2.0.1 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-06-29
+**Version**: 2.1.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-15

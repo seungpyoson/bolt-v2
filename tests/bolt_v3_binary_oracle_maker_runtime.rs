@@ -1774,8 +1774,10 @@ fn maker_sim_context(
 /// Register the maker with a real NT core whose clock reads `RUNTIME_NOW_MS`, so
 /// the static instruments (whose activation/expiration bracket `RUNTIME_NOW_MS`)
 /// are selectable at `on_start`. Returns the cache so the test can seed it.
-fn register_maker_at_runtime_now(maker: &mut BinaryOracleMaker) -> Rc<RefCell<Cache>> {
-    register_maker_at_runtime_now_with_quote_timer_handler(maker, true)
+fn register_maker_at_runtime_now_lifecycle_only(
+    maker: &mut BinaryOracleMaker,
+) -> Rc<RefCell<Cache>> {
+    register_maker_at_runtime_now_lifecycle_only_with_quote_timer_handler(maker, true)
 }
 
 /// Register the maker against a `TestClock` set to `RUNTIME_NOW_MS`. When
@@ -1785,7 +1787,7 @@ fn register_maker_at_runtime_now(maker: &mut BinaryOracleMaker) -> Rc<RefCell<Ca
 /// provided" and `on_start`'s quote-timer registration fails loud. The
 /// `DataActorNative::core_mut` registration used here is intentionally
 /// lifecycle-only and does not initialize the strategy order factory.
-fn register_maker_at_runtime_now_with_quote_timer_handler(
+fn register_maker_at_runtime_now_lifecycle_only_with_quote_timer_handler(
     maker: &mut BinaryOracleMaker,
     wire_quote_timer_handler: bool,
 ) -> Rc<RefCell<Cache>> {
@@ -1833,7 +1835,7 @@ fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
         maker_config_with_static_market(),
         maker_sim_context(writer, admission),
     );
-    let cache = register_maker_at_runtime_now(&mut maker);
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
             .borrow_mut()
@@ -1876,7 +1878,7 @@ fn maker_on_stop_resets_runtime_so_a_restart_re_resolves_and_re_subscribes() {
         maker_config_with_static_market(),
         maker_sim_context(writer, admission),
     );
-    let cache = register_maker_at_runtime_now(&mut maker);
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
             .borrow_mut()
@@ -1920,7 +1922,7 @@ fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock(
         ..maker_config_with_static_market()
     };
     let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer, admission));
-    let cache = register_maker_at_runtime_now(&mut maker);
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
             .borrow_mut()
@@ -1963,7 +1965,8 @@ fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
         maker_config_with_static_market(),
         maker_sim_context(writer, admission),
     );
-    let cache = register_maker_at_runtime_now_with_quote_timer_handler(&mut maker, false);
+    let cache =
+        register_maker_at_runtime_now_lifecycle_only_with_quote_timer_handler(&mut maker, false);
     for instrument in runtime_static_instruments() {
         cache
             .borrow_mut()

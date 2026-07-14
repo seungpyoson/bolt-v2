@@ -1,0 +1,33 @@
+Source: NautilusTrader
+Revision: d636f17604cdbddc28ad40e0e15720e2d19bf860
+Path: crates/adapters/polymarket/src/http/query.rs
+Full source SHA-256: 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d
+Extracted ranges from pinned checkout: lines 130-137 and 529-547
+
+/// Parameters for `POST /order`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostOrderParams {
+    pub order_type: PolymarketOrderType,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub post_only: bool,
+}
+    fn test_post_order_params_skips_post_only_when_false() {
+        let params = PostOrderParams {
+            order_type: PolymarketOrderType::GTC,
+            post_only: false,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(!json.contains("post_only"));
+        assert!(!json.contains("postOnly"));
+    }
+
+    #[rstest]
+    fn test_post_order_params_includes_post_only_when_true() {
+        let params = PostOrderParams {
+            order_type: PolymarketOrderType::GTC,
+            post_only: true,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("postOnly"));
+    }

@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `7c2aafb30fb143069c915a3f2057bb12174405f6`
-Last NT pin compatibility verified date: 2026-05-20
+Last NT pin compatibility verified rev: `d636f17604cdbddc28ad40e0e15720e2d19bf860`
+Last NT pin compatibility verified date: 2026-07-15
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -120,12 +120,14 @@ Decision to repo-rule mapping:
 
 ## Verified Evidence
 
-The following source anchors were verified before writing this doctrine:
+The following source anchors were verified for this doctrine or a later
+compatibility slice:
 
-- `Cargo.toml` pins NT to release `v1.227.0`
-  (`7c2aafb30fb143069c915a3f2057bb12174405f6`). The 2026-05-20 pin slice
-  verified focused compile/test compatibility for the strategy-free readiness
-  blockers; it did not re-audit all NT-owned behaviors cited by this doctrine.
+- `Cargo.toml` pins NT to the `v1.230.0`-based fork revision
+  (`d636f17604cdbddc28ad40e0e15720e2d19bf860`). The 2026-07-15 pin slice's
+  declared compatibility scope is the NT 0.60 migration, the governed Binance
+  boundary evidence, and required exact-head tests. It does not re-audit all
+  NT-owned behaviors cited by this doctrine.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are
@@ -422,7 +424,7 @@ verifier.
 | V6 | D5 | NT config mapping contains no `..Default::default()` for NT config structs | Process-only until source scanner or AST-aware lint is selected | Not selected |
 | V7 | D5 | No `impl From<...>` or `impl Into<...>` constructs NT provider config structs in this crate | Source scan | Not selected |
 | V8 | D5, O6 | Every NT runtime-bearing field has an explicit field decision | Process-only until O6 selects a mechanism | Not selected |
-| V9 | Governance | All `nautilus-*` git dependency revs in `Cargo.toml`, and the resolved revs in `Cargo.lock` when present, match this file's last NT pin compatibility verified rev. Full doctrine-audit freshness is tracked separately by `Last full NT doctrine audit rev`. | Process-only manual comparison until source scan or TOML parser is selected | Code review |
+| V9 | Governance | All `nautilus-*` git dependency revs in tracked Cargo manifests, the resolved revs in tracked lockfiles, and governed compatibility-evidence surfaces match this file's last NT pin compatibility verified rev. Full doctrine-audit freshness is tracked separately by `Last full NT doctrine audit rev`. | TOML/lock parsing plus exact anchored text-pin census; a distinct full-audit revision remains permitted | `scripts/verify_bolt_v3_boundary_evidence.py`; `scripts/test_verify_bolt_v3_boundary_evidence.py` |
 | V10 | R25 | Verifier files have no `#[ignore]` tests and include positive-failure fixtures, path-scope evasion fixtures, and pattern-weakening fixtures | Test meta-check | Not selected |
 | V11 | R20 | No `bolt_v3_*` module imports an NT provider crate that is not registered in the active provider binding table | Source scan | Not selected |
 | V12 | R21 | No new Bolt-v3 provider logic lands in legacy non-`bolt_v3_*` modules | Review gate plus source scan | Not selected |

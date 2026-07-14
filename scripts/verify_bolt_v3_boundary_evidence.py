@@ -56,14 +56,24 @@ CANONICAL_CARGO_PIN_SURFACES = (
 RUNTIME_CONTRACT_PIN_SURFACE = Path(
     "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
 )
+ROOT_SCHEMA_PIN_SURFACE = Path("docs/bolt-v3/2026-04-25-bolt-v3-schema.md")
 NT_NAMING_LEDGER_PIN_SURFACE = Path(
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"
 )
+NT_BOUNDARY_DOCTRINE_PIN_SURFACE = Path(
+    "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md"
+)
+POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
+    "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt"
+)
 NON_CARGO_PIN_SURFACES = (
     RUNTIME_CONTRACT_PIN_SURFACE,
+    ROOT_SCHEMA_PIN_SURFACE,
+    NT_BOUNDARY_DOCTRINE_PIN_SURFACE,
     NT_NAMING_LEDGER_PIN_SURFACE,
     Path("scripts/verify_bolt_v3_boundary_evidence.py"),
     Path("scripts/test_verify_bolt_v3_boundary_evidence.py"),
+    POLYMARKET_QUERY_FIXTURE_PIN_SURFACE,
 )
 PIN_SURFACES = (*CANONICAL_CARGO_PIN_SURFACES, *NON_CARGO_PIN_SURFACES)
 BINANCE_SOURCE_SYMBOLS = (
@@ -247,8 +257,39 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
     ),
 }
 PIN_TEXT_PATTERNS = {
+    ROOT_SCHEMA_PIN_SURFACE: (
+        re.compile(
+            r"^- `qsize` must equal the pinned NT `LiveDataEngineConfig::default\(\)\.qsize` value, verified as `100000` at pinned NT rev `([0-9a-f]{40})`$",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\| `qsize` \| must equal the pinned NT `LiveDataEngineConfig::default\(\)\.qsize` value, verified as `100000` at pinned NT rev `([0-9a-f]{40})` \| `LiveDataEngineConfig\.qsize` \|$",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^- `qsize` must equal the pinned NT `LiveExecEngineConfig::default\(\)\.qsize` value, verified as `100000` at pinned NT rev `([0-9a-f]{40})`$",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\| `qsize` \| must equal the pinned NT `LiveExecEngineConfig::default\(\)\.qsize` value, verified as `100000` at pinned NT rev `([0-9a-f]{40})` \| `LiveExecEngineConfig\.qsize` \|$",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^- must equal the pinned NT `LiveRiskEngineConfig::default\(\)\.qsize` value, verified as `100000` at pinned NT rev `([0-9a-f]{40})`$",
+            re.MULTILINE,
+        ),
+    ),
+    NT_BOUNDARY_DOCTRINE_PIN_SURFACE: (
+        re.compile(
+            r"^Last NT pin compatibility verified rev: `([0-9a-f]{40})`$",
+            re.MULTILINE,
+        ),
+    ),
     NT_NAMING_LEDGER_PIN_SURFACE: (
         re.compile(r'^nautilus_trader_revision:\s*"([0-9a-f]{40})"$', re.MULTILINE),
+    ),
+    POLYMARKET_QUERY_FIXTURE_PIN_SURFACE: (
+        re.compile(r"^Revision: ([0-9a-f]{40})$", re.MULTILINE),
     ),
 }
 RUNTIME_CONTRACT_PIN_SECTIONS = (
@@ -2356,19 +2397,19 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
             continue
         if surface.suffix == ".py":
             revisions = python_expected_nt_revisions(surface, text, findings)
+            invalid_pin_surface = revisions != [EXPECTED_NT_REV]
         else:
-            revisions = [
-                match.group(1)
+            pattern_revisions = [
+                [match.group(1) for match in pattern.finditer(text)]
                 for pattern in PIN_TEXT_PATTERNS[surface]
-                for match in pattern.finditer(text)
             ]
-        expected_count = len(PIN_TEXT_PATTERNS.get(surface, ())) or 1
-        if len(revisions) != expected_count or any(
-            revision != EXPECTED_NT_REV for revision in revisions
-        ):
+            invalid_pin_surface = any(
+                revisions != [EXPECTED_NT_REV] for revisions in pattern_revisions
+            )
+        if invalid_pin_surface:
             findings.append(
-                f"{surface}: NautilusTrader pin census must contain exactly the governed "
-                f"{EXPECTED_NT_REV} value(s)"
+                f"{surface}: NautilusTrader pin census must contain exactly one governed "
+                f"{EXPECTED_NT_REV} value for each anchored pin claim"
             )
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:

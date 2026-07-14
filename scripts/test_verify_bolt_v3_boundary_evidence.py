@@ -42,9 +42,12 @@ REQUIRED_PIN_SURFACES = (
     "crates/backtesting-vertical-slice/Cargo.toml",
     "crates/backtesting-vertical-slice/Cargo.lock",
     "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+    "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
+    "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
     "scripts/verify_bolt_v3_boundary_evidence.py",
     "scripts/test_verify_bolt_v3_boundary_evidence.py",
+    "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
 )
 
 
@@ -199,6 +202,23 @@ def clean_files(root: Path) -> None:
     )
     write(
         root,
+        "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
+        "Last full NT doctrine audit rev: "
+        "`56a438216442f079edf322a39cdc0d9e655ba6d8`\n"
+        f"Last NT pin compatibility verified rev: `{EXPECTED_NT_REV}`\n",
+    )
+    write(
+        root,
+        "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
+        f"- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}`\n"
+        f"| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}` | `LiveDataEngineConfig.qsize` |\n"
+        f"- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}`\n"
+        f"| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}` | `LiveExecEngineConfig.qsize` |\n"
+        f"- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}`\n"
+        f"Historical evidence only: `{OLD_NT_REV}`\n",
+    )
+    write(
+        root,
         "scripts/verify_bolt_v3_boundary_evidence.py",
         f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
     )
@@ -206,6 +226,13 @@ def clean_files(root: Path) -> None:
         root,
         "scripts/test_verify_bolt_v3_boundary_evidence.py",
         f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
+    )
+    write(
+        root,
+        "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+        "Source: NautilusTrader\n"
+        f"Revision: {EXPECTED_NT_REV}\n"
+        "Path: crates/adapters/polymarket/src/http/query.rs\n",
     )
     write(
         root,
@@ -653,6 +680,66 @@ def test_pin_census_rejects_each_mismatched_surface() -> None:
             )
 
         assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
+
+
+def test_doctrine_pin_census_keeps_full_audit_revision_separate() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "56a438216442f079edf322a39cdc0d9e655ba6d8",
+                "2" * 40,
+            ),
+            encoding="utf-8",
+        )
+
+    findings = scan_temp(mutate)
+    doctrine_findings = [
+        finding
+        for finding in findings
+        if finding.startswith(
+            "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md: "
+            "NautilusTrader pin census"
+        )
+    ]
+    assert doctrine_findings == []
+
+
+def test_schema_pin_census_rejects_duplicate_governed_claim_in_decoy_section() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
+        governed_claim = (
+            "- `qsize` must equal the pinned NT "
+            "`LiveDataEngineConfig::default().qsize` value, verified as `100000` "
+            f"at pinned NT rev `{EXPECTED_NT_REV}`"
+        )
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + f"\n## Historical decoy\n\n{governed_claim}\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "2026-04-25-bolt-v3-schema.md: NautilusTrader pin census")
+
+
+def test_schema_pin_census_ignores_unanchored_historical_revision() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + f"\nHistorical source note: old NT rev `{OLD_NT_REV}`.\n",
+            encoding="utf-8",
+        )
+
+    findings = scan_temp(mutate)
+    schema_findings = [
+        finding
+        for finding in findings
+        if finding.startswith(
+            "docs/bolt-v3/2026-04-25-bolt-v3-schema.md: NautilusTrader pin census"
+        )
+    ]
+    assert schema_findings == []
 
 
 def test_pin_census_reports_one_pin_finding_for_each_missing_required_surface() -> None:

@@ -3,7 +3,7 @@
   "checkpoint_id": "1a04e4173445",
   "strategy": "manual-commit",
   "branch": "chore/nt-v1-230-pin-refresh",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "src/strategies/registry.rs",
     "tests/bolt_v3_binary_oracle_maker_runtime.rs"
@@ -22,13 +22,20 @@
       "compact_transcript": "/1a/04e4173445/1/transcript.jsonl",
       "content_hash": "/1a/04e4173445/1/content_hash.txt",
       "prompt": "/1a/04e4173445/1/prompt.txt"
+    },
+    {
+      "metadata": "/1a/04e4173445/2/metadata.json",
+      "transcript": "/1a/04e4173445/2/full.jsonl",
+      "compact_transcript": "/1a/04e4173445/2/transcript.jsonl",
+      "content_hash": "/1a/04e4173445/2/content_hash.txt",
+      "prompt": "/1a/04e4173445/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1131582,
+    "input_tokens": 4915790,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 41616128,
-    "output_tokens": 90694,
-    "api_call_count": 364
+    "cache_read_tokens": 219964672,
+    "output_tokens": 812123,
+    "api_call_count": 1796
   }
 }

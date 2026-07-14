@@ -1,0 +1,349 @@
+You are the primary orchestrator, running GPT-5.6 Sol Max.
+
+  Objective
+  Make bolt-v2 infrastructure capable of running strategies continuously and autonomously. Success is not
+  “it survived 24 hours.” Success is a design whose safety, storage, recovery, and resource usage remain
+  correct for an unbounded operating lifetime.
+
+  Model roles
+  - GPT-5.6 Sol Max: investigation, architecture, planning, integration, and final judgment.
+  - GPT-5.6 Sol Medium: bounded implementation tasks after plan approval.
+  - Claude Code: independent adversarial reviewer of the completed design and execution plan. Report
+  Claude’s exact configured model.
+
+  Do not begin implementation until Claude returns APPROVE.
+
+  Authorization
+  You may investigate, design, implement, test, open PRs, resolve review comments, and run the
+  repository’s exact-head remote verification workflow.
+
+  You may not deploy to production, start the EC2 instance, or place live trades without new operator
+  approval.
+
+  Start correctly
+  - Read AGENTS.md.
+  - Fetch the latest origin/main and work from a fresh branch.
+  - Treat the deployed release and live artifacts as incident evidence, not as the implementation base.
+  - Do not continue from stale branches or old plan files.
+
+  Primary autonomy invariant
+  For any arbitrarily long sequence of market events, feed-state changes, dependency failures, process
+  crashes, and host restarts:
+
+  1. Local disk, recovery data, memory state, file descriptors, retry state, pending work, and log volume
+  remain bounded by reviewed configuration.
+  2. Those bounds depend on currently active risk and closed semantic state—not total event count or
+  uptime.
+  3. The system never loses its ability to reconcile, reduce, settle, or accurately report existing risk.
+  4. After a crash or restart, it deterministically recovers all unresolved orders, positions, and
+  settlements, or remains safely blocked from new risk.
+  5. No normal recovery, rollover, archival, or dependency-restoration path requires human repair.
+  6. External outages may stop new trading, but may not cause unsafe behavior, unbounded growth, or
+  prevent exits and settlement.
+  7. When dependencies recover, the system resumes automatically once its invariants are satisfied.
+
+  Evidence-specific invariant
+  For a stable business episode, each canonical semantic state may produce evidence at most once,
+  regardless of A→B→A recurrence or how often raw inputs oscillate.
+
+  Episode identity must not contain tick-varying prices, timestamps, transient feed flags, or raw
+  diagnostic values.
+
+  The active local recovery set must always fit below its configured recovery ceiling, including reserved
+  worst-case capacity for every permitted exit, reconciliation, settlement, and terminal transition.
+
+  S3 may preserve historical evidence, but safe restart must not depend on S3 availability.
+
+  Observed incident
+  A supervised production run used v0.1.13 at source SHA
+  17bdf952f3e9422c6957b88556dbb4f145046754.
+
+  Trading behavior was correct:
+  - two $2.50 FOK BTC-Up entries;
+  - both filled;
+  - one lost and one won/redeemed;
+  - approximate combined result after fees: −$0.25;
+  - zero process restarts;
+  - no third trade.
+
+  Infrastructure behavior was not acceptable:
+  - evidence exceeded the 1 MiB recovery ceiling in about five minutes;
+  - final file: 1,254,325 bytes and 272 records;
+  - 149 entry_skip records;
+  - 101 strategy_input_snapshot records;
+  - entry dedupe identity changed at least 146 times;
+  - fast-venue state changed about 100 times;
+  - pricing blockers changed 114 times;
+  - strategy-input identity changed 89 times.
+
+  The finite RV novelty mask worked while its surrounding key remained stable. Volatile outer-key changes
+  repeatedly reset its protection.
+
+  At market rollover, the runtime also attempted to subscribe to the expired instrument and logged an
+  error. It continued operating, but continuous infrastructure must handle rollover without stale
+  subscriptions, error storms, or leaked resources.
+
+  The EC2 instance is stopped. Do not restart it.
+
+  Scope
+  In scope:
+  - bounded evidence emission;
+  - authoritative recovery state;
+  - crash-consistent compaction or rotation;
+  - archival and retention;
+  - bounded archive backlog and retry behavior;
+  - automatic recovery;
+  - runtime health and capacity admission;
+  - market-subscription rollover lifecycle;
+  - verification needed to authorize continuous autonomous operation.
+
+  Out of scope:
+  - trading signals;
+  - pricing thresholds;
+  - order sizing policy;
+  - strategy profitability;
+  - unrelated risk controls;
+  - another live deployment.
+
+  Architecture phase
+  Investigate before choosing a solution.
+
+  Produce 2–3 viable architectures. For each, state:
+  - authoritative state and data flow;
+  - exact resource bounds;
+  - crash behavior at every durable transition;
+  - S3 outage behavior;
+  - restart behavior;
+  - migration and compatibility impact;
+  - operational complexity;
+  - blast radius if wrong.
+
+  Do not assume that rotation, dedupe, compaction, checkpointing, or S3 is automatically the right primary
+  mechanism. Select the smallest architecture that proves the invariant without creating dual state or
+  unsafe intermediate behavior.
+
+  The preferred architecture must include closed-form bounds. “It remained small during a soak” is not a
+  bound.
+
+  Plan-review artifact
+  Before asking Claude to review, produce a finalized invariant matrix:
+
+  | Invariant | Mechanism | Enforced where | Failure behavior | Verification |
+  |-----------|-----------|----------------|------------------|--------------|
+
+  Also include:
+
+  1. Resource-bound table
+
+  | Resource | Bound | Function of | Enforcement point | Exhaustion behavior |
+  |----------|-------|-------------|-------------------|---------------------|
+
+  2. Crash matrix covering every durable transition.
+
+  3. Dependency-failure matrix covering S3, network, venue, disk, and corrupt state.
+
+  4. Exact PR dependency graph. Each PR must be issue-bound, independently reviewable, and must not leave
+  main in an unsafe or dual-path state.
+
+  5. Explicit migrations for existing evidence and recovery files.
+
+  Resolve all meaningful design choices before Claude review. Do not send Claude an open-ended design and
+  ask it to finish the architecture.
+
+  Claude approval contract
+  Ask Claude to answer only after independently checking the plan against current source:
+
+  - Can resource usage grow with event count or uptime?
+  - Can volatile input churn reset a bounded-state guard?
+  - Can the system cross a capacity boundary before new risk is blocked?
+  - Is sufficient capacity reserved for exits, reconciliation, and settlement?
+  - Can an S3 outage cause data loss, unsafe restart, or block risk reduction?
+  - Is any recovery-critical truth duplicated across competing authorities?
+  - Can a crash at any modeled transition produce ambiguous state?
+  - Can rollover leak subscriptions, tasks, files, or retry episodes?
+  - Does any normal recovery require an operator?
+  - Can each claimed bound be tested or mechanically inspected?
+  - Are intermediate PR states safe?
+
+  Any “yes” or unresolved ambiguity is REQUEST CHANGES.
+
+  Claude should not require implementation details that do not affect the invariant, interfaces, failure
+  semantics, or proof. But every substantive correctness gap must be resolved.
+
+  Iterate until Claude returns APPROVE. Do not weaken the invariant to obtain approval.
+
+  Implementation
+  After approval:
+
+  - Freeze the invariant and verification contract.
+  - Delegate narrowly scoped implementation tasks to GPT-5.6 Sol Medium.
+  - GPT-5.6 Sol Max must inspect and integrate every diff.
+  - Evidence-driven implementation is required; TDD is optional.
+  - Do not weaken tests or acceptance criteria to accommodate implementation.
+  - Use one configuration source and TOML-owned runtime bounds.
+  - No hardcodes, dual paths, TODOs, alternate secret sources, or Python runtime.
+  - Use Rust-native AWS integration; never shell out to AWS CLI.
+  - Preserve risk-reducing and settlement behavior during all infrastructure failures.
+  - Follow remote-first Rust verification.
+  - Resolve all valid review comments before requesting another review.
+  - Remove temporary execution-plan files from the final PR diff.
+  - Do not merge manually; use repository governance and merge queue.
+
+  Required verification
+  The proof must include:
+
+  - A state-machine or property test where input oscillates indefinitely in principle and record/state
+  cardinality reaches a fixed bound independent of iteration count.
+  - Tests with large repeated A→B→A sequences.
+  - Exact maximum-size accounting for recovery state.
+  - Proof that capacity is checked before admitting new risk.
+  - Reserved-capacity tests for exits and settlement.
+  - Crash injection around every durable transition.
+  - Restart with:
+    - open entry order;
+    - managed position;
+    - exit pending;
+    - settlement pending;
+    - archival backlog at capacity.
+  - S3 unavailable, slow, duplicated, partially successful, and checksum-corrupt cases.
+  - Automatic recovery after S3 returns.
+  - Repeated market rollovers without expired-instrument subscription attempts or resource growth.
+  - Exact-head root and backtester CI.
+  - Internal adversarial review of the final publishable head.
+  - A supervised live canary only after explicit operator approval.
+
+  A soak may supplement these proofs, but elapsed time alone cannot establish autonomous readiness.
+
+  Final report
+  Return:
+
+  - selected architecture and rejected alternatives;
+  - Claude’s approval and exact model;
+  - invariant and resource-bound matrices;
+  - issue/PR dependency graph;
+  - implementation and verification evidence;
+  - remaining unmeasured claims;
+  - a binary ruling:
+
+  AUTONOMOUS OPERATION: AUTHORIZED
+
+  or
+
+  AUTONOMOUS OPERATION: BLOCKED — <specific unmet invariant>
+
+---
+
+the goal is: 
+• Yes—if that work is fully implemented and verified, the strategy should run continuously without someone
+  watching it.
+
+  It should automatically:
+
+  - Recover from crashes and restarts.
+  - Bound logs, evidence, memory, and disk usage.
+  - Rotate and archive evidence safely.
+  - Handle market rollovers and temporary dependency failures.
+  - Block new trades when unsafe while still managing existing positions.
+  - Resume automatically when conditions recover.
+
+  It should still have alerts for exceptional failures, but humans should respond only to rare incidents—
+  not continuously supervise normal operation. “Unattended” means self-managing and fail-safe, not
+  invisible.
+
+---
+
+you should generate a review prompt so that I can relay to claude
+
+---
+
+I sent the claude prompt - should I wait?
+
+---
+
+CONFIGURED MODEL: claude-fable-5
+
+REQUEST CHANGES
+
+There is nothing to review yet. The dispatch was issued before the review package existed, and the four artifact paths in the prompt are unsubstituted template placeholders (<ARCHITECTURE_ARTIFACT_PATH>, <INVARIANT_AND_RESOURCE_MATRIX_PATH>, <IMPLEMENTATION_PLAN_PATH>, <MIGRATION_AND_PR_GRAPH_PATH>), not file paths. I verified this against the repository itself rather than assuming a paste error:
+
+- The specified working tree .worktrees/autonomous-operation-design is at commit 17bdf952f — bit-identical to the declared base SHA. git log 17bdf952f..HEAD and git diff --name-status 17bdf952f..HEAD are both empty: zero commits, zero changed files.
+- The tree is clean with no untracked or ignored candidate files (only scripts/__pycache__/), no stash, and the branch reflog shows exactly one event: "Created from origin/main." No design content was ever committed, staged, stashed, or reset away in this worktree.
+- No tracked markdown at HEAD matches the four artifact roles (the only hits are unrelated older specs under specs/023, specs/024, specs/522, which the dispatch itself excludes as historical material), no branch or commit anywhere in the repo carries this design, and neither Augment workspace (different-review, repo-config) is joined to this repository.
+
+Blocking finding (sole finding; it gates all fifteen checklist questions):
+
+- Invariant violated: the review's evidence standard itself — every checklist answer must be demonstrated against the finalized artifacts, and none of the fifteen questions can be answered without them. Per the dispatch's own rule, an unresolved ambiguity of this size cannot be approved around.
+- Current-source evidence: worktree .worktrees/autonomous-operation-design at 17bdf952f == base SHA; empty log/diff against base; branch reflog single entry "Created from origin/main"; no artifact files tracked, untracked, or stashed.
+- Deficient plan section: all four — the architecture, invariant-and-resource matrix, implementation plan, and migration/PR graph are absent.
+- Concrete required correction: the producing session must commit the four finalized artifacts to design/autonomous-operation in this worktree, then re-issue this dispatch with the real repository paths substituted and the reviewed commit SHA pinned.
+- Verification needed to close: re-run this review against that pinned commit; I will then read AGENTS.md in full and verify all fifteen questions against both the artifacts and current source, as specified.
+
+I deliberately did not go hunting for "probably intended" documents elsewhere on the machine and did not substitute the current source alone as the review subject — reviewing a guessed or partial package would produce a verdict about the wrong thing, which is worse than no verdict. Approving, or reviewing something else in its place, would have weakened the invariant to reach an answer; the dispatch forbids both.
+
+✻ Sautéed for 4m 26s
+
+---
+
+don't ask for model - I know which model I am using
+
+---
+
+ok continue
+
+---
+
+are you asking me? or should I send this to Claude?
+
+---
+
+too long and complex - explain in plain english and make this concise
+
+---
+
+no I want you to explain the design in plain english and make this concise
+
+---
+
+is this the best design you consider?
+
+---
+
+what are the cons or risks I should consider?
+
+---
+
+is this a one way door decision?
+
+---
+
+so how do we mitigate these?
+
+---
+
+ok if you are considering the gaps, then I approve
+
+---
+
+Claude: 
+APPROVE
+
+Verification record (worktree design/autonomous-operation at fe368f851, base origin/main = 17bdf952f = remote tag v0.1.13 — confirmed pointing at exactly the base SHA):
+
+Read completely: AGENTS.md and all four specs (architecture 1,665 lines; invariant contract 679; delivery/verification contract 1,250; migration/PR contract 1,218). No TODO/TBD/FIXME in any spec.
+
+Every current-source claim I tested in the package is accurate at HEAD:
+- src/bolt_v3_decision_evidence.rs — append_line → write_all → sync_all with no writer-side size check; the configured max_bytes (1 MiB) is enforced only in the two whole-file readers (take(max_bytes+1) at the read paths, lines 2253/2643). Confirms "writer uncapped, reader-cap only, whole-file recovery read."
+- Bounded-guard resets exist exactly as claimed: evict_oldest_episodes_over_cap (oldest-episode eviction) and prune_observed_dedupe_entries (retention-window pruning in bolt_v3_observed_dedupe.rs) — both are time/cardinality resets of novelty state, and strategies/binary_oracle_edge_taker/tests/source_evidence.rs:4753–4761 explicitly asserts A→B→A oscillations re-emit (bounded per cycle, not per lifetime).
+- src/nt_runtime_capture.rs uses unbounded_channel() (lines 745, 1065). config/root.toml sets qsize = 100000 three times with item counts only, no byte accounting.
+- Settlement-close retry exhausts market_exit_max_attempts into a locally terminal "settlement close fetch attempts exhausted; settlement not booked" state (binary_oracle_edge_taker/mod.rs ~1060) — confirming the "retry becomes terminal locally" defect the Capsule state machine replaces.
+- Pinned NT fork afc014a… (Cargo.toml) checked in the actual checkout: Polymarket subscribe_market/unsubscribe_market are send-only Result<()> writes with no server acknowledgement anywhere in the client — the rollover design's load-bearing premise holds.
+- Config keys match exactly: config/root.toml:140 state_path = "state/kill-switch.json", :194 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"; the unbounded append-only manual-recovery audit sibling exists (loss_governor_manual_recovery_audit_path in bolt_v3_kill_switch_store.rs, whole-file read_to_string).
+- Issues #1354 ("Eliminate per-tick disk writes…"), #883, #763 ("Rotate and archive…") are open, and their current contracts are indeed weaker than or in conflict with this design (e.g., #763 is rotation-flavored vs. the fixed outbox), exactly as the amendment sections state.
+
+Closed-form accounting recomputed independently — all exact: Capsule section sum (892,928 + 155,648 = P), crash peaks (2P+2M+A = 33,562,624; runtime set 67,141,632; cutover 71,467,008 < 157,351,936 aggregate), arena 960×32,768 with disjoint 640/256/64 partitions, ballast identity (134,217,728 + 188,743,680 + 213,909,504 = 512 MiB), per-socket C summands (= 6,291,456), ordinary-pool rows (= 2 GiB exactly), host claims (= 8,053,063,680), FD partition (80+136+64+32+64+48+88 = 512), async 10·6+16·2+8·3+12 = 128, retry 64+32 = 96, S3 ring/legacy maxima (1,261,698 objects; 3,314,119,482,752 B), migration workspace (= 134,217,728), work bound 3S+4A·F+2AN = 15,313,780,736 and 1,081,342 opens, device cold minima and both host-disk peaks, selector 256/512-byte layouts, descriptor #[repr(C)] offsets/size, and Alternatives B/C. Cross-document numbers (network caps/populations 18/17, 16/11, 19/18, 18/17, 34/30 sockets, 14/64 members, 10/20/10/13) are consistent everywhere they appear.
+
+The fifteen checks: each has a concrete mechanism, a named enforcement point, fail-closed behavior, and a named verification obligation — growth is capped by fixed slots/ring/registry with no per-attempt state anywhere; guards are keyed on the non-temporal EvidenceEpisodeId with OR-only novelty and bind-once GammaMarketBinding; production is the single Unseen→PendingArena commit; the full closure vector is acquired inside EntryPreparedNotAuthorized with protected classes ordinary work cannot borrow; restart never reads S3 or legacy JSONL; authority is one quorum-selected Capsule with venue owning external facts; every durable edge is registry-bound with generated crash matrix and fault hooks; rollover is whole-generation replace with the per-asset unsubscribe source-fenced unreachable and a join deadline backed by systemd restart; recovery and dependency restoration are operatorless by self-clearing predicates; every bound is generated + tested at limit±1 with the unbounded claim carried by a checked transition invariant rather than soak time; and every PR node lands disabled with an explicit safe-intermediate contract, monotonically shrinking census, and activation edges unreachable from any repo/CI path.
+
+Provider capability blockers: fail-closed and not bypassable within the contract — the tombstone/completeness/competing-nonce gates sit in entry_ready, in generated profile construction, in negative activation fixtures that must keep entry blocked, and behind no_unregistered_external_effect plus census-reachability proofs; ACTIVATE-003 additionally requires the green manifest, the engineering AUTHORIZED ruling, and separate operator approval. Zero-allowance is correctly treated as temporary protection, not a substitute primitive.
+
+No unresolved correctness ambiguity found. Implementation-side reminder per the contract itself: symbolic AO-* nodes must be bound to real issue numbers (owner-confirmed, bidirectional) before any implementation branch starts, and the frozen tables may be strengthened but never silently weakened.

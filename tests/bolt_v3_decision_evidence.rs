@@ -2415,7 +2415,7 @@ fn rv_clock_domain_amendment_replayed_gate(
         .get("rv_max_source_age_ms")?
         .as_u64()
         .filter(|age| *age > 0)?;
-    let snapshot_ready = match family {
+    let usable_ready = match family {
         RvClockDomainReplayFamily::Decision => record
             .get("rv_snapshot_has_ready_realized_vol")?
             .as_bool()?,
@@ -2451,7 +2451,7 @@ fn rv_clock_domain_amendment_replayed_gate(
     if evaluation_receive_ms - snapshot_receive_watermark_ms > i128::from(max_source_age_ms) {
         return Some(BoltV3RvGateResult::RejectedStale);
     }
-    if !snapshot_ready {
+    if !usable_ready {
         return Some(BoltV3RvGateResult::RejectedNotReady);
     }
     Some(BoltV3RvGateResult::Accepted)
@@ -2777,8 +2777,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
                     value["rv_snapshot_as_of_ms"] = case
                         .as_of_ms
                         .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
-                    value["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(case.raw_ready);
-                    value["rv_snapshot_ready"] = serde_json::json!(case.usable_ready);
+                    value["rv_snapshot_ready"] = serde_json::json!(case.raw_ready);
+                    value["rv_snapshot_has_ready_realized_vol"] =
+                        serde_json::json!(case.usable_ready);
                     value["rv_snapshot_blockers"] = serde_json::json!(case.blockers);
                     value["realized_vol"] = if case.usable_ready {
                         serde_json::json!("999")
@@ -2810,14 +2811,14 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
                 RvClockDomainReplayFamily::Decision => {
                     assert_eq!(
                         value.get("rv_snapshot_has_ready_realized_vol"),
-                        Some(&serde_json::json!(case.raw_ready)),
-                        "{} must retain raw snapshot readiness",
+                        Some(&serde_json::json!(case.usable_ready)),
+                        "{} must retain usable decision readiness",
                         case.label
                     );
                     assert_eq!(
                         value.get("rv_snapshot_ready"),
-                        Some(&serde_json::json!(case.usable_ready)),
-                        "{} must retain usable snapshot readiness",
+                        Some(&serde_json::json!(case.raw_ready)),
+                        "{} must retain raw snapshot readiness",
                         case.label
                     );
                 }

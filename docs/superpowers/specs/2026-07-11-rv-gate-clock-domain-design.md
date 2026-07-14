@@ -7,11 +7,10 @@ receive-time domain. Venue event timestamps remain inputs to realized-volatility
 computation and evidence, but never decide whether another venue may consume a
 ready snapshot.
 
-The core clock-ownership implementation is present on a fresh branch from
-authoritative `main`; the user-approved durable-input and semantic-dedupe amendment
-below remains an implementation task. Local static and exact-head remote Rust
-verification, external review, and required native approval remain completion gates;
-this document does not claim merge or live-soak readiness.
+The approved durable-input and semantic-dedupe amendment is implemented.
+Exact-current-head CI, external review, and required native approval remain
+completion and merge gates; this document does not claim that those gates have
+passed or that the change is merge- or live-soak-ready.
 
 ## Invariant
 

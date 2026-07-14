@@ -798,7 +798,11 @@ fn rv_clock_domain_amendment_runtime_config_requires_positive_surface_age() {
     );
 
     for (label, value, expected) in [
-        ("wrong_type", Value::String("500".to_string()), "integer"),
+        (
+            "wrong_type",
+            Value::String("500".to_string()),
+            "expected u64",
+        ),
         ("zero", Value::Integer(0), "positive"),
     ] {
         let mut raw = valid_raw_config();

@@ -278,11 +278,17 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   immutable `latest_realized_vol_snapshot_for_surface` borrow, call free
   `classify_rv_gate` exactly once and build a compact owned exit-only projection of
   schema/decision-needed scalars and bounded cloned fields: gate,
-  presence/as-of/watermark, raw+usable readiness, accepted RV/source, mapped exit
-  blockers/diagnostics, signed delta, derived fair/uncertainty probabilities,
-  surface/max-age/evaluation receive. Do not own `RealizedVolGateClassification`, a
-  full `RealizedVolSnapshot`, or full entry `RealizedVolatilityEvidenceFields`; do not
-  call clone-producing `classify_realized_vol_snapshot` on this path.
+  presence/as-of/watermark, raw+usable readiness, accepted RV/source, the snapshot's
+  raw ordered `Vec<RealizedVolBlockReason>`, compact schema-owned diagnostic
+  projections, signed delta, derived fair/uncertainty probabilities, and
+  surface/max-age/evaluation receive. Decision construction maps the raw blockers
+  with existing `realized_vol_blocker_to_exit_evidence` unchanged; evaluation
+  construction maps them with existing
+  `realized_volatility_block_reason_evidence_label(...).to_string()` unchanged. Do
+  not pre-map/reorder blockers or introduce mapping semantics. Do not own
+  `RealizedVolGateClassification`, a full `RealizedVolSnapshot`, or full entry
+  `RealizedVolatilityEvidenceFields`; do not call clone-producing
+  `classify_realized_vol_snapshot` on this path.
 - `BoltV3ExitDecisionEvidence` and `BoltV3ExitEvaluationEvidence` add optional `rv_snapshot_receive_watermark_ms` and `rv_max_source_age_ms` fields; their wire structs decode omitted or `null` legacy values as `None` without changing `BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION` from `15`.
 - The receipt watermark stays typed `LocalReceiveMs`. Decision durable/wire fields
   are `rv_snapshot_receive_watermark_ms: Option<u64>`,
@@ -374,7 +380,7 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     current public exit APIs and assert their serialized projections; do not name or
     construct the not-yet-defined receipt type. Exercise every existing early-return
     shape.
-  - Add `rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_replacement`. Capture through current public behavior, replace the pricing snapshot, and assert the original receive stamp, configured surface, max age, snapshot presence/as-of/readiness/value/source/blockers/diagnostics, gate, watermark, fair probabilities, uncertainty probability and signed diagnostic delta remain the RV source. Durable records retain only schema-owned projections; non-RV market inputs claim only same-callback atomicity.
+  - Add `rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_replacement`. Capture through current public behavior, replace the pricing snapshot, and assert the original receive stamp, configured surface, max age, snapshot presence/as-of/readiness/value/source/blockers/diagnostics, gate, watermark, fair probabilities, uncertainty probability and signed diagnostic delta remain the RV source. Exercise every current `RealizedVolBlockReason` in source order and pin the exact current pre-amendment decision blocker enum vector and evaluation string-label vector as direct expected record outputs. Require element/byte identity before and after replacement. Production must still use `realized_vol_blocker_to_exit_evidence` and `realized_volatility_block_reason_evidence_label(...).to_string()`; do not derive or define new mapping semantics in the receipt. Durable records retain only schema-owned projections; non-RV market inputs claim only same-callback atomicity.
   - Include a raw-ready blocked snapshot. Decision raw readiness stays true, its new independent usable-readiness input is false, evaluation `rv_ready` is false, and existing decision `realized_vol` remains gate-filtered. Evaluation keeps the captured signed delta; decision keeps only its positive future projection. Pin the `rv_as_of_minus_now_ms` misnomer semantics.
   - Add extreme-delta cases using `u64::MAX` and zero in both operand orders. Prove
     receipt/decision projection never wraps or inverts sign, positive decision output
@@ -459,14 +465,22 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Borrow the latest surface snapshot once in a dedicated
     `exit_realized_volatility_gate_receipt_at` capture helper and invoke free
     `classify_rv_gate` exactly once even when receive context is absent. Build the
-    compact exit-only projection; do not own full snapshot/classification/entry
-    evidence and do not use `classify_realized_vol_snapshot`. Preserve the strategy
-    wrapper only for other diagnostics/non-receipt paths.
-  - Derive fair-up/down and uncertainty once. Move `ExitEvaluation` into
-    `ExitSubmissionDecision` instead of `evaluation.clone()`. Log/durable builders
-    borrow the single receipt. Delete post-capture queries/locks/classification and RV
-    recomputation. Only schema-owned strings/vectors are copied; no-divergence remains
-    scoped to RV-derived fields and non-RV inputs retain same-callback atomicity.
+    compact exit-only projection; copy the snapshot's raw ordered
+    `Vec<RealizedVolBlockReason>` and compact schema-owned diagnostics, but do not own
+    full snapshot/classification/entry evidence and do not use
+    `classify_realized_vol_snapshot`. Preserve the strategy wrapper only for other
+    diagnostics/non-receipt paths. Decision and evaluation builders apply their
+    existing blocker mapping functions unchanged and preserve source order.
+  - Derive fair-up/down and uncertainty once. In
+    `exit_submission_decision_from_evaluation`, compute/cache every scalar needed
+    later or reorder those reads before moving `ExitEvaluation` into
+    `ExitSubmissionDecision`; remove only that exit-side `evaluation.clone()` with
+    behavior unchanged. The existing entry-side clone in
+    `entry_submission_decision_for_receive_at` remains expected and out of scope.
+    Log/durable builders borrow the single receipt. Delete post-capture queries/locks/
+    classification and RV recomputation. Only the raw blocker vector and compact
+    schema-owned strings/vectors are copied; no-divergence remains scoped to
+    RV-derived fields and non-RV inputs retain same-callback atomicity.
   - Preserve decision raw-ready and gate-filtered `realized_vol`. Add independent
     decision `rv_snapshot_has_ready_realized_vol: Option<bool>` durable+wire input;
     evaluation retains `rv_ready`. Serialize receipt watermark to decision
@@ -532,11 +546,15 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     to locate and inspect the actual complete receipt definition wherever it is
     declared, proving it owns no full snapshot, classification, or entry-evidence
     field. Use
-    `rg -n 'fn exit_realized_volatility_gate_receipt_at|classify_rv_gate\(|classify_realized_vol_snapshot\(|evaluation\.clone\(\)' src/strategies/binary_oracle_edge_taker/`
+    `rg -n 'fn exit_realized_volatility_gate_receipt_at|fn exit_submission_decision_from_evaluation|fn entry_submission_decision_for_receive_at|classify_rv_gate\(|classify_realized_vol_snapshot\(|evaluation\.clone\(\)' src/strategies/binary_oracle_edge_taker/`
     and inspect the complete capture-to-`ExitSubmissionDecision` path across every
     file it traverses, proving exactly one free-classifier call, no clone-producing
-    classifier call, and a moved rather than cloned `ExitEvaluation`. Record the
-    inspected ranges, run
+    classifier call, and no exit-side clone. A directory-wide hit for the existing
+    `entry_submission_decision_for_receive_at` `evaluation.clone()` is expected and
+    out of scope; classify it explicitly rather than treating the search as clean.
+    Fail the audit only if the exit capture/submission path still clones the
+    evaluation, and verify its later reads were cached or reordered before the move
+    without changing behavior. Record the inspected ranges, run
     `just source-fence-static`, and require the internal adversarial review in Step 7
     to repeat this structural inspection.
   - Commit the coherent implementation and lasting documentation. Keep the PR body head-agnostic: no current SHA, transient check status, or head-specific review receipt.

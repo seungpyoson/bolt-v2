@@ -178,16 +178,29 @@ transferred unchanged through `ExitSubmissionDecision`. Capture takes one immuta
 borrow from `latest_realized_vol_snapshot_for_surface`, invokes free
 `classify_rv_gate` exactly once, and immediately builds a compact owned exit-only
 projection. The receipt owns only schema/decision-needed values: gate,
-presence/as-of/watermark, raw and usable readiness, accepted RV/source, mapped exit
-blockers/diagnostics, signed delta, derived fair/uncertainty probabilities,
+presence/as-of/watermark, raw and usable readiness, accepted RV/source, the raw
+snapshot blockers as an ordered `Vec<RealizedVolBlockReason>`, compact schema-owned
+diagnostic projections, signed delta, derived fair/uncertainty probabilities,
 configured surface/max-age, and optional typed evaluation receive stamp. It must not
 own `RealizedVolGateClassification`, a full `RealizedVolSnapshot`, or the full
 entry-oriented `RealizedVolatilityEvidenceFields`.
 
-Only schema-owned strings/vectors are copied at this boundary. `ExitEvaluation` is
-moved into `ExitSubmissionDecision` rather than cloned, and log/durable builders
-borrow the one compact receipt. This removes the current full-snapshot/classification
-deep clone and repeated RV queries/locks while preserving immutable evidence.
+The raw blocker vector is copied from the snapshot without pre-mapping or reordering.
+The decision builder applies the existing `realized_vol_blocker_to_exit_evidence`
+mapping unchanged; the evaluation builder independently applies the existing
+`realized_volatility_block_reason_evidence_label(...).to_string()` mapping unchanged.
+No new blocker mapping semantics are introduced. Diagnostics remain compact
+schema-owned projections rather than full snapshot state.
+
+Only the raw blocker vector and compact schema-owned strings/vectors are copied at
+this boundary. The exit-side
+`evaluation.clone()` in `exit_submission_decision_from_evaluation` is removed:
+values that function still needs are computed/cached or read before `ExitEvaluation`
+is moved into `ExitSubmissionDecision`, with behavior unchanged. The existing
+entry-side `evaluation.clone()` in `entry_submission_decision_for_receive_at` remains
+expected and is outside this exit-receipt change. Log/durable builders borrow the one
+compact receipt. This removes the current exit full-snapshot/classification deep
+clone and repeated RV queries/locks while preserving immutable evidence.
 `classify_realized_vol_gate` remains available for non-receipt diagnostics; the exit
 receipt does not call clone-producing `classify_realized_vol_snapshot`.
 
@@ -444,6 +457,12 @@ watermarks, thresholds, or readiness inputs that they never captured.
 - After entry evaluation, replacing the pricing state's latest RV snapshot cannot
   change log, skip, or submit evidence: all three must retain the evaluation receipt's
   gate result and admitted snapshot identity.
+- Exit receipt tests pin every current `RealizedVolBlockReason` in source order. The
+  decision blocker enum vector and evaluation blocker string-label vector remain
+  element/byte-identical to pre-amendment records, including after the pricing
+  snapshot is replaced. Expected enum and string vectors pin the current record
+  outputs directly; production continues to call the two existing mapping functions
+  rather than defining new mapping logic.
 - A cutoff surface ignores both accepted observations newer than its event-time
   cutoff and eligible-but-unused observations after the final selected grid point.
   A separate regression case uses ascending event times with a larger receive time

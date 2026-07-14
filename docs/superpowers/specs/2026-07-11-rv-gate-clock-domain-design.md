@@ -129,21 +129,30 @@ call-site convention. No tolerance window or fallback comparison is introduced.
 
 Surface-policy ownership is resolved before the strategy can start. The existing
 `validate_strategies` pass continues to cross-reference each strategy's
-`realized_volatility_surface_id`, and `raw_taker_config` independently resolves that
-identifier against `loaded.root.realized_volatility_surfaces` and copies
-`surface.policy.max_source_age_ms` into the required in-memory
-`BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`. A missing
-surface fails the existing binding/startup `Result` path. The exit callback never
-looks up an optional policy or fails because a policy disappeared; shared pricing
-APIs that retain an optional compatibility boundary receive
-`Some(config.realized_volatility_max_source_age_ms)`. This keeps forced-flat
-available even when the valid configured surface has no current snapshot.
+`realized_volatility_surface_id`. Independently, `raw_taker_config` is the only
+runtime-mapping layer that resolves that identifier against
+`loaded.root.realized_volatility_surfaces`: it distinguishes an absent surfaces
+block from a present block missing the configured identifier, rejects either through
+the existing binding/startup `Result` path, requires the selected policy age to be
+positive, and copies `surface.policy.max_source_age_ms` into required raw strategy
+TOML. `parse_config` cannot resolve surface identifiers; it only requires the copied
+scalar and rejects zero before constructing the required in-memory
+`BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`.
+
+Every entry, exit, and shared production pricing call reads that stored scalar.
+Shared pricing APIs that retain an optional diagnostic boundary receive
+`Some(config.realized_volatility_max_source_age_ms)`. The obsolete optional
+`StrategyBuildContext::realized_volatility_max_source_age_ms_for_surface` and
+`RealizedVolSurfaceRuntime::max_source_age_ms_for_surface` accessors are removed;
+the runtime/context remains responsible for RV ingest, subscriptions, and current
+snapshots, not strategy-policy lookup. This keeps forced-flat available even when a
+valid configured surface has no current snapshot.
 
 The receive-domain classifier inputs must remain auditable after the in-memory
 snapshot changes. Each exit evaluation therefore owns one immutable
 `ExitRealizedVolatilityGateReceipt`, captured before any evaluation early return and
 transferred unchanged through `ExitSubmissionDecision`. It owns the evaluation's
-optional `LocalReceiveMs`, configured surface identity, required effective
+optional typed `LocalReceiveMs`, configured surface identity, required effective
 `max_source_age_ms: u64`, one owned `RealizedVolGateClassification` (or an equivalent
 single-classification result), and one owned `RealizedVolatilityEvidenceFields`
 projection. It also owns the classified snapshot-presence, as-of, readiness, value,
@@ -151,26 +160,35 @@ source, blockers, diagnostics and receive watermark, plus the fair-up, fair-down
 uncertainty probabilities derived from the accepted RV value and the immutable
 snapshot-versus-trigger diagnostic delta.
 
-The decision, log and both exit durable-record builders derive every RV field that
-their existing schemas own from that receipt plus the immutable trigger context.
+The decision, log and both exit durable-record builders derive every RV-derived
+field that their existing schemas own from that receipt plus the immutable trigger
+context.
 The receipt's complete value/source/probability projection does not silently widen
 either durable schema: decision evidence keeps its existing value/source fields,
 while exit-evaluation evidence keeps only the RV fields it already owns plus the two
-new classifier inputs below. After capture the builders do not query the current
+new numeric classifier inputs below. After capture the builders do not query the current
 pricing snapshot, call `classify_realized_vol_gate`, or recompute an RV-derived
 probability. `ExitEvaluation` uses the receipt's fair probability to compute hold EV,
-so decision and evidence cannot diverge after the pricing state is replaced.
+so RV-derived decision and evidence fields cannot diverge after the pricing state is
+replaced. Non-RV market inputs are not historicalized by this receipt; their
+consistency is the existing same-callback atomicity contract.
 
 The two existing readiness projections remain deliberately distinct. Decision
-evidence writes `rv_snapshot_ready = snapshot.ready`; evaluation evidence writes
-`rv_ready = snapshot.ready_realized_vol().is_some()`. A ready snapshot carrying a
-blocker therefore discriminates the two projections, and replacement after receipt
-capture cannot change either recorded value. One captured signed
+evidence keeps `rv_snapshot_ready = snapshot.ready`; evaluation evidence keeps
+`rv_ready = snapshot.ready_realized_vol().is_some()`. Decision evidence additionally
+stores the independent optional replay input
+`rv_snapshot_has_ready_realized_vol: Option<bool>`, with new records writing
+`Some(snapshot.ready_realized_vol().is_some())`. The existing decision
+`realized_vol` remains gate-filtered output and is not redefined as a replay input.
+A raw-ready snapshot carrying a blocker therefore discriminates the projections,
+and replacement after receipt capture cannot change any of them. One captured signed
 snapshot-as-of-minus-trigger-event delta maps unchanged to evaluation evidence's
-signed `rv_as_of_minus_now_ms` and maps only its positive component to decision
-evidence's `rv_future_dating_delta_ms`. The receipt's evaluation receive stamp, not
-`exit_eval_now_ms`, is the sole source of serialized `trigger_ts_init_ms`; a second
-timestamp read is not permitted.
+signed `rv_as_of_minus_now_ms`. That existing field name is a historical misnomer:
+its preserved semantics are snapshot `as_of_ms` minus the trigger's venue-event
+timestamp, not wall-clock "now." The same captured delta maps only its positive
+component to decision evidence's `rv_future_dating_delta_ms`. The receipt's
+evaluation receive stamp, not `exit_eval_now_ms`, is the sole source of serialized
+`trigger_ts_init_ms`; a second timestamp read is not permitted.
 
 A configured surface policy is required and is captured at startup, never recovered
 inside an exit evaluation. A valid configured surface with no current snapshot
@@ -182,40 +200,76 @@ never become ordinary `MissingSnapshot` or an unbounded
 remains `MissingEvaluationEventTime`; if a snapshot exists, its receive watermark and
 all other schema-owned captured fields remain present in evidence.
 
-`BoltV3ExitDecisionEvidence` and `BoltV3ExitEvaluationEvidence` both serialize
-`rv_snapshot_receive_watermark_ms` and `rv_max_source_age_ms` from the receipt. New
-writes always store `Some(receipt.max_source_age_ms)`. The fields remain optional only
-in the existing version-15 durable/wire shape so a legacy record that omits either
-field, or explicitly stores `null`, decodes it as `None`; this amendment does not bump
-the evidence schema version or alter the gate taxonomy.
+The receipt keeps the watermark typed as `LocalReceiveMs`; durable/wire conversion is
+explicit and asymmetric because the existing record families use different integer
+domains. `BoltV3ExitDecisionEvidence` stores
+`rv_snapshot_receive_watermark_ms: Option<u64>`,
+`rv_max_source_age_ms: Option<u64>`, and the decision-only
+`rv_snapshot_has_ready_realized_vol: Option<bool>`. `BoltV3ExitEvaluationEvidence`
+stores `rv_snapshot_receive_watermark_ms: Option<i64>` using checked conversion and
+`rv_max_source_age_ms: Option<u64>` while retaining its existing `rv_ready: bool`.
+Negative or otherwise unrepresentable values are invalid/unreplayable; no conversion
+may cast, saturate, or default them. New writes always store the representable
+watermark, `Some(receipt.max_source_age_ms)`, and the decision replay boolean. These
+inputs remain optional only in the existing version-15 durable/wire shape so a
+legacy record that omits one or stores `null` still decodes; such a record is
+unreplayable rather than inferred. This amendment does not bump the evidence schema
+version or alter the six-value gate taxonomy.
 
-The durable proof is record-local, not dependent on retained strategy memory. For
-each of the six gate categories, both serialized-and-decoded record types carry
-enough schema-owned input to recompute the gate using only their trigger receive
-stamp, snapshot presence/readiness projection, receive watermark and maximum age.
-For decision evidence the usable-readiness projection is exactly its existing raw
-`rv_snapshot_ready && rv_snapshot_blockers.is_empty()` plus a present
-`realized_vol` string that parses to a finite value greater than or equal to zero,
-matching `ready_realized_vol()`. Evaluation evidence uses its canonical existing
-`rv_ready`. The recomputed result must equal the stored gate. The table includes
-divergent event and receive clocks, `MissingEvaluationEventTime` with a present
-watermark, a valid configured surface with no snapshot, raw-ready snapshots that
-have a blocker, lack an RV value, or carry an invalid/non-finite durable RV spelling
-when representable, and an accepted zero RV value. Assertions for each record stop
-at the fields that record's existing schema owns.
+The durable proof is record-local, not dependent on retained strategy memory. It
+replays from reconstruction inputs and must not consult the stored gate result or
+the decision record's gate-filtered `realized_vol`. Decision replay uses only its
+optional independent `rv_snapshot_has_ready_realized_vol`; evaluation replay uses
+its existing `rv_ready`. A record missing any required reconstruction input is
+unreplayable, never assigned a default result.
 
-Entry flood guards track semantic RV gate state without admitting tick-varying time
-into their stable base keys. The existing fields become `EntrySkipDedupeBaseKey` and
-`BlockedStrategyInputDedupeBaseKey`. Each path owns an episode with one stable base
-key and a finite seen set of `RvGateDedupeState { gate_result: BoltV3RvGateResult,
-watermark_present: bool }` values:
+Replay mirrors the free `classify_rv_gate` function exactly, in this normative
+precedence order:
+
+1. absent snapshot -> `MissingSnapshot`;
+2. absent evaluation receive stamp -> `MissingEvaluationEventTime`;
+3. absent snapshot receive watermark -> `RejectedNotReady`;
+4. watermark later than evaluation receive -> `RejectedFutureDated`;
+5. same-domain age greater than the effective maximum age -> `RejectedStale`;
+6. unusable readiness -> `RejectedNotReady`;
+7. otherwise -> `Accepted`.
+
+The production strategy wrapper remains named `classify_realized_vol_gate`; it owns
+strategy diagnostics around, but does not redefine, the free
+`classify_rv_gate` precedence. Record tables cover all six results plus overlapping
+states that lock precedence: not-ready plus future, not-ready plus stale, and blocker
+plus stale, as well as missing snapshot/evaluation/watermark and a valid zero RV.
+Assertions for each record stop at the fields that record's schema owns.
+
+Entry flood guards track semantic state without admitting tick-varying time into
+their keys. The whitelists are exact:
+
+- `EntrySkipDedupeBaseKey = { market_id }`.
+- Entry semantic state is `{ reason_category, gate_blocked_by,
+  pricing_blocked_by, fast_venue_available,
+  reference_current_price_available, fast_venue_incoherent, rv }`.
+- `BlockedStrategyInputDedupeBaseKey = { configured_target_id,
+  market_selection_ruleset_id, market_id, up_instrument_id,
+  down_instrument_id, price_to_beat_source,
+  realized_volatility_surface_id }`.
+- Blocked semantic state is `{ typed_market_selection_outcome, gate_blocked_by,
+  pricing_blocked_by, typed_selected_side, fast_venue_available,
+  reference_current_price_available, reference_current_price_failed_over,
+  fast_venue_incoherent, rv }`.
+- In both paths, `rv = { gate_result: BoltV3RvGateResult,
+  watermark_present: bool }`.
+
+The keys explicitly exclude `interval_open`; venue/source IDs outside the blocked
+base whitelist; RV blockers, source diagnostics, and unknown IDs; RV values,
+as-of values, and raw watermark values; prices, ages, jitter, probabilities,
+counters, and all timestamps. Each path owns an episode with one stable base key and
+a finite seen set of its complete semantic-state values:
 
 - The first occurrence of each semantic state in a stable-base episode emits.
 - Repeated or returning states, including `A -> B -> A` oscillation, remain
   suppressed after their first occurrence in that episode.
-- Numeric watermark movement with unchanged presence remains suppressed. Raw
-  watermark values, timestamps, ages, prices, counters and volatility values remain
-  outside both base keys and semantic-state keys.
+- Numeric watermark movement with unchanged presence and churn in every excluded
+  field remains suppressed.
 - A stable-base-key change begins a new episode. The entry-skip episode also ends at
   the existing admitted-entry reset; the blocked-snapshot episode ends at the
   existing transition out of the RV-not-ready path.
@@ -223,9 +277,11 @@ watermark_present: bool }` values:
   behavior. Blocked-snapshot preserves its existing mark-only-after-the-propagating
   writer-succeeds behavior.
 
-The semantic set is bounded by the closed six-category gate enum times two watermark
-presence values. Durable records still retain the exact gate result and raw optional
-watermark even though dedupe compares only category and presence.
+Tests exercise all twelve RV states exactly once per stable episode, more than 100
+`A -> B -> A` oscillations, more than 100 excluded-field churn events, each semantic
+field, each stable-base field, both real reset sites, and both writer-commit
+semantics. Durable records still retain the exact gate result and raw optional
+watermark even though dedupe's RV projection compares only category and presence.
 
 This is the user-approved exception to the earlier report-only dedupe ruling. Other
 dedupe-key findings and the `position_id=None` finding remain report-only under
@@ -289,12 +345,18 @@ Any future restart remains subject to the existing 1 MiB fail-closed boundary, a
 into this change. #763 S3 archival remains later and depends on #883 redaction; it is
 not a soak blocker.
 
-The two additive optional exit fields modestly increase each newly written exit
-decision and exit-evaluation record, and semantic entry transitions may add records
-that the old collapsed key suppressed. The byte increase is unmeasured. It does not
-change the existing 1 MiB reader boundary, the #1275 item 13 pre-soak requirement, or
-the archived-session arithmetic above. Historical records cannot be backfilled with
-watermarks or thresholds that they never captured.
+The two additive numeric exit fields have a conservative compact-JSON bound of at
+most 100 bytes per record, including field names, separators, and maximum-width
+integer spellings. The decision-only readiness boolean adds at most 43 bytes, so the
+fixed-field bound is at most 143 bytes for a decision record and 100 bytes for an
+evaluation record. Even pessimistically charging 143 bytes to every one of the 106
+counterfactual records adds at most 15,158 bytes, leaving that fixed-record-count
+counterfactual safely below 1 MiB. This bound does not claim a final restart size:
+semantic entry states may add records that the old collapsed key suppressed, and
+that record-count growth remains unmeasured. The amendment does not change the
+existing 1 MiB reader boundary, the #1275 item 13 pre-soak requirement, or the
+archived-session arithmetic above. Historical records cannot be backfilled with
+watermarks, thresholds, or readiness inputs that they never captured.
 
 ## Verification Contract
 
@@ -310,8 +372,9 @@ watermarks or thresholds that they never captured.
   adapter never produced the genuine local receive stamps later required by the fixed
   classifier. Final classifier behavior is proved by production-shaped differentials,
   not retroactively inferred from missing historical data. New version-15 records
-  carry the optional snapshot receive watermark and effective maximum source age, but
-  those additive fields cannot restore data absent from the archived session.
+  carry the optional snapshot receive watermark and effective maximum source age;
+  decision records also carry the independent optional usable-readiness input. Those
+  additive fields cannot restore data absent from the archived session.
 - Alternating cross-venue book clocks fail red before the production change and
   collapse to one evidence key afterward.
 - Alternating book, signal, and selection triggers share the receive clock and do not
@@ -342,11 +405,13 @@ watermarks or thresholds that they never captured.
 - Rejected observations cannot advance the event or receive watermark.
 - Restart bootstrap with an open position succeeds at or below 1 MiB and enters existing
   blind recovery above 1 MiB.
-- The two approved entry keys record RV gate-category and watermark-presence
-  states once per stable-base episode while suppressing raw watermark advances,
-  repeated/returning states, and long alternating-state floods. Base changes and the
-  existing real episode-end resets permit the states to record again. Other
-  dedupe-key and `position_id=None` findings remain report-only under #1354.
+- The two approved entry keys use the exact stable-base and semantic-state
+  whitelists above. They record all twelve RV category/presence states once per
+  stable-base episode while suppressing raw watermark advances, excluded-field
+  churn, repeated/returning states, and long alternating-state floods. Every
+  whitelisted semantic/base field discriminates; base changes and the existing real
+  episode-end resets permit states to record again. Other dedupe-key and
+  `position_id=None` findings remain report-only under #1354.
 - The archived replay reads the existing incident artifact in place; this PR creates
   no new archive upload. Classification and handling of that pre-#883 artifact remain
   with #883/#763.

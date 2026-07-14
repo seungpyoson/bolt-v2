@@ -216,6 +216,8 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 **Files:**
 - Modify: `src/bolt_v3_decision_evidence.rs`
 - Modify: `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
+- Modify: `src/bolt_v3_realized_volatility_runtime.rs`
+- Modify: `src/strategies/registry.rs`
 - Modify: `src/strategies/binary_oracle_edge_taker/config.rs`
 - Modify: `src/strategies/binary_oracle_edge_taker/exit_decision.rs`
 - Modify: `src/strategies/binary_oracle_edge_taker/entry_decision.rs`
@@ -237,14 +239,19 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   `tests/fixtures/bolt_v3/predeploy_exit_evaluation_evidence.jsonl`.
 
 **Interfaces:**
-- `raw_taker_config` resolves the already cross-validated
+- `raw_taker_config` alone resolves the already cross-validated
   `realized_volatility_surface_id` against
-  `loaded.root.realized_volatility_surfaces`, copies the configured policy into
-  required `BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`,
-  and returns the existing binding/startup error when the surface is absent. Exit
-  callbacks read only this stored scalar; they never perform an optional policy
-  lookup or fail forced-flat because the valid surface has no snapshot. Shared
-  pricing Option APIs receive `Some(stored_age)`.
+  `loaded.root.realized_volatility_surfaces`. It distinguishes an absent surfaces
+  block from a present block missing the configured ID and returns the existing
+  binding/startup error for either. It copies the selected positive policy age into
+  required raw strategy TOML. `parse_config` cannot resolve identifiers; it only
+  requires the copied scalar, rejects zero, and constructs required
+  `BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`.
+- Every entry, exit, and shared production pricing use reads the required config
+  scalar. Option-valued diagnostic boundaries receive `Some(stored_age)`. Delete
+  `StrategyBuildContext::realized_volatility_max_source_age_ms_for_surface` and
+  `RealizedVolSurfaceRuntime::max_source_age_ms_for_surface`; retain runtime/context
+  ownership of ingest, subscriptions, and snapshots.
 - `ExitRealizedVolatilityGateReceipt` is captured before any `ExitEvaluation` early
   return and transferred unchanged through `ExitSubmissionDecision`. It owns
   `evaluation_receive_ms: Option<LocalReceiveMs>`, the configured surface identity,
@@ -255,57 +262,143 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   snapshot-versus-trigger delta, and captured fair-up/fair-down/uncertainty
   probabilities.
 - `BoltV3ExitDecisionEvidence` and `BoltV3ExitEvaluationEvidence` add optional `rv_snapshot_receive_watermark_ms` and `rv_max_source_age_ms` fields; their wire structs decode omitted or `null` legacy values as `None` without changing `BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION` from `15`.
-- Each durable record receives only the receipt fields its existing schema owns plus
-  those two new classifier inputs. Decision readiness remains
-  `rv_snapshot_ready = snapshot.ready`; evaluation readiness remains
-  `rv_ready = snapshot.ready_realized_vol().is_some()`. One captured signed
-  as-of-minus-trigger-event delta maps signed to evaluation evidence and positive-only
-  to decision future-delta evidence. `trigger_ts_init_ms` comes from the receipt's
-  evaluation receive input, never `exit_eval_now_ms`.
-- Existing key fields become `EntrySkipDedupeBaseKey` and
-  `BlockedStrategyInputDedupeBaseKey`. Each path owns one stable-base episode with a
-  finite seen set of `RvGateDedupeState { gate_result: BoltV3RvGateResult,
-  watermark_present: bool }`. Neither base key nor semantic state stores a raw
-  watermark, timestamp, age, price, counter, or volatility value.
+- The receipt watermark stays typed `LocalReceiveMs`. Decision durable/wire fields
+  are `rv_snapshot_receive_watermark_ms: Option<u64>`,
+  `rv_max_source_age_ms: Option<u64>`, and decision-only
+  `rv_snapshot_has_ready_realized_vol: Option<bool>`. Evaluation durable/wire fields
+  are `rv_snapshot_receive_watermark_ms: Option<i64>` with checked conversion and
+  `rv_max_source_age_ms: Option<u64>`; evaluation continues to use existing
+  `rv_ready: bool`. Negative or unrepresentable values are invalid/unreplayable,
+  never cast, saturated, or defaulted.
+- Decision keeps existing `realized_vol` gate-filtered semantics. Replay never uses
+  it or the stored gate. It uses the independent optional usable-readiness boolean;
+  evaluation replay uses existing `rv_ready`. Missing legacy reconstruction inputs
+  make the record unreplayable. Replay mirrors free `classify_rv_gate` precedence:
+  missing snapshot; missing evaluation receive; missing watermark -> not ready;
+  future; stale; unusable readiness -> not ready; accepted. The strategy wrapper is
+  `classify_realized_vol_gate` and must not redefine that order.
+- One captured signed snapshot-as-of-minus-trigger-event delta maps unchanged to
+  evaluation evidence's historically misnamed `rv_as_of_minus_now_ms` and
+  positive-only to decision future-delta evidence. `trigger_ts_init_ms` comes from
+  the receipt's evaluation receive input, never `exit_eval_now_ms`.
+- Exact dedupe whitelists:
+  - entry base `{ market_id }`;
+  - entry state `{ reason_category, gate_blocked_by, pricing_blocked_by,
+    fast_venue_available, reference_current_price_available,
+    fast_venue_incoherent, rv }`;
+  - blocked base `{ configured_target_id, market_selection_ruleset_id, market_id,
+    up_instrument_id, down_instrument_id, price_to_beat_source,
+    realized_volatility_surface_id }`;
+  - blocked state `{ typed_market_selection_outcome, gate_blocked_by,
+    pricing_blocked_by, typed_selected_side, fast_venue_available,
+    reference_current_price_available, reference_current_price_failed_over,
+    fast_venue_incoherent, rv }`;
+  - `rv = { gate_result: BoltV3RvGateResult, watermark_present: bool }`.
+  Exclude `interval_open`, non-whitelisted venue/source IDs, RV blockers/source
+  diagnostics/unknown IDs, values/as-of/raw watermarks, prices, ages, jitter,
+  probabilities, counters, and timestamps.
 - Every new Rust test in this task starts with the already-authorized prefix
   `rv_clock_domain_amendment_`.
 
 - [ ] **Step 1: Add the failing exit wire and single-capture tests.**
-  - Add `rv_clock_domain_amendment_exit_wires_preserve_new_and_legacy_inputs` across the inline and integration evidence tests. Assert both record kinds serialize `rv_snapshot_receive_watermark_ms = 1_200` and `rv_max_source_age_ms = 500`; delete each key and separately replace it with `null`, then assert both forms decode to `None`. Update all three integration struct literals. Keep both predeploy JSONL fixtures byte-identical and assert their omitted fields decode to `None`. Pin schema version `15`.
-  - Extend the startup/config tests with `rv_clock_domain_amendment_runtime_mapping_copies_required_surface_age`, `rv_clock_domain_amendment_runtime_mapping_rejects_unknown_surface`, and required/nonzero runtime-config coverage. Assert the mapper copies the fixture surface's configured `500` rather than a test fallback, and the unknown ID reaches the binding/startup error path.
-  - Add `rv_clock_domain_amendment_exit_records_share_the_captured_receipt` and `rv_clock_domain_amendment_exit_receipt_survives_early_returns`. Build one required-threshold receipt and exercise every existing early-return shape.
-  - Add `rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_replacement`. Capture a decision, replace the current pricing snapshot, and assert the receipt retains its original receive stamp, configured surface, max age, snapshot presence/as-of/readiness/value/source/blockers/diagnostics, gate, watermark, fair probabilities, uncertainty probability and signed diagnostic delta. Assert each durable record retains only its schema-owned projection plus the two new inputs; do not add receipt value/source fields to exit-evaluation evidence.
-  - Include a ready snapshot carrying a blocker before replacement. Assert decision `rv_snapshot_ready` remains raw `snapshot.ready`, evaluation `rv_ready` remains `snapshot.ready_realized_vol().is_some()`, the evaluation record keeps the captured signed delta, and the decision record keeps only its positive future-delta projection.
+  - The committed RED must compile against current APIs and fail named behavioral
+    assertions, never because a future field/type is undefined. Build RED with
+    dynamic TOML/JSON mutation and current public strategy/evidence APIs. References
+    to new typed fields and new struct literals begin only in the implementation
+    commit after the RED transcript.
+  - Add `rv_clock_domain_amendment_exit_wires_preserve_new_and_legacy_inputs` using
+    serialized JSON values during RED. Require decision watermark `1_200u64`, max age
+    `500u64`, and independent readiness `true`; require evaluation watermark
+    `1_200i64` and max age `500u64`. Cover omitted/null legacy values, negative and
+    out-of-range checked-conversion rejection, and schema version `15`. Keep both
+    predeploy JSONL fixtures byte-identical.
+  - Add `rv_clock_domain_amendment_runtime_mapping_copies_required_surface_age`,
+    `rv_clock_domain_amendment_runtime_mapping_rejects_absent_surface_block`,
+    `rv_clock_domain_amendment_runtime_mapping_rejects_unknown_surface`, and
+    `rv_clock_domain_amendment_runtime_config_requires_positive_surface_age` using
+    dynamic TOML/current mapper APIs. Prove `raw_taker_config` copies configured
+    `500`, distinguishes both missing shapes, and `parse_config` requires `> 0`.
+  - Add `rv_clock_domain_amendment_exit_records_share_the_captured_receipt` and
+    `rv_clock_domain_amendment_exit_receipt_survives_early_returns`. In RED, drive
+    current public exit APIs and assert their serialized projections; do not name or
+    construct the not-yet-defined receipt type. Exercise every existing early-return
+    shape.
+  - Add `rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_replacement`. Capture through current public behavior, replace the pricing snapshot, and assert the original receive stamp, configured surface, max age, snapshot presence/as-of/readiness/value/source/blockers/diagnostics, gate, watermark, fair probabilities, uncertainty probability and signed diagnostic delta remain the RV source. Durable records retain only schema-owned projections; non-RV market inputs claim only same-callback atomicity.
+  - Include a raw-ready blocked snapshot. Decision raw readiness stays true, its new independent usable-readiness input is false, evaluation `rv_ready` is false, and existing decision `realized_vol` remains gate-filtered. Evaluation keeps the captured signed delta; decision keeps only its positive future projection. Pin the `rv_as_of_minus_now_ms` misnomer semantics.
   - Cover `Accepted`, `MissingSnapshot`, `MissingEvaluationEventTime`, `RejectedFutureDated`, `RejectedStale`, and `RejectedNotReady`. A present snapshot keeps its watermark even for `MissingEvaluationEventTime` and every rejection. Only an absent snapshot or a snapshot with no accepted watermark records `None`.
-  - Add `rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs`: table all six categories for both serialized-and-decoded record types, recompute from only that record's trigger receive, snapshot presence/readiness projection, receive watermark and maximum age, and require equality with the stored gate. Decision defines usable readiness exactly as raw `rv_snapshot_ready && rv_snapshot_blockers.is_empty()` plus a present `realized_vol` string that parses finite and `>= 0`, matching `ready_realized_vol()`; evaluation uses its canonical existing `rv_ready`. Include divergent event/receive stamps, `MissingEvaluationEventTime` with a present watermark, and a valid surface with no snapshot. Keep assertions limited to each record's existing schema-owned fields.
-  - Add explicit RED discriminators with raw ready `true`, empty blockers and a present watermark but missing RV, plus invalid/non-finite RV spellings when the durable representation permits them; each must remain `RejectedNotReady`. A present finite zero RV must remain usable and reach the otherwise-accepted case.
+  - Add `rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs` for
+    serialized-and-decoded records. Recompute without reading stored gate or
+    gate-filtered RV. Lock exact free-function precedence with cases for not-ready +
+    future, not-ready + stale, blocker + stale, missing snapshot, missing evaluation,
+    missing watermark, each of six results, and accepted zero. Missing/null legacy
+    reconstruction inputs are explicitly unreplayable, not inferred.
   - Prove a valid configured surface with no snapshot produces `MissingSnapshot` while retaining `Some(max_source_age_ms)` and an otherwise valid forced-flat exit remains available. Unknown surface identity is a startup failure, never a callback error, ordinary `MissingSnapshot`, or an unbounded-age fallback.
 
 - [ ] **Step 2: Add the failing episode-bounded semantic-dedupe tests.**
   - Add `rv_clock_domain_amendment_entry_skip_episode_tracks_finite_rv_states` and `rv_clock_domain_amendment_blocked_snapshot_episode_tracks_finite_rv_states` in `source_evidence.rs`.
-  - For both paths, cover all six gate categories crossed with watermark absence/presence and verify the exact mapping into `RvGateDedupeState`.
-  - Run more than 100 `A -> B -> A` oscillations and assert only the first `A` and first `B` emit. Cover `Some -> None -> Some`, numeric `Some(1_200) -> Some(1_201)` churn, and a state returning after intervening states.
-  - Assert a stable base-key change begins a fresh episode and both states may emit again. Exercise the real existing episode-end reset for each path and assert the next identical state emits.
-  - Preserve writer semantics with dedicated tests: entry-skip marks the state seen even when its writer error is swallowed; blocked-snapshot marks only after a successful write and retries after a propagated failure.
+  - For both paths, cover all twelve gate-category/watermark-presence states exactly
+    once per stable episode and verify the exact nested `rv` projection.
+  - Add `rv_clock_domain_amendment_entry_skip_excluded_churn_is_suppressed` and
+    `rv_clock_domain_amendment_blocked_snapshot_excluded_churn_is_suppressed`.
+    Run more than 100 `A -> B -> A` oscillations and more than 100 changes across the
+    complete exclusion list. Assert only first semantic states emit, including
+    `Some -> None -> Some`, numeric watermark churn, and return after intervention.
+  - Add `rv_clock_domain_amendment_entry_skip_semantic_fields_discriminate` and
+    `rv_clock_domain_amendment_blocked_snapshot_semantic_fields_discriminate`; mutate
+    each whitelisted semantic field independently and require an emission.
+  - Add `rv_clock_domain_amendment_entry_skip_base_fields_start_new_episode` and
+    `rv_clock_domain_amendment_blocked_snapshot_base_fields_start_new_episode`;
+    mutate each whitelisted stable-base field independently. Exercise both real
+    episode-end resets and require the next identical state to emit.
+  - Add `rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen` and
+    `rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries`: entry-skip
+    marks seen even when its writer error is swallowed; blocked-snapshot marks only
+    after a successful write and retries after a propagated failure.
   - Assert emitted records retain exact raw watermark values and gate categories even though the episode set compares only category and presence.
 
 - [ ] **Step 3: Capture the one authorized local RED.**
   - Run `just fmt-check` so formatting is not discovered remotely.
-  - Commit the complete Steps 1-2 tests-only state before executing Rust so the RED has an exact immutable commit. Do not publish this commit.
+  - Before committing, prove all amendment tests compile against the current public
+    API without new production fields/types. Commit the complete Steps 1-2 tests-only
+    state so the RED has an exact immutable commit. Do not publish this commit.
   - Run exactly `BOLT_ALLOW_LOCAL_RUST=1 cargo nextest run --locked rv_clock_domain_amendment_` against that committed tests-only state. This is the single owner-authorized local Rust exception; do not run Rust Probe, a second local Rust command, local Rust GREEN, clippy, or the full suite.
-  - A compiler-error RED caused by the not-yet-defined receipt or fields is acceptable. Record the exact commit and compiler/test evidence; named runtime failures are not required.
+  - Accept the RED only when the named amendment tests execute and fail their named
+    assertions for missing production behavior. Compiler errors, zero matched tests,
+    and harness/setup failures are not evidence. Record the immutable test commit and
+    exact assertion output.
 
 - [ ] **Step 4: Implement one full immutable exit receipt.**
-  - In `raw_taker_config`, resolve the strategy surface against `loaded.root.realized_volatility_surfaces` and copy `surface.policy.max_source_age_ms` into new required `BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`. Preserve `validate_strategies` cross-reference validation and fail the existing binding/startup `Result` path if direct/post-load construction supplies an unknown surface. Add required positive config validation where the runtime-config layer already enforces positive policy values.
-  - Construct `ExitRealizedVolatilityGateReceipt` once before entering `exit_evaluation_with_hold_ev_at`. Its `max_source_age_ms` comes from the stored required config field. Remove callback-time policy lookup; pass `Some(stored_age)` only at shared pricing Option boundaries. A valid surface with no snapshot is `MissingSnapshot`, not an error, so forced-flat remains available.
-  - With a receive stamp, consume one `RealizedVolGateClassification`; without one, use the actual `classify_realized_vol_gate` diagnostic path once. Preserve `RealizedVolGateClassification`, `BoltV3RvGateResult`, and existing `exit_rv_gate_result_from_shared` names and roles.
+  - In `raw_taker_config`, distinguish absent surfaces block from missing configured ID
+    and copy positive `surface.policy.max_source_age_ms`. In `parse_config`, require
+    the copied scalar and reject zero without resolving IDs. Preserve
+    `validate_strategies` cross-reference validation and existing startup errors.
+  - Rewire every entry, exit, and shared production pricing call to the required
+    config scalar. Delete both optional policy lookup accessors from
+    `registry.rs`/`bolt_v3_realized_volatility_runtime.rs`; retain their ingest,
+    subscription, and snapshot responsibilities.
+  - Construct `ExitRealizedVolatilityGateReceipt` once before entering `exit_evaluation_with_hold_ev_at`. Remove callback-time policy lookup; pass `Some(stored_age)` only at shared diagnostic Option boundaries. A valid surface with no snapshot is `MissingSnapshot`, not an error, so forced-flat remains available.
+  - With a receive stamp, consume one `RealizedVolGateClassification`; without one,
+    use the strategy wrapper `classify_realized_vol_gate` diagnostic path once.
+    Preserve wrapper/free-function names and the normative free `classify_rv_gate`
+    precedence, plus `BoltV3RvGateResult` and `exit_rv_gate_result_from_shared` roles.
   - Derive fair-up, fair-down and uncertainty probabilities once from the captured accepted RV value. Use the captured fair probability for hold EV. Capture `RealizedVolatilityEvidenceFields`, mapped exit blockers/diagnostics and one signed snapshot-as-of-minus-trigger-event delta at the same boundary.
-  - Thread the receipt through `ExitEvaluation`, `ExitSubmissionDecision`, `ExitEvaluationLogFields`, `BoltV3ExitDecisionEvidence::from_exit_decision`, logging and `record_exit_evaluation_evidence`. Every schema-owned RV field in both records comes only from the receipt plus immutable trigger data. Delete all post-capture pricing snapshot lookups, `classify_realized_vol_gate` calls and RV-derived probability recomputation. Preserve decision raw-ready versus evaluation usable-ready semantics; map the captured signed delta unchanged to evaluation and positive-only to decision.
-  - Serialize `trigger_ts_init_ms` from `receipt.evaluation_receive_ms`, never from `exit_eval_now_ms`. Add `rv_snapshot_receive_watermark_ms: Option<LocalReceiveMs>` and `rv_max_source_age_ms: Option<u64>` to both durable structs and optional `u64` fields to both wire structs. New records write `Some(receipt.max_source_age_ms)`; missing/null `None` is legacy-only. Preserve schema version 15 and gate taxonomy; do not add value/source fields to the exit-evaluation schema.
+  - Thread the receipt through `ExitEvaluation`, `ExitSubmissionDecision`, `ExitEvaluationLogFields`, `BoltV3ExitDecisionEvidence::from_exit_decision`, logging and `record_exit_evaluation_evidence`. Every schema-owned RV-derived field comes only from the receipt plus immutable trigger data. Delete post-capture snapshot queries, wrapper classifier calls, and RV probability recomputation. Scope no-divergence to RV-derived fields; non-RV inputs retain same-callback atomicity.
+  - Preserve decision raw-ready and gate-filtered `realized_vol`. Add independent
+    decision `rv_snapshot_has_ready_realized_vol: Option<bool>` durable+wire input;
+    evaluation retains `rv_ready`. Serialize receipt watermark to decision
+    `Option<u64>` and evaluation `Option<i64>` with checked conversion; serialize max
+    age as `Option<u64>` on both. Reject invalid conversions; never cast/saturate.
+    Missing/null reconstruction inputs remain legacy-only and unreplayable. Preserve
+    schema version 15 and gate taxonomy; do not add value/source fields to evaluation.
+  - Serialize `trigger_ts_init_ms` from `receipt.evaluation_receive_ms`, never from
+    `exit_eval_now_ms`. Preserve the existing signed `rv_as_of_minus_now_ms` field's
+    snapshot-as-of-minus-trigger-event semantics despite its name.
   - Keep production startup/exit wrappers on their existing `Result` paths. Test helpers may unwrap those same paths only after supplying a real fixture surface policy and matching required config age; no test-only `None`, unlimited-age or alternate fallback path is allowed.
 
 - [ ] **Step 5: Implement episode-bounded semantic entry dedupe.**
-  - Preserve every existing key field in `EntrySkipDedupeBaseKey` and `BlockedStrategyInputDedupeBaseKey`. Define `RvGateDedupeState` and one episode per path containing a stable base key plus `BTreeSet<RvGateDedupeState>` (or an equivalent bounded seen set).
+  - Implement only the exact base/state whitelists in this task's Interfaces. Define
+    nested `RvGateDedupeState` and one episode per path containing a stable base plus
+    a `BTreeSet` of complete semantic states (or equivalent bounded seen set).
   - Build semantic state directly from `decision.evaluation.realized_volatility_receipt`; never recover required state from optional serialized fields.
   - On stable-base change, replace the episode and begin an empty seen set. Within a stable base, insert and emit only the first occurrence of each state. Preserve the existing admitted-entry and left-RV-not-ready reset sites as the real episode ends.
   - On entry-skip, mark the state before its swallow-on-error write so failure cannot create a tight retry loop. On blocked-snapshot, commit the state only after the propagating write succeeds so failure remains retryable.
@@ -313,7 +406,17 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 
 - [ ] **Step 6: Complete implementation and cheap local verification.**
   - Update `valid_raw_config`, the direct `BinaryOracleEdgeTakerConfig` fixture, and every surface-attaching helper in `pricing.rs`, `source_evidence.rs` and `reference_price.rs` with the matching configured surface age so unrelated exit tests remain on their intended paths.
-  - Update the schema document with the two additive optional version-15 fields and legacy omission/null behavior. Keep the historical archive limitation/arithmetic, unmeasured byte increase, 1 MiB boundary and #1275 constraint unchanged.
+  - Update the schema document with exact durable/wire types: decision optional
+    `u64` watermark, optional `u64` max age, optional independent readiness boolean;
+    evaluation optional checked `i64` watermark and optional `u64` max age. Document
+    legacy omission/null as unreplayable, checked conversion, unchanged gate-filtered
+    decision RV, existing evaluation readiness, schema version 15, and the historical
+    delta-field misnomer semantics.
+  - Record the fixed-field capacity bound: the two numeric fields are at most 100
+    bytes/record; decision readiness makes its conservative total at most 143 bytes.
+    Pessimistically 106 x 143 adds at most 15,158 bytes, safely below 1 MiB for the
+    fixed 106-record counterfactual. Keep semantic-entry record-count growth
+    explicitly unmeasured; do not claim a final restart size.
   - Run only the permitted cheap gates: `just fmt-check`, `just deny`, `just ci-lint-workflow`, and `just source-fence-static`. Do not run local Rust GREEN or Rust Probe.
   - Commit the coherent implementation and lasting documentation. Keep the PR body head-agnostic: no current SHA, transient check status, or head-specific review receipt.
 
@@ -325,6 +428,9 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 
 **Files:**
 - Modify: PR body only for lasting arithmetic, scope and timeless merge requirements; no repository runtime change and no mutable head/check/review receipt.
+- Remove from the final PR diff:
+  `docs/superpowers/plans/2026-07-11-rv-gate-clock-domain.md`; retain the durable
+  design and schema documents.
 
 The replacement PR body retains the six immutable pre-change RED transcripts rather
 than manufacturing a new failing head:
@@ -353,9 +459,13 @@ right: 1
 ```
 
 - [x] Run the saved read-only dedupe-and-capacity recipe against `s3://bolt-deploy-artifacts/archives/bolt-v2/evidence/order-intents-v0111-session-20260711T074342Z.jsonl.gz` (or its byte-identical local copy); report recipe digest `af2704f6c85201c4d51c0d530800176d63f839d46750f54fb023f81abe4ad226`, the explicit receive-fresh assumption, and the deterministic 166,086 records / 760,791,685 bytes to 106 records / 199,023 bytes result.
-- [x] State the replay limit exactly: the archive cannot reproduce final receive-domain `classify_realized_vol_gate` results because it lacks `latest_accepted_receive_ms`, and the historical Binance adapter never produced genuine local receive stamps. Use production-shaped differentials as classifier proof; do not relabel the capacity counterfactual as a final-classifier replay.
-- [x] Report only the measured open-position counterfactual window: 47,551 bytes over 939.354 seconds. Do not extrapolate or project a future restart size; it remains unmeasured and subject to the 1 MiB fail-closed boundary and #1275 item 13 pre-soak requirement. The Task 7 additive fields and semantic transitions have an unmeasured byte cost and do not change that arithmetic. #763 remains later and depends on #883; do not promote S3 archival into the soak blockers.
+- [x] State the replay limit exactly: the archive cannot reproduce final receive-domain free `classify_rv_gate` results because it lacks `latest_accepted_receive_ms`, and the historical Binance adapter never produced genuine local receive stamps. The strategy wrapper `classify_realized_vol_gate` preserves that free-function precedence while adding diagnostics. Use production-shaped differentials as classifier proof; do not relabel the capacity counterfactual as a final-classifier replay.
+- [x] Report only the measured open-position counterfactual window: 47,551 bytes over 939.354 seconds. Do not extrapolate or project a future restart size; it remains unmeasured and subject to the 1 MiB fail-closed boundary and #1275 item 13 pre-soak requirement. Bound the two numeric additions at no more than 100 bytes per record and the decision record's numeric-plus-readiness additions at no more than 143 bytes. Pessimistically charging 106 records adds at most 15,158 bytes and remains safely below 1 MiB at that fixed record count. Semantic-entry record-count growth remains unmeasured and therefore is not folded into the historical arithmetic. #763 remains later and depends on #883; do not promote S3 archival into the soak blockers.
 - [ ] After Task 7 is complete, perform one final scope/capacity/documentation consistency review.
+- [ ] Before marking the PR ready, restore/remove
+  `docs/superpowers/plans/2026-07-11-rv-gate-clock-domain.md` from the final PR diff.
+  Keep the durable design and schema docs. Run the final changed-file census and
+  fail the handoff if this implementation plan is still present.
 - [ ] Mark the existing PR draft before the single final publish. Publish the completed draft head once with `just sandbox-safe-push`, verify that the exact remote PR head equals the published local SHA, then detach. Do not dispatch or run `just verify-remote` from the executor.
 - [ ] The user/reviewer marks that completed draft ready and owns the one final exact-head root/BVS full-CI wave, including root archive execution, root `gate`, BVS archive execution and `backtester-gate`. Iteration-only, skipped, prior-head, probe or no-op results are not proof.
 - [ ] Only after that exact head is GREEN, reply inline to and resolve both existing review threads with the lasting correction and exact-head evidence. Then request external review and refresh the required native review for the same head.

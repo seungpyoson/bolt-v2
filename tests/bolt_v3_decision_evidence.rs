@@ -2786,6 +2786,16 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             expected: BoltV3RvGateResult::MissingEvaluationEventTime,
         },
         Case {
+            label: "missing_evaluation_and_watermark",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: None,
+            watermark_ms: None,
+            raw_ready: true,
+            usable_ready: true,
+            blockers: &[],
+            expected: BoltV3RvGateResult::MissingEvaluationEventTime,
+        },
+        Case {
             label: "missing_watermark",
             as_of_ms: Some(1_200),
             evaluation_receive_ms: Some(1_200),
@@ -2892,6 +2902,11 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             "{} must retain production classifier precedence",
             case.label
         );
+        let poisoned_stored_gate = if case.expected == BoltV3RvGateResult::Accepted {
+            "rejected_stale"
+        } else {
+            "accepted"
+        };
 
         for family in [
             RvClockDomainReplayFamily::Decision,
@@ -2914,7 +2929,7 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             value["rv_snapshot_receive_watermark_ms"] = case
                 .watermark_ms
                 .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
-            value["rv_gate_result"] = serde_json::json!("accepted");
+            value["rv_gate_result"] = serde_json::json!(poisoned_stored_gate);
             match family {
                 RvClockDomainReplayFamily::Decision => {
                     value["rv_snapshot_as_of_ms"] = case
@@ -2940,6 +2955,12 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
                     value = rv_clock_domain_amendment_round_trip_evaluation_value(value);
                 }
             }
+            assert_eq!(
+                value.get("rv_gate_result"),
+                Some(&serde_json::json!(poisoned_stored_gate)),
+                "{} must retain the deliberately wrong stored gate",
+                case.label
+            );
             let blockers_field = match family {
                 RvClockDomainReplayFamily::Decision => "rv_snapshot_blockers",
                 RvClockDomainReplayFamily::Evaluation => "rv_blockers",

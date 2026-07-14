@@ -3566,6 +3566,12 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
     );
 }
 
+const RV_RECEIPT_SNAPSHOT_AS_OF_MS: u64 = 1_350;
+const RV_RECEIPT_WATERMARK_MS: u64 = 1_180;
+const RV_RECEIPT_TRIGGER_EVENT_MS: u64 = 1_100;
+const RV_RECEIPT_TRIGGER_RECEIVE_MS: u64 = 1_220;
+const RV_RECEIPT_LIFECYCLE_NOW_MS: u64 = 1_260;
+
 fn rv_clock_domain_amendment_set_snapshot_times(
     strategy: &mut BinaryOracleEdgeTaker,
     as_of_ms: u64,
@@ -3587,8 +3593,10 @@ fn rv_clock_domain_amendment_set_snapshot_times(
 
 fn rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(
     strategy: &mut BinaryOracleEdgeTaker,
+    as_of_ms: u64,
+    receive_watermark_ms: Option<u64>,
 ) {
-    rv_clock_domain_amendment_set_snapshot_times(strategy, 1_200, Some(1_200));
+    rv_clock_domain_amendment_set_snapshot_times(strategy, as_of_ms, receive_watermark_ms);
     let mut snapshot = strategy
         .pricing
         .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
@@ -3653,17 +3661,27 @@ fn rv_clock_domain_amendment_json_projection(
 #[test]
 fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    rv_clock_domain_amendment_set_snapshot_times(&mut strategy, 1_200, Some(1_200));
+    rv_clock_domain_amendment_set_snapshot_times(
+        &mut strategy,
+        RV_RECEIPT_SNAPSHOT_AS_OF_MS,
+        Some(RV_RECEIPT_WATERMARK_MS),
+    );
     let trigger = ExitEvaluationTriggerContext::new(
         crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-        1_100,
-        Some(1_200),
+        RV_RECEIPT_TRIGGER_EVENT_MS,
+        Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
-    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    let decision =
+        strategy.exit_submission_decision_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
     strategy
-        .record_exit_decision_once(1_200, trigger, &decision)
+        .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger, &decision)
         .expect("exit decision evidence should record");
-    strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+    strategy.record_exit_evaluation_evidence(
+        RV_RECEIPT_LIFECYCLE_NOW_MS,
+        &decision,
+        trigger,
+        false,
+    );
 
     let decisions = recorded_exit_decisions(&evidence);
     let evaluations = recorded_exit_evaluations(&evidence);
@@ -3672,20 +3690,44 @@ fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
     let decision = serde_json::to_value(&decisions[0]).unwrap();
     let evaluation = serde_json::to_value(&evaluations[0]).unwrap();
 
-    assert_eq!(decision["trigger_ts_init_ms"], serde_json::json!(1_200_u64));
+    assert_eq!(
+        decision["exit_eval_now_ms"],
+        serde_json::json!(RV_RECEIPT_LIFECYCLE_NOW_MS)
+    );
+    assert_eq!(
+        evaluation["exit_eval_now_ms"],
+        serde_json::json!(RV_RECEIPT_LIFECYCLE_NOW_MS as i64)
+    );
+    assert_eq!(
+        decision["trigger_ts_event_ms"],
+        serde_json::json!(RV_RECEIPT_TRIGGER_EVENT_MS)
+    );
+    assert_eq!(
+        evaluation["trigger_ts_event_ms"],
+        serde_json::json!(RV_RECEIPT_TRIGGER_EVENT_MS as i64)
+    );
+    assert_eq!(
+        decision["trigger_ts_init_ms"],
+        serde_json::json!(RV_RECEIPT_TRIGGER_RECEIVE_MS)
+    );
     assert_eq!(
         evaluation["trigger_ts_init_ms"],
-        serde_json::json!(1_200_i64)
+        serde_json::json!(RV_RECEIPT_TRIGGER_RECEIVE_MS as i64)
+    );
+    assert_eq!(
+        decision["rv_snapshot_as_of_ms"],
+        serde_json::json!(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
     );
     assert_eq!(decision["rv_snapshot_as_of_ms"], evaluation["rv_as_of_ms"]);
     assert_eq!(decision["rv_gate_result"], evaluation["rv_gate_result"]);
+    assert_eq!(decision["rv_gate_result"], serde_json::json!("accepted"));
     assert_eq!(
         decision["rv_snapshot_receive_watermark_ms"],
-        serde_json::json!(1_200_u64)
+        serde_json::json!(RV_RECEIPT_WATERMARK_MS)
     );
     assert_eq!(
         evaluation["rv_snapshot_receive_watermark_ms"],
-        serde_json::json!(1_200_i64)
+        serde_json::json!(RV_RECEIPT_WATERMARK_MS as i64)
     );
     assert_eq!(decision["rv_max_source_age_ms"], serde_json::json!(500_u64));
     assert_eq!(
@@ -3700,28 +3742,36 @@ fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
     assert_eq!(evaluation["rv_ready"], serde_json::json!(true));
     assert_eq!(
         decision["rv_future_dating_delta_ms"],
-        serde_json::json!(100_u64)
+        serde_json::json!(250_u64)
     );
     assert_eq!(
         evaluation["rv_as_of_minus_now_ms"],
-        serde_json::json!(100_i64)
+        serde_json::json!(250_i64)
     );
 }
 
 #[test]
-fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
+fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    rv_clock_domain_amendment_set_snapshot_times(&mut strategy, 1_200, Some(1_200));
+    rv_clock_domain_amendment_set_snapshot_times(
+        &mut strategy,
+        RV_RECEIPT_SNAPSHOT_AS_OF_MS,
+        Some(RV_RECEIPT_WATERMARK_MS),
+    );
     let trigger = ExitEvaluationTriggerContext::new(
         crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-        1_100,
-        Some(1_200),
+        RV_RECEIPT_TRIGGER_EVENT_MS,
+        Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
-    let mut base = strategy.exit_evaluation_for_trigger_at(1_200, trigger);
+    let mut base = strategy.exit_evaluation_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
     base.forced_flat_reasons.clear();
     base.exit_decision = Some(ExitDecision::Exit);
     base.blocked_reason = None;
 
+    // `ExitEvaluation` requires a receipt at construction, which structurally enforces
+    // capture before any production return. This fixture pins transfer and durable
+    // projection across the current constructed submission outcomes; it is not a
+    // dynamic branch-coverage harness.
     let mut decisions = Vec::new();
     for blocked_reason in [
         EXIT_BLOCK_REASON_NO_OPEN_POSITION,
@@ -3779,12 +3829,21 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
 
     for decision in &decisions {
         let receipt = &decision.evaluation.realized_volatility_receipt;
+        assert_eq!(receipt.gate_result, BoltV3RvGateResult::Accepted);
+        assert_eq!(
+            receipt.snapshot_as_of_ms,
+            Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
+        );
+        assert_eq!(
+            receipt.evaluation_receive_ms.map(LocalReceiveMs::value),
+            Some(RV_RECEIPT_TRIGGER_RECEIVE_MS)
+        );
         assert_eq!(
             receipt
                 .snapshot_receive_watermark_ms
                 .map(LocalReceiveMs::value),
-            Some(1_200),
-            "every early return must retain the single captured watermark"
+            Some(RV_RECEIPT_WATERMARK_MS),
+            "every constructed submission shape must retain the captured watermark"
         );
         assert_eq!(receipt.max_source_age_ms, 500);
         assert!(receipt.snapshot_has_ready_realized_vol);
@@ -3793,7 +3852,7 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
     assert_eq!(
         decisions.len(),
         12,
-        "the fixture must cover all early returns"
+        "the fixture must retain all twelve named submission shapes"
     );
     let intentionally_non_recordable = &decisions[0];
     assert_eq!(
@@ -3816,8 +3875,12 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
     for (index, decision) in decisions.iter().enumerate() {
         strategy.last_recorded_exit_decision = None;
         strategy
-            .record_exit_decision_once(1_200 + index as u64, trigger, decision)
-            .expect("each early-return recording attempt should preserve writer semantics");
+            .record_exit_decision_once(
+                RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64,
+                trigger,
+                decision,
+            )
+            .expect("each submission-shape recording attempt should preserve writer semantics");
     }
 
     let records = recorded_exit_decisions(&evidence);
@@ -3826,7 +3889,7 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
         .map(|record| {
             record
                 .blocked_reason
-                .expect("every recordable early return must persist its blocked reason")
+                .expect("every recordable submission shape must persist its blocked reason")
         })
         .collect::<Vec<_>>();
     let expected_blocked_reasons = vec![
@@ -3843,12 +3906,28 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
         BoltV3ExitBlockedReason::ExitQuantityNotPositive,
     ];
     assert_eq!(persisted_blocked_reasons, expected_blocked_reasons);
-    for record in records {
+    for (index, record) in records.into_iter().enumerate() {
         let value = serde_json::to_value(record).unwrap();
         assert_eq!(
+            value["exit_eval_now_ms"],
+            serde_json::json!(RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64 + 1)
+        );
+        assert_eq!(
+            value["trigger_ts_event_ms"],
+            serde_json::json!(RV_RECEIPT_TRIGGER_EVENT_MS)
+        );
+        assert_eq!(
+            value["rv_snapshot_as_of_ms"],
+            serde_json::json!(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
+        );
+        assert_eq!(
+            value["trigger_ts_init_ms"],
+            serde_json::json!(RV_RECEIPT_TRIGGER_RECEIVE_MS)
+        );
+        assert_eq!(
             value["rv_snapshot_receive_watermark_ms"],
-            serde_json::json!(1_200_u64),
-            "every early return must retain the single captured watermark"
+            serde_json::json!(RV_RECEIPT_WATERMARK_MS),
+            "every persisted submission shape must retain the captured watermark"
         );
         assert_eq!(value["rv_max_source_age_ms"], serde_json::json!(500_u64));
         assert_eq!(
@@ -3861,25 +3940,40 @@ fn rv_clock_domain_amendment_exit_receipt_survives_early_returns() {
 #[test]
 fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_replacement() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy);
+    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(
+        &mut strategy,
+        RV_RECEIPT_SNAPSHOT_AS_OF_MS,
+        Some(RV_RECEIPT_WATERMARK_MS),
+    );
     let trigger = ExitEvaluationTriggerContext::new(
         crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-        1_100,
-        Some(1_200),
+        RV_RECEIPT_TRIGGER_EVENT_MS,
+        Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
-    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    let decision =
+        strategy.exit_submission_decision_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
     strategy
-        .record_exit_decision_once(1_200, trigger, &decision)
+        .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger, &decision)
         .expect("original exit decision evidence should record");
-    strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+    strategy.record_exit_evaluation_evidence(
+        RV_RECEIPT_LIFECYCLE_NOW_MS,
+        &decision,
+        trigger,
+        false,
+    );
 
     strategy.last_recorded_exit_decision = None;
     strategy.last_exit_evidence_outcome.clear();
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy
-        .record_exit_decision_once(1_201, trigger, &decision)
+        .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS + 1, trigger, &decision)
         .expect("post-replacement exit decision evidence should record");
-    strategy.record_exit_evaluation_evidence(1_201, &decision, trigger, false);
+    strategy.record_exit_evaluation_evidence(
+        RV_RECEIPT_LIFECYCLE_NOW_MS + 1,
+        &decision,
+        trigger,
+        false,
+    );
 
     let decisions = recorded_exit_decisions(&evidence);
     let evaluations = recorded_exit_evaluations(&evidence);
@@ -3932,8 +4026,38 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         "gate-filtered RV stays absent"
     );
     assert!(!evaluations[0].rv_ready, "usable readiness must stay false");
-    assert_eq!(decisions[0].rv_future_dating_delta_ms, Some(100));
-    assert_eq!(evaluations[0].rv_as_of_minus_now_ms, Some(100));
+    assert_eq!(
+        decisions[0].rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3ExitRvGateResult::RejectedNotReady
+    );
+    assert_eq!(
+        evaluations[0].rv_gate_result,
+        BoltV3RvGateResult::RejectedNotReady
+    );
+    assert_eq!(decisions[0].exit_eval_now_ms, RV_RECEIPT_LIFECYCLE_NOW_MS);
+    assert_eq!(evaluations[0].exit_eval_now_ms, 1_260);
+    assert_eq!(
+        decisions[0].trigger_ts_event_ms,
+        RV_RECEIPT_TRIGGER_EVENT_MS
+    );
+    assert_eq!(evaluations[0].trigger_ts_event_ms, Some(1_100));
+    assert_eq!(
+        decisions[0].rv_snapshot_as_of_ms,
+        Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
+    );
+    assert_eq!(
+        decisions[0].rv_snapshot_receive_watermark_ms,
+        Some(RV_RECEIPT_WATERMARK_MS)
+    );
+    assert_eq!(
+        decisions[0].trigger_ts_init_ms,
+        Some(RV_RECEIPT_TRIGGER_RECEIVE_MS)
+    );
+    assert_eq!(evaluations[0].rv_as_of_ms, Some(1_350));
+    assert_eq!(evaluations[0].rv_snapshot_receive_watermark_ms, Some(1_180));
+    assert_eq!(evaluations[0].trigger_ts_init_ms, Some(1_220));
+    assert_eq!(decisions[0].rv_future_dating_delta_ms, Some(250));
+    assert_eq!(evaluations[0].rv_as_of_minus_now_ms, Some(250));
 
     const DECISION_FIELDS: &[&str] = &[
         "trigger_ts_init_ms",
@@ -4205,9 +4329,23 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
 
 #[test]
 fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
-    for (label, snapshot_as_of_ms, trigger_event_ms, watermark_ms, trigger_receive_ms) in [
-        ("positive", u64::MAX, 0, 1_200, 1_200),
-        ("negative", 0, u64::MAX, 0, 0),
+    for (
+        label,
+        snapshot_as_of_ms,
+        trigger_event_ms,
+        watermark_ms,
+        trigger_receive_ms,
+        expected_receipt_delta,
+    ) in [
+        (
+            "positive",
+            u64::MAX,
+            0,
+            1_200,
+            1_200,
+            Some(i128::from(u64::MAX)),
+        ),
+        ("negative", 0, u64::MAX, 0, 0, Some(-i128::from(u64::MAX))),
     ] {
         let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
         rv_clock_domain_amendment_set_snapshot_times(
@@ -4221,6 +4359,14 @@ fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
             Some(trigger_receive_ms),
         );
         let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+        assert_eq!(
+            decision
+                .evaluation
+                .realized_volatility_receipt
+                .snapshot_as_of_minus_trigger_event_ms,
+            expected_receipt_delta,
+            "{label} receipt must retain the raw signed i128 event-time delta"
+        );
         let outcome_before = (
             decision.evaluation.exit_decision,
             decision.blocked_reason,
@@ -4446,6 +4592,94 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
             .count(),
         12
     );
+}
+
+#[test]
+fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
+    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 6] = [
+        (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
+        (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
+        (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
+    ];
+    let rv_states = [
+        (
+            BoltV3RvGateResult::Accepted,
+            Some(LocalReceiveMs::new(1_200)),
+        ),
+        (
+            BoltV3RvGateResult::RejectedStale,
+            Some(LocalReceiveMs::new(1_200)),
+        ),
+    ];
+
+    let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
+    let mut entry = minimal_entry_submission_decision();
+    let mut now_ms = 1_200_u64;
+    // A -> B -> A must start a fresh two-bit novelty mask at every key transition.
+    for category in [
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        BoltV3EntrySkipReasonCategory::NoSideSelected,
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+    ] {
+        for (gate, watermark) in rv_states {
+            rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
+            entry_strategy
+                .record_entry_skip_once(now_ms, &entry, category, None)
+                .expect("each previously seen RV bit must emit after an entry-key change");
+            now_ms += 1;
+        }
+    }
+    let entry_states = entry_evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some((
+                skip.realized_vol_gate_result
+                    .expect("RV gate result must be present"),
+                skip.realized_vol_receive_watermark_ms.is_some(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(entry_states.as_slice(), &EXPECTED_STATES[..]);
+
+    let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
+    let mut blocked = rv_clock_domain_amendment_blocked_decision();
+    let original_market_id = blocked_strategy.active.market_id.clone();
+    let mut now_ms = 1_300_u64;
+    for market_id in [
+        original_market_id.clone(),
+        Some("<KEY_B>".to_string()),
+        original_market_id,
+    ] {
+        blocked_strategy.active.market_id = market_id;
+        for (gate, watermark) in rv_states {
+            rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
+            blocked_strategy
+                .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
+                .expect("each previously seen RV bit must emit after a blocked-key change");
+            now_ms += 1;
+        }
+    }
+    let blocked_states = blocked_evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some((
+                snapshot
+                    .realized_volatility_gate_result
+                    .expect("RV gate result must be present"),
+                snapshot.realized_volatility_receive_watermark_ms.is_some(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(blocked_states.as_slice(), &EXPECTED_STATES[..]);
 }
 
 #[test]
@@ -4805,7 +5039,7 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 ) {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
-    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy);
+    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
     let mut decision = rv_clock_domain_amendment_blocked_decision();
     decision.evaluation.realized_volatility_receipt.evidence =
         strategy.realized_volatility_evidence_fields();
@@ -4857,7 +5091,7 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
-    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy);
+    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
     let mut decision = rv_clock_domain_amendment_blocked_decision();
     decision.evaluation.realized_volatility_receipt.evidence =
         strategy.realized_volatility_evidence_fields();
@@ -5165,5 +5399,77 @@ fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
             .map(LocalReceiveMs::value),
         Some(1_234),
         "emitted record must retain the exact raw watermark even though novelty uses presence"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries() {
+    let evidence =
+        Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
+    let mut decision = rv_clock_domain_amendment_blocked_decision();
+
+    rv_clock_domain_amendment_apply_state(
+        &mut decision,
+        BoltV3RvGateResult::Accepted,
+        Some(LocalReceiveMs::new(1_200)),
+    );
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_200, &decision)
+        .expect("the first bit on the key should commit");
+
+    rv_clock_domain_amendment_apply_state(
+        &mut decision,
+        BoltV3RvGateResult::RejectedStale,
+        Some(LocalReceiveMs::new(1_234)),
+    );
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
+        .expect_err("the new bit's configured writer attempt must fail");
+
+    rv_clock_domain_amendment_apply_state(
+        &mut decision,
+        BoltV3RvGateResult::Accepted,
+        Some(LocalReceiveMs::new(1_200)),
+    );
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
+        .expect("the committed bit should remain suppressed");
+    assert_eq!(
+        evidence.strategy_input_attempts(),
+        2,
+        "a failed new bit must neither clear the committed bit nor reach the writer again"
+    );
+
+    rv_clock_domain_amendment_apply_state(
+        &mut decision,
+        BoltV3RvGateResult::RejectedStale,
+        Some(LocalReceiveMs::new(1_234)),
+    );
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_203, &decision)
+        .expect("the failed new bit must remain unseen and retry on the same key");
+    assert_eq!(evidence.strategy_input_attempts(), 3);
+
+    let recorded_states = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some((
+                snapshot.realized_volatility_gate_result,
+                snapshot
+                    .realized_volatility_receive_watermark_ms
+                    .map(LocalReceiveMs::value),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded_states,
+        vec![
+            (Some(BoltV3RvGateResult::Accepted), Some(1_200)),
+            (Some(BoltV3RvGateResult::RejectedStale), Some(1_234)),
+        ],
+        "only the committed bit and the successful retry may persist"
     );
 }

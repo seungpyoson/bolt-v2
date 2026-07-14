@@ -42,8 +42,10 @@ use bolt_v2::{
         read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
         read_submit_reservation_recovery_evidence, read_terminal_settlement_evidence,
     },
+    bolt_v3_fair_value_pricing::classify_rv_gate,
     bolt_v3_realized_volatility::{
-        RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
+        RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
+        RealizedVolSampleKind, RealizedVolSnapshot, RealizedVolSourceClass,
         RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
     bolt_v3_timestamp_domain::LocalReceiveMs,
@@ -2397,6 +2399,53 @@ enum RvClockDomainReplayFamily {
     Evaluation,
 }
 
+fn rv_clock_domain_amendment_production_snapshot(
+    as_of_ms: u64,
+    watermark_ms: Option<u64>,
+    raw_ready: bool,
+    usable_ready: bool,
+    has_blockers: bool,
+) -> RealizedVolSnapshot {
+    assert_eq!(
+        usable_ready,
+        raw_ready && !has_blockers,
+        "fixture readiness must agree with the production usable-readiness contract"
+    );
+    let snapshot = RealizedVolSnapshot {
+        surface_id: "<surface_id>".to_string(),
+        as_of_ms,
+        latest_accepted_receive_ms: watermark_ms.map(LocalReceiveMs::new),
+        annualized_realized_vol_decimal: raw_ready.then_some(1.0),
+        measured_annualized_realized_vol_decimal: raw_ready.then_some(1.0),
+        noise_robust_annualized_realized_vol_decimal: raw_ready.then_some(1.0),
+        continuous_annualized_realized_vol_decimal: raw_ready.then_some(1.0),
+        jump_annualized_realized_vol_decimal: raw_ready.then_some(0.0),
+        forecast_annualized_realized_vol_decimal: None,
+        pricing_component: RealizedVolPricingComponent::Measured,
+        ready: raw_ready,
+        sources_used: raw_ready
+            .then(|| "<SOURCE_ID_A>".to_string())
+            .into_iter()
+            .collect(),
+        source_diagnostics: Vec::new(),
+        horizon_estimates: Vec::new(),
+        unknown_source_rejections: BTreeMap::new(),
+        blocked_reasons: has_blockers
+            .then_some(RealizedVolBlockReason::SourceStale)
+            .into_iter()
+            .collect(),
+        aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        seconds_per_annum: 31_536_000.0,
+        config_fingerprint: "rv-clock-domain-replay".to_string(),
+    };
+    assert_eq!(
+        snapshot.ready_realized_vol().is_some(),
+        usable_ready,
+        "fixture must exercise production readiness rather than a stored gate result"
+    );
+    snapshot
+}
+
 fn rv_clock_domain_amendment_wire_ms(
     record: &serde_json::Value,
     field: &str,
@@ -2631,11 +2680,26 @@ fn rv_clock_domain_amendment_negative_receive_fields_fail_decode_and_encode() {
         "encode error must name rv_snapshot_receive_watermark_ms: {error:#}"
     );
 
-    for (label, marker) in [
-        ("omitted", None),
-        ("null", Some(serde_json::Value::Null)),
-        ("zero", Some(serde_json::json!(0_i64))),
-        ("i64_max", Some(serde_json::json!(i64::MAX))),
+    for (label, marker, expected_decoded, expected_encoded) in [
+        ("omitted", None, None, serde_json::Value::Null),
+        (
+            "null",
+            Some(serde_json::Value::Null),
+            None,
+            serde_json::Value::Null,
+        ),
+        (
+            "zero",
+            Some(serde_json::json!(0_i64)),
+            Some(0_i64),
+            serde_json::json!(0_i64),
+        ),
+        (
+            "i64_max",
+            Some(serde_json::json!(i64::MAX)),
+            Some(i64::MAX),
+            serde_json::json!(i64::MAX),
+        ),
     ] {
         let mut payload = serde_json::to_value(sample_exit_evaluation_evidence(true))
             .expect("sample exit evaluation should serialize");
@@ -2653,10 +2717,15 @@ fn rv_clock_domain_amendment_negative_receive_fields_fail_decode_and_encode() {
         }
         let decoded: BoltV3ExitEvaluationEvidence = serde_json::from_value(payload)
             .expect("omitted/null/non-negative watermark must decode");
+        assert_eq!(
+            decoded.rv_snapshot_receive_watermark_ms, expected_decoded,
+            "{label} watermark must decode to its exact Option value"
+        );
         let encoded = serde_json::to_value(decoded).expect("valid watermark must encode");
-        assert!(
-            encoded.get("rv_snapshot_receive_watermark_ms").is_some(),
-            "valid {label} watermark form must survive the durable round trip: {encoded}"
+        assert_eq!(
+            encoded.get("rv_snapshot_receive_watermark_ms"),
+            Some(&expected_encoded),
+            "{label} watermark must round-trip to its canonical exact value: {encoded}"
         );
     }
 
@@ -2686,6 +2755,16 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
     }
 
     let cases = [
+        Case {
+            label: "missing_snapshot_and_evaluation",
+            as_of_ms: None,
+            evaluation_receive_ms: None,
+            watermark_ms: None,
+            raw_ready: false,
+            usable_ready: false,
+            blockers: &[],
+            expected: BoltV3RvGateResult::MissingSnapshot,
+        },
         Case {
             label: "missing_snapshot",
             as_of_ms: None,
@@ -2768,11 +2847,56 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
         },
     ];
 
-    for family in [
-        RvClockDomainReplayFamily::Decision,
-        RvClockDomainReplayFamily::Evaluation,
-    ] {
-        for case in cases {
+    for case in cases {
+        let production_snapshot = case.as_of_ms.map(|as_of_ms| {
+            rv_clock_domain_amendment_production_snapshot(
+                u64::try_from(as_of_ms).expect("fixture as-of time must be non-negative"),
+                case.watermark_ms.map(|watermark_ms| {
+                    u64::try_from(watermark_ms)
+                        .expect("fixture receive watermark must be non-negative")
+                }),
+                case.raw_ready,
+                case.usable_ready,
+                !case.blockers.is_empty(),
+            )
+        });
+        if let Some(snapshot) = production_snapshot.as_ref() {
+            assert_eq!(snapshot.ready, case.raw_ready);
+            assert_eq!(snapshot.ready_realized_vol().is_some(), case.usable_ready);
+            assert_eq!(
+                snapshot
+                    .latest_accepted_receive_ms
+                    .map(LocalReceiveMs::value),
+                case.watermark_ms.map(|watermark_ms| {
+                    u64::try_from(watermark_ms)
+                        .expect("fixture receive watermark must be non-negative")
+                })
+            );
+            assert_eq!(
+                snapshot.blocked_reasons.is_empty(),
+                case.blockers.is_empty()
+            );
+        }
+        let production_result = classify_rv_gate(
+            production_snapshot.as_ref(),
+            case.evaluation_receive_ms.map(|evaluation_receive_ms| {
+                LocalReceiveMs::new(
+                    u64::try_from(evaluation_receive_ms)
+                        .expect("fixture evaluation receive time must be non-negative"),
+                )
+            }),
+            Some(500),
+        );
+        assert_eq!(
+            production_result, case.expected,
+            "{} must retain production classifier precedence",
+            case.label
+        );
+
+        for family in [
+            RvClockDomainReplayFamily::Decision,
+            RvClockDomainReplayFamily::Evaluation,
+        ] {
             let mut value = match family {
                 RvClockDomainReplayFamily::Decision => {
                     serde_json::to_value(sample_exit_decision_evidence())
@@ -2852,8 +2976,8 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             }
             assert_eq!(
                 rv_clock_domain_amendment_replayed_gate(&value, family),
-                Some(case.expected),
-                "{} must replay from record-local reconstruction inputs only",
+                Some(production_result),
+                "{} must replay the public production classifier from record-local inputs only",
                 case.label
             );
         }
@@ -2884,12 +3008,29 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             "high-u64 decision timestamp `{field}` must remain present on its unsigned wire"
         );
     }
+    let high_snapshot = rv_clock_domain_amendment_production_snapshot(
+        high_watermark_ms,
+        Some(high_watermark_ms),
+        true,
+        true,
+        false,
+    );
+    let high_production_result = classify_rv_gate(
+        Some(&high_snapshot),
+        Some(LocalReceiveMs::new(high_trigger_ms)),
+        Some(500),
+    );
+    assert_eq!(
+        high_production_result,
+        BoltV3RvGateResult::RejectedStale,
+        "production must compare unsigned receive timestamps above i64::MAX"
+    );
     assert_eq!(
         rv_clock_domain_amendment_replayed_gate(
             &high_decision,
             RvClockDomainReplayFamily::Decision,
         ),
-        Some(BoltV3RvGateResult::RejectedStale),
+        Some(high_production_result),
         "decision replay must compare unsigned timestamps above i64::MAX through i128"
     );
 

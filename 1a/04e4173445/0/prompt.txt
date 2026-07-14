@@ -1,0 +1,62 @@
+I'm not the best technical engineer and decision maker - so you should generate a plan and have that be reviewed by claude
+
+---
+
+you should generte a review request prompt -
+
+---
+
+but it will likely be in never ending loop as there would likely be gaps - so we need to be very surgical about how we request reviews - including internal adverserial reviews
+
+---
+
+ok proceed - and tell me when you are requesting for review
+
+---
+
+what are you doing? should we get another review?
+
+---
+
+ok
+
+---
+
+give me a blurb to send to claude
+
+---
+
+Review done. Receipt at /private/tmp/cmux-1016-lean-ci-plan-claude-review.md. Verdict: REQUEST_CHANGES: X1, X2 — two blockers, both fixable with small re-sequencing; the architecture itself held up under every check I could run.
+
+What I verified first: all five input digests match, main is 17bdf952f everywhere, and every file, command, stage name, and Rust type the plan builds on exists at that exact commit. The plan's most important motivating claim is true and I confirmed it live: run 29334284412 passed the required gate while the build job was skipped — today's CI can go green without ever compiling the trading binary. The fail-open launch target, the tag-deploy route that reuses a prior run's artifact, and the AI reviewer's merge-blocking inline-comment power are all real too. Six of the eight fixed questions pass cleanly, including the important one: the one-use in-process LiveReadinessPermit is enforceable exactly as specified, with no persisted authority and no second path to Start.
+
+Blocker 1 (X1): Task 6A deletes the four CI conditions from Mergify's own rules before cutover, claiming "GitHub remains authoritative until Task 7." That premise is false: I re-verified live that Mergify holds an always-bypass on the CI-gates ruleset — GitHub's required checks don't bind Mergify's merges; Mergify's own conditions are the real gate. Deleting them early either opens a window where an approved PR can merge with failing CI (depends on a Mergify behavior I could not verify — their docs are unreachable through the approved fetch route), or — this part is certain — bricks the merge queue entirely, because the preflight script validates the Mergify file against pinned expectations that 6A doesn't update. Fix: keep the predicates until Task 7 and remove them in the same atomic step as the ruleset change, which is exactly where the governing packet put them.
+
+Blocker 2 (X2): the lane map says Tasks 5, 6A, and 6B can run in parallel with separate owners, but the repo couples their files: ci_provenance.py is assigned to both 5 and 6B, and any .mergify.yml edit (6A) fails required CI unless 6B-owned expectation files change in the same PR — I traced that enforcement chain end to end. Fix: whoever edits .mergify.yml also owns its expectation mirrors, and 5 vs 6B get an explicit ordering on that one file pair.
+
+My take: this lean direction is the right call and a big improvement over the trusted-App design — it removes the machine instead of guarding it, and it puts the only authority that matters (arming real money) inside the binary where it can be typed, not in CI where it can be spoofed. The two blockers are transition-choreography mistakes, not design flaws, and the fixes are a few lines of plan text. I'd send it back for exactly those two corrections and nothing else; per the review protocol, the next round is resolution-only on X1 and X2.
+
+---
+
+Claude:
+Resolution review done. Receipt at /private/tmp/cmux-1016-lean-ci-plan-claude-r2-review.md. Verdict: APPROVE — both X1 and X2 are resolved, verified against the exact corrected plan (digest matches, main unchanged at 17bdf952f).
+
+X1 — resolved by a genuinely clever cutover order. Task 6A now keeps all four Mergify CI conditions and states the correct reason (Mergify's always-bypass makes its own conditions the binding gate — the false "GitHub remains authoritative" sentence is gone). Task 7 alone removes them, and the choreography closes the hole I found: under an operator merge pause, the live required statuses are removed first, while the old Mergify conditions still bind every queue merge; then the one and only commit allowed through the queue is the cutover commit itself — which must pass those four CI checks to merge, and whose merge is what deletes them. The predicates literally gate their own removal. At no instant does safety depend on the Mergify vendor behavior I couldn't verify, in either direction. The plan is also honest that the pause is procedural, not GitHub-enforced — and your untouched native-review ruleset still binds even a manual merge during that window.
+
+X2 — resolved by strict sequencing. Tasks now run 5 → 6B → 6A, each with named exclusive ownership of ci_provenance.py/its tests; 6B deletes the Mergify expectation mirrors and test fixtures (the exact files that would have failed 6A's CI) before 6A touches .mergify.yml, and any survivor is owned by whichever slice edits the Mergify file. Both branches of my original counterexample — 6A's PR failing required CI, and the post-merge queue brick — are dead.
+
+Both of my non-blocking observations were also incorporated: the trading-binary workflow now has a fixed trigger policy (post-merge push + manual dispatch only, which Task 10 measures), and the cutover drill plus rehearsal-exclusion attestation have named owners in Tasks 5 and 10.
+
+Per the review protocol this was the single permitted resolution round, and it passed. The plan is now review-complete on my side; what remains before any implementation is your call, not mine: plan approval, then Task 0's governance amendments (which encode the accepted red-main risk) — and nothing in this approval authorizes repository, GitHub, or live-state changes by itself.
+
+---
+
+approve - let's proceed.
+
+---
+
+authorie
+
+---
+
+ok

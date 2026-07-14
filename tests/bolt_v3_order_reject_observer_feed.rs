@@ -36,7 +36,7 @@ fn subscribed_order_reject_event_panics_on_poisoned_feed_lock() {
     let _subscription = subscribe_order_reject_observer_feed(feed);
 
     publish_order_event(
-        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
         &OrderEventAny::Rejected(order_rejected_event(
             "client-order-1",
             "instrument-yes.VENUE-A",

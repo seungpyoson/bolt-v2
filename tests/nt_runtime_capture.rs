@@ -563,7 +563,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     12.into(),
                 ));
                 publish_order_event(
-                    switchboard::get_event_orders_topic(strategy_id),
+                    switchboard::get_event_order_topic(strategy_id),
                     &order_event,
                 );
 
@@ -588,10 +588,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     Some(PositionId::from("P-001")),
                     Some(Money::new(0.01, Currency::USD())),
                 ));
-                publish_order_event(
-                    switchboard::get_event_orders_topic(strategy_id),
-                    &fill_event,
-                );
+                publish_order_event(switchboard::get_event_order_topic(strategy_id), &fill_event);
 
                 let position_event = PositionEvent::PositionOpened(PositionOpened {
                     trader_id: TraderId::from("TESTER-001"),
@@ -613,7 +610,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     ts_init: 22.into(),
                 });
                 publish_position_event(
-                    switchboard::get_event_positions_topic(strategy_id),
+                    switchboard::get_event_position_topic(strategy_id),
                     &position_event,
                 );
 
@@ -632,7 +629,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     24.into(),
                 ));
                 publish_position_event(
-                    switchboard::get_event_positions_topic(strategy_id),
+                    switchboard::get_event_position_topic(strategy_id),
                     &adjusted_event,
                 );
 

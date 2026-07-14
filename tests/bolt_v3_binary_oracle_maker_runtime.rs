@@ -48,6 +48,7 @@ use bolt_v2::{
 };
 use futures_util::{FutureExt, future::BoxFuture};
 use nautilus_common::{
+    actor::DataActorNative,
     cache::Cache,
     clock::{Clock, TestClock},
     timer::{TimeEvent, TimeEventCallback},
@@ -60,7 +61,6 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_portfolio::portfolio::Portfolio;
-use nautilus_trading::Strategy;
 use rust_decimal::Decimal;
 use std::{
     cell::RefCell,
@@ -1177,8 +1177,8 @@ fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
     clock.borrow_mut().set_time(UnixNanos::from(1_u64));
     let cache = Rc::new(RefCell::new(Cache::default()));
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
-        cache.clone(),
         clock.clone(),
+        cache.clone(),
         None,
     )));
     maker
@@ -1792,8 +1792,8 @@ fn register_maker_at_runtime_now_with_quote_timer_handler(
     }
     let cache = Rc::new(RefCell::new(Cache::default()));
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
-        cache.clone(),
         clock.clone(),
+        cache.clone(),
         None,
     )));
     maker

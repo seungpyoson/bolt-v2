@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "aee01a30024c",
+  "strategy": "manual-commit",
+  "branch": "chore/nt-v1-230-pin-refresh",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_order_execution.rs",
+    "src/strategies/binary_oracle_edge_taker/mod.rs",
+    "src/strategies/binary_oracle_edge_taker/orders.rs",
+    "src/strategies/binary_oracle_maker/mod.rs",
+    "src/strategies/complete_set_arbitrage/mod.rs",
+    "src/strategies/registry.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ae/e01a30024c/0/metadata.json",
+      "transcript": "/ae/e01a30024c/0/full.jsonl",
+      "compact_transcript": "/ae/e01a30024c/0/transcript.jsonl",
+      "content_hash": "/ae/e01a30024c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 72031,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 8588544,
+    "output_tokens": 5014,
+    "api_call_count": 51
+  }
+}

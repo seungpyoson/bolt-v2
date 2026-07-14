@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "aee01a30024c",
+  "session_id": "019f60d7-8211-7060-8292-6fcd460c60a2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-14T14:51:05.906122Z",
+  "branch": "chore/nt-v1-230-pin-refresh",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_order_execution.rs",
+    "src/strategies/binary_oracle_edge_taker/mod.rs",
+    "src/strategies/binary_oracle_edge_taker/orders.rs",
+    "src/strategies/binary_oracle_maker/mod.rs",
+    "src/strategies/complete_set_arbitrage/mod.rs",
+    "src/strategies/registry.rs"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "984621769485",
+  "checkpoint_transcript_start": 451,
+  "transcript_lines_at_start": 451,
+  "compact_transcript_start": 89,
+  "token_usage": {
+    "input_tokens": 72031,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 8588544,
+    "output_tokens": 5014,
+    "api_call_count": 51
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-14T14:51:05.850106Z",
+    "agent_lines": 29,
+    "agent_removed": 27,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 29,
+    "total_lines_changed": 56,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

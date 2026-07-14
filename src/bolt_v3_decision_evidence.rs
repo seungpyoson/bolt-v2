@@ -988,6 +988,9 @@ pub struct BoltV3ExitDecisionEvidence {
     pub rv_surface_id: String,
     pub rv_snapshot_as_of_ms: Option<u64>,
     pub rv_snapshot_ready: bool,
+    pub rv_snapshot_has_ready_realized_vol: Option<bool>,
+    pub rv_snapshot_receive_watermark_ms: Option<u64>,
+    pub rv_max_source_age_ms: Option<u64>,
     pub rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
     pub rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
     pub rv_gate_result: BoltV3ExitRvGateResult,
@@ -1041,6 +1044,9 @@ struct BoltV3ExitDecisionEvidenceWire {
     rv_surface_id: String,
     rv_snapshot_as_of_ms: Option<u64>,
     rv_snapshot_ready: bool,
+    rv_snapshot_has_ready_realized_vol: Option<bool>,
+    rv_snapshot_receive_watermark_ms: Option<u64>,
+    rv_max_source_age_ms: Option<u64>,
     rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
     rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
     rv_gate_result: BoltV3ExitRvGateResult,
@@ -1101,6 +1107,9 @@ impl<'de> Deserialize<'de> for BoltV3ExitDecisionEvidence {
             rv_surface_id: wire.rv_surface_id,
             rv_snapshot_as_of_ms: wire.rv_snapshot_as_of_ms,
             rv_snapshot_ready: wire.rv_snapshot_ready,
+            rv_snapshot_has_ready_realized_vol: wire.rv_snapshot_has_ready_realized_vol,
+            rv_snapshot_receive_watermark_ms: wire.rv_snapshot_receive_watermark_ms,
+            rv_max_source_age_ms: wire.rv_max_source_age_ms,
             rv_snapshot_blockers: wire.rv_snapshot_blockers,
             rv_source_diagnostics: wire.rv_source_diagnostics,
             rv_gate_result: wire.rv_gate_result,
@@ -1761,6 +1770,8 @@ pub struct BoltV3ExitEvaluationEvidence {
     pub rv_surface_id: String,
     pub rv_as_of_ms: Option<i64>,
     pub rv_ready: bool,
+    pub rv_snapshot_receive_watermark_ms: Option<i64>,
+    pub rv_max_source_age_ms: Option<u64>,
     pub rv_blockers: Vec<String>,
     pub rv_source_diagnostics: Vec<String>,
     pub rv_gate_result: BoltV3RvGateResult,
@@ -1799,6 +1810,8 @@ struct BoltV3ExitEvaluationEvidenceWire {
     rv_surface_id: String,
     rv_as_of_ms: Option<i64>,
     rv_ready: bool,
+    rv_snapshot_receive_watermark_ms: Option<i64>,
+    rv_max_source_age_ms: Option<u64>,
     rv_blockers: Vec<String>,
     rv_source_diagnostics: Vec<String>,
     rv_gate_result: BoltV3RvGateResult,
@@ -1830,6 +1843,19 @@ impl<'de> Deserialize<'de> for BoltV3ExitEvaluationEvidence {
         D: serde::Deserializer<'de>,
     {
         let wire = BoltV3ExitEvaluationEvidenceWire::deserialize(deserializer)?;
+        if wire.trigger_ts_init_ms.is_some_and(i64::is_negative) {
+            return Err(serde::de::Error::custom(
+                "trigger_ts_init_ms must be non-negative",
+            ));
+        }
+        if wire
+            .rv_snapshot_receive_watermark_ms
+            .is_some_and(i64::is_negative)
+        {
+            return Err(serde::de::Error::custom(
+                "rv_snapshot_receive_watermark_ms must be non-negative",
+            ));
+        }
         Ok(Self {
             position_id: wire.position_id,
             market_id: wire.market_id,
@@ -1842,6 +1868,8 @@ impl<'de> Deserialize<'de> for BoltV3ExitEvaluationEvidence {
             rv_surface_id: wire.rv_surface_id,
             rv_as_of_ms: wire.rv_as_of_ms,
             rv_ready: wire.rv_ready,
+            rv_snapshot_receive_watermark_ms: wire.rv_snapshot_receive_watermark_ms,
+            rv_max_source_age_ms: wire.rv_max_source_age_ms,
             rv_blockers: wire.rv_blockers,
             rv_source_diagnostics: wire.rv_source_diagnostics,
             rv_gate_result: wire.rv_gate_result,
@@ -3856,6 +3884,15 @@ impl ExitEvaluationLineOwned {
 }
 
 fn encode_exit_evaluation_line(evidence: &BoltV3ExitEvaluationEvidence) -> Result<Vec<u8>> {
+    if evidence.trigger_ts_init_ms.is_some_and(i64::is_negative) {
+        anyhow::bail!("trigger_ts_init_ms must be non-negative");
+    }
+    if evidence
+        .rv_snapshot_receive_watermark_ms
+        .is_some_and(i64::is_negative)
+    {
+        anyhow::bail!("rv_snapshot_receive_watermark_ms must be non-negative");
+    }
     let envelope = ExitEvaluationLine {
         schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         recorded_at_utc_ns: current_utc_ns(),
@@ -5148,6 +5185,8 @@ mod tests {
             rv_surface_id: "surface-one".to_string(),
             rv_as_of_ms: Some(1_699_999_995_000),
             rv_ready: true,
+            rv_snapshot_receive_watermark_ms: Some(1_699_999_999_750),
+            rv_max_source_age_ms: Some(30_000),
             rv_blockers: vec!["source_stale".to_string()],
             rv_source_diagnostics: vec!["source-a:ready".to_string()],
             rv_gate_result: BoltV3RvGateResult::RejectedFutureDated,

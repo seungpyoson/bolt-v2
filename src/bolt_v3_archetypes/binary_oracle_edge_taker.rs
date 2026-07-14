@@ -696,6 +696,34 @@ pub fn raw_taker_config(
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: "config.realized_volatility_surface_id is required".to_string(),
         })?;
+    let realized_volatility_surfaces = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "realized_volatility_surfaces is absent; configured surface `{realized_volatility_surface_id}` cannot be resolved"
+            ),
+        })?;
+    let realized_volatility_max_source_age_ms = realized_volatility_surfaces
+        .get(realized_volatility_surface_id)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "configured surface `{realized_volatility_surface_id}` is not present in realized_volatility_surfaces"
+            ),
+        })?
+        .policy
+        .max_source_age_ms;
+    if realized_volatility_max_source_age_ms == 0 {
+        return Err(BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "realized_volatility_surfaces.{realized_volatility_surface_id}.policy.max_source_age_ms must be positive"
+            ),
+        });
+    }
     let reference_current_price = strategy
         .config
         .reference_current_price
@@ -890,6 +918,12 @@ pub fn raw_taker_config(
         "realized_volatility_surface_id",
         realized_volatility_surface_id.to_string(),
     );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "realized_volatility_max_source_age_ms",
+        realized_volatility_max_source_age_ms,
+    )?;
     if let Some(resolution_data) = resolution_data {
         insert_string(
             &mut table,

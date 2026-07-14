@@ -1176,6 +1176,9 @@ fn sample_exit_decision_evidence() -> BoltV3ExitDecisionEvidence {
         rv_surface_id: "surface-one".to_string(),
         rv_snapshot_as_of_ms: Some(1_250),
         rv_snapshot_ready: true,
+        rv_snapshot_has_ready_realized_vol: Some(true),
+        rv_snapshot_receive_watermark_ms: Some(1_200),
+        rv_max_source_age_ms: Some(500),
         rv_snapshot_blockers: vec![BoltV3ExitRvSnapshotBlocker::QuorumNotReady],
         rv_source_diagnostics: Vec::new(),
         rv_gate_result: BoltV3ExitRvGateResult::RejectedFutureDated,
@@ -1464,6 +1467,8 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
             rv_surface_id: "surface-one".to_string(),
             rv_as_of_ms: Some(1_699_999_995_000),
             rv_ready: true,
+            rv_snapshot_receive_watermark_ms: Some(1_200),
+            rv_max_source_age_ms: Some(500),
             rv_blockers: vec!["source_stale".to_string()],
             rv_source_diagnostics: vec!["source-a:ready".to_string()],
             rv_gate_result: BoltV3RvGateResult::RejectedFutureDated,
@@ -1501,6 +1506,8 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
             rv_surface_id: "surface-two".to_string(),
             rv_as_of_ms: None,
             rv_ready: false,
+            rv_snapshot_receive_watermark_ms: None,
+            rv_max_source_age_ms: None,
             rv_blockers: Vec::new(),
             rv_source_diagnostics: Vec::new(),
             rv_gate_result: BoltV3RvGateResult::MissingSnapshot,
@@ -2610,6 +2617,18 @@ fn rv_clock_domain_amendment_negative_receive_fields_fail_decode_and_encode() {
     assert!(
         format!("{error:#}").contains("trigger_ts_init_ms"),
         "encode error must name trigger_ts_init_ms: {error:#}"
+    );
+
+    let mut negative_watermark = sample_exit_evaluation_evidence(true);
+    negative_watermark.rv_snapshot_receive_watermark_ms = Some(-1);
+    let (_temp, _path, writer) =
+        temp_decision_evidence_writer("negative-exit-evaluation-watermark-encode");
+    let error = writer
+        .record_exit_evaluation(&negative_watermark)
+        .expect_err("manual negative RV receive watermark must fail durable encoding");
+    assert!(
+        format!("{error:#}").contains("rv_snapshot_receive_watermark_ms"),
+        "encode error must name rv_snapshot_receive_watermark_ms: {error:#}"
     );
 
     for (label, marker) in [

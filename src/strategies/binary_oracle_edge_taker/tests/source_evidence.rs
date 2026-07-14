@@ -2731,6 +2731,25 @@ fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
 fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
     ExitSubmissionDecision {
         evaluation: ExitEvaluation {
+            realized_volatility_receipt: ExitRealizedVolatilityGateReceipt {
+                gate_result: BoltV3RvGateResult::MissingSnapshot,
+                surface_id: TEST_SURFACE_ID.to_string(),
+                max_source_age_ms: 500,
+                evaluation_receive_ms: Some(LocalReceiveMs::new(1_200)),
+                snapshot_as_of_ms: None,
+                snapshot_receive_watermark_ms: None,
+                snapshot_ready: false,
+                snapshot_has_ready_realized_vol: false,
+                realized_vol: None,
+                realized_vol_source_venue: None,
+                realized_vol_source_ts_ms: None,
+                raw_snapshot_blockers: Vec::new(),
+                source_diagnostics: Vec::new(),
+                snapshot_as_of_minus_trigger_event_ms: None,
+                fair_probability_up: None,
+                fair_probability_down: None,
+                uncertainty_band_probability: None,
+            },
             position_outcome_side: None,
             forced_flat_reasons: vec![],
             hold_ev_bps: None,

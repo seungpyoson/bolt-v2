@@ -144,6 +144,7 @@ pub(super) fn valid_raw_config() -> Value {
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         realized_volatility_surface_id = "<surface_id>"
+        realized_volatility_max_source_age_ms = 500
         trade_flow_window_secs = 30
         trade_flow_max_samples = 100
         spike_guard_return_threshold = 0.05
@@ -1269,6 +1270,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
             resolution_instrument_id: Some("CONFIGURED_ASSET-USD.CHAINLINK".to_string()),
             realized_volatility_surface_id: "<surface_id>".to_string(),
+            realized_volatility_max_source_age_ms: 500,
             static_condition_id: None,
             static_yes_outcome: None,
             static_no_outcome: None,

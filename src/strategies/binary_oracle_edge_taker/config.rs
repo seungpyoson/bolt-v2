@@ -77,6 +77,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             spike_guard_return_threshold: f64 => Float;
             spike_guard_cooldown_secs: u64 => Integer;
             price_to_beat_source: String => String;
+            realized_volatility_max_source_age_ms: u64 => Integer;
             pricing_kurtosis: f64 => Float;
             theta_decay_factor: f64 => Float;
             forced_flat_stale_reference_ms: u64 => Integer;
@@ -320,6 +321,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 stringify!(sizing_ev_reference_bps),
                 Some(config.sizing_ev_reference_bps),
             ),
+            (
+                stringify!(realized_volatility_max_source_age_ms),
+                Some(config.realized_volatility_max_source_age_ms),
+            ),
         ] {
             if let Some(value) = value {
                 anyhow::ensure!(value > u64::MIN, "{field} must be positive");
@@ -511,6 +516,12 @@ impl BinaryOracleEdgeTakerBuilder {
             table,
             field_prefix,
             stringify!(sizing_ev_reference_bps),
+            errors,
+        );
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(realized_volatility_max_source_age_ms),
             errors,
         );
         Self::validate_non_negative_finite_float_field(

@@ -326,6 +326,12 @@ pub(super) struct EntrySkipDedupeKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EntrySkipDedupeState {
+    pub(super) current_key: EntrySkipDedupeKey,
+    pub(super) rv_seen_mask: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockedStrategyInputSourceStateKey {
     source_id: String,
     enabled: bool,
@@ -357,6 +363,29 @@ pub(super) struct BlockedStrategyInputDedupeKey {
     realized_volatility_blockers: Vec<String>,
     realized_volatility_source_states: Vec<BlockedStrategyInputSourceStateKey>,
     realized_volatility_unknown_source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BlockedStrategyInputDedupeState {
+    pub(super) current_key: BlockedStrategyInputDedupeKey,
+    pub(super) rv_seen_mask: u16,
+}
+
+pub(super) const fn rv_gate_novelty_bit(
+    gate_result: BoltV3RvGateResult,
+    watermark_present: bool,
+) -> u16 {
+    let gate_index: u32 = match gate_result {
+        BoltV3RvGateResult::Accepted => 0,
+        BoltV3RvGateResult::MissingSnapshot => 1,
+        BoltV3RvGateResult::MissingEvaluationEventTime => 2,
+        BoltV3RvGateResult::RejectedFutureDated => 3,
+        BoltV3RvGateResult::RejectedStale => 4,
+        BoltV3RvGateResult::RejectedNotReady => 5,
+    };
+    let watermark_index = if watermark_present { 1 } else { 0 };
+    let bit_index = gate_index * 2 + watermark_index;
+    1_u16 << bit_index
 }
 
 impl BlockedStrategyInputDedupeKey {

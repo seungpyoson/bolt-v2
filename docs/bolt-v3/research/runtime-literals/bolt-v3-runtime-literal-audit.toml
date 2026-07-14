@@ -20960,3 +20960,123 @@ literal = "1"
 context = '''self.terminal_transition_count = self.terminal_transition_count.saturating_add(1);'''
 classification = "operator_health_counter_increment"
 reason = "One typed health event represents one completed canonical terminal transition; this is a counter identity, not an operator-configurable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"realized_volatility_max_source_age_ms"'''
+context = '''"realized_volatility_max_source_age_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "Derived runtime config field populated from the selected root realized-volatility surface policy; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "0"
+context = '''BoltV3RvGateResult::Accepted => 0,'''
+classification = "rv_gate_novelty_enum_index"
+reason = "Closed enum index for the Accepted RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "1"
+context = '''BoltV3RvGateResult::MissingSnapshot => 1,'''
+classification = "rv_gate_novelty_enum_index"
+reason = "Closed enum index for the MissingSnapshot RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "2"
+context = '''BoltV3RvGateResult::MissingEvaluationEventTime => 2,'''
+classification = "rv_gate_novelty_enum_index"
+reason = "Closed enum index for the MissingEvaluationEventTime RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "3"
+context = '''BoltV3RvGateResult::RejectedFutureDated => 3,'''
+classification = "rv_gate_novelty_enum_index"
+reason = "Closed enum index for the RejectedFutureDated RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "4"
+context = '''BoltV3RvGateResult::RejectedStale => 4,'''
+classification = "rv_gate_novelty_enum_index"
+reason = "Closed enum index for the RejectedStale RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "5"
+context = '''BoltV3RvGateResult::RejectedNotReady => 5,'''
+classification = "rv_gate_novelty_enum_index"
+reason = "Closed enum index for the RejectedNotReady RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "2"
+context = '''let bit_index = gate_index * 2 + watermark_index;'''
+classification = "rv_gate_novelty_dimension_count"
+reason = "Each closed RV gate category has exactly two evidence states, receive-watermark absent or present; this is a bounded schema dimension, not a runtime policy value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "1_u16"
+context = '''1_u16 << bit_index'''
+classification = "rv_gate_novelty_bit_identity"
+reason = "One-hot identity used to mark an observed category-and-watermark-presence state in the bounded u16 evidence mask."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"trigger_ts_event_ms"'''
+context = '''"trigger_ts_event_ms",'''
+classification = "exit_evidence_field_diagnostic"
+reason = "Stable evidence field name used only in a checked-conversion error; the timestamp value comes from the trigger."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"trigger_ts_init_ms"'''
+context = '''.map(|value| checked_timestamp("trigger_ts_init_ms", value.value()))'''
+classification = "exit_evidence_field_diagnostic"
+reason = "Stable evidence field name used only in a checked-conversion error; the receive timestamp comes from the immutable exit receipt."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"exit_eval_now_ms"'''
+context = '''let exit_eval_now_ms = checked_timestamp("exit_eval_now_ms", now_ms)?;'''
+classification = "exit_evidence_field_diagnostic"
+reason = "Stable evidence field name used only in a checked-conversion error; the lifecycle timestamp comes from the caller."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"rv_as_of_ms"'''
+context = '''.map(|value| checked_timestamp("rv_as_of_ms", value))'''
+classification = "exit_evidence_field_diagnostic"
+reason = "Stable evidence field name used only in a checked-conversion error; the event timestamp comes from the immutable exit receipt."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"rv_snapshot_receive_watermark_ms"'''
+context = '''.map(|value| checked_timestamp("rv_snapshot_receive_watermark_ms", value.value()))'''
+classification = "exit_evidence_field_diagnostic"
+reason = "Stable evidence field name used only in a checked-conversion error; the watermark comes from the immutable exit receipt."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"exit evaluation evidence rv_as_of_minus_now_ms exceeds i64 range: {delta_ms}"'''
+context = '''"exit evaluation evidence rv_as_of_minus_now_ms exceeds i64 range: {delta_ms}"'''
+classification = "exit_evidence_conversion_diagnostic_template"
+reason = "Fail-loud diagnostic for a checked durable-evidence projection; it reports the captured delta and does not configure trading behavior."

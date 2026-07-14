@@ -138,7 +138,7 @@ fn rv_clock_domain_amendment_set_snapshot(
             strategy.pricing.classify_realized_vol_gate(
                 &strategy.config.realized_volatility_surface_id,
                 Some(LocalReceiveMs::new(snapshot_receive_ms)),
-                strategy.realized_volatility_max_source_age_ms(),
+                Some(strategy.config.realized_volatility_max_source_age_ms),
             ),
             BoltV3RvGateResult::RejectedNotReady,
             "the negative fixture must be a present RejectedNotReady snapshot"

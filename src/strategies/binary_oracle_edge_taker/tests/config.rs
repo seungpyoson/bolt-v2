@@ -807,7 +807,7 @@ fn rv_clock_domain_amendment_runtime_config_requires_positive_surface_age() {
             .insert(field.to_string(), value);
         let error = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .expect_err("invalid derived RV policy age must fail direct parsing");
-        let rendered = error.to_string();
+        let rendered = format!("{error:#}");
         assert!(
             rendered.contains(field) && rendered.contains(expected),
             "{label} `{field}` must be rejected as a required positive {expected}: {rendered}"

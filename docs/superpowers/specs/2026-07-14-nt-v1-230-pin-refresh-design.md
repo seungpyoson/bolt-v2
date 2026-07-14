@@ -67,7 +67,8 @@ revision:
 - port the minimum SBE 3:5 loading, request, receive-clock, fixture, and focused
   test changes required by the three behavior contracts above;
 - update every governed Bolt Cargo manifest and lockfile to the resulting SHA;
-- make the minimum Bolt source adaptations required by NT `0.60.0` APIs;
+- make only Bolt source adaptations proven necessary by NT `0.60.0` compile or
+  contract evidence;
 - update the runtime-contract, provenance, audit, test-fixture, and boundary
   evidence surfaces that intentionally record the dependency revision;
 - verify compatibility and fail-closed behavior through local non-compile gates
@@ -131,6 +132,8 @@ minimum it will require:
   exact fork revision;
 - the CLOB V2 readiness and panic-gate matrices required by the runtime
   contract;
+- targeted text/static checks and an internal adversarial review of changed
+  documentation, verifier, and policy evidence;
 - exact-head remote Rust CI on a draft PR, followed by green ready-PR merge
   proof and the required code-owner review before completion or merge.
 

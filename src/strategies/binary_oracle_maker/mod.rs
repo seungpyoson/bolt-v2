@@ -327,8 +327,6 @@ impl BinaryOracleMaker {
     ) -> Result<()> {
         let Some((action_cost_class, block_reason)) = requote_throttle_block(market, leg, decision)
         else {
-            self.last_requote_throttle_blocks
-                .retain(|key| !(key.family_key == family_key && key.leg == leg));
             return Ok(());
         };
         let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
@@ -366,8 +364,6 @@ impl BinaryOracleMaker {
                 self.config.strategy_id
             );
         }
-        self.last_requote_throttle_blocks
-            .retain(|existing| !(existing.family_key == family_key && existing.leg == leg));
         self.last_requote_throttle_blocks.push(key);
         Ok(())
     }

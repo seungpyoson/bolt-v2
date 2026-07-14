@@ -21080,3 +21080,107 @@ literal = '''"exit evaluation evidence rv_as_of_minus_now_ms exceeds i64 range: 
 context = '''"exit evaluation evidence rv_as_of_minus_now_ms exceeds i64 range: {delta_ms}"'''
 classification = "exit_evidence_conversion_diagnostic_template"
 reason = "Fail-loud diagnostic for a checked durable-evidence projection; it reports the captured delta and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "0"
+context = '''ordered_outcomes[0].outcome_index,'''
+classification = "evidence_identity_binary_shape"
+reason = "Array index for validating the first member of the venue-defined binary outcome identity; it is type shape, not runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "2"
+context = '''ordered_outcomes: [EvidenceOutcomeIdentity; 2],'''
+classification = "evidence_identity_binary_shape"
+reason = "The market identity binds the venue-defined ordered binary outcome pair required by the evidence contract; it is type shape, not runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "2"
+context = '''pub fn ordered_outcomes(&self) -> &[EvidenceOutcomeIdentity; 2] {'''
+classification = "evidence_identity_binary_shape"
+reason = "Return type preserves the venue-defined ordered binary outcome pair at the type boundary; it is type shape, not runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"normalized_outcome"'''
+context = '''"normalized_outcome",'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"clob_token_id"'''
+context = '''clob_token_id: NonEmptyEvidenceIdentity::new("clob_token_id", clob_token_id)?,'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"gamma_market_id"'''
+context = '''gamma_market_id: NonEmptyEvidenceIdentity::new("gamma_market_id", gamma_market_id)?,'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"condition_id"'''
+context = '''condition_id: NonEmptyEvidenceIdentity::new("condition_id", condition_id)?,'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"question_id"'''
+context = '''question_id: NonEmptyEvidenceIdentity::new("question_id", question_id)?,'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"logical_strategy_id"'''
+context = '''"logical_strategy_id",'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"logical_target_id"'''
+context = '''"logical_target_id",'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"logical_venue_id"'''
+context = '''logical_venue_id: NonEmptyEvidenceIdentity::new("logical_venue_id", logical_venue_id)?,'''
+classification = "evidence_identity_validation_field"
+reason = "Stable field label used only to identify an invalid empty evidence identity input."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''"evidence CLOB token identity is duplicated"'''
+context = '''formatter.write_str("evidence CLOB token identity is duplicated")'''
+classification = "evidence_identity_validation_diagnostic"
+reason = "Stable fail-closed validation diagnostic; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "number"
+literal = "0"
+context = '''self.last_recorded_blocked_strategy_input[index].rv_seen_mask & rv_bit != 0'''
+classification = "evidence_novelty_mask_empty_check"
+reason = "Zero tests whether the closed RV evidence novelty bit has already been observed; it is not a runtime policy threshold."

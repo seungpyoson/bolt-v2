@@ -754,9 +754,9 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
-    last_recorded_blocked_strategy_input: Option<BlockedStrategyInputDedupeState>,
-    last_recorded_entry_skip: Option<EntrySkipDedupeState>,
-    last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
+    last_recorded_blocked_strategy_input: Vec<BlockedStrategyInputDedupeState>,
+    last_recorded_entry_skip: Vec<EntrySkipDedupeState>,
+    last_recorded_exit_decision: Vec<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
     latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
@@ -780,7 +780,7 @@ pub struct BinaryOracleEdgeTaker {
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
     /// 2026-06-20 incident) into one record per distinct outcome. The per-tick
     /// tracing log is unaffected.
-    last_exit_evidence_outcome: BTreeMap<PositionId, ExitOutcomeKey>,
+    last_exit_evidence_outcome: BTreeMap<PositionId, Vec<ExitOutcomeKey>>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
     /// Test-only observability for live-strike fetch attempts. Records each
@@ -879,9 +879,9 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
-            last_recorded_blocked_strategy_input: None,
-            last_recorded_entry_skip: None,
-            last_recorded_exit_decision: None,
+            last_recorded_blocked_strategy_input: Vec::new(),
+            last_recorded_entry_skip: Vec::new(),
+            last_recorded_exit_decision: Vec::new(),
             pricing,
             latest_signal_quote: None,
             latest_selected_reference_quote: None,
@@ -4288,7 +4288,6 @@ impl BinaryOracleEdgeTaker {
                 .map(entry_pricing_block_reason_to_evidence)
                 .collect(),
             market_id: fields.market_id.clone(),
-            interval_open: option_evidence_number(fields.interval_open),
             fast_venue_available: fields.fast_venue_available,
             reference_current_price_available: fields.reference_current_price_available,
             fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
@@ -4301,21 +4300,21 @@ impl BinaryOracleEdgeTaker {
                 .receive_watermark_ms
                 .is_some(),
         );
-        let next_state = match self.last_recorded_entry_skip.as_ref() {
-            Some(state) if state.current_key == key => {
-                if state.rv_seen_mask & rv_bit != 0 {
-                    return Ok(false);
-                }
-                EntrySkipDedupeState {
-                    current_key: key,
-                    rv_seen_mask: state.rv_seen_mask | rv_bit,
-                }
+        if let Some(state) = self
+            .last_recorded_entry_skip
+            .iter_mut()
+            .find(|state| state.current_key == key)
+        {
+            if state.rv_seen_mask & rv_bit != 0 {
+                return Ok(false);
             }
-            _ => EntrySkipDedupeState {
+            state.rv_seen_mask |= rv_bit;
+        } else {
+            self.last_recorded_entry_skip.push(EntrySkipDedupeState {
                 current_key: key,
                 rv_seen_mask: rv_bit,
-            },
-        };
+            });
+        }
         let evidence = BoltV3EntrySkipEvidence::from_entry_skip(
             self.config.strategy_id.clone(),
             now_ms,
@@ -4326,7 +4325,6 @@ impl BinaryOracleEdgeTaker {
         );
         // Preserve the existing mark-before-swallowed-writer-error contract: a
         // telemetry failure must not spin on the same semantic skip state.
-        self.last_recorded_entry_skip = Some(next_state);
         if let Err(error) = self
             .context
             .decision_evidence()
@@ -4403,7 +4401,7 @@ impl BinaryOracleEdgeTaker {
             exit_decision: evidence.exit_decision,
             blocked_reason: evidence.blocked_reason,
         };
-        if self.last_recorded_exit_decision.as_ref() == Some(&key) {
+        if self.last_recorded_exit_decision.contains(&key) {
             return Ok(());
         }
         if let Err(error) = self
@@ -4420,7 +4418,7 @@ impl BinaryOracleEdgeTaker {
                 self.config.strategy_id
             );
         }
-        self.last_recorded_exit_decision = Some(key);
+        self.last_recorded_exit_decision.push(key);
         Ok(())
     }
 
@@ -6513,25 +6511,27 @@ impl BinaryOracleEdgeTaker {
                 .receive_watermark_ms
                 .is_some(),
         );
-        let next_state = match self.last_recorded_blocked_strategy_input.as_ref() {
-            Some(state) if state.current_key == key => {
-                if state.rv_seen_mask & rv_bit != 0 {
-                    return Ok(());
-                }
-                BlockedStrategyInputDedupeState {
-                    current_key: key,
-                    rv_seen_mask: state.rv_seen_mask | rv_bit,
-                }
-            }
-            _ => BlockedStrategyInputDedupeState {
-                current_key: key,
-                rv_seen_mask: rv_bit,
-            },
-        };
+        let existing_index = self
+            .last_recorded_blocked_strategy_input
+            .iter()
+            .position(|state| state.current_key == key);
+        if existing_index.is_some_and(|index| {
+            self.last_recorded_blocked_strategy_input[index].rv_seen_mask & rv_bit != 0
+        }) {
+            return Ok(());
+        }
         self.context
             .decision_evidence()
             .record_strategy_input_snapshot(&snapshot)?;
-        self.last_recorded_blocked_strategy_input = Some(next_state);
+        if let Some(index) = existing_index {
+            self.last_recorded_blocked_strategy_input[index].rv_seen_mask |= rv_bit;
+        } else {
+            self.last_recorded_blocked_strategy_input
+                .push(BlockedStrategyInputDedupeState {
+                    current_key: key,
+                    rv_seen_mask: rv_bit,
+                });
+        }
         Ok(())
     }
 
@@ -7068,15 +7068,15 @@ impl BinaryOracleEdgeTaker {
         // distinct, rare event). The per-tick tracing log above is untouched.
         if let Some(position_id) = log_fields.position_id {
             let mut changed = true;
-            if let Some(last_outcome) = self.last_exit_evidence_outcome.get_mut(&position_id) {
-                if last_outcome == &outcome_key {
+            if let Some(seen_outcomes) = self.last_exit_evidence_outcome.get_mut(&position_id) {
+                if seen_outcomes.contains(&outcome_key) {
                     changed = false;
                 } else {
-                    *last_outcome = outcome_key;
+                    seen_outcomes.push(outcome_key);
                 }
             } else {
                 self.last_exit_evidence_outcome
-                    .insert(position_id, outcome_key);
+                    .insert(position_id, vec![outcome_key]);
             }
             if !submitted && !changed {
                 return;
@@ -7274,8 +7274,6 @@ impl BinaryOracleEdgeTaker {
                 .is_empty();
         if realized_volatility_not_ready {
             self.record_blocked_entry_strategy_input_snapshot_once(now_ms, &decision)?;
-        } else {
-            self.last_recorded_blocked_strategy_input = None;
         }
 
         if let Some(reason) = decision.blocked_reason {
@@ -7332,7 +7330,6 @@ impl BinaryOracleEdgeTaker {
         }
 
         self.entry_reject_state.remove(&instrument_id);
-        self.last_recorded_entry_skip = None;
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         let order = self.build_configured_entry_order(
@@ -8300,6 +8297,9 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
         // a closed position never re-emits exit evidence, so its dedup key is dead
         // state. Removal here is behavior-neutral and bounds the map over a long run.
         self.last_exit_evidence_outcome.remove(&event.position_id);
+        let closed_position_id = event.position_id.to_string();
+        self.last_recorded_exit_decision
+            .retain(|key| key.position_id.as_deref() != Some(closed_position_id.as_str()));
         let managed_position_close = match &self.exposure {
             ExposureState::Managed(position)
                 if position.position.position_id == event.position_id =>

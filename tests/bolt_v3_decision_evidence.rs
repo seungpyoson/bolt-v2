@@ -966,6 +966,51 @@ fn jsonl_decision_evidence_shutdown_drain_succeeds_after_record_write() {
     );
 }
 
+#[test]
+fn recovery_bearing_jsonl_updates_remain_unsuppressed() {
+    let (_temp, path, writer) =
+        temp_decision_evidence_writer("decision-evidence-recovery-unsuppressed");
+    let snapshot: BoltV3StrategyInputEvidenceSnapshot =
+        serde_json::from_value(sample_entry_decision_evidence_lines()[0]["snapshot"].clone())
+            .expect("sample submit-linked snapshot should decode");
+    assert!(!snapshot.client_order_id.is_empty());
+
+    for index in 0..128_u64 {
+        writer
+            .record_strategy_input_snapshot(&snapshot)
+            .expect("submit-linked snapshots must remain append-complete");
+        let mut fill = sample_submit_reservation_fill();
+        fill.trade_id = format!("trade-{index}");
+        fill.fill_quantity = index.saturating_add(1).to_string();
+        fill.observed_at_ns = fill.observed_at_ns.saturating_add(index);
+        writer
+            .record_submit_reservation_fill(&fill)
+            .expect("changing recovery fills must remain append-complete");
+    }
+    writer
+        .drain_shutdown()
+        .expect("recovery evidence should drain");
+
+    let lines = read_decision_evidence_json_lines(&path);
+    assert_eq!(lines.len(), 256);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line["kind"] == "strategy_input_snapshot")
+            .count(),
+        128,
+        "writer-level suppression must never collapse submit-linked snapshots"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line["kind"] == "submit_reservation_fill")
+            .count(),
+        128,
+        "changing fill payloads must remain complete for restart recovery"
+    );
+}
+
 fn append_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     use std::io::Write;
 

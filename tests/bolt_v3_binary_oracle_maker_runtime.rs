@@ -241,9 +241,9 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
         .expect("one-submit budget fixture builds");
     let submit_template = maker_limit_post_only_template();
 
-    let route_input = || BinaryOracleMakerRuntimeQuoteRouteInput {
+    let route_input = |family_key: &'static str| BinaryOracleMakerRuntimeQuoteRouteInput {
         quote: MakerRuntimeQuoteInput {
-            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_plan: quote_plan_inputs(family_key),
             quote_set: quote_set_inputs(),
             order_plan: order_plan_inputs(),
         },
@@ -256,17 +256,28 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     };
 
     maker
-        .route_maker_runtime_quote(&mut market, &mut budget, route_input())
+        .route_maker_runtime_quote(
+            &mut market,
+            &mut budget,
+            route_input(static_binary_event::KEY),
+        )
         .expect("first quote cycle should route the granted leg and record the denied leg");
-    maker
-        .route_maker_runtime_quote(&mut market, &mut budget, route_input())
-        .expect("repeated blocked quote cycle should be deduped");
+    for index in 0..10_000 {
+        let family_key = if index % 2 == 0 {
+            "alternate-family"
+        } else {
+            static_binary_event::KEY
+        };
+        maker
+            .route_maker_runtime_quote(&mut market, &mut budget, route_input(family_key))
+            .expect("oscillating blocked quote cycles should route without duplicate evidence");
+    }
 
     let throttles = writer.requote_throttles();
     assert_eq!(
         throttles.len(),
-        1,
-        "same blocked leg state must emit one throttle evidence record"
+        2,
+        "A-to-B-to-A oscillation must emit each finite requote-throttle state once"
     );
     let throttle = &throttles[0];
     assert_eq!(throttle.strategy_id, "maker-strategy");

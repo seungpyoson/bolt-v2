@@ -2831,7 +2831,7 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         "an exit-decision evidence write failure must not propagate and block the exit: {result:?}"
     );
     assert!(
-        strategy.last_recorded_exit_decision.is_some(),
+        !strategy.last_recorded_exit_decision.is_empty(),
         "the dedupe key must still be set so the lost write is not retried in a tight loop"
     );
 }
@@ -3112,7 +3112,7 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
     );
     assert!(
-        strategy.last_recorded_entry_skip.is_some(),
+        !strategy.last_recorded_entry_skip.is_empty(),
         "the dedupe key must still be set so the lost write is not retried in a tight loop"
     );
 }
@@ -3452,6 +3452,45 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
         records.len(),
         1,
         "six unchanged book evaluations must collapse even when an independent venue clock alternately leads and trails the RV venue clock"
+    );
+}
+
+#[test]
+fn autonomous_amendment_exit_evaluation_suppresses_large_a_b_a_oscillation() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    let decision_a = minimal_exit_submission_decision();
+    let mut decision_b = decision_a.clone();
+    decision_b
+        .evaluation
+        .realized_volatility_receipt
+        .gate_result = BoltV3RvGateResult::RejectedStale;
+
+    for index in 0..100_000_u64 {
+        let decision = if index % 2 == 0 {
+            &decision_a
+        } else {
+            &decision_b
+        };
+        strategy.record_exit_evaluation_evidence(
+            1_300 + index,
+            decision,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                1_200,
+                Some(1_210 + index),
+            ),
+            false,
+        );
+    }
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        2,
+        "large A-to-B-to-A oscillation must emit each finite exit outcome once"
     );
 }
 
@@ -3873,7 +3912,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     );
 
     for (index, decision) in decisions.iter().enumerate() {
-        strategy.last_recorded_exit_decision = None;
+        strategy.last_recorded_exit_decision.clear();
         strategy
             .record_exit_decision_once(
                 RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64,
@@ -3962,7 +4001,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         false,
     );
 
-    strategy.last_recorded_exit_decision = None;
+    strategy.last_recorded_exit_decision.clear();
     strategy.last_exit_evidence_outcome.clear();
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy
@@ -4595,10 +4634,8 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 }
 
 #[test]
-fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
-    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 6] = [
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
+fn autonomous_amendment_key_change_preserves_seen_rv_bits_across_a_b_a() {
+    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 4] = [
         (BoltV3RvGateResult::Accepted, true),
         (BoltV3RvGateResult::RejectedStale, true),
         (BoltV3RvGateResult::Accepted, true),
@@ -4619,7 +4656,8 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     let mut now_ms = 1_200_u64;
-    // A -> B -> A must start a fresh two-bit novelty mask at every key transition.
+    // A -> B -> A records both semantic states once and keeps A suppressed when
+    // it returns within the same process episode.
     for category in [
         BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
         BoltV3EntrySkipReasonCategory::NoSideSelected,
@@ -4629,7 +4667,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
             entry_strategy
                 .record_entry_skip_once(now_ms, &entry, category, None)
-                .expect("each previously seen RV bit must emit after an entry-key change");
+                .expect("finite entry novelty should record only unseen states");
             now_ms += 1;
         }
     }
@@ -4662,7 +4700,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
             blocked_strategy
                 .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
-                .expect("each previously seen RV bit must emit after a blocked-key change");
+                .expect("finite blocked novelty should record only unseen states");
             now_ms += 1;
         }
     }
@@ -4710,7 +4748,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .unwrap();
     }
 
-    for index in 0..128_u64 {
+    for index in 0..100_000_u64 {
         let (gate, watermark) = if index % 2 == 0 {
             (
                 BoltV3RvGateResult::Accepted,
@@ -4750,7 +4788,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
         12,
-        "100+ repeats and A-B-A oscillations must remain bounded to twelve entry records"
+        "100,000 A-B-A oscillations must remain bounded to twelve entry records"
     );
     assert_eq!(
         blocked_events
@@ -4758,7 +4796,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
             .count(),
         12,
-        "100+ repeats and A-B-A oscillations must remain bounded to twelve blocked records"
+        "100,000 A-B-A oscillations must remain bounded to twelve blocked records"
     );
     assert!(entry_events.iter().all(|event| {
         match event {
@@ -5034,7 +5072,7 @@ impl RvClockDomainBlockedKeyField {
     }
 }
 
-fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
+fn autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(
     field: RvClockDomainBlockedKeyField,
 ) {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -5064,8 +5102,8 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 
     assert_eq!(
         evidence.strategy_input_attempts(),
-        3,
-        "{field:?} must reach the writer for A, B, and restored A"
+        2,
+        "{field:?} must reach the writer for A and B but suppress restored A"
     );
     let records = evidence
         .events()
@@ -5077,8 +5115,8 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .collect::<Vec<_>>();
     assert_eq!(
         records.len(),
-        3,
-        "{field:?} must emit after A-to-B and again after B-to-A"
+        2,
+        "{field:?} must emit A and B exactly once across A-to-B-to-A"
     );
     assert!(records.iter().all(|record| {
         record.realized_volatility_gate_result == Some(BoltV3RvGateResult::RejectedNotReady)
@@ -5134,7 +5172,7 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
 }
 
 #[test]
-fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
+fn autonomous_amendment_existing_key_changes_preserve_rv_novelty() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
@@ -5189,12 +5227,6 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
     entry_strategy.active.market_id = original_market_id;
     record_entry(&mut entry_strategy, &entry, baseline_category);
 
-    let original_interval_open = entry_strategy.active.interval_open;
-    entry_strategy.active.interval_open = Some(3_101.0);
-    record_entry(&mut entry_strategy, &entry, baseline_category);
-    entry_strategy.active.interval_open = original_interval_open;
-    record_entry(&mut entry_strategy, &entry, baseline_category);
-
     let original_spot = entry_strategy.pricing.selected_pricing_spot().cloned();
     entry_strategy.pricing.set_selected_pricing_spot(None);
     record_entry(&mut entry_strategy, &entry, baseline_category);
@@ -5229,12 +5261,12 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        17,
-        "each of eight current entry-key fields must emit on change and returning to the prior key must emit again"
+        8,
+        "the baseline plus seven semantic changes emit once; restored A states stay suppressed"
     );
 
     for field in RvClockDomainBlockedKeyField::ALL {
-        rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(field);
+        autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(field);
     }
     rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent();
 }

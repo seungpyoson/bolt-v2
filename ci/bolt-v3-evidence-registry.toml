@@ -1,0 +1,464 @@
+schema_version = 1
+source_module = "src/bolt_v3_decision_evidence.rs"
+identity_module = "src/bolt_v3_evidence_identity.rs"
+closed_families = ["risk", "market", "system"]
+allowed_classifications = ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]
+allowed_suppression = ["unsuppressed", "finite-episode"]
+handler_sweep_roots = ["src/strategies", "src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"]
+non_evidence_per_tick_appenders = []
+
+[[family]]
+name = "risk"
+capacity = 64
+allocations = [
+  { name = "admission_entry", start = 0, end = 8 },
+  { name = "order_prepare_submit_fill_terminal", start = 8, end = 24 },
+  { name = "position_exposure", start = 24, end = 32 },
+  { name = "exit_cancel_replacement", start = 32, end = 48 },
+  { name = "settlement_redemption", start = 48, end = 56 },
+  { name = "reconciliation_dependency", start = 56, end = 62 },
+  { name = "terminal_integrity", start = 62, end = 64 },
+]
+
+[[family]]
+name = "market"
+capacity = 256
+allocations = [
+  { name = "discovery_identity", start = 0, end = 32 },
+  { name = "lifecycle_rollover", start = 32, end = 80 },
+  { name = "subscription_book", start = 80, end = 144 },
+  { name = "strategy_input_pricing_blocker", start = 144, end = 208 },
+  { name = "dependency_health", start = 208, end = 240 },
+  { name = "terminal_closed_window_skip", start = 240, end = 256 },
+]
+
+[[family]]
+name = "system"
+capacity = 64
+allocations = [
+  { name = "startup_recovery", start = 0, end = 16 },
+  { name = "storage_archive", start = 16, end = 32 },
+  { name = "authentication_network_provider", start = 32, end = 48 },
+  { name = "capacity_host", start = 48, end = 60 },
+  { name = "integrity_operator", start = 60, end = 64 },
+]
+
+[[reader]]
+name = "read_latest_entry_decision_evidence_chain"
+record_kinds = ["strategy_input_snapshot", "order_intent", "admission_decision"]
+recovery_role = true
+
+[[reader]]
+name = "read_submit_reservation_recovery_evidence"
+record_kinds = ["submit_reservation_metadata", "submit_reservation_fill"]
+recovery_role = true
+
+[[reader]]
+name = "read_exit_evaluation_evidence"
+record_kinds = ["exit_evaluation"]
+recovery_role = false
+
+[[reader]]
+name = "read_loss_governor_halt_evidence"
+record_kinds = ["loss_governor_halt"]
+recovery_role = false
+
+[[reader]]
+name = "read_order_reject_evidence"
+record_kinds = ["order_reject"]
+recovery_role = false
+
+[[reader]]
+name = "read_settlement_evidence"
+record_kinds = ["settlement"]
+recovery_role = false
+
+[[reader]]
+name = "read_settlement_booking_error_evidence"
+record_kinds = ["settlement_booking_error"]
+recovery_role = false
+
+[[reader]]
+name = "read_terminal_settlement_evidence"
+record_kinds = ["terminal_settlement"]
+recovery_role = false
+
+[[reader]]
+name = "read_terminal_settlement_keys_for_recovery_scope"
+record_kinds = ["terminal_settlement"]
+recovery_role = true
+
+[[reader]]
+name = "read_settlement_keys_for_recovery_scope"
+record_kinds = ["settlement"]
+recovery_role = true
+
+[[reader]]
+name = "read_settlement_booking_error_keys_for_recovery_scope"
+record_kinds = ["settlement_booking_error", "terminal_settlement"]
+recovery_role = true
+
+[[reader]]
+name = "read_settlement_evidence_for_recovery_scope"
+record_kinds = ["settlement"]
+recovery_role = true
+
+[[producer]]
+name = "strategy_input_snapshot_submit"
+method = "record_strategy_input_snapshot"
+record_kind = "strategy_input_snapshot"
+gate_id = "bolt_v3.strategy_input_snapshot"
+family = "market"
+state_id = 144
+allocation = "strategy_input_pricing_blocker"
+classification = "event-keyed"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+source_paths = ["entry_strategy_input_evidence_snapshot_at"]
+named_readers = ["read_latest_entry_decision_evidence_chain"]
+repeat_semantics = "every submit-linked snapshot remains append-complete"
+dedupe_key_evidence = "non-empty client_order_id; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "strategy_input_snapshot_blocked_rv"
+method = "record_strategy_input_snapshot"
+record_kind = "strategy_input_snapshot"
+gate_id = "bolt_v3.strategy_input_snapshot"
+family = "market"
+state_id = 145
+allocation = "strategy_input_pricing_blocker"
+classification = "state-observation"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+source_paths = ["blocked_entry_strategy_input_evidence_snapshot_at"]
+named_readers = []
+repeat_semantics = "one record per semantic blocked state per process episode; A-to-B-to-A is suppressed"
+dedupe_key_evidence = "market/selection identity, blocker categories, availability, RV surface/blockers, normalized source status; no volatile observations"
+recovery_bearing = false
+suppression = "finite-episode"
+owner_decision_required = false
+
+[[producer]]
+name = "order_intent"
+method = "record_order_intent"
+record_kind = "order_intent"
+gate_id = "bolt_v3.order_intent"
+family = "risk"
+state_id = 8
+allocation = "order_prepare_submit_fill_terminal"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+source_paths = ["submit admission order construction"]
+named_readers = ["read_latest_entry_decision_evidence_chain"]
+repeat_semantics = "every distinct order intent remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "admission_decision"
+method = "record_admission_decision"
+record_kind = "admission_decision"
+gate_id = "bolt_v3.submit_admission"
+family = "risk"
+state_id = 0
+allocation = "admission_entry"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+source_paths = ["submit admission"]
+named_readers = ["read_latest_entry_decision_evidence_chain"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "basket_admission_decision"
+method = "record_basket_admission_decision"
+record_kind = "basket_admission_decision"
+gate_id = "bolt_v3.submit_admission"
+family = "risk"
+state_id = 1
+allocation = "admission_entry"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+source_paths = ["basket admission"]
+named_readers = []
+repeat_semantics = "append-complete pending owner decision"
+dedupe_key_evidence = "none"
+recovery_bearing = false
+suppression = "unsuppressed"
+owner_decision_required = true
+
+[[producer]]
+name = "capital_admission_rebuild_audit"
+method = "record_capital_admission_rebuild_audit"
+record_kind = "capital_admission_rebuild"
+gate_id = "bolt_v3.capital_admission_rebuild"
+family = "risk"
+state_id = 56
+allocation = "reconciliation_dependency"
+classification = "no-named-reader"
+handler_reachability = ["startup"]
+source_paths = ["capital admission rebuild"]
+named_readers = []
+repeat_semantics = "every rebuild observation remains append-complete"
+dedupe_key_evidence = "none"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = true
+
+[[producer]]
+name = "submit_reservation_metadata"
+method = "record_submit_reservation_metadata"
+record_kind = "submit_reservation_metadata"
+gate_id = "bolt_v3.submit_admission"
+family = "risk"
+state_id = 9
+allocation = "order_prepare_submit_fill_terminal"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+source_paths = ["submit reservation creation"]
+named_readers = ["read_submit_reservation_recovery_evidence"]
+repeat_semantics = "every changing reservation record remains append-complete"
+dedupe_key_evidence = "submit_reservation_id event identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "submit_reservation_fill"
+method = "record_submit_reservation_fill"
+record_kind = "submit_reservation_fill"
+gate_id = "bolt_v3.submit_admission"
+family = "risk"
+state_id = 10
+allocation = "order_prepare_submit_fill_terminal"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+source_paths = ["submit reservation fill reconciliation"]
+named_readers = ["read_submit_reservation_recovery_evidence"]
+repeat_semantics = "every fill remains append-complete"
+dedupe_key_evidence = "trade_id event identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "entry_skip"
+method = "record_entry_skip"
+record_kind = "entry_skip"
+gate_id = "bolt_v3.entry_skip"
+family = "market"
+state_id = 146
+allocation = "strategy_input_pricing_blocker"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+source_paths = ["record_entry_skip_once"]
+named_readers = []
+repeat_semantics = "one record per semantic state per market episode; A-to-B-to-A is suppressed"
+dedupe_key_evidence = "reason/blocker/market/availability/RV class; timestamps, prices, ages, counters excluded"
+recovery_bearing = false
+suppression = "finite-episode"
+owner_decision_required = false
+
+[[producer]]
+name = "exit_decision"
+method = "record_exit_decision"
+record_kind = "exit_decision"
+gate_id = "bolt_v3.exit_decision"
+family = "risk"
+state_id = 32
+allocation = "exit_cancel_replacement"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+source_paths = ["record_exit_decision_once"]
+named_readers = []
+repeat_semantics = "one record per semantic state per open-position episode; A-to-B-to-A is suppressed"
+dedupe_key_evidence = "market/position/forced-flat/outcome/block reason; timestamps, prices, ages, counters excluded"
+recovery_bearing = false
+suppression = "finite-episode"
+owner_decision_required = false
+
+[[producer]]
+name = "exit_evaluation"
+method = "record_exit_evaluation"
+record_kind = "exit_evaluation"
+gate_id = "bolt_v3.exit_evaluation"
+family = "risk"
+state_id = 33
+allocation = "exit_cancel_replacement"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+source_paths = ["record_exit_evaluation_evidence"]
+named_readers = ["read_exit_evaluation_evidence"]
+repeat_semantics = "one record per semantic outcome per open-position episode; submitted events stay append-complete"
+dedupe_key_evidence = "decision/block reason/RV gate; timestamps, prices, ages, counters excluded"
+recovery_bearing = false
+suppression = "finite-episode"
+owner_decision_required = false
+
+[[producer]]
+name = "loss_governor_halt"
+method = "record_loss_governor_halt"
+record_kind = "loss_governor_halt"
+gate_id = "bolt_v3.loss_governor_halt"
+family = "system"
+state_id = 48
+allocation = "capacity_host"
+classification = "already-deduped"
+handler_reachability = ["quote", "timer"]
+source_paths = ["record_stale_loss_governor_halt"]
+named_readers = ["read_loss_governor_halt_evidence"]
+repeat_semantics = "existing bounded exponential sampling remains unchanged"
+dedupe_key_evidence = "stable halt reason/source; retry and elapsed fields excluded"
+recovery_bearing = false
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "order_reject"
+method = "record_order_reject"
+record_kind = "order_reject"
+gate_id = "bolt_v3.order_reject"
+family = "risk"
+state_id = 57
+allocation = "reconciliation_dependency"
+classification = "already-deduped"
+handler_reachability = ["timer"]
+source_paths = ["submit admission reject observer", "NT order reject observer"]
+named_readers = ["read_order_reject_evidence"]
+repeat_semantics = "existing bounded exponential sampling remains unchanged"
+dedupe_key_evidence = "stable reject source/reason/instrument/side; attempt id, retry, elapsed excluded"
+recovery_bearing = false
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "order_lifecycle"
+method = "record_order_lifecycle"
+record_kind = "order_lifecycle"
+gate_id = "bolt_v3.order_lifecycle"
+family = "risk"
+state_id = 11
+allocation = "order_prepare_submit_fill_terminal"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+source_paths = ["order and position lifecycle handlers"]
+named_readers = []
+repeat_semantics = "every evolving lifecycle update remains append-complete"
+dedupe_key_evidence = "none"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = true
+
+[[producer]]
+name = "requote_throttle"
+method = "record_requote_throttle"
+record_kind = "requote_throttle"
+gate_id = "bolt_v3.requote_throttle"
+family = "market"
+state_id = 208
+allocation = "dependency_health"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer"]
+source_paths = ["update_requote_throttle_edge"]
+named_readers = []
+repeat_semantics = "one record per semantic throttle state while blocked; A-to-B-to-A is suppressed"
+dedupe_key_evidence = "family/leg/action/block/bound; timestamps, budgets, counters excluded"
+recovery_bearing = false
+suppression = "finite-episode"
+owner_decision_required = false
+
+[[producer]]
+name = "settlement"
+method = "record_settlement"
+record_kind = "settlement"
+gate_id = "bolt_v3.settlement"
+family = "risk"
+state_id = 48
+allocation = "settlement_redemption"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+source_paths = ["settlement booking"]
+named_readers = ["read_settlement_evidence", "read_settlement_keys_for_recovery_scope", "read_settlement_evidence_for_recovery_scope"]
+repeat_semantics = "every settlement update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "settlement_booking_error"
+method = "record_settlement_booking_error"
+record_kind = "settlement_booking_error"
+gate_id = "bolt_v3.settlement"
+family = "risk"
+state_id = 49
+allocation = "settlement_redemption"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+source_paths = ["settlement booking failure"]
+named_readers = ["read_settlement_booking_error_evidence", "read_settlement_booking_error_keys_for_recovery_scope"]
+repeat_semantics = "every booking-error update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "terminal_settlement"
+method = "record_terminal_settlement"
+record_kind = "terminal_settlement"
+gate_id = "bolt_v3.settlement"
+family = "risk"
+state_id = 50
+allocation = "settlement_redemption"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+source_paths = ["terminal settlement lifecycle"]
+named_readers = ["read_terminal_settlement_evidence", "read_terminal_settlement_keys_for_recovery_scope", "read_settlement_booking_error_keys_for_recovery_scope"]
+repeat_semantics = "every terminal settlement update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+recovery_bearing = true
+suppression = "unsuppressed"
+owner_decision_required = false
+
+[[producer]]
+name = "venue_truth_capture_failure"
+method = "record_venue_truth_capture_failure"
+record_kind = "venue_truth_capture_failure"
+gate_id = "bolt_v3.venue_truth_capture_failure"
+family = "system"
+state_id = 32
+allocation = "authentication_network_provider"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+source_paths = ["venue truth capture"]
+named_readers = []
+repeat_semantics = "append-complete pending owner decision"
+dedupe_key_evidence = "none"
+recovery_bearing = false
+suppression = "unsuppressed"
+owner_decision_required = true
+
+[[producer]]
+name = "venue_truth_divergence"
+method = "record_venue_truth_divergence"
+record_kind = "venue_truth_divergence"
+gate_id = "bolt_v3.venue_truth_divergence"
+family = "system"
+state_id = 33
+allocation = "authentication_network_provider"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+source_paths = ["venue truth divergence"]
+named_readers = []
+repeat_semantics = "append-complete pending owner decision"
+dedupe_key_evidence = "none"
+recovery_bearing = false
+suppression = "unsuppressed"
+owner_decision_required = true

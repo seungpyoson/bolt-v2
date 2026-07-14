@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "91b725d06102",
+  "strategy": "manual-commit",
+  "branch": "chore/nt-v1-230-pin-refresh",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/backtesting-vertical-slice/src/catalog_projection.rs",
+    "crates/backtesting-vertical-slice/src/mechanical_probe_strategy.rs",
+    "crates/backtesting-vertical-slice/src/nt_catalog_capability.rs",
+    "crates/backtesting-vertical-slice/src/nt_catalog_proof.rs",
+    "crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs",
+    "crates/backtesting-vertical-slice/src/run_manifest.rs",
+    "crates/backtesting-vertical-slice/src/runner.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_catalog_and_node.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs",
+    "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_s3_catalog_smoke.rs",
+    "crates/backtesting-vertical-slice/tests/research_reader_contract.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/91/b725d06102/0/metadata.json",
+      "transcript": "/91/b725d06102/0/full.jsonl",
+      "compact_transcript": "/91/b725d06102/0/transcript.jsonl",
+      "content_hash": "/91/b725d06102/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32534,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7585280,
+    "output_tokens": 3509,
+    "api_call_count": 38
+  }
+}

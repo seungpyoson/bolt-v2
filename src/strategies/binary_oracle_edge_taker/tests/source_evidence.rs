@@ -4462,6 +4462,319 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     }));
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RvClockDomainBlockedKeyField {
+    ConfiguredTargetId,
+    MarketSelectionRulesetId,
+    MarketSelectionOutcome,
+    MarketId,
+    UpInstrumentId,
+    DownInstrumentId,
+    PriceToBeatSource,
+    GateBlockedBy,
+    PricingBlockedBy,
+    SelectedSide,
+    FastVenueName,
+    FastVenueAvailable,
+    ReferenceCurrentPriceSourceId,
+    ReferenceCurrentPriceAvailable,
+    ReferenceCurrentPriceFailedOver,
+    FastVenueIncoherent,
+    RealizedVolatilitySurfaceId,
+    RealizedVolatilityBlockers,
+    SourceId,
+    SourceEnabled,
+    SourceCountsTowardQuorum,
+    SourceStatus,
+    SourceBlockReason,
+    SourceLastRejectedReason,
+    UnknownSourceIds,
+}
+
+impl RvClockDomainBlockedKeyField {
+    const ALL: [Self; 25] = [
+        Self::ConfiguredTargetId,
+        Self::MarketSelectionRulesetId,
+        Self::MarketSelectionOutcome,
+        Self::MarketId,
+        Self::UpInstrumentId,
+        Self::DownInstrumentId,
+        Self::PriceToBeatSource,
+        Self::GateBlockedBy,
+        Self::PricingBlockedBy,
+        Self::SelectedSide,
+        Self::FastVenueName,
+        Self::FastVenueAvailable,
+        Self::ReferenceCurrentPriceSourceId,
+        Self::ReferenceCurrentPriceAvailable,
+        Self::ReferenceCurrentPriceFailedOver,
+        Self::FastVenueIncoherent,
+        Self::RealizedVolatilitySurfaceId,
+        Self::RealizedVolatilityBlockers,
+        Self::SourceId,
+        Self::SourceEnabled,
+        Self::SourceCountsTowardQuorum,
+        Self::SourceStatus,
+        Self::SourceBlockReason,
+        Self::SourceLastRejectedReason,
+        Self::UnknownSourceIds,
+    ];
+
+    fn set_changed(
+        self,
+        strategy: &mut BinaryOracleEdgeTaker,
+        decision: &mut EntrySubmissionDecision,
+        changed: bool,
+    ) {
+        match self {
+            // The runtime snapshot currently derives both fields from the same
+            // configured target. Keep separate cases so the key-field inventory
+            // remains explicit while exercising their only behavioral source.
+            Self::ConfiguredTargetId | Self::MarketSelectionRulesetId => {
+                strategy.config.configured_target_id =
+                    if changed { "<TARGET_B>" } else { "<TARGET_A>" }.to_string();
+            }
+            Self::MarketSelectionOutcome => {
+                strategy.active.market_selection_outcome = if changed {
+                    MarketSelectionOutcome::Next
+                } else {
+                    MarketSelectionOutcome::Current
+                };
+            }
+            Self::MarketId => {
+                strategy.active.market_id =
+                    Some(if changed { "<MARKET_B>" } else { "<MARKET_A>" }.to_string());
+            }
+            Self::UpInstrumentId => {
+                strategy.active.books.up.instrument_id = Some(
+                    nautilus_model::identifiers::InstrumentId::from(if changed {
+                        "condition-B-B-UP.POLYMARKET"
+                    } else {
+                        "condition-A-A-UP.POLYMARKET"
+                    }),
+                );
+            }
+            Self::DownInstrumentId => {
+                strategy.active.books.down.instrument_id = Some(
+                    nautilus_model::identifiers::InstrumentId::from(if changed {
+                        "condition-B-B-DOWN.POLYMARKET"
+                    } else {
+                        "condition-A-A-DOWN.POLYMARKET"
+                    }),
+                );
+            }
+            Self::PriceToBeatSource => {
+                strategy.config.price_to_beat_source = if changed {
+                    "<PRICE_TO_BEAT_B>"
+                } else {
+                    "<PRICE_TO_BEAT_A>"
+                }
+                .to_string();
+            }
+            Self::GateBlockedBy => {
+                decision.evaluation.gate.blocked_by = if changed {
+                    vec![EntryBlockReason::PhaseNotActive]
+                } else {
+                    Vec::new()
+                };
+            }
+            Self::PricingBlockedBy => {
+                decision.evaluation.pricing_blocked_by =
+                    vec![EntryPricingBlockReason::RealizedVolNotReady];
+                if changed {
+                    decision
+                        .evaluation
+                        .pricing_blocked_by
+                        .push(EntryPricingBlockReason::SpotPriceMissing);
+                }
+            }
+            Self::SelectedSide => {
+                decision.evaluation.selected_side = changed.then_some(OutcomeSide::Up);
+            }
+            Self::FastVenueName => {
+                strategy.latest_signal_quote = None;
+                strategy.pricing.set_selected_pricing_spot(Some(fast_spot(
+                    if changed { "<FAST_B>" } else { "<FAST_A>" },
+                    3_100.5,
+                    1_200,
+                )));
+            }
+            Self::FastVenueAvailable => {
+                let spot = fast_spot("<FAST_AVAILABILITY>", 3_100.5, 1_200);
+                strategy.latest_signal_quote = Some(spot.clone());
+                strategy
+                    .pricing
+                    .set_selected_pricing_spot((!changed).then_some(spot));
+            }
+            Self::ReferenceCurrentPriceSourceId => {
+                strategy.active.reference_current_price_source_id = Some(
+                    if changed {
+                        "<REFERENCE_B>"
+                    } else {
+                        "<REFERENCE_A>"
+                    }
+                    .to_string(),
+                );
+            }
+            Self::ReferenceCurrentPriceAvailable => {
+                strategy
+                    .pricing
+                    .set_last_reference_fair_value((!changed).then_some(3_100.0));
+            }
+            Self::ReferenceCurrentPriceFailedOver => {
+                strategy.active.reference_current_price_failed_over = Some(changed);
+            }
+            Self::FastVenueIncoherent => {
+                strategy.pricing.fast_venue_incoherent = changed;
+            }
+            Self::RealizedVolatilitySurfaceId => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .surface_id = if changed {
+                    "<SURFACE_B>"
+                } else {
+                    "<SURFACE_A>"
+                }
+                .to_string();
+            }
+            Self::RealizedVolatilityBlockers => {
+                let blockers = &mut decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .blockers;
+                *blockers = vec!["quorum_not_ready".to_string()];
+                if changed {
+                    blockers.push("source_stale".to_string());
+                }
+            }
+            Self::SourceId => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .source_diagnostics[0]
+                    .source_id = if changed { "<SOURCE_B>" } else { "<SOURCE_A>" }.to_string();
+            }
+            Self::SourceEnabled => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .source_diagnostics[0]
+                    .enabled = !changed;
+            }
+            Self::SourceCountsTowardQuorum => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .source_diagnostics[0]
+                    .counts_toward_quorum = !changed;
+            }
+            Self::SourceStatus => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .source_diagnostics[0]
+                    .status = if changed { "ready" } else { "blocked" }.to_string();
+            }
+            Self::SourceBlockReason => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .source_diagnostics[0]
+                    .block_reason = Some(
+                    if changed {
+                        "source_stale"
+                    } else {
+                        "quorum_not_ready"
+                    }
+                    .to_string(),
+                );
+            }
+            Self::SourceLastRejectedReason => {
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .source_diagnostics[0]
+                    .last_rejected_reason = changed.then(|| "out_of_order".to_string());
+            }
+            Self::UnknownSourceIds => {
+                let rejections = &mut decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .unknown_source_rejections;
+                rejections.clear();
+                rejections.insert("<UNKNOWN_A>".to_string(), 1);
+                if changed {
+                    rejections.insert("<UNKNOWN_B>".to_string(), 1);
+                }
+            }
+        }
+    }
+}
+
+fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
+    field: RvClockDomainBlockedKeyField,
+) {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
+    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy);
+    let mut decision = rv_clock_domain_amendment_blocked_decision();
+    decision.evaluation.realized_volatility_receipt.evidence =
+        strategy.realized_volatility_evidence_fields();
+    rv_clock_domain_amendment_apply_state(
+        &mut decision,
+        BoltV3RvGateResult::RejectedNotReady,
+        Some(LocalReceiveMs::new(1_200)),
+    );
+
+    field.set_changed(&mut strategy, &mut decision, false);
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_200, &decision)
+        .unwrap();
+    field.set_changed(&mut strategy, &mut decision, true);
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
+        .unwrap();
+    field.set_changed(&mut strategy, &mut decision, false);
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
+        .unwrap();
+
+    assert_eq!(
+        evidence.strategy_input_attempts(),
+        3,
+        "{field:?} must reach the writer for A, B, and restored A"
+    );
+    let records = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records.len(),
+        3,
+        "{field:?} must emit after A-to-B and again after B-to-A"
+    );
+    assert!(records.iter().all(|record| {
+        record.realized_volatility_gate_result == Some(BoltV3RvGateResult::RejectedNotReady)
+            && record
+                .realized_volatility_receive_watermark_ms
+                .is_some_and(|watermark| watermark.value() == 1_200)
+    }));
+}
+
 #[test]
 fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -4562,216 +4875,9 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
         "each of eight current entry-key fields must emit on change and returning to the prior key must emit again"
     );
 
-    let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
-    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut blocked_strategy);
-    let mut blocked = rv_clock_domain_amendment_blocked_decision();
-    blocked.evaluation.realized_volatility_receipt.evidence =
-        blocked_strategy.realized_volatility_evidence_fields();
-    rv_clock_domain_amendment_apply_state(
-        &mut blocked,
-        BoltV3RvGateResult::RejectedNotReady,
-        Some(LocalReceiveMs::new(1_200)),
-    );
-    let baseline_snapshot = blocked_strategy
-        .blocked_entry_strategy_input_evidence_snapshot_at(1_200, &blocked)
-        .expect("blocked snapshot should build");
-    let baseline_key = BlockedStrategyInputDedupeKey::from_snapshot(&baseline_snapshot);
-
-    macro_rules! assert_blocked_key_change {
-        ($label:literal, $mutation:expr) => {{
-            let mut changed = baseline_snapshot.clone();
-            ($mutation)(&mut changed);
-            assert_ne!(
-                BlockedStrategyInputDedupeKey::from_snapshot(&changed),
-                baseline_key,
-                "blocked existing-key field `{}` must affect adjacent-key identity",
-                $label
-            );
-        }};
+    for field in RvClockDomainBlockedKeyField::ALL {
+        rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(field);
     }
-    assert_blocked_key_change!(
-        "configured_target_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .configured_target_id
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "market_selection_ruleset_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .market_selection_ruleset_id
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "market_selection_outcome",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .market_selection_outcome
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "market_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .market_id =
-            Some("other".to_string())
-    );
-    assert_blocked_key_change!(
-        "up_instrument_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .up_instrument_id =
-            Some("other-up".to_string())
-    );
-    assert_blocked_key_change!(
-        "down_instrument_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .down_instrument_id =
-            Some("other-down".to_string())
-    );
-    assert_blocked_key_change!(
-        "price_to_beat_source",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .price_to_beat_source
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "gate_blocked_by",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .gate_blocked_by
-            .push(crate::bolt_v3_decision_evidence::BoltV3EntryBlockReason::PhaseNotActive)
-    );
-    assert_blocked_key_change!(
-        "pricing_blocked_by",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .pricing_blocked_by
-            .push(
-                crate::bolt_v3_decision_evidence::BoltV3EntryPricingBlockReason::SpotPriceMissing
-            )
-    );
-    assert_blocked_key_change!(
-        "selected_side",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .selected_side =
-            Some("down".to_string())
-    );
-    assert_blocked_key_change!(
-        "fast_venue_name",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .fast_venue_name =
-            Some("other".to_string())
-    );
-    assert_blocked_key_change!(
-        "fast_venue_available",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .fast_venue_available =
-            !value.fast_venue_available
-    );
-    assert_blocked_key_change!(
-        "reference_current_price_source_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .reference_current_price_source_id =
-            Some("other".to_string())
-    );
-    assert_blocked_key_change!(
-        "reference_current_price_available",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .reference_current_price_available =
-            !value.reference_current_price_available
-    );
-    assert_blocked_key_change!(
-        "reference_current_price_failed_over",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .reference_current_price_failed_over =
-            Some(true)
-    );
-    assert_blocked_key_change!(
-        "fast_venue_incoherent",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .fast_venue_incoherent =
-            !value.fast_venue_incoherent
-    );
-    assert_blocked_key_change!(
-        "realized_volatility_surface_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_surface_id
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "realized_volatility_blockers",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_blockers
-            .push("other".to_string())
-    );
-    assert_blocked_key_change!(
-        "source_id",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_source_diagnostics[0]
-            .source_id
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "source_enabled",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_source_diagnostics[0]
-            .enabled =
-            !value.realized_volatility_source_diagnostics[0].enabled
-    );
-    assert_blocked_key_change!(
-        "source_counts_toward_quorum",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_source_diagnostics[0]
-            .counts_toward_quorum =
-            !value.realized_volatility_source_diagnostics[0].counts_toward_quorum
-    );
-    assert_blocked_key_change!(
-        "source_status",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_source_diagnostics[0]
-            .status
-            .push('x')
-    );
-    assert_blocked_key_change!(
-        "source_block_reason",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_source_diagnostics[0]
-            .block_reason =
-            Some("other".to_string())
-    );
-    assert_blocked_key_change!(
-        "source_last_rejected_reason",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| value
-            .realized_volatility_source_diagnostics[0]
-            .last_rejected_reason =
-            Some("other".to_string())
-    );
-    assert_blocked_key_change!(
-        "realized_volatility_unknown_source_ids",
-        |value: &mut crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot| {
-            value
-                .realized_volatility_unknown_source_rejections
-                .insert("other".to_string(), 1);
-        }
-    );
-
-    let original_market_id = blocked_strategy.active.market_id.clone();
-    blocked_strategy
-        .record_blocked_entry_strategy_input_snapshot_once(1_200, &blocked)
-        .unwrap();
-    blocked_strategy.active.market_id = Some("<ADJACENT_MARKET>".to_string());
-    blocked_strategy
-        .record_blocked_entry_strategy_input_snapshot_once(1_201, &blocked)
-        .unwrap();
-    blocked_strategy.active.market_id = original_market_id;
-    blocked_strategy
-        .record_blocked_entry_strategy_input_snapshot_once(1_202, &blocked)
-        .unwrap();
-    assert_eq!(
-        blocked_evidence
-            .events()
-            .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
-            .count(),
-        3,
-        "blocked key change must reset RV novelty and returning to A after B must emit again"
-    );
 }
 
 #[test]

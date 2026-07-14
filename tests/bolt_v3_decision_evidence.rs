@@ -2390,6 +2390,23 @@ enum RvClockDomainReplayFamily {
     Evaluation,
 }
 
+fn rv_clock_domain_amendment_wire_ms(
+    record: &serde_json::Value,
+    field: &str,
+    family: RvClockDomainReplayFamily,
+) -> Option<i128> {
+    match family {
+        RvClockDomainReplayFamily::Decision => record
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .map(i128::from),
+        RvClockDomainReplayFamily::Evaluation => record
+            .get(field)
+            .and_then(serde_json::Value::as_i64)
+            .map(i128::from),
+    }
+}
+
 fn rv_clock_domain_amendment_replayed_gate(
     record: &serde_json::Value,
     family: RvClockDomainReplayFamily,
@@ -2408,26 +2425,20 @@ fn rv_clock_domain_amendment_replayed_gate(
         RvClockDomainReplayFamily::Decision => "rv_snapshot_as_of_ms",
         RvClockDomainReplayFamily::Evaluation => "rv_as_of_ms",
     };
-    if record
-        .get(snapshot_as_of_key)
-        .and_then(serde_json::Value::as_i64)
-        .is_none()
-    {
+    if rv_clock_domain_amendment_wire_ms(record, snapshot_as_of_key, family).is_none() {
         return Some(BoltV3RvGateResult::MissingSnapshot);
     }
 
-    let Some(evaluation_receive_ms) = record
-        .get("trigger_ts_init_ms")
-        .and_then(serde_json::Value::as_i64)
+    let Some(evaluation_receive_ms) =
+        rv_clock_domain_amendment_wire_ms(record, "trigger_ts_init_ms", family)
     else {
         return Some(BoltV3RvGateResult::MissingEvaluationEventTime);
     };
     if evaluation_receive_ms < 0 {
         return None;
     }
-    let Some(snapshot_receive_watermark_ms) = record
-        .get("rv_snapshot_receive_watermark_ms")
-        .and_then(serde_json::Value::as_i64)
+    let Some(snapshot_receive_watermark_ms) =
+        rv_clock_domain_amendment_wire_ms(record, "rv_snapshot_receive_watermark_ms", family)
     else {
         return Some(BoltV3RvGateResult::RejectedNotReady);
     };
@@ -2437,9 +2448,7 @@ fn rv_clock_domain_amendment_replayed_gate(
     if snapshot_receive_watermark_ms > evaluation_receive_ms {
         return Some(BoltV3RvGateResult::RejectedFutureDated);
     }
-    if i128::from(evaluation_receive_ms) - i128::from(snapshot_receive_watermark_ms)
-        > i128::from(max_source_age_ms)
-    {
+    if evaluation_receive_ms - snapshot_receive_watermark_ms > i128::from(max_source_age_ms) {
         return Some(BoltV3RvGateResult::RejectedStale);
     }
     if !snapshot_ready {
@@ -2764,6 +2773,38 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             );
         }
     }
+
+    let high_watermark_ms =
+        u64::try_from(i64::MAX).expect("i64::MAX should fit the decision u64 wire") + 1;
+    let high_trigger_ms = high_watermark_ms + 501;
+    let mut high_decision = serde_json::to_value(sample_exit_decision_evidence())
+        .expect("sample exit decision should serialize");
+    high_decision["rv_snapshot_as_of_ms"] = serde_json::json!(high_watermark_ms);
+    high_decision["trigger_ts_init_ms"] = serde_json::json!(high_trigger_ms);
+    high_decision["rv_snapshot_receive_watermark_ms"] = serde_json::json!(high_watermark_ms);
+    high_decision["rv_max_source_age_ms"] = serde_json::json!(500_u64);
+    high_decision["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(true);
+    high_decision["rv_gate_result"] = serde_json::json!("accepted");
+    let high_decision = rv_clock_domain_amendment_round_trip_decision_value(high_decision);
+    for (field, expected) in [
+        ("rv_snapshot_as_of_ms", high_watermark_ms),
+        ("trigger_ts_init_ms", high_trigger_ms),
+        ("rv_snapshot_receive_watermark_ms", high_watermark_ms),
+    ] {
+        assert_eq!(
+            high_decision.get(field).and_then(serde_json::Value::as_u64),
+            Some(expected),
+            "high-u64 decision timestamp `{field}` must remain present on its unsigned wire"
+        );
+    }
+    assert_eq!(
+        rv_clock_domain_amendment_replayed_gate(
+            &high_decision,
+            RvClockDomainReplayFamily::Decision,
+        ),
+        Some(BoltV3RvGateResult::RejectedStale),
+        "decision replay must compare unsigned timestamps above i64::MAX through i128"
+    );
 
     for family in [
         RvClockDomainReplayFamily::Decision,

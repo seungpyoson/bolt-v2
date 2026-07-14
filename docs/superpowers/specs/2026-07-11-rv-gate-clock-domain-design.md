@@ -138,6 +138,13 @@ positive, and copies `surface.policy.max_source_age_ms` into required raw strate
 TOML. `parse_config` cannot resolve surface identifiers; it only requires the copied
 scalar and rejects zero before constructing the required in-memory
 `BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`.
+Root `validate_realized_volatility_surfaces` already rejects a zero policy age as
+"must be a positive integer," so this does not change validated loaded-config
+behavior. The direct `parse_config` zero rejection is a deliberate new fail-closed
+defense for callers that bypass root validation. The config field is added only to
+the `binary_oracle_edge_taker_config_fields!` single-source macro as
+`realized_volatility_max_source_age_ms: u64 => Integer`; the generated struct,
+required-field parser, and allowlist must not be hand-maintained separately.
 
 Every entry, exit, and shared production pricing call reads that stored scalar.
 Shared pricing APIs that retain an optional diagnostic boundary receive
@@ -158,19 +165,31 @@ in `current_realized_vol_for_gate_at`,
 `exit_realized_volatility_gate_fields_at`,
 `entry_realized_volatility_receipt_at`, and
 `record_exit_evaluation_evidence`, plus the pricing test helper, use the required
-config scalar rather than either deleted accessor.
+config scalar rather than either deleted accessor. Delete
+`BinaryOracleEdgeTaker::realized_volatility_max_source_age_ms`, both runtime/context
+accessors, and `runtime_taker_pricing_config`; the final tree has zero definitions or
+calls of those policy wrappers. The distinct strategy classifier wrapper
+`classify_realized_vol_gate` remains.
 
 The receive-domain classifier inputs must remain auditable after the in-memory
 snapshot changes. Each exit evaluation therefore owns one immutable
 `ExitRealizedVolatilityGateReceipt`, captured before any evaluation early return and
-transferred unchanged through `ExitSubmissionDecision`. It owns the evaluation's
-optional typed `LocalReceiveMs`, configured surface identity, required effective
-`max_source_age_ms: u64`, one owned `RealizedVolGateClassification` (or an equivalent
-single-classification result), and one owned `RealizedVolatilityEvidenceFields`
-projection. It also owns the classified snapshot-presence, as-of, readiness, value,
-source, blockers, diagnostics and receive watermark, plus the fair-up, fair-down and
-uncertainty probabilities derived from the accepted RV value and the immutable
-snapshot-versus-trigger diagnostic delta.
+transferred unchanged through `ExitSubmissionDecision`. Capture takes one immutable
+borrow from `latest_realized_vol_snapshot_for_surface`, invokes free
+`classify_rv_gate` exactly once, and immediately builds a compact owned exit-only
+projection. The receipt owns only schema/decision-needed values: gate,
+presence/as-of/watermark, raw and usable readiness, accepted RV/source, mapped exit
+blockers/diagnostics, signed delta, derived fair/uncertainty probabilities,
+configured surface/max-age, and optional typed evaluation receive stamp. It must not
+own `RealizedVolGateClassification`, a full `RealizedVolSnapshot`, or the full
+entry-oriented `RealizedVolatilityEvidenceFields`.
+
+Only schema-owned strings/vectors are copied at this boundary. `ExitEvaluation` is
+moved into `ExitSubmissionDecision` rather than cloned, and log/durable builders
+borrow the one compact receipt. This removes the current full-snapshot/classification
+deep clone and repeated RV queries/locks while preserving immutable evidence.
+`classify_realized_vol_gate` remains available for non-receipt diagnostics; the exit
+receipt does not call clone-producing `classify_realized_vol_snapshot`.
 
 The decision, log and both exit durable-record builders derive every RV-derived
 field that their existing schemas own from that receipt plus the immutable trigger
@@ -221,14 +240,26 @@ domains. `BoltV3ExitDecisionEvidence` stores
 `rv_snapshot_has_ready_realized_vol: Option<bool>`. `BoltV3ExitEvaluationEvidence`
 stores `rv_snapshot_receive_watermark_ms: Option<i64>` using checked conversion and
 `rv_max_source_age_ms: Option<u64>` while retaining its existing `rv_ready: bool`.
-Both evaluation `trigger_ts_init_ms` and evaluation
-`rv_snapshot_receive_watermark_ms` use `i64::try_from`; conversion failure propagates
-through the existing evidence write/error path and never wraps, saturates, or becomes
-`None`. Negative decoded wire values are invalid. New writes always store the representable
-watermark, `Some(receipt.max_source_age_ms)`, and the decision replay boolean. These
-inputs remain optional in the existing version-15 durable/wire shape as explicit
-replay markers. This amendment does not bump the evidence schema version or alter the
-six-value gate taxonomy.
+All five outbound `u64` absolute-time values in exit-evaluation evidence use
+`i64::try_from`: trigger event, trigger init, exit-evaluation now, RV as-of, and the
+new receive watermark. `record_exit_evaluation_evidence` remains unit-returning and
+non-aborting. After its existing dedupe mark timing, a private `Result` helper builds
+the complete record. A field-specific build-conversion error or writer error produces
+one `log::error!`, writes no partial record, substitutes no value/`None`, preserves
+the submission/exposure/order result, and continues the callback. Mark-before-failure
+is retained so identical ticks do not produce repeated errors. This is
+fail-loud-and-skip for that evidence record, not propagation into trading.
+
+Manual `BoltV3ExitEvaluationEvidence` deserialization rejects negative
+`trigger_ts_init_ms` and `rv_snapshot_receive_watermark_ms` with field-specific serde
+errors before durable construction. Omitted, `null`, zero, and `i64::MAX` remain
+valid. `encode_exit_evaluation_line` independently rejects manually constructed
+negative values, and replay defensively treats them as unreplayable. Negative inbound
+validation for the existing event/lifecycle/as-of fields is unchanged and out of
+scope. New writes store the representable watermark,
+`Some(receipt.max_source_age_ms)`, and decision replay boolean. These inputs remain
+optional in version 15 as explicit replay markers; schema version and six-value gate
+taxonomy do not change.
 
 The durable proof is record-local, not dependent on retained strategy memory. It
 replays from reconstruction inputs and must not consult the stored gate result or
@@ -240,6 +271,11 @@ and are unreplayable. Once those markers are present, `None` snapshot/as-of,
 evaluation-receive, or watermark values are legitimate classifier inputs, not legacy
 defaults. Decision replay uses the independent readiness boolean; evaluation replay
 uses its existing `rv_ready`.
+
+Snapshot presence adds no boolean: decision replay uses
+`rv_snapshot_as_of_ms.is_some()` and evaluation replay uses
+`rv_as_of_ms.is_some()`. `None` therefore selects `MissingSnapshot`; `Some(0)` is a
+present snapshot and proceeds to later precedence checks.
 
 Replay mirrors the free `classify_rv_gate` function exactly, in this normative
 precedence order:

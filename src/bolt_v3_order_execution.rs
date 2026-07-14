@@ -15,7 +15,7 @@ use nautilus_model::{
     orders::{Order, OrderAny, OrderList},
     types::{Price, Quantity},
 };
-use nautilus_trading::Strategy;
+use nautilus_trading::{Strategy, StrategyNative};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
@@ -103,7 +103,7 @@ impl BoltV3OrderExecutionPolicy {
         context: BoltV3SubmitContext,
     ) -> Result<BoltV3SubmitRoutingOutcome>
     where
-        S: Strategy + ?Sized,
+        S: Strategy + StrategyNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_submit_with_sink(routing, &mut sink, order, context)
@@ -165,7 +165,7 @@ impl BoltV3OrderExecutionPolicy {
         params: Option<Params>,
     ) -> Result<BoltV3CancelRoutingOutcome>
     where
-        S: Strategy + ?Sized,
+        S: Strategy + StrategyNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_cancel_with_sink(&mut sink, client_order_id, client_id, params)
@@ -205,7 +205,7 @@ impl BoltV3OrderExecutionPolicy {
         params: Option<Params>,
     ) -> Result<BoltV3ModifyRoutingOutcome>
     where
-        S: Strategy + ?Sized,
+        S: Strategy + StrategyNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_modify_with_sink(
@@ -270,7 +270,7 @@ impl BoltV3OrderExecutionPolicy {
         params: Option<Params>,
     ) -> Result<BoltV3CancelAllRoutingOutcome>
     where
-        S: Strategy + ?Sized,
+        S: Strategy + StrategyNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_cancel_all_with_sink(&mut sink, instrument_id, order_side, client_id, params)
@@ -658,7 +658,7 @@ pub fn route_maker_order_command<S>(
     input: MakerOrderDispatchInput<'_>,
 ) -> Result<MakerOrderDispatchOutcome>
 where
-    S: Strategy + ?Sized,
+    S: Strategy + StrategyNative + ?Sized,
 {
     let mut runtime = NtStrategyMakerOrderRuntime { strategy };
     route_maker_order_command_with_runtime(
@@ -771,14 +771,14 @@ where
 
 struct NtStrategyVenueMutationSink<'a, S>
 where
-    S: Strategy + ?Sized,
+    S: Strategy + StrategyNative + ?Sized,
 {
     strategy: &'a mut S,
 }
 
 impl<S> BoltV3NtVenueMutationSink for NtStrategyVenueMutationSink<'_, S>
 where
-    S: Strategy + ?Sized,
+    S: Strategy + StrategyNative + ?Sized,
 {
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
         self.strategy.submit_order(
@@ -839,14 +839,14 @@ trait BoltV3MakerOrderRuntime: BoltV3NtVenueMutationSink {
 
 struct NtStrategyMakerOrderRuntime<'a, S>
 where
-    S: Strategy + ?Sized,
+    S: Strategy + StrategyNative + ?Sized,
 {
     strategy: &'a mut S,
 }
 
 impl<S> BoltV3NtVenueMutationSink for NtStrategyMakerOrderRuntime<'_, S>
 where
-    S: Strategy + ?Sized,
+    S: Strategy + StrategyNative + ?Sized,
 {
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
         self.strategy.submit_order(
@@ -899,10 +899,10 @@ where
 
 impl<S> BoltV3MakerOrderRuntime for NtStrategyMakerOrderRuntime<'_, S>
 where
-    S: Strategy + ?Sized,
+    S: Strategy + StrategyNative + ?Sized,
 {
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
-        self.strategy.core_mut().order_factory()
+        self.strategy.order_factory()
     }
 }
 

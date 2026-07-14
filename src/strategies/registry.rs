@@ -45,7 +45,7 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
+pub trait RuntimeStrategy: Component + std::fmt::Debug {}
 
 impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + std::fmt::Debug {}
 

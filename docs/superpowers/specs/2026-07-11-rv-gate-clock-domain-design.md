@@ -213,12 +213,20 @@ stores the independent optional replay input
 snapshot is absent. The existing decision
 `realized_vol` remains gate-filtered output and is not redefined as a replay input.
 A raw-ready snapshot carrying a blocker therefore discriminates the projections,
-and replacement after receipt capture cannot change any of them. One captured signed
-snapshot-as-of-minus-trigger-event delta maps unchanged to evaluation evidence's
-signed `rv_as_of_minus_now_ms`. That existing field name is a historical misnomer:
-its preserved semantics are snapshot `as_of_ms` minus the trigger's venue-event
-timestamp, not wall-clock "now." The same captured delta maps only its positive
-component to decision evidence's `rv_future_dating_delta_ms`. The receipt's
+and replacement after receipt capture cannot change any of them. When both operands
+exist, the receipt computes the snapshot-as-of-minus-trigger-event delta losslessly
+as `i128::from(snapshot_as_of_ms) - i128::from(trigger_event_ms)`, where both source
+values are still `u64`. It must never call `VenueEventMs::signed_delta_since` or cast
+either operand through `as i64`. The captured `i128` delta preserves the existing
+semantics of evaluation evidence's signed `rv_as_of_minus_now_ms`: that field name is
+a historical misnomer because the value is snapshot `as_of_ms` minus the trigger's
+venue-event timestamp, not wall-clock "now." A positive delta maps to decision
+evidence's `rv_future_dating_delta_ms` only through checked `u64::try_from(delta)`;
+zero or a negative delta maps to no future-dating value. Evaluation narrows the same
+delta with `i64::try_from(delta)` only after every outbound absolute timestamp has
+passed its own checked `i64::try_from` conversion. Any unrepresentable absolute time
+or signed delta follows the record-level fail-loud-and-skip path below; it never
+wraps, saturates, changes sign, or changes the trading result. The receipt's
 evaluation receive stamp, not `exit_eval_now_ms`, is the sole source of serialized
 `trigger_ts_init_ms`; a second timestamp read is not permitted.
 
@@ -242,13 +250,15 @@ stores `rv_snapshot_receive_watermark_ms: Option<i64>` using checked conversion 
 `rv_max_source_age_ms: Option<u64>` while retaining its existing `rv_ready: bool`.
 All five outbound `u64` absolute-time values in exit-evaluation evidence use
 `i64::try_from`: trigger event, trigger init, exit-evaluation now, RV as-of, and the
-new receive watermark. `record_exit_evaluation_evidence` remains unit-returning and
-non-aborting. After its existing dedupe mark timing, a private `Result` helper builds
-the complete record. A field-specific build-conversion error or writer error produces
-one `log::error!`, writes no partial record, substitutes no value/`None`, preserves
-the submission/exposure/order result, and continues the callback. Mark-before-failure
-is retained so identical ticks do not produce repeated errors. This is
-fail-loud-and-skip for that evidence record, not propagation into trading.
+new receive watermark. The private builder completes those absolute-time checks
+before deriving the evaluation record's `i64` delta from the receipt's lossless
+`i128` value. `record_exit_evaluation_evidence` remains unit-returning and
+non-aborting. After its existing dedupe mark timing, the private `Result` helper
+builds the complete record. A field-specific build-conversion error or writer error
+produces one `log::error!`, writes no partial record, substitutes no value/`None`,
+preserves the submission/exposure/order result, and continues the callback.
+Mark-before-failure is retained so identical ticks do not produce repeated errors.
+This is fail-loud-and-skip for that evidence record, not propagation into trading.
 
 Manual `BoltV3ExitEvaluationEvidence` deserialization rejects negative
 `trigger_ts_init_ms` and `rv_snapshot_receive_watermark_ms` with field-specific serde

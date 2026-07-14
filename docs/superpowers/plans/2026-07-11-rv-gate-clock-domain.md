@@ -196,7 +196,11 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 **Files:**
 - Modify all production files named in Tasks 1–4.
 
-- [x] Preserve the immutable review-amendment RED evidence from the provisional branch; do not rerun RED or revert production code on this fresh port.
+- [x] Preserve the immutable review-amendment RED evidence for the already-completed
+  Tasks 1–4 and their provisional tests; do not rerun those historical RED cases or
+  revert production code on this fresh port. This prohibition does not apply to the
+  new Task 7-only amendment tests or Task 7 Step 3's exactly one explicitly
+  authorized local invocation.
 - [x] Add the snapshot receive watermark and accepted-only surface-clock derivation.
 - [x] Change production shared pricing requests to required `LocalReceiveMs`, keep only the diagnostic classifier's structurally absent input optional, and remove production dependence on cross-venue event ordering.
 - [x] Thread receive context through every production entry and exit trigger and through the existing maker pricing route boundary; do not add maker production wiring.
@@ -308,10 +312,15 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
 - Snapshot presence uses existing fields only: decision
   `rv_snapshot_as_of_ms.is_some()` and evaluation `rv_as_of_ms.is_some()`. No presence
   boolean is added; `None` is missing snapshot and `Some(0)` is present.
-- One captured signed snapshot-as-of-minus-trigger-event delta maps unchanged to
-  evaluation evidence's historically misnamed `rv_as_of_minus_now_ms` and
-  positive-only to decision future-delta evidence. `trigger_ts_init_ms` comes from
-  the receipt's evaluation receive input, never `exit_eval_now_ms`.
+- When both operands exist, capture snapshot-as-of-minus-trigger-event losslessly as
+  `i128::from(snapshot_as_of_ms) - i128::from(trigger_event_ms)` from the original
+  `u64` values. Never use `VenueEventMs::signed_delta_since` or pre-cast either
+  operand with `as i64`. The positive component reaches decision future-delta
+  evidence only through checked `u64::try_from(delta)`; evaluation narrows with
+  `i64::try_from(delta)` only after all five absolute-time conversions succeed. The
+  evaluation field remains the historically misnamed `rv_as_of_minus_now_ms` with
+  unchanged snapshot-as-of-minus-trigger-event semantics. `trigger_ts_init_ms`
+  comes from the receipt's evaluation receive input, never `exit_eval_now_ms`.
 - Preserve each path's current existing dedupe key without the newly added RV
   novelty dimension exactly; it may already contain RV diagnostic fields whose churn
   and evidence volume remain unmeasured. Store only
@@ -355,7 +364,10 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     `rv_clock_domain_amendment_runtime_config_requires_positive_surface_age` using
     dynamic TOML/current mapper APIs. Prove `raw_taker_config` copies configured
     `500`, distinguishes both missing shapes, and `parse_config` rejects missing,
-    wrong-type, and zero derived values. Add the macro allowlist/SSOT test and update
+    wrong-type, and zero derived values. Extend the existing
+    `validate_table_allowlist_is_single_sourced_from_config_struct` test with a sanity
+    assertion for `realized_volatility_max_source_age_ms`; because this is an
+    existing test, the amendment-prefix rule does not apply to it. Update
     `valid_raw_config`, direct config literals, and surface-attaching helpers.
   - Add `rv_clock_domain_amendment_exit_records_share_the_captured_receipt` and
     `rv_clock_domain_amendment_exit_receipt_survives_early_returns`. In RED, drive
@@ -363,12 +375,13 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     construct the not-yet-defined receipt type. Exercise every existing early-return
     shape.
   - Add `rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_replacement`. Capture through current public behavior, replace the pricing snapshot, and assert the original receive stamp, configured surface, max age, snapshot presence/as-of/readiness/value/source/blockers/diagnostics, gate, watermark, fair probabilities, uncertainty probability and signed diagnostic delta remain the RV source. Durable records retain only schema-owned projections; non-RV market inputs claim only same-callback atomicity.
-  - Add `rv_clock_domain_amendment_exit_receipt_is_compact_and_single_classified`
-    structural coverage: no full snapshot, classification enum, or full entry evidence
-    field; exactly one free-classifier call; no exit `classify_realized_vol_snapshot`;
-    and `ExitEvaluation` is moved rather than cloned. Keep replacement immutability as
-    the behavioral no-requery proof; do not add allocator/size guesses.
   - Include a raw-ready blocked snapshot. Decision raw readiness stays true, its new independent usable-readiness input is false, evaluation `rv_ready` is false, and existing decision `realized_vol` remains gate-filtered. Evaluation keeps the captured signed delta; decision keeps only its positive future projection. Pin the `rv_as_of_minus_now_ms` misnomer semantics.
+  - Add extreme-delta cases using `u64::MAX` and zero in both operand orders. Prove
+    receipt/decision projection never wraps or inverts sign, positive decision output
+    uses checked `u64::try_from`, and evaluation evidence fails loud and skips the
+    complete record whenever an absolute time cannot enter its signed wire domain.
+    The callback/order result remains unchanged. Do not obtain the expected delta by
+    calling the production delta helper.
   - Cover `Accepted`, `MissingSnapshot`, `MissingEvaluationEventTime`, `RejectedFutureDated`, `RejectedStale`, and `RejectedNotReady`. A present snapshot keeps its watermark even for `MissingEvaluationEventTime` and every rejection. Only an absent snapshot or a snapshot with no accepted watermark records `None`.
   - Add `rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs` for
     serialized-and-decoded records. Recompute without reading stored gate or
@@ -443,11 +456,12 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     snapshot responsibilities and distinct classifier wrapper
     `classify_realized_vol_gate`.
   - Construct `ExitRealizedVolatilityGateReceipt` once before entering `exit_evaluation_with_hold_ev_at`. Remove callback-time policy lookup; pass `Some(stored_age)` only at shared diagnostic Option boundaries. A valid surface with no snapshot is `MissingSnapshot`, not an error, so forced-flat remains available.
-  - Borrow the latest surface snapshot once and invoke free `classify_rv_gate` exactly
-    once even when receive context is absent. Build the compact exit-only projection;
-    do not own full snapshot/classification/entry evidence and do not use
-    `classify_realized_vol_snapshot`. Preserve the strategy wrapper only for other
-    diagnostics/non-receipt paths.
+  - Borrow the latest surface snapshot once in a dedicated
+    `exit_realized_volatility_gate_receipt_at` capture helper and invoke free
+    `classify_rv_gate` exactly once even when receive context is absent. Build the
+    compact exit-only projection; do not own full snapshot/classification/entry
+    evidence and do not use `classify_realized_vol_snapshot`. Preserve the strategy
+    wrapper only for other diagnostics/non-receipt paths.
   - Derive fair-up/down and uncertainty once. Move `ExitEvaluation` into
     `ExitSubmissionDecision` instead of `evaluation.clone()`. Log/durable builders
     borrow the single receipt. Delete post-capture queries/locks/classification and RV
@@ -465,8 +479,15 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     retain their normative meanings. Preserve
     schema version 15 and gate taxonomy; do not add value/source fields to evaluation.
   - Serialize `trigger_ts_init_ms` from `receipt.evaluation_receive_ms`, never from
-    `exit_eval_now_ms`. Preserve the existing signed `rv_as_of_minus_now_ms` field's
-    snapshot-as-of-minus-trigger-event semantics despite its name.
+    `exit_eval_now_ms`. Compute the receipt delta from the original `u64` operands as
+    `i128::from(snapshot_as_of_ms) - i128::from(trigger_event_ms)`; do not use
+    `VenueEventMs::signed_delta_since` or `as i64`. Convert its positive decision
+    projection with checked `u64::try_from`. Only after every absolute-time
+    `i64::try_from` succeeds may the private record builder narrow the delta with
+    `i64::try_from`. Preserve the existing signed `rv_as_of_minus_now_ms` field's
+    snapshot-as-of-minus-trigger-event semantics despite its name. An
+    unrepresentable absolute time or delta logs once, skips the record, and cannot
+    alter submission/exposure/order behavior.
   - In manual deserialize, reject negative trigger-init/watermark before durable
     construction; make encode reject manually negative values; keep omitted/null/0/
     `i64::MAX` valid. Do not broaden inbound-negative policy to event/lifecycle/as-of.
@@ -505,6 +526,17 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     fixed 106-record counterfactual. Keep semantic-entry record-count growth
     explicitly unmeasured; do not claim a final restart size.
   - Run only the permitted cheap gates: `just fmt-check`, `just deny`, `just ci-lint-workflow`, and `just source-fence-static`. Do not run local Rust GREEN or Rust Probe.
+  - Do not add a Rust source-text unit test for receipt shape. After implementation,
+    use
+    `rg -n 'struct ExitRealizedVolatilityGateReceipt|RealizedVolSnapshot|RealizedVolGateClassification|RealizedVolatilityEvidenceFields' src/strategies/binary_oracle_edge_taker/mod.rs`
+    to locate and inspect the complete receipt definition, proving it owns no full
+    snapshot, classification, or entry-evidence field. Use
+    `rg -n 'fn exit_realized_volatility_gate_receipt_at|classify_rv_gate\(|classify_realized_vol_snapshot\(|evaluation\.clone\(\)' src/strategies/binary_oracle_edge_taker/mod.rs`
+    and inspect the complete capture-to-`ExitSubmissionDecision` path, proving exactly
+    one free-classifier call, no clone-producing classifier call, and a moved rather
+    than cloned `ExitEvaluation`. Record the inspected ranges, run
+    `just source-fence-static`, and require the internal adversarial review in Step 7
+    to repeat this structural inspection.
   - Commit the coherent implementation and lasting documentation. Keep the PR body head-agnostic: no current SHA, transient check status, or head-specific review receipt.
 
 - [ ] **Step 7: Close the amendment locally before completion handoff.**

@@ -1,0 +1,1201 @@
+• Use one dedicated orchestrator session for both programs, while keeping their implementation PRs
+  strictly separate.
+
+  You are the dedicated orchestrator for two related but separate programs:
+
+  A. CI TECH-DEBT REMOVAL — issue-owned deletion/reduction PRs.
+  B. #1016 — trusted-base precursor followed by one atomic verifier replacement.
+
+  You orchestrate only. Do not implement production changes yourself. Delegate bounded audits, proof work,
+  and implementation to separate sessions; adjudicate their results; prevent overlap; control review, CI,
+  and merge sequencing.
+
+  AUTHORITATIVE CONTEXT
+
+  Repository: /Users/spson/Projects/Claude/bolt-v2
+  Current Phase-0 planning worktree:
+  /private/tmp/bolt-v2-1016-job-graph
+  Planning head:
+  7597308c19b7e3ab4ae2419db332d6dde8ca58d4
+
+  Read AGENTS.md first. After every merge, refresh from authoritative main. Old branches and conversations
+  are evidence only.
+
+  Primary artifacts:
+
+  - docs/ci/1016-ci-check-census.md
+  - docs/ci/1016-trusted-base-precursor-design.md
+  - docs/ci/1016-atomic-verifier-replacement-design.md
+  - docs/ci/1016-program-ledger.md
+  - docs/ci/1016-receipts/phase0-architecture-adjudication.md
+  - docs/ci/1016-receipts/phase0-reaudit-resolution-safety.md
+
+  Measured Phase-0 state:
+
+  - 34 ci-lint suites
+  - 67-file executable closure
+  - 95,790 Python lines
+  - 7,216 predicate rows
+  - 2,091 production-policy candidates
+  - 19 non-Python source groups
+  - 14 dynamic caller edges
+  - Proposed dispositions: 716 RETAIN, 566 RE-HOME, 224 DELETE, 25 native, 63 canonical merges
+  - Safety review: 147 SAFE, 2 UNSAFE, 203 UNPROVEN
+
+  GOVERNING SEQUENCE — ALREADY APPROVED
+
+  1. Resolve safety evidence and land approved issue-owned CI deletions first.
+  2. Regenerate the complete census, closure, manifest, and corpus from fresh main.
+  3. Land the permanent trusted-base precursor.
+  4. Make #1016’s atomic replacement the first subsequent enforcement-surface change.
+  5. Retain the permanent trusted-base seam afterward.
+
+  No compatibility adapter, legacy protocol wrapper, deletion exemption, head-selected corpus, dual
+  verifier path, or combined deletion-and-replacement PR is authorized.
+
+  PROGRAM A — CI TECH-DEBT REMOVAL
+
+  Purpose: remove unnecessary CI jobs, suites, policy predicates, duplicated checks, frequency, and
+  implementation-shape enforcement before freezing #1016’s replacement corpus.
+
+  Rules:
+
+  - Every deletion belongs to its actual owning issue, not #1016.
+  - One PR covers one issue or explicitly named slice.
+  - SAFE does not automatically mean authorized; require a named survivor/native guarantee and mutation or
+  exact-identity evidence.
+  - UNPROVEN is work to investigate, not authorization to delete and not a reason to stop the entire
+  program.
+  - UNSAFE remains until a proven replacement owner exists.
+  - Delete obsolete policy before re-homing it.
+  - Do not preserve unnecessary checks merely because they already exist.
+  - Do not replace deleted checks with new regexes, conditionals, exceptions, fallback scanners, or
+  implementation-shape fences.
+  - CI cost, speed, frequency, and safety must be measured before and after.
+  - Parallelize independent proof and implementation slices. Queue non-conflicting ready PRs as one wave;
+  do not serialize merely for convenience.
+  - Never batch conflicting enforcement-surface edits without explicit dependency ordering.
+
+  For each candidate deletion, require this receipt:
+
+  - Predicate/suite/module ID
+  - Current owner and callers
+  - Behavior or risk it claims to protect
+  - Evidence that it is obsolete, duplicated, native, or unnecessary
+  - Named surviving owner, if any
+  - Discriminating mutation or exact-identity proof
+  - Owning GitHub issue
+  - Files expected to change
+  - CI cost/latency effect
+  - Reviewer result
+  - Exact merged PR and main SHA
+
+  PROGRAM B — #1016
+
+  Purpose: replace the central verifier architecture after Program A establishes the reduced policy
+  surface.
+
+  #1016 must not absorb runtime CI-policy changes. It owns verifier architecture only:
+
+  - Explicit path/source classification
+  - Parse each source once
+  - Typed workflow, action, TOML, Justfile, and shell models
+  - Fail-closed parse/model errors
+  - Stable semantic rule IDs
+  - Focused policy-family tests
+  - Permanent trusted-base enforcement
+  - Atomic deletion of the legacy verifier, giant test, helpers, scanners, digest pins, compatibility
+  exports, and old/new comparison paths
+
+  The precursor must not begin until:
+
+  - All approved Program-A deletions are merged
+  - Main is refreshed
+  - All remaining corpus entries are independently proven
+  - No UNSAFE or UNPROVEN disposition enters the corpus
+  - The executable closure and dynamic caller census are regenerated
+  - The precursor design and corpus receive adversarial review
+
+  After the precursor merges:
+
+  - Freeze covered enforcement surfaces
+  - #1016 replacement must be the first subsequent covered change
+  - Do not allow unrelated CI PRs to merge ahead of it
+  - The candidate must implement the permanent protocol directly
+  - The legacy architecture is deleted atomically at the replacement head
+
+  ORCHESTRATION WORKFLOW
+
+  Maintain one durable ledger with two separate boards:
+
+  PROGRAM A:
+  candidate → evidence pending → proven safe/retain/re-home/delete → issue assigned → implementation →
+  internal review → exact-head CI → external/native review → queue → merged → measured
+
+  PROGRAM B:
+  Phase-0 proof complete → reduced corpus regenerated → precursor reviewed → precursor merged →
+  enforcement freeze → atomic replacement → parity/mutation proof → exact-head CI → external/native review
+  → queue alone → merged
+
+  Do not mark the whole goal blocked merely because rows remain UNPROVEN. Partition them into bounded
+  evidence packets and keep progressing. Mark blocked only for a genuine repeated external impasse under
+  the goal rules.
+
+  MODEL/SESSION MANAGEMENT
+
+  - Give each worker a bounded file/rule family; never ask one session to understand all 95,790 lines.
+  - One implementer owns a file set at a time.
+  - Parallel sessions may perform read-only audits and independent reviews.
+  - Require every worker to report exact base/head SHA, changed files, evidence, remaining scope, and
+  worktree cleanliness.
+  - Reject reports that merely say tests pass without mapping requirements to evidence.
+  - Preserve conversations/Entire receipts as historical evidence, but current main and current source
+  inspection are authoritative.
+  - Do not let a worker silently expand its issue or “fix nearby debt.”
+
+  CI/REVIEW CONTROL
+
+  - Cheap local non-compile checks during implementation.
+  - No repeated full-CI churn.
+  - Resolve internal findings before ready-state full CI.
+  - Obtain one coherent exact-head merge proof.
+  - External review only after the repository-required exact-head CI/equivalent is green.
+  - Required native approval and thread resolution remain mandatory.
+  - Merge only through `just merge-queue`.
+  - #1016 precursor and atomic replacement queue alone.
+
+  IMMEDIATE NEXT ACTIONS
+
+  1. Resume the blocked Phase-0 goal using the approved deletions-before-precursor ruling.
+  2. Update the program ledger: sequencing is approved; safety evidence remains pending.
+  3. Partition the 203 UNPROVEN and 2 UNSAFE decisions into bounded proof packets by semantic owner.
+  4. Identify the first independently proven, high-value deletion slices and their owning issues.
+  5. Produce execution prompts for those separate implementation sessions.
+  6. Do not start precursor or replacement implementation.
+  7. Report back concisely with:
+     - proof packets created
+     - first deletion PR candidates
+     - issue ownership
+     - expected cost/latency reduction
+     - conflicts/dependencies
+     - what can run in parallel
+     - remaining true blockers
+
+  Success means less CI policy and code, lower cost and latency, no lost safety invariant, and a
+  substantially smaller single-path verifier—not merely reorganizing the existing debt.
+
+---
+
+• Safety-proof work is complete and committed at 9a78431fa9eb40a3e25f2e1e931d9d2e3098834f. Final
+  eligibility audit is READY.
+
+  Only one pre-precursor deletion is authorized:
+
+  Option A — focused registry removal (recommended)
+
+  - Remove ubicloud-runner-minutes from CI_LINT_SUITES.
+  - Remove its required command from test_default_suite_table_covers_the_ci_lint_contract.
+  - Retain scripts/ubicloud_runner_minutes.py, its test file, just ci-runner-minutes, and lane-policy
+    registration outside CI-lint.
+
+  - Verify the runner tests, utility tests, --list absence, then the required cheap gates once.
+  - Publish one draft #1016 slice; no ready state, full CI, review request, queue, or merge.
+
+  Option B — make no pre-precursor deletion
+
+  - Safest operationally, but preserves reporting policy in the safety gate and misses the only
+    independently approved reduction.
+
+  Option C — delete the utility/tests too
+
+  - Rejected: they remain a useful operator tool outside CI-lint and have no approved deletion scope.
+
+  Approve Option A’s focused design?
+
+---
+
+• Please review the focused #1016 design at:
+
+  docs/superpowers/specs/2026-07-11-ci-lint-runner-minutes-removal-design.md
+
+---
+
+you need to tell me what we actually be doing - I'm frustrated 
+› generate a review prompt for the PR
+
+
+• Review draft PR #1363 at exact head 554fabd4ca16f38243443ae540060f048cbf1740.
+
+  This PR originally proposed removing the runner-minutes test from CI-lint. Internal adversarial review
+  found that this would remove the only automatic regression coverage for the repository’s runner-minute
+  unit-of-record utility. The deletion was therefore fully reverted.
+
+  Verify:
+
+  - The branch tree is identical to main.
+  - Both CI-lint registry-contract lines are restored.
+  - test_ubicloud_runner_minutes.py remains automatically executed.
+  - No alternate CI path or policy change was introduced.
+  - The PR has no effective implementation diff.
+  - The title and description accurately record why the proposed slice was withdrawn.
+  - No broader #1016 work is claimed or implemented.
+
+  Report findings by severity with file or PR references. Identify the reviewer source and exact model.
+  Conclude with APPROVE, REQUEST CHANGES, or COMMENT.
+
+  Do not modify the branch, request review, run full CI, ready, queue, merge, or close the PR.
+
+
+› do we need to get this merged before working on other work?
+
+
+• No. PR #1363 has no effective diff, so merging it would add two cancelling commits without changing
+  main.
+
+  Leave it as a draft record or close it as withdrawn. Continue other work from a fresh branch based on
+  current main; do not stack anything on #1363.
+
+
+› wait why do we need to close it?
+
+
+• We don’t strictly need to close it. It can remain draft as an audit record.
+
+  Closing is simply cleaner because:
+
+  - It has no effective diff.
+  - Nothing can be usefully merged.
+  - It avoids looking like an active dependency for later #1016 work.
+
+  Either way, future work must branch from current main, not PR #1363. My recommendation is to close it as
+  withdrawn after the review record is captured.
+
+
+› I don't wunderstand why we are doing this at all if it can be closed
+
+
+• You’re right to question it. The slice no longer delivers any change.
+
+  What happened:
+
+  1. We proposed removing one CI-lint test registration.
+  2. The internal adversarial review found that doing so would leave an important reporting utility
+     without automatic regression coverage.
+
+  3. Addressing that finding meant restoring the deletion.
+  4. That returned the branch to the same content as main.
+
+  So PR #1363 now serves only as a record of a rejected experiment. It does not need to merge, and keeping
+  it open provides little value. The useful outcome is the decision: this deletion is unsafe unless a
+  replacement automatic test edge is designed first.
+
+  Recommendation: close #1363 as withdrawn, record the result in the #1016 planning ledger, then continue
+  the program from fresh main with a different proven deletion slice.
+
+
+› ok close it - we should not be doing any work if that is meant to be closed.
+
+
+• I’ll close PR #1363 as withdrawn and leave the local branch/worktree untouched. No further work will
+  build on it.
+
+• Running gh pr close 1363 --comment "Withdrawn after internal adversarial review. The proposed deletion
+  │ removed the only automatic regression edge for the retained runner-minute unit-of-record
+  │ utility, so the change was fully reverted. This PR has no effective diff and must not be used as
+  │ … +1 lines
+
+⚠ Automatic approval review approved (risk: low, authorization: high): Closing the draft PR with a
+  withdrawal comment is a reversible metadata action the user explicitly requested after deciding the no-
+  op branch should not remain active.
+
+✔ Auto-reviewer approved codex to run gh pr close 1363 --comment "Withdrawn after internal adversarial
+  review. The ... this time
+
+• Ran gh pr close 1363 --comment "Withdrawn after internal adversarial review. The proposed deletion
+  │ removed the only automatic regression edge for the retained runner-minute unit-of-record utility, so
+  │ the change was fully reverted. This PR has no effective diff and must not be used as a base for
+  │ … +1 lines
+  └ ✓ Closed pull request seungpyoson/bolt-v2#1363 (ci: retain runner-minute regression coverage (#1016
+    review resolution))
+
+• Ran gh pr view 1363 --json state,isDraft,headRefOid,url
+  └ {"headRefOid":"554fabd4ca16f38243443ae540060f048cbf1740","isDraft":true,"state":"CLOSED","url":"https:
+    //github.com/seungpyoson/bolt-v2/pull/1363"}
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• PR #1363 (https://github.com/seungpyoson/bolt-v2/pull/1363) is closed as withdrawn.
+
+  No further work will use that branch or PR as a base.
+
+---
+
+I want you to drive this and manage your sessions in parallel - lets conduct internal adverserial reviews in between and proceed with the CI removal & tech debt removals
+
+---
+
+use gpt 5.6 medium for implementation
+
+---
+
+continue
+
+---
+
+review whether other parallel work fanout died
+
+---
+
+ok continue
+
+---
+
+again do not use ultra for all - you should be the orchestrator - use sol medium
+
+---
+
+so what did you exactly do? explain in plain English - make this concise
+
+---
+
+you should be able to select other models -
+
+---
+
+continue - let's checkup on the fanouts
+
+---
+
+so this is what I want you to do after implementation is complete and internal adverserial review is clean - afterwards, use computer use - you will use computer-use and use cmux where I opened up tabs for each model - codex, kimi, grok, glm, claude. use codex - gpt-5.6-sol-medium, claude - opus 4.8-xhigh, kimi - k2.7, glm-5.2 (via opencode), grok (4.5). create a workspace and create the same set up tabs for each model for each implementation lane so that you don't duplicate it across different workstreams. loop until we have unanimous approvals from each model with systematic solutions
+
+---
+
+check if you understand what I am saying by trying out computer use and access cmux yourself right now - let me know if you have any questions
+
+---
+
+if you think this is too difficult, we can just skip cmux and the reviews I asked you  - is it difficult or not?
+
+---
+
+continue
+
+---
+
+let's skip computer use - I'll drive the review myself -
+
+---
+
+so what do you need from me?
+
+---
+
+generate a review request prompt and save them in downloads folder in md format
+
+---
+
+don't ask models to do config matching or some bullshit that's not related to review - CONFIG_MISMATCH — /private/tmp/cmux-pr1368-codex-review.md
+
+---
+
+PR 1365
+
+Claude: 
+APPROVE — receipt at /private/tmp/cmux-pr1365-claude-review.md
+
+Identity gate passed (Claude Opus 4.8, opus[1m], effortLevel: xhigh). Required exact-head CI is green — actionlint, backtester-gate, gate, host-health all SUCCESS at 22bff389, with the ready-state gate completing at 18:08:17Z and zero failing or pending checks in the rollup.
+
+The delta is exactly the declared slice: two files, one insertion, six deletions. I independently recomputed the digest at both endpoints — the base file hashes to the old literal and the head file to the new one, and the guard hashes raw bytes and is invoked unconditionally, so the one-line update is precisely what the fail-closed check demands rather than a loosening.
+
+The one thing I dug hard at was a real lane asymmetry I found: the five programs now run only where the clippy job runs, so in the draft-iteration and docs lanes they go from running once to running zero times, which the PR body doesn't disclose. I chased it rather than assuming, and it doesn't hold up as a regression. The only real-repo state those tests read is ci/sccache-location.toml and scripts/test_ci_input_sets.py; both live under paths that are excluded from the docs-safe allowlist, so any edit to them forces full CI and the checks run. More tellingly, four of the five analyzers are imported only by verify_ci_workflow_hygiene.py — a verify_ci_* module the fence explicitly excludes by design. The fence was running unit tests for a verifier it never ran, so this change puts the tests in the same lane as their subject rather than opening a hole. I recorded it as informational with that control observation attached, not buried.
+
+Everything else checks: the five test blobs are byte-identical to base, subprocess execution hits the same main() the fence already preferred (so no semantic loss, and status propagation stays fail-closed), CI-lint is pinned automatic by a hygiene verifier that errors if clippy drops the contract flag, the 61.45s figure is correctly bounded as host-serial work rather than CI wall-time, and #1215 stays open with no closing keyword anywhere in the body or commits.
+
+Worth flagging for the owner: the PR body still says "ready-state exact-head full CI remains pending," which is now stale — that CI has since gone green. It's an under-claim, not an overclaim, so I didn't treat it as a finding, but the body could be refreshed before merge.GLM: Verdict: APPROVE
+Receipt: /private/tmp/cmux-pr1365-glm-review.md
+Grok: Yes. I re-did it as a real code audit, not a checklist pass.
+
+What I audited line-by-line
+
+Delta (entire committed change):
+• scripts/run_fences.py — only five STANDALONE_TEST_FILENAMES string lines deleted; difflib confirms no other byte changes
+• scripts/test_lane_governor.py — only RUN_FENCES_SOURCE_SHA256 updated; loader/reflection/digest fail-closed code around it unchanged
+
+Harness semantics:
+• discover_test_paths / import_module_from_path / call_module / run_module — full read
+• Live discovery at head: none of the five reappear via auto-pairing
+• CI-lint path: subprocess.run → suite main → failure returns 1 → justfile sets failed=1
+• Clippy still forces lint-workflow-contract: true → just ci-lint-workflow
+
+Each of the five suites:
+• Full main() call graph (which assert_* run)
+• **main** → lane_governor.acquire() → main()
+• No argv/policy coupling that depended on the import harness
+• Important: source-fence import path never ran **main** (synthetic module name); CI-lint subprocess path is the fuller entry. Survivors keep the stronger path.
+
+Executed (not just read):
+┌──────────────────────────────────────┬────────┐
+│ Check                                │ Result │
+├──────────────────────────────────────┼────────┤
+│ test_run_fences.py                   │ pass   │
+├──────────────────────────────────────┼────────┤
+│ digest pin + loader pristine tests   │ pass   │
+├──────────────────────────────────────┼────────┤
+│ all five suites as python3 scripts/… │ pass   │
+└──────────────────────────────────────┴────────┘
+
+Verdict
+
+APPROVE — no Critical / Important / Minor findings after the line-level pass.
+
+Updated receipt: /private/tmp/cmux-pr1365-grok-review.md
+Kimi:  Worktree restored: on branch codex/1215-source-fence-dedup at 22bff389, clean.
+
+   Verdict: APPROVE
+
+   Receipt: /private/tmp/cmux-pr1365-kimi-review.md
+
+   Key evidence behind the verdict:
+   • Required exact-head CI green: run 29162550211 at 22bff389 succeeded, including gate, clippy (which runs just
+     ci-lint-workflow), and source-fence.
+   • Diff is exactly 2 files / 1 insertion / 6 deletions: five tuple-entry deletions in scripts/run_fences.py plus the single
+     RUN_FENCES_SOURCE_SHA256 literal swap in scripts/test_lane_governor.py:124.
+   • New digest matches shasum -a 256 scripts/run_fences.py byte-for-byte; the fail-closed guard and loader/reflection fences are
+     untouched.
+   • All five suites remain automatic CI_LINT_SUITES owners (run_ci_lint_suites.py:38-41,67) with the contract test retained; no
+     verify_*.py discovery path resurrects them in source-fence.
+   • The five test-program blobs at head are identical to the reviewed blobs; PR closingIssuesReferences is empty, so #1215 stays
+     open; the 61.45 s figure is correctly scoped as serial host work, not CI wall-time.
+
+   No Critical/Important/Minor findings — the two notes in the receipt (stale non-required check entries, path-filtered
+   source-fence-static skip) are informational only.
+
+---
+
+give me what to edit for the pr body I'll do this myself
+
+---
+
+PR 1368
+
+GPT: REQUEST_CHANGES — /private/tmp/cmux-pr1368-codex-review.md
+
+Kimi: Verdict: REQUEST_CHANGES
+
+   Receipt: /private/tmp/cmux-pr1368-kimi-review.md
+
+   One substantive finding: the PR body claims hash backtester_cache retains dc234643…, but at the exact head b66869b8 the
+   committed script produces 6deda6d6…. The main refresh (merge of 4b501dc3f / PR #1362) changed files inside the backtester_cache
+   input set, so the digest legitimately moved. I validated this with a git ls-tree-based replica that reproduces 6deda6d6… at the
+   refreshed head and the claimed dc234643… at the pre-merge head 7c02d40eb — the body line is stale pre-refresh evidence.
+
+   Everything else passed: exact +3/-7 single-file delta, list fails closed via argparse (exit 2, invalid choice), retained
+   hash/validate/changed behave identically, counter-mutation reproduced byte-for-byte (537 bytes, matching SHA-256), no callers or
+   docs reference list, blob identical to the originally reviewed head, focused tests pass, exact-head CI green (45 SUCCESS, no
+   failures), and #1215 stays open with remaining scope tracked.
+
+GLM: APPROVE — /private/tmp/cmux-pr1368-glm-review.md
+Identity matches (GLM-5.2, Z.AI Coding Plan). Exact-head CI is green (gate/backtester-gate SUCCESS, no FAILURE). The PR is exactly the declared #1215 slice: one file, 3+/7-, list fails closed via argparse (exit 2, invalid choice, no compat path), hash/validate/changed retained and unchanged, no tracked caller or doc references list, focused tests pass. One non-blocking Minor: the PR body's retained hash digest is stale relative to refreshed head because main merge #1362 rotated input contents — expected, not a defect.
+Claude: Verdict: REQUEST_CHANGES
+Receipt: /private/tmp/cmux-pr1368-claude-review.md
+
+Identity gate passed (Opus 4.8, xhigh). Required exact-head CI is green — actionlint, gate, backtester-gate, host-health all SUCCESS at b66869b87; BLOCKED is only the pending approval.
+
+The code is correct and exactly in scope — no code defect. The one substantive finding is in the PR description: it publishes hash backtester_cache = dc23464… as retained-command evidence, but at the PR's own head the digest is 6deda6d6…. That value was measured at the pre-refresh head; the merged main delta (#1362) touched 18 files inside the backtester_cache input set, and the digest hashes file bytes, so it went stale by construction. Retained-command identity itself holds — I proved it with a same-tree differential (base script vs head script produce identical output for hash, validate, changed) — so the fix is a body edit, not a code change. The counter-mutation claim (537 bytes / 46bb7beb…) does reproduce at head.
+Grok: 
+Yes. I did a real review on the exact head, not a rubber-stamp of the prior receipts.
+
+What I actually inspected
+
+1. PR metadata + exact-head CI via gh pr view 1368 — head b66869b…, base 4b501dc…, gate SUCCESS, no failing latest checks, closingIssuesReferences: [], full PR body.
+2. Exact three-dot diff — only scripts/ci_input_sets.py, +3/−7: drop list from the ("list", "hash") parser loop and delete the list dispatch branch.
+3. Full current main() / parse_args() at HEAD (lines ~197–239): hash / validate / changed only; subparsers(..., required=True).
+4. Caller search — workflows (backtester-ci, flaky-test-*), verify_ci_workflow_hygiene.py, tests, config. Live CLI uses only hash / validate / changed. No ci_input_sets … list at base or head.
+5. Runtime smoke (this worktree)
+   • --help → {hash,validate,changed}
+   • list, list backtester_cache, LIST …, -- list … → exit 2, empty stdout, argparse invalid choice
+   • hash / validate / changed → exit 0
+   • base-script vs head-script hash backtester_cache digests identical (6deda6d6…)
+6. Blob identity — head implementation blob 38afae5a… matches pre-refresh head; differs from base a8a108d0….
+7. Issue #1215 — list is Class-B dead surface; PR correctly does not close the issue.
+8. Prior receipts — used as context, then re-checked against current head rather than trusted alone.
+
+What I did not do
+
+• Did not re-run test_ci_input_sets.py / full local suites (remote exact-head gate/test were already green; review request said not to run CI).
+• Did not re-do the one-time in-memory counter-mutation; treated that PR-body claim as non-reproducible narrative (noted in the receipt).
+• Did not change the repo or GitHub state.
+
+Verdict basis
+
+The change is a pure surface deletion: argparse rejects list before dispatch; retained handlers and caller contracts are intact; scope matches the declared #1215 slice. I found no Critical/Important/Minor code defects, so APPROVE at /private/tmp/cmux-pr1368-grok-review.md.
+
+---
+
+so each reviewer just requested changes in pr body?
+
+---
+
+no let's move on to the next ones - 1364, 1369 - are the pr review request prompts up to date?
+
+---
+
+PR 1364
+
+GLM: APPROVE — no substantive findings.
+Receipt: /private/tmp/cmux-pr1364-glm-review.md
+Summary of the independent review: PR #1364 is a clean pure-deletion slice (3 files, 92 deletions, 0 additions) under open issue #1318. Required exact-head CI is green (source-fence, build, clippy, test, deny, gate). Every removed predicate/test is fully dominated by a retained gate: the as_text regex by the verbatim Text(bytes) | Binary(bytes) check, the class: " regex by the Rust type system + REQUIRED_CLASSES, extra_http by the general extra check, and the deleted justfile recipe by run_fences.py auto-discovery plus the retained cheap_lane_labels lane governance. Automatic execution and all category checks (registry, fail-closed floor, deferral, raw-wire, SSM/HTTP/IMDS, fixture provenance, Chainlink) are preserved; closingIssuesReferences is empty and #1318 is OPEN, so the slice does not close the issue.
+GPT:  APPROVE
+
+  /private/tmp/cmux-pr1364-codex-review.md
+Kimi: APPROVE
+
+   Receipt: /private/tmp/cmux-pr1364-kimi-review.md
+
+   Summary: exact-head CI is fully green (gate, source-fence, clippy, build, test all success at 37c5a43fd), the three-dot delta is
+   exactly 3 files / 92 deletions / 0 additions, every removed predicate was verified redundant or dead code
+   (reference_named_provider_binding_keys had zero callers; string-class, extra_http, and as_text checks are each covered by
+   surviving owners), the deleted Just recipe loses no execution because run_fences.py auto-discovers the verifier and its paired
+   test suite, closingIssuesReferences is empty so #1318 cannot be closed, and no claim overstates impact. Two non-substantive
+   minors recorded: a self-test coverage reduction for the string-literal key-extraction branch (M1) and a stale "CI pending" line
+   in the PR body (M2).
+
+Grok: APPROVE
+
+/private/tmp/cmux-pr1364-grok-review.md
+
+Claude: Verdict: REQUEST_CHANGES
+Receipt: /private/tmp/cmux-pr1364-claude-review.md
+
+Two substantive findings, both proven by execution rather than by reading:
+
+The PR says it deletes "three dependent self-tests." I ran all three against the head verifier: two of them still pass, so they were never coupled to any removed predicate. Their deletion is pure coverage loss.
+
+The more serious one (Finding 1) is that test_string_literal_non_reference_metadata_provider_without_registry_fails was the sole discriminating owner of the metadata→WebSocketFrame-registry derivation — the rule that forces a newly added reference-price provider into the boundary registry (AGENTS.md Repo Rule 11). I planted a minimal regression that silently skips string-literal client_venue_key values; it's invisible on the current tree (clean scan returns []), all 20 retained self-tests pass under it, and only the deleted test catches it. It's compounded by the fact that the same PR deletes the dead reference_named_provider_binding_keys helper, which encoded exactly the filter that deleted test was guarding against — so the guard and the guarded-against code go together, and nothing prevents reintroduction.
+
+Finding 2: deleting test_registered_text_only_handler_fails leaves the explicitly-retained "Chainlink handler must accept Text and Binary frames" check with zero self-test coverage (git grep "Text and Binary" at head returns one hit — the verifier line itself).
+
+Everything else in the slice checks out and I cleared it with evidence: exact-head CI is green (48 success, 0 failing/pending); the class/string check is genuinely redundant with the Rust enum type; the extra_http check is strictly subsumed by the generic extra-entry check; the deleted helper was dead at base; the recipe deletion loses no automatic execution (I ran run_fences.py discovery at head — both the verifier and its paired test are still discovered); and closingIssuesReferences is empty so the PR cannot close #1318.
+
+The remedy is cheap and keeps the PR net-negative: restore the two tests verbatim (they pass at head as-is), delete only test_parser_only_chainlink_handler_fails, and correct the PR body's self-test claims. I did not implement it, and I did not touch the worktree, PR, or any GitHub state.
+
+---
+
+PR 1369
+
+Claude: Verdict: REQUEST_CHANGES
+Receipt: /private/tmp/cmux-pr1369-claude-review.md
+
+The nine named symbols are genuinely dead and safely removed — zero consumers repo-wide, no reflection path, no import-time effect, retained chain and coverage-enforcer consumer intact, required exact-head CI green, and all four Python suites pass when I re-ran them at head. The blocker is the deletion boundary, not the deletion.
+
+verify_ci_workflow_hygiene.py:5302 (GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT) is a GATE_* assignment with zero loads in the module and zero consumers in the repo — dead by exactly the criterion used to delete its seven block-siblings — and the PR leaves it sitting alone one line from the deletion. Re-running the PR's own AST census over the same file finds 16 such constants, three of which hold byte-identical literals to three of the deleted ones. None of them are named in #1215's dead register, so the PR's claim that the residue "remains tracked under #1215" doesn't hold for what it left behind. The internal reviews missed this because all eight of their forced-dissent hypotheses probed refresh integrity (merge parents, blob identity, patch-ID staleness) rather than boundary completeness.
+
+I did not modify repository or GitHub state; the worktree is clean at 6081b5676.
+
+GLM: APPROVE — /private/tmp/cmux-pr1369-glm-review.md
+Nine deleted symbols proven dead (each appears only at its own definition at base; optional_gate_name's two calls were inside the likewise-deleted required_context_aliases), no hidden/reflection/import-time callers, required-context path + coverage-enforcer consumer retained, gate_names config still owned by ci_provenance.py, deletion boundary correct, gate green at exact head, focused tests pass at head. No substantive findings.
+Kimi:  Verdict: APPROVE
+
+   Receipt: /private/tmp/cmux-pr1369-kimi-review.md
+
+   Key evidence: exact-head CI green (99 check runs, no failures); diff is exactly two files, 37 deletions, zero additions;
+   repo-wide census (including ignored files) finds zero consumers of all nine deleted symbols; retained required_contexts ->
+   resolve_required_contexts -> active_gate_context_pair chain and the coverage-enforcer consumer are intact; all four focused
+   test/verifier commands pass at head with a clean worktree; closingIssuesReferences is correctly empty for a slice PR; PR
+   description matches the diff. No Critical/Important/Minor findings.
+
+Grok: APPROVE
+
+Receipt: /private/tmp/cmux-pr1369-grok-review.md
+
+GPT: APPROVE — /private/tmp/cmux-pr1369-codex-review.md
+
+---
+
+updated - but reading all these PRs - don't think we are removing lines aggressivelyt
+
+---
+
+so Claude came back - are we actually doing the right thing? 
+Verdict: REQUEST_CHANGES (unchanged)
+Receipt: /private/tmp/cmux-pr1369-claude-review.md
+
+The head hasn't moved (6081b5676, no new commits), so this was a genuine second pass at the same code rather than a delta review. I re-derived everything from scratch, and the two Important findings survived: the PR still deletes seven of the eight dead constants in the block it edits and leaves the eighth (GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT at verify_ci_workflow_hygiene.py:5302, zero loads, zero consumers, dead in the test file too), and the 15 further constants of the identical class are named nowhere in #1215 despite the PR asserting the residue is tracked there.
+
+Three things the second pass added, all of which strengthen the deletion's safety case rather than weaken it:
+
+The nine symbols are fossils of a superseded gate shape. The current gate job in ci.yml has no if [[ "$policy_path" == ... ]] shell branches at all — policy handling moved to a script-arg form (--policy-path, --expected-event-class, --full-ci-deferred at ci.yml:1895-1897). That's the control observation I was missing: it explains why they're dead and proves deleting them costs no enforcement. I had started to form a concern that the constants were breadcrumbs for a check that silently went missing; that concern is disproven, and I'm not raising it.
+
+The "no reflection consumer" claim is now proven rather than asserted. Reflection consumers genuinely exist for constants in this file — test_command_understanding.py:325 reads one via getattr — and my census catches that one while scoring zero for all nine deleted names.
+
+And required_context_aliases was a duplicate encoding of the gate/backtester alias pairing that gate_context_variants → active_gate_context_pair → resolve_required_contexts already own, so removing it eliminates a competing source of truth.
+
+So the deletion is clean and I'd happily approve it; what blocks is the boundary, and the fix is one line plus a tracking update to #1215's dead register.
+
+---
+
+A 
+
+so I don't think you understand my original ask - what was my original ask?
+
+---
+
+so I think we should be rewriting CI overall - a lot of .py files are too overblown
+
+---
+
+so we should be merging whatever we have opened or close them - so we need to first make decisions on that - and we should not be just deleting everything outright
+
+---
+
+I thought I gave you 1369 review outputs - so what should we do for 1364 and 1369? do not queue 1365, 1368 yet
+
+---
+
+so make the necessary fixes via the sol medium implementator fanout
+
+---
+
+generate a review request promtp
+
+---
+
+ok then make them review ready
+
+---
+
+PR 1364
+
+Claude: 
+Verdict: REQUEST_CHANGES
+Receipt: /private/tmp/cmux-pr1364-claude-review.md
+
+The good news first: the code change is now correct. Both findings from my round-1 review were fixed, and I re-verified each one rather than taking the fix on faith — I planted the specific regression each restored test claims to own and confirmed that test is the only one of the 22 that catches it. The one test that stays deleted (test_parser_only_chainlink_handler_fails) is genuinely dominated: I replayed its mutation and the retained Text/Binary check fires for the on-point reason. Every remaining deletion is independently dominated by a retained owner, and the diff is exactly as advertised (3 files, 54 deletions, 0 additions, no mode changes or residue).
+
+Two non-code issues block, both traceable to the same PR-body edit:
+
+Critical — the PR now closes #1318. closingIssuesReferences is no longer empty; it links #1318. The cause is body line 54: "This PR is one named #1318 slice and does not close #1318." GitHub matches the adjacency close #1318 and ignores the negation, so the sentence written to disclaim closure is what creates it. On merge, #1318 auto-closes and the remaining strategy-policy and homeless-invariant scope loses its tracker — the exact thing the slice contract forbids. It's invisible in the diff; only the GitHub metadata shows it. One-line body fix.
+
+Important — the exact head is not green. The prompt cites run 29180388937 as SUCCESS, and it is — but it isn't the newest run at that SHA. A second CI run (29180402121, created 36 seconds later) failed at the same head, and since the rollup surfaces the newest check per name, the required gate check is currently RED. The failure is ERROR: newest same-SHA carry-forward run 29180388937 was 'in_progress' — the duplicate run's carry-forward resolver fired while the first run was still in flight. bvs-test archive is also still in progress. This is a duplicate-run artifact, not a code defect, but it needs re-resolving at head rather than being waved through by citing the older of two runs.
+
+One Minor: the claim that the removed .as_text() regex is "dominated by the exact retained Text/Binary boundary requirement" is provably false — a presence check can't subsume an absence check, and I have the counterexample (keep the arm, add a production .as_text() call, fence returns []). No invariant is actually lost, because the retained native Rust binary tests own that behavior for real, but the justification should name them as the owner.
+
+✻ Baked for 7m 4sGLM: REQUEST_CHANGES
+Receipt: /private/tmp/cmux-pr1364-glm-review.md
+Key finding (Important): the PR body's sentence "does not close #1318" is parsed by GitHub as a closing reference — closingIssuesReferences now lists #1318 (was [] at the prior head). Merging will auto-close #1318, which is OPEN with remaining scope (strategy-policy, homeless-invariant), contradicting the PR's own intent and review requirement 8. Fix: reword the body to drop the close #NNN adjacency (e.g. "; the issue remains open with remaining scope"), then re-verify closingIssuesReferences == []. All code/safety questions (Q1–Q7) pass — diff is a clean 3-file/54-deletion slice, both safety tests retained and discriminating, deleted test dominated by the retained exact-string Text/Binary owner, automatic run_fences.py discovery intact, exact-head CI 29180388937 SUCCESS. No code change required.
+Kimi: REQUEST_CHANGES
+
+   Receipt: /private/tmp/cmux-pr1364-kimi-review.md (replaces the prior receipt for the old head)
+
+   The code side is clean and I proved it empirically at exact head 91c4bd8e:
+
+   • Diff is exactly 3 files / 54 deletions / 0 additions, no mode or unrelated changes.
+   • Both retained tests ran standalone and pass, discriminating their claimed regressions; full self-test suite: 22/22 pass.
+   • Replayed the deleted test's exact .as_text() mutation against the head verifier — it still fails under the retained
+     Text/Binary production-literal owner, for the boundary reason itself, so no unique invariant is lost.
+   • The four production deletions are each dominated by surviving owners (dead helper with zero callers, string-class check
+     dominated by the registry parser + REQUIRED_CLASSES + Rust enum typing, extra_http dominated by general unexpected-entry
+     enforcement).
+   • Automatic execution intact via run_fences.py discovery and the CI source-fence lane; exact-head CI run 29180388937 is SUCCESS
+     at 91c4bd8e.
+
+   The one substantive finding (Critical): the PR will auto-close #1318 on merge. closingIssuesReferences is [1318] — the body line
+   "does not close #1318" contains the literal close #1318, which GitHub's keyword parser honors despite the negation. At the
+   previous head this was [], so it's a regression introduced between heads, and it violates the explicit scope requirement. A
+   one-line body rewording (drop the closing keyword) fixes it; everything else is merge-ready.
+GPT: REQUEST_CHANGES
+
+  Receipt: /private/tmp/cmux-pr1364-codex-review.md
+
+  Finding: PR #1364 currently lists #1318 in closingIssuesReferences, despite intending not to close the broader issue.Claude:
+Grok:  Findings
+
+Critical
+None.
+
+Important
+I1 — PR will auto-close #1318 on merge
+
+• Body says: “does not close #1318”
+• GitHub still matches close #1318 and sets closingIssuesReferences → #1318
+• Merge would close a broader tracking issue this 54-line slice does not complete
+• Fix: reword so no close/fix/resolve keyword sits before #1318; confirm closingIssuesReferences is empty
+
+Minor
+None on the code delta.
+
+Code / CI (clean)
+
+┌────────────────────────────┬─────────────────────────────────────────────────────────────────────────┐
+│ Check                      │ Result                                                                  │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Base / head                │ 4b501dc3… → 91c4bd8e…                                                   │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Diff                       │ 3 files, 54 deletions, 0 additions                                      │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Retained tests             │ Both present, byte-identical to base; live mutations still discriminate │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Deleted test_parser_only_… │ Still fails under retained Text|Binary owner                            │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Production deletions       │ Dominated / dead code                                                   │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ Auto execution             │ run_fences.py discovery + lane labels intact                            │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+│ CI 29180388937             │ SUCCESS at exact head 91c4bd8e…                                         │
+└────────────────────────────┴─────────────────────────────────────────────────────────────────────────┘
+
+Verdict
+
+REQUEST_CHANGES
+
+Receipt: /private/tmp/cmux-pr1364-grok-review.md
+
+---
+
+CI gate is failing for 1364
+
+---
+
+PR 1369 - 
+
+Claude: 
+Verdict: APPROVE — no Critical, no Important, two Minor. Receipt at /private/tmp/cmux-pr1369-claude-review.md (Claude Code / claude-opus-4-8[1m]).
+
+The PR does exactly what it claims. The diff is 3 files / 59 deletions / 0 additions with no mode changes, and the stated base is the true merge-base, so there's no hidden drift. All 14 distinct deleted names occur exactly once at base (their own definition) and zero times at head.
+
+The interesting part was question 2, since the prompt warned that grep alone is insufficient here — and it was right. This
+verifier family really does contain a string-literacommand_understanding.py:325 reads a constant viagetattr(static, "COMMAND_UNDERSTANDING_PARITY_EXPORTS", None), which is invisible to AST-load analysis. That validates the concern but also confirms full-text grep is the correct instrument, because it matches inside string literals too — and no deleted name appears anywhere except its own definition. I also checked the AST consumer (assert_relocated_symbols_keep_legacy_exports), which
+only enumerates names from four moved modules plus which define the deleted symbols. A good precision
+signal: the PR kept GATE_TAG_REUSE_CONDITION, whichis is a targeted deletion, not a blanket GATE_*sweep.
+
+Rather than trust the PR's receipts, I verified enforcement survives by mutating ci.yml in a throwaway clone at the exact head.
+Both hardcoding and deleting --expected-event-class retained verifier, so the surviving guard is
+load-bearing, not vacuous. The structured path is iwas removed: evaluate_ci_gate_verdict guards everybranch and is fail-closed on an unknown policy path, and it adds require_jobs_skipped + require_verified_carry_forward on top of the event-class check the old shell fixture performed. Separately, exact-head CI run 29180350238 is green at b901592d0… (not the
+stale head), and I re-ran all four focused suites mll pass.
+
+Two Minor findings, neither blocking:
+- M1: the deletion left three blank lines at merge_readiness.py:241-243 (PEP 8 E303). Purely cosmetic — the repo has no Python linter configured at all, so it cannot fail CI.
+- M2: the class is only half-closed. BACKTESTER_DEFER/ITERATION/NOOP_CONDITION (verify_ci_workflow_hygiene.py:8645-8647) hold byte-identical strings to three deleted GATE_* constants and are still dead. The PR correctly does not delete them and explicitly disclaims resolving them, so this satisfies the boundary requirement — but it's the item to keep tracked under #1215 so the class gets fully closed.
+
+One caveat I want to be explicit about rather than round up: my AST census flagged 17 zero-load constants in the verifier, but at least one of those (COMMAND_UNDERSTANDING_PARITY_EXPORTS) is actually live via that getattr. So 17 is an upper bound; only the four BACKTESTER_* are grep-confirmed dead. The other twelve I did not prove either way.
+
+Two housekeeping notes: /private/tmp/cmux-pr1369-claude-review.md already existed but reviewed the superseded head 6081b5676 — I preserved it as …-claude-review-6081b5676-historical.md instead of overwriting it, since it's cited as historical evidence. And I modified no repo, PR, issue, or queue state: the sot 22bff389a, and I used an isolated clone in thescratchpad rather than adding a worktree.
+
+GLM: 
+Review complete. Receipt saved to /private/tmp/cmux-pr1369-glm-52-review.md.
+Summary
+Reviewer: opencode / glm-5.2 (zai-coding-plan/glm-5.2)
+Verdict: APPROVE — no Critical, Important, or Minor findings.
+All 8 required questions verified with direct evidence:
+1. Diff — exactly 3 files, 59 deletions, 0 additions, no mode changes. The only + lines are diff headers.
+2. Dead symbols — all 15 deleted definitions have zero git grep matches at head across all .py; no **all**, no getattr reflection, importlib usage is unrelated.
+3. Test-fixture family — the 5 deleted test constants were used only to construct the deleted defer/noop blocks; complete transitive-dead family.
+4. Event-class enforcement survives — ci.yml:1895-1897 passes all three args; ci_provenance.evaluate_ci_gate_verdict (l.1013) is fail-closed with --expected-event-class required=True and raises ProvenanceError on every mismatch; retained mutation tests at lines 5194-5199 and 10254-10258 still discriminate.
+5. Merge-readiness survives — gate_context_variants → active_gate_context_pair → resolve_required_contexts → required_contexts chain intact; test_merge_readiness.py passes and never referenced the deleted alias helper.
+6. Boundary — only the proven-dead GATE_* family removed; all remaining GATE_* constants are live. The BACKTESTER_* conditions (l.8645-8647) also appear dead but are a separate family correctly left out of scope; the PR explicitly disclaims them.
+7. CI — run 29180350238 = SUCCESS at exact head b901592.
+8. Scope — #1215 is OPEN; pure deletions, no unrelated work.
+Local tests pass: test_merge_readiness.py and test_verify_ci_workflow_hygiene.py both OK.
+
+GPT: 
+• No Critical, Important, or Minor findings.
+
+  Verdict: APPROVE
+
+  Full review receipt saved to /private/tmp/cmux-pr1369-codex-review.md. Exact-head CI and four focused checks passed at
+  b901592d0279c5ae9ef6633057cfca0cd506d49c.
+
+Grok: Full-tree AST census finished and matches the receipt:
+
+• Head residual: none (AST, imports, getattr/hasattr, text, non-Python)
+• Base Loads only: optional_gate_name (2× inside deleted helper), GATE_DEFER_CONTEXT_GUARD / GATE_NOOP_CONTEXT_GUARD (inside deleted fixtures)
+
+No change to the review: APPROVE, receipt at /private/tmp/cmux-pr1369-xai-grok-review.md.
+
+Archive-only run failed for environment reasons only (git ls-files outside a git repo). Authoritative detached-worktree run at b901592d… already passed all four focused checks.
+
+Review unchanged: APPROVE · `/private/tmp/cmux-pr1369-xai-grok-review.md
+
+Kimi:  Review complete. Receipt saved to /private/tmp/cmux-pr1369-kimi-review.md.
+
+   Verdict: APPROVE — no Critical, Important, or Minor findings.
+
+   What I independently verified (reviewer: Kimi Code CLI, model kimi-code/kimi-for-coding):
+
+   • Q1 — GitHub PR metadata and local three-dot diff agree exactly: 3 files, 59 deletions, 0 additions, no mode changes
+     (merge_readiness.py −30, test file −21, verifier −8).
+   • Q2 — Dead-symbol proof beyond grep: exact-name git grep at head = zero matches; AST census across all 113 Python files at head
+     = zero Name/Attribute references; no reflective consumers (importlib loaders exist but nothing enumerates verifier globals or
+     scans GATE_ prefixes); sole external importer coverage_enforcer.py uses only retained symbols.
+   • Q3 — At base, the five test-fixture constants reference only each other (f-string construction) and nothing reads the blocks —
+     closed transitively-dead family.
+   • Q4 — Enforcement intact: ci.yml:1895-1897 passes the three args; evaluate_ci_gate_verdict (ci_provenance.py:1013) raises on
+     every event-class mismatch and unknown path; mutation test at test line 5192 still rejects a missing --expected-event-class.
+   • Q5 — gate_context_variants → active_gate_context_pair → resolve_required_contexts → required_contexts intact with focused
+     tests (test_merge_readiness.py:302-358); the deleted alias helper had zero callers even at base — not a second owner.
+   • Q6/Q8 — PR body explicitly leaves other evidence-pending families for their own proof; #1215 remains OPEN; no workflow/policy
+     or out-of-scope changes; still-live GATE_TAG_REUSE_CONDITION correctly retained.
+   • Q7 — Run 29180350238 confirmed conclusion=success at headSha=b901592d… via gh run view.
+   • Local evidence — extracted the head tree to a scratch dir and ran the verifier plus four self-test suites
+     (verify_ci_workflow_hygiene, its test file, test_merge_readiness, test_coverage_enforcer, test_ci_provenance) — all passed.
+
+   No files, branches, or PR state were modified; the scratch trees live under /tmp/pr1369-head*.
+
+---
+
+you need to delegate agents - don't implement yourself
+
+---
+
+should we get another review for 1364 or not?
+
+---
+
+PR 1364 - 
+
+
+Claude: 
+Verdict: APPROVE
+Receipt: /private/tmp/cmux-pr1364-claude-review.md (replaces the prior one)
+
+All three findings I raised are resolved, and I verified each against live GitHub state rather than against the PR description.
+
+The closing reference is gone. closingIssuesReferences is now empty, #1318 is still OPEN with its remaining scope, and a regex scan of the body for any closing keyword adjacent to #1318 returns zero hits. The offending "does not close #1318" phrasing was replaced with wording that carries no keyword.
+
+The gate failure is genuinely superseded, not hand-waved. I pulled every gate check-run at the head and ordered them by completion time: the failing one completed at 05:34:19Z, and job 86619615674 (run attempt 4) completed at 05:36:13Z with SUCCESS — 1m54s later, making it the newest check-run for that name. The API confirms it is bound to head_sha=91c4bd8e8. actionlint, backtester-gate, and host-health are all green too.
+
+The .as_text() rationale is now correct. The body no longer claims a presence check subsumes an absence check; it credits the retained native Rust binary tests as the behavioral owner, which is exactly what I proved by execution last round.
+
+Nothing else moved. I proved the source is untouched at the blob level — the three object hashes are identical to what I reviewed — rather than trusting the "unchanged" claim. Same two commits, no amend or force-push, diff still 3 files / 54 deletions / 0 additions. I also spot-checked the body's own claims: both retained tests really are byte-identical to base, and the 23→22 self-test count is accurate.
+
+One Minor, requiring no change to the PR: the aggregate rollup still reads PENDING, because a redundant 4th same-SHA bvs-test archive run is still in flight — that check has already passed three times at this identical SHA. The root cause is that each PR-body edit re-triggers full CI, so this one commit has accumulated 4× CI, 4× Backtester, 4× actionlint, and 4× Coverage Enforcer runs; that same churn is what produced the transient gate failure originally. Worth batching future metadata fixes into a single edit, given the repo's live runner-cost concerns.
+
+To be explicit about what I'm not saying: I'm approving the change, not clearing it to merge. The rollup is still pending and the required native review is outstanding — that call is the owner's against live state.
+
+GPT:  APPROVE
+
+  Receipt: /private/tmp/cmux-pr1364-codex-review.md
+Grok: Findings
+
+Critical / Important / Minor: none.
+
+Resolutions verified
+
+┌──────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+│ Check                                │ Result                                                                 │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ closingIssuesReferences              │ empty                                                                  │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ Close-keyword adjacency for #1318    │ none (does not close #1318 removed)                                    │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ Issue #1318                          │ still OPEN                                                             │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ .as_text() body text                 │ shape vs behavior; native binary tests; planted mutation rejected by   │
+│                                      │ Text/Binary owner — no presence-subsumes-absence claim                 │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ Code head                            │ still 91c4bd8e… — 3 files, 54 del, 0 add                               │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ actionlint / gate / backtester-gate  │ SUCCESS at exact head                                                  │
+│ / host-health                        │                                                                        │
+├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ Gate 86619615674 + ci-provenance     │ SUCCESS (supersedes earlier same-SHA failed gate)                      │
+│ -attempt-4                           │                                                                        │
+└──────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+
+Verdict
+
+APPROVE
+
+Receipt: /private/tmp/cmux-pr1364-grok-review.md
+Kimi: APPROVE
+
+   Receipt: /private/tmp/cmux-pr1364-kimi-review.md (replaces the prior one)
+
+   All four resolution points verified directly against current GitHub state:
+
+   1. Closure fixed — closingIssuesReferences is now []; the body reworded to "one named slice under issue #1318. That issue
+      remains open…" with no closing-keyword adjacency anywhere; issue #1318 is OPEN with its remaining scope.
+   2. .as_text() justification corrected — the body now states the regex was implementation-shape enforcement, native Rust binary
+      tests own frame-handling behavior, and the deleted planted mutation is independently rejected by the retained Text/Binary
+      boundary owner. No presence-subsumes-absence claim remains, and the statement matches the executed evidence from the previous
+      round.
+   3. Checks green — gate job 86619615674 success at the exact head (run 29180388937), backed by non-expired artifact
+      ci-provenance-attempt-4; the failed gate 86619472332 traces to superseded carry-forward run 29180402121 exactly as described.
+      actionlint, backtester-gate, and host-health are all successful at this SHA.
+   4. Nothing else moved — remote branch head and PR head are still 91c4bd8e (code diff definitionally unchanged), base unchanged,
+      issue state unchanged; only the PR body text changed, in exactly the two required areas.
+
+   No remaining findings at any severity.
+GLM: APPROVE
+Receipt: /private/tmp/cmux-pr1364-glm-review.md
+Both prior metadata findings are resolved with direct evidence:
+1. closingIssuesReferences is now [] — the "close #1318" adjacency is gone (only inert "fail-closed floor" remains); #1318 is OPEN with remaining scope.
+2. The .as_text() bullet is corrected — frames the removed regex as implementation-shape, credits retained native Rust binary tests for behavior, and claims only that the specific planted mutation is rejected by the exact Text/Binary owner. The presence-subsumes-absence reasoning is removed.
+3. Required exact-head checks green at unchanged head: actionlint, gate (job 86619615674, success, gated merge of 91c4bd8e into base, consumed ci-provenance-emit=success), backtester-gate, host-health; backed by artifact ci-provenance-attempt-4.
+4. No source, commits, head SHA, issue state, or unrelated PR metadata changed — only the PR body (the intended surface).
+
+---
+
+so what about 1369? do we have clean reviews?
+
+---
+
+ok I'll merge 1364, 1365,1368, 1369 via merge queue
+
+---
+
+tell me what to fix for 1369
+
+---
+
+so I need you to really clear up clogged context on the previous PRs we did - I really need to know what we can do to rewrite everything so we have a tech debt-free and clean CI runs a lot of .py are very bad
+
+---
+
+ok is this the best option?
+
+---
+
+ok is this the best option?
+
+---
+
+ok let's do that
+
+---
+
+… +13 lines (ctrl + t to view transcript)
+
+---
+
+so you should not be implementing yourself - because you are very expensive - you should only be orchestrating
+
+---
+
+what's the overall status? on a scale of 1 to 100?
+
+---
+
+continue
+
+---
+
+so what's next
+
+---
+
+I can't really review technical decisions -
+
+---
+
+generate a review request prompt - I'll ask Claude - but explain what the plan is for. what are we trying to do
+
+---
+
+I didn't understand - what about other .py files
+
+---
+
+ok so how does this work? I'm not just look for lines of code - are we making code efficient so that we are not creating multiple lines of unnecessary code when we are just making config changes? that's what literally happened - so I'm sure we are creating unnecessary code for all other use cases
+
+---
+
+so is your plan addressing my concern or not? basically, CI should be reflecting what it actually should be, and should be as minimal as possible without it being the reason for creating tech debts
+
+---
+
+what's your worktree?
+
+---
+
+skip orca - let's continue working as intended
+
+---
+
+so what's next?
+
+---
+
+Review executed and the receipt is written to /private/tmp/cmux-1016-ci-rewrite-plan-claude-review.md.
+
+Verdict: REQUEST_CHANGES — the architecture is sound, but the plan is missing its hinge step.
+
+What verified clean (everything checkable checked out exactly):
+- Worktree/HEAD/parent/branch/live tip all match the prompt; all four SHA-256 digests exact; whitespace checks clean; live main still equals the stated base.
+- Every supported number re-derived: 113 files / 143,819 lines, all four domain pairs, the 26,667 cluster (reproduces exactly as facade + giant test + helper + one 126-line test), all 8 historical PR rows, path unions 44/26/16, Program-A +4/−126 with net −118 Python lines.
+- Live claims confirmed via GitHub API: Mergify (app 10562) has always bypass on ruleset 14763242, and the wrong-publisher risk is real (required checks bind only to the shared Actions app). Bonus fact the docs omit: the review ruleset has no bypass actors, so human code-owner review already binds every merge, including Mergify's.
+- The claimed issue-body conflict is real: #1016 prescribes incremental migration with old/new differential parity; the design mandates atomic replacement and rejects comparison. The ledger correctly marks this blocked.
+
+The two Important defects (same root):
+1. F1 — No document says when, how, or under whose authority the merge requirement flips from today's bare check-success = gate to the App-qualified authority context. Without that step, "protected-base semantics alone judge the activation head" is enforced by nothing; with an early flip, there's a legacy+App dual-requirement window that invariant 5's "no dual authority" wording appears to forbid.
+2. F2 — The single-use precursor bootstrap exception is ambiguous: before promotion the App has no engine, so an emission exception on the precursor head gates nothing unless the flip already happened — which would block every other PR. The envelope's promotion-authorization role and the check-context exception need to be split.
+
+Six Minor findings follow (ledger labels PRs as "Issues", unenumerated cluster membership, undefined canary pass criteria, no base-side rule owner for the Mergify condition, a corpus-exclusion gaming seam, and no TCB enumeration). The decision table adds one new owner decision: place the requirement flip after freeze, before activation, as its own governed step. No simpler equivalent architecture exists — I checked the native options against live state and each fails publisher identity or the bypass.
+
+---
+
+approve
+
+---
+
+give me a review request blurb
+
+---
+
+Round-two review executed; receipt written to /private/tmp/cmux-1016-ci-rewrite-plan-claude-r2-review.md.
+
+Verdict: REQUEST_CHANGES — but materially converged. All eight round-one findings are genuinely resolved, verified against committed bytes and live state; three new Important defects came in with the new hinge text, each fixable with one or two sentences.
+
+Prior findings: F1's fix is the strongest part of the revision — instead of reconciling a dual-authority window, it eliminates the window: an exact-number .mergify.yml admission lock lands under legacy authority, the repo is frozen, the ruleset flips to its final state pre-precursor, and no merge occurs between precursor and activation, so legacy and trusted authority are each the sole semantic veto in their own phase. F2 is cleanly split (the bootstrap envelope is promotion-only and can never emit a check). F3–F8 all landed exactly as recommended — the ledger's PR/issue columns and the receipt's cluster enumeration match my independent verification to the line. The revision also fixed a hole I hadn't flagged: post-cutover, the required gate check is stripped of any covered-semantic veto.
+
+New defects:
+1. R2-F1 — the revised trusted-ci-verifier definition says it is emitted only for the activation proof head. The steady-state clause was deleted, so a literal reading leaves every post-activation PR permanently unable to merge — contradicting the future-versions section and the whole ordinary-change machinery.
+2. R2-F2 — the central enforcement mutation is "change Mergify's bypass from always to exempt", but exempt is not a GitHub bypass mode (the enum is always/pull_request as far as I can verify; the live ruleset shows always). I tried the cited Mergify docs through the routed reader twice, got provider auth failures, and marked that side UNVERIFIED rather than bypassing the safety layer. The ceremony's safety survives either real interpretation, but the step isn't executable as written.
+3. R2-F3 — after the precursor merges there's no defined line between transient movement (queue noise, re-runs — retryable) and terminal failure (no recovery, repo may stay frozen). Since queue noise is near-certain and the no-recovery rule is absolute, this ambiguity could brick merging over nothing.
+
+On your four specific criteria: no dual verifier authority (excluded by construction), merge races mostly closed except R2-F3, zero permanent CI debt (all temporary controls removed at node 10), and no readiness overclaims — the revision actually narrowed its approval claims to two ordering decisions. Two owner decisions need explicit recording before approval: acceptance of the no-recovery posture, and the merge-outage window, which actually starts at admission-lock merge — earlier than the plan surfaces.
+
+---
+
+Round-three review executed; receipt at /private/tmp/cmux-1016-ci-rewrite-plan-claude-r3-review.md.
+
+Verdict: APPROVE — with the standard caveat that approval does not mean implementation-ready; ledger nodes 1–10 all remain correctly BLOCKED.
+
+All four focus areas pass:
+
+1. Permanent post-activation authority (R2-F1) — fixed completely. The context definition now phase-splits: absent during the ceremony, then "normal steady-state merge authority for each exact Mergify proof head evaluated by the currently active protected-base verifier" after cleanup. It's restated consistently in all six places it needs to appear, including the Vn+1 rule that the next staging PR is judged by the current Vn.
+2. Retry vs terminal (R2-F3) — fixed with exactly the right taxonomy: a closed, enumerated list of retryable infrastructure noise (stale reads, timeouts, cancelled runners, blocked queue entries, proof-head regeneration), each retryable only while every protected identity is byte-for-byte unchanged and within an owner-approved rehearsal budget; any merits or identity failure, or budget exhaustion, is terminal. Queue noise can no longer brick the repository, and nothing partial can ever publish authority.
+3. Outage boundaries (R2-F4) — the outage now honestly starts at admission-lock merge and ends only at temporary-control removal; expected duration, retry budgets, and a pre-precursor abort threshold must come from a disposable rehearsal and get your approval before the lock lands; the unbounded terminal-tail risk is a separate explicit acceptance. The plan deliberately invents no numbers.
+4. The exempt question (R2-F2) — resolved, and here I owe a correction: my round-two objection was stale knowledge. I verified against GitHub's live GraphQL schema this session that the bypass-mode enum is ALWAYS | PULL_REQUEST | EXEMPT. The plan's citation is accurate, it still gates on live proof for this repo's REST API version and Mergify's injection behavior, and its "no mutation is claimed" statement checks out (the live ruleset still shows always).
+
+Two Minor findings remain, each a one-sentence fix: the precursor's pre-lock "green" evidence goes stale when the lock merges (safety is unaffected — the real gate is fresh proof-head checks — but the refresh should be stated and budgeted), and exempt removes GitHub-side bypass audit entries, a trade the design should acknowledge with its compensating control-plane audit.
+
+What actually needs you next, in order: the #1016 issue-body rewrite (D1), the control-plane design (D3), and — before any ceremony could ever start — your approval of rehearsal-derived budgets (D4) and acceptance of the unbounded-outage-on-failure risk (D5), which remains the single largest residual risk in this design.
+
+---
+
+proceed
+
+---
+
+so why are we not implementing
+
+---
+
+D1?
+
+---
+
+so what are the overall purpose of these D1-D5
+
+---
+
+ok so what are the next steps
+
+---
+
+ok let's proceed with D3
+
+---
+
+yes
+
+---
+
+explain your suggestion in plain english and make this concise
+
+---
+
+is that the best solution?
+
+---
+
+ok so what's next
+
+---
+
+ok let's do that
+
+---
+
+generate a review request prompt
+
+---
+
+D3 review executed; receipt at /private/tmp/cmux-1016-d3-trusted-control-plane-claude-review.md. Verdict: APPROVE — architecture approval only, nothing is authorized to be built yet.
+
+What I verified: commit chain and clean worktree at the exact head, design digest matches the prompt byte-for-byte, branch still touches only docs, live main unchanged. I also verified the ledger's new claim that the #1016 issue body was reconciled: the recorded digest reproduces against the live issue body exactly (once you normalize line endings), and the issue hasn't been edited since — so node 1's COMPLETE status is honest. The two commits between round three and this one closed both of my round-three minor findings exactly as recommended.
+
+Findings: no Critical, no Important. Three Minors: (1) the design requires a registered three-person owner set with hardware keys for every sensitive approval — nothing shows this project can staff three humans, and if it can't, the ceremony can never start; that should be an explicit early gate, not a late discovery. (2) The rule for letting main advance day-to-day assigns a "does this touch the authority surface?" classification to the verifier engine — correct — but no protocol field is named to carry that answer, and an implementer could wrongly put it in the publisher, breaching the one-verifier boundary. One named field fixes it. (3) The ledger cites /private/tmp files and an unstated hash normalization — cosmetic reproducibility.
+
+What I think, candidly: this is the strongest document in the whole #1016 series. Two things stand out. First, it's honest where designs usually hide: it names the publisher runtime plus its signing key as a "catastrophic" trust component that the audit ledger can detect but not prevent, and it forces the eventual pre-implementation review to explicitly accept or reject that residual rather than burying it. Second, the two attacks that would actually break this — a fake same-name check fooling Mergify, and a check that lands after the world has moved — are both converted into "prove it live or the architecture is not implementable," which is exactly the right way to handle claims only a rehearsal can settle. The lost-response handling (never call create twice; never abandon until the old head is provably unable to merge) is genuinely well done.
+
+My one real reservation isn't a defect, it's proportionality: this is a lot of machine for a one-person repository — a hosted App, a managed append-only ledger, hardware keys, three approvers, drills. The design is the honest minimum for the threat model you accepted, and it refuses to fake any of it. But before anyone builds, the cheapest decision that could stop everything is the staffing one (Minor #1): decide now whether you can name three approvers. After that, the path is unchanged — hosting selection, the disposable live-proof matrix, then your two decisions (D4 rehearsal budgets, D5 outage-risk acceptance).
+
+---
+
+we should simplify the ownership model - I don't know why we need 3 person owner set - why do we need this
+
+---
+
+no that's setting unnecessary gate. we do not, and should not, do that
+
+---
+
+okay so we don't need to keep doing review churn - you having unnecessary gate worries me though
+
+---
+
+ok let's proceed
+
+---
+
+so I can't really make technical decisions for you - but explain the overall situation -
+
+---
+
+ok
+
+---
+
+proceed
+
+---
+
+so what's the progress? on a scale of 1 to 100?
+
+---
+
+ok continue
+
+---
+
+what's your overall progress on a scale of 1 to 100?
+
+---
+
+are you working from a different repo?
+
+---
+
+so what do you mean by merging 8C?
+
+---
+
+I don't see any Prs
+
+---
+
+ok continue
+
+---
+
+yes - so you've been working quite a long session - so what are we doing here
+
+---
+
+ok no overengineering - CI should not be a hard gate - it should really reflect what we try to do with the actual trading binary
+
+---
+
+and importantly, CI should not be a combination of so many conditional fallbacks and hard conditions that are hard to manage

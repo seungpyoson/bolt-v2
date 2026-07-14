@@ -2383,3 +2383,414 @@ fn strategy_build_context_requires_decision_evidence_value() {
             .is_ok()
     );
 }
+
+#[derive(Clone, Copy)]
+enum RvClockDomainReplayFamily {
+    Decision,
+    Evaluation,
+}
+
+fn rv_clock_domain_amendment_replayed_gate(
+    record: &serde_json::Value,
+    family: RvClockDomainReplayFamily,
+) -> Option<BoltV3RvGateResult> {
+    let max_source_age_ms = record
+        .get("rv_max_source_age_ms")?
+        .as_u64()
+        .filter(|age| *age > 0)?;
+    let snapshot_ready = match family {
+        RvClockDomainReplayFamily::Decision => record
+            .get("rv_snapshot_has_ready_realized_vol")?
+            .as_bool()?,
+        RvClockDomainReplayFamily::Evaluation => record.get("rv_ready")?.as_bool()?,
+    };
+    let snapshot_as_of_key = match family {
+        RvClockDomainReplayFamily::Decision => "rv_snapshot_as_of_ms",
+        RvClockDomainReplayFamily::Evaluation => "rv_as_of_ms",
+    };
+    if record
+        .get(snapshot_as_of_key)
+        .and_then(serde_json::Value::as_i64)
+        .is_none()
+    {
+        return Some(BoltV3RvGateResult::MissingSnapshot);
+    }
+
+    let Some(evaluation_receive_ms) = record
+        .get("trigger_ts_init_ms")
+        .and_then(serde_json::Value::as_i64)
+    else {
+        return Some(BoltV3RvGateResult::MissingEvaluationEventTime);
+    };
+    if evaluation_receive_ms < 0 {
+        return None;
+    }
+    let Some(snapshot_receive_watermark_ms) = record
+        .get("rv_snapshot_receive_watermark_ms")
+        .and_then(serde_json::Value::as_i64)
+    else {
+        return Some(BoltV3RvGateResult::RejectedNotReady);
+    };
+    if snapshot_receive_watermark_ms < 0 {
+        return None;
+    }
+    if snapshot_receive_watermark_ms > evaluation_receive_ms {
+        return Some(BoltV3RvGateResult::RejectedFutureDated);
+    }
+    if i128::from(evaluation_receive_ms) - i128::from(snapshot_receive_watermark_ms)
+        > i128::from(max_source_age_ms)
+    {
+        return Some(BoltV3RvGateResult::RejectedStale);
+    }
+    if !snapshot_ready {
+        return Some(BoltV3RvGateResult::RejectedNotReady);
+    }
+    Some(BoltV3RvGateResult::Accepted)
+}
+
+fn rv_clock_domain_amendment_round_trip_decision_value(
+    value: serde_json::Value,
+) -> serde_json::Value {
+    let record: BoltV3ExitDecisionEvidence =
+        serde_json::from_value(value).expect("decision payload should decode");
+    serde_json::to_value(record).expect("decision payload should encode")
+}
+
+fn rv_clock_domain_amendment_round_trip_evaluation_value(
+    value: serde_json::Value,
+) -> serde_json::Value {
+    let record: BoltV3ExitEvaluationEvidence =
+        serde_json::from_value(value).expect("evaluation payload should decode");
+    serde_json::to_value(record).expect("evaluation payload should encode")
+}
+
+#[test]
+fn rv_clock_domain_amendment_exit_wires_preserve_new_and_legacy_inputs() {
+    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 15);
+
+    let mut decision = serde_json::to_value(sample_exit_decision_evidence())
+        .expect("sample exit decision should serialize");
+    decision["rv_snapshot_as_of_ms"] = serde_json::json!(1_200_u64);
+    decision["trigger_ts_init_ms"] = serde_json::json!(1_200_u64);
+    let decision = rv_clock_domain_amendment_round_trip_decision_value(decision);
+    assert_eq!(
+        decision.get("rv_snapshot_receive_watermark_ms"),
+        Some(&serde_json::json!(1_200_u64)),
+        "decision wire must retain the receive-domain snapshot watermark"
+    );
+    assert_eq!(
+        decision.get("rv_max_source_age_ms"),
+        Some(&serde_json::json!(500_u64)),
+        "decision wire must retain the effective configured age"
+    );
+    assert_eq!(
+        decision.get("rv_snapshot_has_ready_realized_vol"),
+        Some(&serde_json::json!(true)),
+        "decision wire must retain readiness independently from the stored gate-filtered RV"
+    );
+
+    let mut evaluation = serde_json::to_value(sample_exit_evaluation_evidence(true))
+        .expect("sample exit evaluation should serialize");
+    evaluation["rv_as_of_ms"] = serde_json::json!(1_200_i64);
+    evaluation["trigger_ts_init_ms"] = serde_json::json!(1_200_i64);
+    let evaluation = rv_clock_domain_amendment_round_trip_evaluation_value(evaluation);
+    assert_eq!(
+        evaluation.get("rv_snapshot_receive_watermark_ms"),
+        Some(&serde_json::json!(1_200_i64)),
+        "evaluation wire must retain the checked signed watermark"
+    );
+    assert_eq!(
+        evaluation.get("rv_max_source_age_ms"),
+        Some(&serde_json::json!(500_u64)),
+        "evaluation wire must retain the effective configured age"
+    );
+
+    let mut missing_snapshot = serde_json::to_value(sample_exit_decision_evidence())
+        .expect("sample exit decision should serialize");
+    missing_snapshot["rv_snapshot_as_of_ms"] = serde_json::Value::Null;
+    missing_snapshot["rv_snapshot_receive_watermark_ms"] = serde_json::Value::Null;
+    missing_snapshot["rv_max_source_age_ms"] = serde_json::json!(500_u64);
+    missing_snapshot["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(false);
+    let missing_snapshot = rv_clock_domain_amendment_round_trip_decision_value(missing_snapshot);
+    assert_eq!(
+        missing_snapshot.get("rv_snapshot_has_ready_realized_vol"),
+        Some(&serde_json::json!(false)),
+        "new missing-snapshot decisions must write an explicit false replay input"
+    );
+    assert_eq!(
+        rv_clock_domain_amendment_replayed_gate(
+            &missing_snapshot,
+            RvClockDomainReplayFamily::Decision,
+        ),
+        Some(BoltV3RvGateResult::MissingSnapshot)
+    );
+
+    for fixture in [
+        "tests/fixtures/bolt_v3/predeploy_exit_decision_evidence.jsonl",
+        "tests/fixtures/bolt_v3/predeploy_exit_evaluation_evidence.jsonl",
+    ] {
+        let legacy = fixture_decision_evidence_line(fixture);
+        let payload = legacy
+            .get("exit_decision")
+            .or_else(|| legacy.get("evidence"))
+            .expect("legacy fixture should carry an exit payload");
+        assert!(payload.get("rv_max_source_age_ms").is_none());
+        assert!(payload.get("rv_snapshot_receive_watermark_ms").is_none());
+    }
+
+    let mut null_markers = serde_json::to_value(sample_exit_decision_evidence())
+        .expect("sample exit decision should serialize");
+    null_markers["rv_max_source_age_ms"] = serde_json::Value::Null;
+    null_markers["rv_snapshot_has_ready_realized_vol"] = serde_json::Value::Null;
+    assert_eq!(
+        rv_clock_domain_amendment_replayed_gate(&null_markers, RvClockDomainReplayFamily::Decision,),
+        None,
+        "omitted or null replay markers identify legacy evidence"
+    );
+
+    let mut zero_is_present = serde_json::to_value(sample_exit_evaluation_evidence(false))
+        .expect("sample exit evaluation should serialize");
+    zero_is_present["rv_max_source_age_ms"] = serde_json::json!(500_u64);
+    zero_is_present["rv_as_of_ms"] = serde_json::json!(0_i64);
+    zero_is_present["trigger_ts_init_ms"] = serde_json::Value::Null;
+    zero_is_present["rv_snapshot_receive_watermark_ms"] = serde_json::json!(0_i64);
+    assert_eq!(
+        rv_clock_domain_amendment_replayed_gate(
+            &zero_is_present,
+            RvClockDomainReplayFamily::Evaluation,
+        ),
+        Some(BoltV3RvGateResult::MissingEvaluationEventTime),
+        "an as-of value of zero is a present snapshot and must reach later precedence"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_negative_receive_fields_fail_decode_and_encode() {
+    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 15);
+
+    for field in ["trigger_ts_init_ms", "rv_snapshot_receive_watermark_ms"] {
+        let mut payload = serde_json::to_value(sample_exit_evaluation_evidence(true))
+            .expect("sample exit evaluation should serialize");
+        payload[field] = serde_json::json!(-1_i64);
+        let error = serde_json::from_value::<BoltV3ExitEvaluationEvidence>(payload)
+            .expect_err("negative receive-domain fields must fail direct payload decoding");
+        assert!(
+            error.to_string().contains(field),
+            "decode error must name `{field}` exactly: {error}"
+        );
+
+        let mut line = exit_evaluation_evidence_line(&sample_exit_evaluation_evidence(true));
+        line["evidence"][field] = serde_json::json!(-1_i64);
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join(format!("negative-{field}.jsonl"));
+        write_decision_evidence_lines(&path, &[line]);
+        let error = read_exit_evaluation_evidence(&path, 100_000)
+            .expect_err("negative receive-domain fields must fail full-line decoding");
+        assert!(
+            format!("{error:#}").contains(field),
+            "full-line decode error must name `{field}` exactly: {error:#}"
+        );
+    }
+
+    let mut manual = sample_exit_evaluation_evidence(true);
+    manual.trigger_ts_init_ms = Some(-1);
+    let (_temp, _path, writer) = temp_decision_evidence_writer("negative-exit-evaluation-encode");
+    let error = writer
+        .record_exit_evaluation(&manual)
+        .expect_err("manual negative receive time must fail durable encoding");
+    assert!(
+        format!("{error:#}").contains("trigger_ts_init_ms"),
+        "encode error must name trigger_ts_init_ms: {error:#}"
+    );
+
+    for marker in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!(0_i64)),
+        Some(serde_json::json!(i64::MAX)),
+    ] {
+        let mut payload = serde_json::to_value(sample_exit_evaluation_evidence(true))
+            .expect("sample exit evaluation should serialize");
+        if let Some(marker) = marker {
+            payload["rv_snapshot_receive_watermark_ms"] = marker;
+        }
+        let decoded: BoltV3ExitEvaluationEvidence = serde_json::from_value(payload)
+            .expect("omitted/null/non-negative watermark must decode");
+        let encoded = serde_json::to_value(decoded).expect("valid watermark must encode");
+        assert!(
+            encoded.get("rv_snapshot_receive_watermark_ms").is_some(),
+            "valid legacy/new watermark forms must survive the durable round trip: {encoded}"
+        );
+    }
+
+    let mut defensive = serde_json::to_value(sample_exit_evaluation_evidence(true))
+        .expect("sample exit evaluation should serialize");
+    defensive["rv_max_source_age_ms"] = serde_json::json!(500_u64);
+    defensive["rv_snapshot_receive_watermark_ms"] = serde_json::json!(-1_i64);
+    assert_eq!(
+        rv_clock_domain_amendment_replayed_gate(&defensive, RvClockDomainReplayFamily::Evaluation,),
+        None,
+        "defensive replay must reject negative receive-domain inputs"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
+    #[derive(Clone, Copy)]
+    struct Case {
+        label: &'static str,
+        as_of_ms: Option<i64>,
+        evaluation_receive_ms: Option<i64>,
+        watermark_ms: Option<i64>,
+        ready: bool,
+        expected: BoltV3RvGateResult,
+    }
+
+    let cases = [
+        Case {
+            label: "missing_snapshot",
+            as_of_ms: None,
+            evaluation_receive_ms: Some(1_200),
+            watermark_ms: Some(1_200),
+            ready: true,
+            expected: BoltV3RvGateResult::MissingSnapshot,
+        },
+        Case {
+            label: "missing_evaluation",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: None,
+            watermark_ms: Some(1_200),
+            ready: true,
+            expected: BoltV3RvGateResult::MissingEvaluationEventTime,
+        },
+        Case {
+            label: "missing_watermark",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: Some(1_200),
+            watermark_ms: None,
+            ready: true,
+            expected: BoltV3RvGateResult::RejectedNotReady,
+        },
+        Case {
+            label: "not_ready_plus_future",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: Some(1_200),
+            watermark_ms: Some(1_201),
+            ready: false,
+            expected: BoltV3RvGateResult::RejectedFutureDated,
+        },
+        Case {
+            label: "not_ready_plus_stale",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: Some(1_701),
+            watermark_ms: Some(1_200),
+            ready: false,
+            expected: BoltV3RvGateResult::RejectedStale,
+        },
+        Case {
+            label: "blocker_plus_stale",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: Some(1_701),
+            watermark_ms: Some(1_200),
+            ready: true,
+            expected: BoltV3RvGateResult::RejectedStale,
+        },
+        Case {
+            label: "not_ready",
+            as_of_ms: Some(1_200),
+            evaluation_receive_ms: Some(1_200),
+            watermark_ms: Some(1_200),
+            ready: false,
+            expected: BoltV3RvGateResult::RejectedNotReady,
+        },
+        Case {
+            label: "accepted_zero",
+            as_of_ms: Some(0),
+            evaluation_receive_ms: Some(0),
+            watermark_ms: Some(0),
+            ready: true,
+            expected: BoltV3RvGateResult::Accepted,
+        },
+    ];
+
+    for family in [
+        RvClockDomainReplayFamily::Decision,
+        RvClockDomainReplayFamily::Evaluation,
+    ] {
+        for case in cases {
+            let mut value = match family {
+                RvClockDomainReplayFamily::Decision => {
+                    serde_json::to_value(sample_exit_decision_evidence())
+                        .expect("sample exit decision should serialize")
+                }
+                RvClockDomainReplayFamily::Evaluation => {
+                    serde_json::to_value(sample_exit_evaluation_evidence(true))
+                        .expect("sample exit evaluation should serialize")
+                }
+            };
+            value["rv_max_source_age_ms"] = serde_json::json!(500_u64);
+            value["trigger_ts_init_ms"] = case
+                .evaluation_receive_ms
+                .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
+            value["rv_snapshot_receive_watermark_ms"] = case
+                .watermark_ms
+                .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
+            value["rv_gate_result"] = serde_json::json!("accepted");
+            match family {
+                RvClockDomainReplayFamily::Decision => {
+                    value["rv_snapshot_as_of_ms"] = case
+                        .as_of_ms
+                        .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
+                    value["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(case.ready);
+                    value["realized_vol"] = serde_json::json!("999");
+                    value = rv_clock_domain_amendment_round_trip_decision_value(value);
+                }
+                RvClockDomainReplayFamily::Evaluation => {
+                    value["rv_as_of_ms"] = case
+                        .as_of_ms
+                        .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
+                    value["rv_ready"] = serde_json::json!(case.ready);
+                    if case.label == "blocker_plus_stale" {
+                        value["rv_blockers"] = serde_json::json!(["source_stale"]);
+                    }
+                    value = rv_clock_domain_amendment_round_trip_evaluation_value(value);
+                }
+            }
+            assert_eq!(
+                rv_clock_domain_amendment_replayed_gate(&value, family),
+                Some(case.expected),
+                "{} must replay from record-local reconstruction inputs only",
+                case.label
+            );
+        }
+    }
+
+    for family in [
+        RvClockDomainReplayFamily::Decision,
+        RvClockDomainReplayFamily::Evaluation,
+    ] {
+        let mut legacy = match family {
+            RvClockDomainReplayFamily::Decision => {
+                serde_json::to_value(sample_exit_decision_evidence()).unwrap()
+            }
+            RvClockDomainReplayFamily::Evaluation => {
+                serde_json::to_value(sample_exit_evaluation_evidence(true)).unwrap()
+            }
+        };
+        legacy
+            .as_object_mut()
+            .expect("record should be an object")
+            .remove("rv_max_source_age_ms");
+        assert_eq!(
+            rv_clock_domain_amendment_replayed_gate(&legacy, family),
+            None,
+            "missing marker must remain legacy-unreplayable"
+        );
+        legacy["rv_max_source_age_ms"] = serde_json::json!(0_u64);
+        assert_eq!(
+            rv_clock_domain_amendment_replayed_gate(&legacy, family),
+            None,
+            "non-positive marker must remain legacy-unreplayable"
+        );
+    }
+}

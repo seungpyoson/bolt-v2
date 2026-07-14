@@ -664,14 +664,30 @@ pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
 pub(super) struct RecordingSequencedDecisionEvidenceWriter {
     events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
     fail_standalone_order_lifecycle: bool,
+    strategy_input_attempts: Mutex<usize>,
+    fail_strategy_input_attempt: Option<usize>,
 }
 
 impl RecordingSequencedDecisionEvidenceWriter {
     pub(super) fn with_failing_standalone_order_lifecycle() -> Self {
         Self {
-            events: Mutex::new(Vec::new()),
             fail_standalone_order_lifecycle: true,
+            ..Self::default()
         }
+    }
+
+    pub(super) fn with_failing_strategy_input_attempt(attempt: usize) -> Self {
+        Self {
+            fail_strategy_input_attempt: Some(attempt),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn strategy_input_attempts(&self) -> usize {
+        *self
+            .strategy_input_attempts
+            .lock()
+            .expect("recording evidence writer strategy-input counter poisoned")
     }
 
     pub(super) fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
@@ -696,6 +712,17 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
     ) -> Result<()> {
+        let attempt = {
+            let mut attempts = self
+                .strategy_input_attempts
+                .lock()
+                .expect("recording evidence writer strategy-input counter poisoned");
+            *attempts += 1;
+            *attempts
+        };
+        if self.fail_strategy_input_attempt == Some(attempt) {
+            anyhow::bail!("strategy input snapshot write failed on attempt {attempt}");
+        }
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")

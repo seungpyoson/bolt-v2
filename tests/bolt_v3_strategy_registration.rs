@@ -577,6 +577,61 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
 }
 
 #[test]
+fn rv_clock_domain_amendment_runtime_mapping_copies_required_surface_age() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+        .expect("known RV surface should map into runtime config");
+    assert_eq!(
+        raw.as_table()
+            .and_then(|table| table.get("realized_volatility_max_source_age_ms"))
+            .and_then(toml::Value::as_integer),
+        Some(500),
+        "runtime mapping must copy the selected surface policy age exactly"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_runtime_mapping_rejects_absent_surface_block() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.realized_volatility_surfaces = None;
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+
+    let error = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+        .expect_err("configured RV identity cannot resolve without the surfaces block");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("realized_volatility_surfaces")
+            && rendered.contains("<surface_id>")
+            && rendered.contains("absent"),
+        "startup error must distinguish an absent surfaces block: {rendered}"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_runtime_mapping_rejects_unknown_surface() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id =
+        Some("<unknown_surface_id>".to_string());
+
+    let error = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+        .expect_err("configured RV identity must resolve to one loaded surface");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("realized_volatility_surfaces")
+            && rendered.contains("<unknown_surface_id>")
+            && rendered.contains("not present"),
+        "startup error must name the unknown surface identity: {rendered}"
+    );
+}
+
+#[test]
 fn runtime_mapping_omits_strategy_local_submit_orders_switch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

@@ -60,6 +60,8 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId, TradeId, TraderId, Venue},
     types::{Price, Quantity},
 };
+use nautilus_portfolio::portfolio::Portfolio;
+use nautilus_trading::StrategyNative;
 use rust_decimal::Decimal;
 use std::{
     cell::RefCell,
@@ -1175,9 +1177,21 @@ fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock.borrow_mut().set_time(UnixNanos::from(1_u64));
     let cache = Rc::new(RefCell::new(Cache::default()));
-    maker
-        .core_mut()
-        .register(TraderId::from("TRADER-001"), clock, cache)
+    register_maker_strategy_core(maker, clock, cache);
+}
+
+fn register_maker_strategy_core(
+    maker: &mut BinaryOracleMaker,
+    clock: Rc<RefCell<dyn Clock>>,
+    cache: Rc<RefCell<Cache>>,
+) {
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        clock.clone(),
+        cache.clone(),
+        None,
+    )));
+    StrategyNative::strategy_core_mut(maker)
+        .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("maker test strategy should register with NT core");
 }
 
@@ -1768,9 +1782,9 @@ fn register_maker_at_runtime_now(maker: &mut BinaryOracleMaker) -> Rc<RefCell<Ca
 /// `wire_quote_timer_handler` is true this also registers the clock's default
 /// time-event handler, mirroring NT's `DataActor::register` (which wires it in
 /// production); without it `TestClock::set_timer_ns` returns "No callbacks
-/// provided" and `on_start`'s quote-timer registration fails loud. The bare
-/// `core_mut().register` used here performs only the core registration, so the
-/// handler must be wired explicitly to reproduce the live start path.
+/// provided" and `on_start`'s quote-timer registration fails loud. The
+/// `DataActorNative::core_mut` registration used here is intentionally
+/// lifecycle-only and does not initialize the strategy order factory.
 fn register_maker_at_runtime_now_with_quote_timer_handler(
     maker: &mut BinaryOracleMaker,
     wire_quote_timer_handler: bool,
@@ -1789,6 +1803,21 @@ fn register_maker_at_runtime_now_with_quote_timer_handler(
         .core_mut()
         .register(TraderId::from("TRADER-001"), clock, cache.clone())
         .expect("maker test strategy should register with NT core");
+    cache
+}
+
+fn register_maker_at_runtime_now_for_order_factory(
+    maker: &mut BinaryOracleMaker,
+) -> Rc<RefCell<Cache>> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)));
+    clock
+        .borrow_mut()
+        .register_default_handler(TimeEventCallback::from(|_event: TimeEvent| {}));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    register_maker_strategy_core(maker, clock, cache.clone());
     cache
 }
 
@@ -1973,7 +2002,7 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
         maker_config_with_static_market(),
         maker_sim_context(writer, admission.clone()),
     );
-    let cache = register_maker_at_runtime_now(&mut maker);
+    let cache = register_maker_at_runtime_now_for_order_factory(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
             .borrow_mut()

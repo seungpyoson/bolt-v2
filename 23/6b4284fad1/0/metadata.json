@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "236b4284fad1",
+  "session_id": "019f5032-250b-7130-a921-f43302c31fa2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-14T13:45:41.461412Z",
+  "branch": "chore/nt-v1-230-pin-refresh",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "8f69d561638a",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 12516861,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1198112256,
+    "output_tokens": 1023909,
+    "api_call_count": 6831
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

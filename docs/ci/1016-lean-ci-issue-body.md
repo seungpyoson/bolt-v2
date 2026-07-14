@@ -41,13 +41,13 @@ There is no fallback, compatibility adapter, inherited result, alternate install
 
 This issue owns the architecture, the 15 acceptance criteria (M1–M3, B1–B3, L1–L3, S1–S3, X1–X3), and their cross-program traceability.
 
-This issue does not own operational replacement, queue reduction, advisory-review changes, live ruleset or Mergify changes, runtime-invariant migrations, broad CI/Python deletion waves, deployment, launch, or trading. Those rows require their own current issue body, implementer, evidence, internal adversarial review, and native human review. Applying this body does not complete or auto-complete any Program-A deletion issue.
+This issue owns no implementation slice. Every Task 1-9 ledger row requires its own exact assigned issue, implementer, evidence, internal adversarial review, and native human review. Applying this body does not complete or auto-complete any implementation row.
 
 ## Migration boundary
 
 This issue-body amendment does not relax current controls. Until the governed Task 7 cutover is complete and live state is re-verified, the existing required statuses, both Mergify `check-success` predicate sets, exact-head review requirements, queue preflight, and verifier behavior remain authoritative.
 
-Migration order is governance first; exact-binary and candidate live-readiness proof under legacy gates; operational and queue-authority retirement while legacy gates remain; governed zero-status cutover; then issue-owned broad-debt deletion and measurement.
+Migration order is fixed: governance and exact issue assignment; Tasks 1, 2A, 2B, 3, and 4 under legacy gates; every applicable Board-B Task 8 migration under legacy gates; Task 5 operational replacement; Task 6B then Task 6A; governed Task 7 zero-status cutover; then Task 9 issue-owned broad-debt deletion and Task 10 measurement. Task 5 is the common predecessor of `6B → 6A → 7`; Task 8 cannot depend on, bypass, or be deferred past Task 5.
 
 No implementation branch starts for a ledger row marked `ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED`.
 <!-- END EXACT ISSUE BODY -->

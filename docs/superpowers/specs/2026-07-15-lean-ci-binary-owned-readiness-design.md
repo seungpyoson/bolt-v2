@@ -41,7 +41,7 @@ There is no fallback, compatibility adapter, inherited result, alternate install
 
 The trusted-App/protected-base verifier, precursor, activation, freeze, merge-protection ceremony, replay/tombstone control plane, and App-qualified merge authority previously proposed for #1016 are superseded. The historical 36,704–38,043-line rehearsal must not merge. Independently useful binary or runtime work may proceed only as a newly reviewed, issue-owned slice that stands on its own evidence and contains no control-plane authority or compatibility route.
 
-#1016 owns this architecture and its acceptance criteria only. It does not own or automatically complete Program-A deletion issues, operational replacement, queue reduction, runtime-invariant migration, or broad-debt deletion.
+#1016 owns this architecture and its acceptance criteria only. It does not own or automatically complete any implementation slice; every Task 1-9 ledger row requires its own exact assigned issue.
 
 ## Migration Boundary
 
@@ -49,12 +49,15 @@ This decision does not change today's merge controls. Until the governed Task 7 
 
 Migration order is fixed:
 
-1. approve governance and assign issue ownership;
-2. add exact-binary evidence under legacy gates;
-3. migrate genuine runtime invariants and prove the candidate immutable install/pre-arm path under legacy gates;
-4. retire legacy deploy authority, queue CI authorization, advisory-review blocking capability, and multi-PR batching while legacy status gates still remain;
-5. re-prove native controls and the complete acceptance matrix, then perform the governed zero-status cutover; and
-6. delete broad non-authoritative debt in issue-owned waves and measure the result.
+1. approve governance and assign an exact issue to every implementation slice;
+2. complete Tasks 1, 2A, 2B, 3, and 4 under legacy gates;
+3. complete every applicable Board-B Task 8 runtime-invariant migration under legacy gates before Task 5;
+4. complete Task 5's atomic operational replacement under legacy gates;
+5. complete Task 6B and then Task 6A under legacy gates;
+6. re-prove native controls and the complete acceptance matrix, then perform the governed Task 7 zero-status cutover; and
+7. complete issue-owned Task 9 debt-deletion waves and Task 10 measurement.
+
+Task 5 is the common predecessor of the fixed `6B → 6A → 7` chain. Task 8 cannot depend on, bypass, or be deferred past Task 5.
 
 No implementation branch starts for a ledger row marked `ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED`.
 

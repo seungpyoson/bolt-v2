@@ -7,7 +7,7 @@ Governing decision: /private/tmp/1016-lean-ci-decision-packet-r2.md
 Governing decision SHA-256: b2d6a5c9952078c695c2cff54352c1dbec8813974ca3469b6e6515730e3651db
 External approval: Claude Code CLI (Anthropic), model claude-fable-5,
   /private/tmp/cmux-1016-lean-ci-plan-claude-r2-review.md, conclusion APPROVE.
-The substantive approved plan below is preserved verbatim.
+The approved source plan is preserved except for adjudicated PR #1391 governance corrections: exact issue ownership for every implementation slice and completion of every applicable Task 8 family before Task 5.
 -->
 
 # Lean CI and Binary-Owned Readiness Implementation Plan
@@ -25,7 +25,7 @@ The substantive approved plan below is preserved verbatim.
 - Authoritative planning base: `main` at `17bdf952f3e9422c6957b88556dbb4f145046754`; refresh every implementation slice from then-current `main` after each merge.
 - Governing design: `/private/tmp/1016-lean-ci-decision-packet-r2.md`, SHA-256 `b2d6a5c9952078c695c2cff54352c1dbec8813974ca3469b6e6515730e3651db`.
 - Preserve criteria M1-M3, B1-B3, L1-L3, S1-S3, and X1-X3. No slice may weaken a criterion to make its proof pass.
-- #1016 owns architecture only. Every deletion branch requires an already assigned owning issue; Task 0 creates or assigns missing ownership before that branch starts. Never use a negated closing keyword next to an issue number.
+- #1016 owns architecture only. Every implementation branch requires an already assigned issue that owns its exact ledger row; Task 0 drafts missing ownership, and an operator must create and assign that issue before the branch starts. Never use a negated closing keyword next to an issue number.
 - One implementer owns a file set at a time. Read-only audits and reviews may run in parallel.
 - No trusted App, external publisher, service, database, signer, ceremony, persisted permit, compatibility adapter, result carry-forward, cache-as-proof, alternate installer, or fallback path.
 - A launch log or receipt is audit-only. It is never read to authorize Start or a restart.
@@ -43,13 +43,15 @@ The substantive approved plan below is preserved verbatim.
 | 2B Exact CLI negatives | 1, 2A | 3 | workflow and profile test evidence |
 | 3 Immutable install | 0, interface agreement with 4 | 1, 2A | deploy installer/unit files |
 | 4 In-process permit | 2A, 3 manifest interface | read-only deletion proofs | launch Rust files and systemd tests |
-| 5 Operational replacement | 3, 4 green | read-only audits | `ci.yml`, deploy path, `scripts/ci_provenance.py`, and `scripts/test_ci_provenance.py`; exclusive handoff to 6B |
+| 5 Operational replacement | 3, 4 green; every applicable Task 8 family complete | read-only audits | `ci.yml`, deploy path, `scripts/ci_provenance.py`, and `scripts/test_ci_provenance.py`; exclusive handoff to 6B |
 | 6B Mechanical queue | 5 | read-only audits | queue scripts/config/tests plus exclusive ownership of `scripts/ci_provenance.py` and `scripts/test_ci_provenance.py` from fresh main; remove queue-CI expectation mirrors before handoff to 6A |
 | 6A Advisory/queue config | 6B | read-only audits | AI files and `.mergify.yml`; if any Mergify expectation/preflight mirror survives 6B, 6A exclusively owns its coupled files |
 | 7 Governed zero-status cutover | 5, 6B, 6A | none | `.mergify.yml`, any surviving coupled fixture, and the live required-status ruleset under an operator merge pause |
-| 8 Runtime-invariant migrations | 2-4, complete ledger | independent semantic families | Rust owners plus one old fence family |
+| 8 Runtime-invariant migrations | 2-4, complete ledger | independent semantic families; every applicable family must merge before Task 5 | Rust owners plus one old fence family |
 | 9 Broad debt deletions | 7, relevant Task 8 family | non-conflicting deletion slices | CI/meta Python and workflow files |
 | 10 Measurement | 7 and representative 9 slices | read-only reporting | no production owner |
+
+Task 5 is the common predecessor of the fixed `6B → 6A → 7` chain. Every applicable Task 8 family completes before Task 5; Task 8 cannot depend on or be deferred into that chain.
 
 ---
 
@@ -64,10 +66,10 @@ The substantive approved plan below is preserved verbatim.
 
 - [ ] Re-query remote `main`, rulesets, required reviewer node, Mergify rules, and open CI-debt issues; record exact SHAs/IDs without mutating them.
 - [ ] Amend #1016 and governance to supersede the trusted-App/precursor ceremony and to encode M1-M3 plus the no-fallback operational boundary.
-- [ ] Create ledger rows for Tasks 5, 6B, 8, and 9 with predicate/module IDs, callers, invariant, surviving owner, mutation/identity proof, owning issue, expected files, cost effect, reviewer, and later merged PR/SHA fields.
+- [ ] Create ledger rows and complete issue drafts for every implementation slice in Tasks 1, 2A, 2B, 3, 4, 5, 6A, 6B, 7, 8, and 9, with predicate/module IDs, callers, invariant, surviving owner, mutation/identity proof, owning issue, expected files, cost effect, reviewer, and later merged PR/SHA fields.
 - [ ] Run `rg -n "trusted-ci-verifier|compatibility adapter|carry-forward|required exact-head CI" AGENTS.md .specify/memory/constitution.md .pr_agent.toml docs/ci` and adjudicate every hit against R2; expected result is only explicitly historical or pre-cutover language.
 - [ ] Run `git diff --check` and the repository's targeted documentation/static checks. Obtain bounded internal adversarial review before publishing the docs-only draft.
-- [ ] Stop if any deletion row lacks an owning issue or if native review rules are absent. No implementation branch starts from an unapproved governance state.
+- [ ] Stop if any implementation row lacks an exact assigned owning issue or if native review rules are absent. No implementation branch starts from an unapproved governance state.
 
 ### Task 1: Add one informational `trading-binary` lane
 
@@ -186,7 +188,8 @@ fn start_ready_node(
 - Delete or narrow after caller proof: same-SHA/tag/prior-artifact sections in `scripts/ci_provenance.py` and their exact tests in `scripts/test_ci_provenance.py`.
 - Shared-file ownership: Task 5 exclusively owns `scripts/ci_provenance.py` and `scripts/test_ci_provenance.py` until merge; Task 6B starts from that fresh `main`, and Task 6A starts only after Task 6B's handoff.
 
-- [ ] From fresh main, prove Tasks 3-4 candidate behavior while legacy gates still exist and deploy/trading is paused.
+- [ ] Task 5 must not start until Tasks 3-4 and every applicable Board-B Task 8 migration are complete on `main` under legacy gates.
+- [ ] From fresh main, prove Tasks 3-4 candidate behavior and every applicable Board-B Task 8 migration while legacy gates still exist and deploy/trading is paused.
 - [ ] In one owning-issue slice, activate the immutable installer/systemd path and delete or hard-disable tag deploy, `same-sha-main-evidence`, prior-main artifact selection, and manual copy without manifest binding.
 - [ ] Run negative tests for tag, prior run, same SHA, mutable copy, wrong path/digest/config bundle, audit-receipt substitution, and restart inheritance.
 - [ ] Drill a failed cutover with deploy/trading paused and recover by forward fix; prove no retired deploy or trading route is restored.
@@ -235,6 +238,8 @@ fn start_ready_node(
 
 ### Task 8: Migrate genuine invariants by semantic owner
 
+Task 8 begins only after Tasks 2-4 and the complete predicate ledger. Every applicable family must merge under legacy gates before Task 5 starts; no family may bypass, defer, or depend on Task 5, 6B, 6A, or 7.
+
 **Ledger families and existing evidence:**
 - Strategy/shared admission: `scripts/verify_bolt_v3_strategy_policy_fence.py`, `scripts/verify_bolt_v3_no_exit_market_command.py`, Rust tests under `src/bolt_v3_live_node/tests/`.
 - Poison/fail-closed state: `scripts/verify_bolt_v3_poison_lock_fence.py`, relevant Rust tests under `src/bolt_v3_live_node/tests/`, `src/bolt_v3_iv/`, `src/nt_runtime_capture.rs`.
@@ -272,7 +277,7 @@ fn start_ready_node(
 
 ## Review and publication protocol for every implementation slice
 
-1. Fresh worktree from authoritative `main`; report base SHA and intended file ownership.
+1. Confirm the exact ledger row has an assigned owning issue, then create a fresh worktree from authoritative `main`; report base SHA and intended file ownership.
 2. One bounded implementer; no nearby cleanup.
 3. Cheap local non-compile checks only.
 4. Separate internal adversarial reviewer maps every requirement to evidence and reports exact base/head, changed files, remaining scope, and cleanliness.
@@ -303,6 +308,6 @@ fn start_ready_node(
 ## Plan-level stop conditions
 
 - Any failed internal resolution criterion returns the design to the owner; no third correction loop.
-- Any missing deletion issue, overlapping implementer file set, stale main, absent native review control, ambiguous artifact identity, or second operational path stops that slice.
+- Any missing exact implementation issue assignment, overlapping implementer file set, stale main, absent native review control, ambiguous artifact identity, or second operational path stops that slice.
 - Any negative case that reaches Start, logs credential material/raw SSM paths, or accepts a persisted receipt as authority stops all operational cutover work.
 - Any cutover failure pauses merge, deploy, or trading as appropriate and receives a forward fix. It does not restore the rejected CI maze or legacy deploy path.

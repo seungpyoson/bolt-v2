@@ -6,16 +6,23 @@ Approved plan: `docs/superpowers/plans/2026-07-15-lean-ci-binary-owned-readiness
 
 Task 0 status: **DONE_WITH_CONCERNS — governance recorded; implementation blocked on unassigned issue rows**
 
-This ledger separates authority/deletion work from runtime-invariant preservation. A row is eligible for implementation only when its current issue body owns the exact row, its dependencies have landed on `main`, and the expected file set has one implementer. A broader or adjacent issue is not treated as ownership.
+This ledger separates implementation/authority-retirement work from runtime-invariant preservation. A row is eligible for implementation only when its current issue body owns the exact row, its dependencies have landed on `main`, and the expected file set has one implementer. A broader or adjacent issue is not treated as ownership. Every implementation row is blocked until its exact issue is assigned. Every applicable Board-B row must merge before A5; A5 is then the common predecessor of the fixed `A6B → A6A → A7` chain.
 
 `Merged PR / main SHA` stays empty until the row is actually merged. Architecture issue #1016 does not complete or auto-complete any row on either board.
 
-## Board A — Authority Retirement and Non-Authoritative Deletion
+## Board A — Replacement, Authority Retirement, and Non-Authoritative Deletion
 
 | Row | Predicate / module IDs | Current callers | Invariant and surviving owner | Mutation / identity proof | Owning issue | Expected files | Cost effect | Reviewer | Merged PR / main SHA |
 |---|---|---|---|---|---|---|---|---|---|
+| A1 — Task 1 informational trading binary | `trading-binary`; locked nextest; locked ARM64 `cargo-zigbuild`; exact-file positive/negative evidence | Post-`main` push and manual dispatch; managed-runner/config registries; production-profile fixture discovery | Every invocation follows one unconditional locked test/build path and executes the exact produced file; surviving owner is the informational workflow plus its exact-file evidence | Reject skipped test/build, changed digest, omitted production overlay, classifier/fallback routing, and execution of any file other than the produced artifact | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A1`) | `.github/workflows/trading-binary.yml`, `ci/github-actions-runners.toml`, `ci/rust-verification.toml`, inspection of `.github/actionlint.yaml` and `tests/bolt_v3_prod_profile.rs` | Adds one visible post-main/manual lane while replacing no authority; record job count, runner-minutes, and artifact bytes | Bounded internal B1-B3 review; native `sp-reviewer` | — |
+| A2A — Task 2A strict live target | `TargetVerifyOutcome::NoTargetConfigured`; `run_loaded_target_verify`; `TargetVerify` stage | `ops launch`, `ops status`, deploy configuration, and operator documentation | A live launch has one explicit observable configured target and fails before SSM or Start when absent, empty, name/tag-only, unobservable, or mismatched; surviving owner is Rust target verification | Counter-mutate each invalid target case toward success and prove the named pre-arm stage fails without SSM resolution or Start | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A2A`) | `src/main.rs`, `config/deploy.toml`, `deploy/README.md`, focused Rust/deploy tests | Replaces ambiguous target discovery with one fail-closed path; measure no added CI authority | Bounded internal L1/L3 review; native `sp-reviewer` | — |
+| A2B — Task 2B exact CLI negatives | Exact produced binary; `secrets-resolve`; storage-prestart failure stages | `trading-binary` negative matrix; production-profile fixture and only demonstrated Rust gaps | The exact built file fails closed at the named stage for missing credentials and unavailable storage, without raw secret/path output or Start | Execute the exact artifact with generated valid config, disabled IMDS, missing SSM credentials, and unavailable storage; prove expected stage and no Start or credential disclosure | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A2B`) | `.github/workflows/trading-binary.yml`, `tests/bolt_v3_prod_profile.rs`, only Rust files required by a demonstrated evidence gap | Adds bounded negative executions to the single lane; record elapsed time and avoid duplicate builds | Bounded internal B2/L3/secrets review; native `sp-reviewer` | — |
+| A3 — Task 3 immutable artifact install | Selected artifact manifest; content-addressed install path; installer renderer; systemd `ExecStart` | Release artifact selection, `deploy/install.sh`, generated systemd unit, `ops launch` | One manifest binds main SHA, artifact digest, config bundle, installed bytes, and exact immutable executable path; surviving owners are manifest verification and installer/unit rendering | Reject mutable target, wrong digest/SHA/config, changed bytes, alternate installer input, and mutable-copy launch; verify before atomic placement and re-hash installed bytes | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A3`) | Release-manifest/install renderer, `deploy/install.sh`, systemd template/generated unit, `deploy/README.md`, `tests/deploy_systemd.rs` | Removes no route until A5; record install/render overhead and artifact-storage delta | Bounded internal L1/L2/S1 review; native `sp-reviewer` | — |
+| A4 — Task 4 in-process readiness permit | `LiveReadinessPermit`; `run_live_readiness`; `start_ready_node` | Exact installed binary's `ops launch`; systemd restart; live-node Start boundary | Only the finite in-process pre-arm phase may construct a private, non-cloneable, non-serializable one-use permit consumed by Start; surviving owner is the Rust type/API boundary | Prove every stage failure, cancellation, receipt substitution, reuse, and restart inheritance cannot reach Start; every restart reruns readiness and creates a fresh permit | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A4`) | `src/bolt_v3_live_readiness.rs`, `src/lib.rs`, `src/main.rs`, bounded audit-only artifact changes, `tests/deploy_systemd.rs` | Moves readiness into the binary without an external service or persisted authority; measure pre-arm latency | Bounded internal L2/L3/S1 review; native `sp-reviewer` | — |
 | A5 — Task 5 operational replacement | `tag-deploy`, `same-sha-main-evidence`, prior-main artifact selection, mutable `/opt/bolt-v2/bolt-v2` install/start | Tag `push` in `.github/workflows/ci.yml`; `scripts/ci_provenance.py`; `scripts/test_ci_provenance.py`; `deploy/README.md`; `deploy/install.sh`; generated systemd unit | Only manifest-bound bytes at the content-addressed immutable path may reach exact-binary `ops launch`; surviving owners are the release-manifest verifier, installer/unit rendering, and Rust pre-arm boundary | Reject tag, prior-run, same-SHA, mutable-copy, wrong-path/digest/config-bundle, audit-receipt substitution, and restart inheritance; re-hash current executable | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A5`); #930/#880 are adjacent but do not own this exact retirement | `.github/workflows/ci.yml`, `ci/github-actions-runners.toml`, `deploy/install.sh`, systemd template/generated unit, `deploy/README.md`, bounded `ci_provenance` code/tests | Removes tag/reuse jobs and one mutable route; measure jobs, lines, runner-minutes, and operator latency in-slice | Bounded internal S1/L2/L3 review; native `sp-reviewer` (`U_kgDOEZMFhA`) | — |
 | A6B — Task 6B mechanical queue | `merge_queue_operator`, `merge_queue_preflight`, required/all-check polling, verifier profiles, `MERGIFY_CONFIG_EXPECTATIONS`, source-fence execution | Public `just merge-queue`; operator invokes preflight; preflight reads `ci/rust-verification.toml`; CI hygiene/provenance suites mirror Mergify and queue policy | Queue admission retains exact PR/head/base identity, native approval and human-thread state, conflicts, and Mergify routing only; surviving owner is the mechanical operator/preflight | Hold PR/head/base/review/conflict inputs constant while green, failed, missing, skipped, cancelled, and unavailable advisory checks all yield the same queue decision | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A6B`) | `justfile`, queue operator/preflight and tests, `ci/rust-verification.toml`, bounded provenance mirrors/tests, `docs/ci/merge-queue-preflight-contract.md` | Removes check polling, verifier execution, and duplicate broad local work from queue admission; record elapsed preflight time before/after | Bounded internal M1/S2/X2 review; native `sp-reviewer` | — |
+| A6A — Task 6A advisory review and single-PR queue | AI-review output capability; Mergify queue batch sizes; retained pre-cutover `check-success` predicates | AI review workflows/config/deliverables/tests; `.mergify.yml`; any coupled expectation fixture handed off by A6B | Advisory automation may publish only top-level/non-required output and cannot submit `REQUEST_CHANGES`; queue batches contain one PR; legacy status predicates survive unchanged until A7 | Prove no advisory inline review or blocking review event, both queue rules are single-PR, and all four legacy `check-success` predicates remain before A7 | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A6A`) | AI reviewer workflows, `ci/ai-review.toml`, deliverables/tests, `.mergify.yml`, `.pr_agent.toml`, any surviving coupled Mergify fixture | Removes advisory veto and multi-PR batching without removing pre-cutover status gates; record queue/review event delta | Bounded internal M2/S2/X1 review; native `sp-reviewer` | — |
+| A7 — Task 7 governed zero-status cutover | Both Mergify `check-success` predicate sets; GitHub required-status contexts; native review controls | `.mergify.yml`, coupled fixtures, live `main` ruleset, merge-queue routing | Required status list and Mergify status predicates are empty while code-owner approval, stale-review dismissal, last-push approval, and human-thread resolution remain binding | Under an operator merge pause, verify same-reviewed-head matrix: advisory green/failed/missing cannot veto, while missing native approval or unresolved human thread still blocks | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A7`) | `.mergify.yml`, coupled expectation fixtures, operator live-ruleset mutation and evidence | Removes all CI merge-authority contexts; measure queue latency and required-context count before/after | Bounded internal M1-M3/S2/X1 review plus required native approval | — |
 | A9.1 — Task 9 dynamic gate/readiness/provenance wave | CI policy detector/classifier, dynamic gate names/classes, merge-readiness watcher/finalizer, gate provenance, carry-forward and inherited-result machinery | `.github/workflows/ci.yml`; merge-readiness finalizer; `scripts/merge_readiness.py`; `scripts/ci_provenance.py`; CI hygiene/provenance test suites | Static `trading-binary` evidence remains visible; no result can authorize merge, install, launch, or trading; surviving owners are native human review and exact-binary live readiness | Negative search for dynamic result classes, carry-forward, inherited success, fallback scanning, and advisory authorization edges; workflow graph has no consumer that converts evidence into authority | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A9-1`) | `.github/workflows/ci.yml`, `.github/workflows/merge-readiness-finalizer.yml`, merge-readiness/provenance scripts and tests, coupled CI docs/config | Removes dynamic jobs, polling, policy code, and duplicate result publication; record lines, jobs, wall time, and runner-minutes | Bounded internal M1/B3/S1/S2/X2 review; native `sp-reviewer` | — |
 | A9.2 — Task 9 nextest archive/cache wave | nextest archive, fingerprint, reuse, cache policy, partition aggregator, prior-result substitution | `.github/workflows/ci.yml`; nextest fingerprint/cache scripts and tests; CI provenance; `docs/ci/nextest-artifact-cache.md` | `trading-binary` always runs locked nextest and builds once; no archive, cache, fingerprint, or prior result is proof; surviving owner is the exact-file lane | Counter-mutations for archive restore, cache hit, prior-run lookup, fingerprint reuse, and skipped locked nextest must fail the static graph/evidence contract | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A9-2`) | `.github/workflows/ci.yml`, nextest fingerprint/cache/input scripts and tests, coupled provenance/config/docs | Removes four partition runs, archive/reuse jobs, storage traffic, and cache policy; record storage bytes and managed runner-minutes | Bounded internal B1/B3/S1/X2 review; native `sp-reviewer` | — |
 | A9.3 — Task 9 CI self-governance and lane wave | giant workflow-hygiene verifier/tests, lane governor/governance, duplicated Rust-under-fence execution, non-runtime `run_fences` residue | `just ci-lint-workflow`; `just source-fence-static`; setup action; merge-queue verifier profiles; cheap-lane registry | Preserve only named runtime/trading invariants on Board B; delete implementation-shape, lane, provenance, broad token/literal, and CI-self-governance policy; surviving owners are focused Rust/static evidence and the simple public recipes that remain | Complete predicate disposition with no unknown row; discriminating Board-B mutations stay caught after each lexical predicate is removed; negative residue/import/caller search | **ISSUE ASSIGNMENT REQUIRED — IMPLEMENTATION BLOCKED** (`DRAFT-A9-3`) | `scripts/verify_ci_workflow_hygiene.py` and tests/helpers, lane governor/governance and tests, `scripts/run_fences.py` residue/tests, setup/config/docs | Removes the largest Python suites, repeated full-tree scans, interpreter launches, and duplicate Rust work; record lines and local/remote elapsed time | Bounded internal S2/S3/X2 review; native `sp-reviewer` | — |
@@ -36,6 +43,96 @@ This ledger separates authority/deletion work from runtime-invariant preservatio
 
 These are exact proposed issue texts. They are not live issues and assign no authority until an operator creates them and records the number in the applicable row.
 
+### DRAFT-A1
+
+**Title:** Add one informational exact-file trading-binary evidence lane
+
+**Body:**
+
+> ## Problem
+> Current CI is a large merge-authority graph and does not provide one simple, unconditional execution record for the exact current Rust trading binary.
+>
+> ## Scope
+> Add `trading-binary` for post-`main` pushes and manual dispatch only. Every invocation must run locked nextest, build one locked ARM64 release artifact, and execute that exact file for positive and fail-closed evidence. Update only its runner/tool registries; do not add it to required-check or merge-authority registries.
+>
+> ## Evidence
+> Prove the graph has one unconditional path and one build. Counter-mutations that skip tests/build, change the artifact digest, omit the production overlay, introduce classifier/fallback routing, or execute a different file must fail targeted workflow/static evidence. Record job count, runner-minutes, and artifact bytes; obtain bounded B1-B3 review.
+>
+> ## Dependencies and non-goals
+> Requires approved governance and exact assignment of this row. It does not authorize merge, install, launch, or trading and does not replace legacy gates before Task 7. Related architecture: issue 1016.
+
+### DRAFT-A2A
+
+**Title:** Make live target verification explicit, observable, and fail closed
+
+**Body:**
+
+> ## Problem
+> A live launch can currently reach readiness with an absent, empty, name/tag-only, unobservable, or mismatched target contract, leaving the binary unable to prove which deployed target it is arming.
+>
+> ## Scope
+> Add one strict configured-target contract to Rust `ops launch`/status and the deploy TOML/docs. Represent no configured target explicitly and require observable identity equality before secret resolution or Start. Keep one target format and one verification path.
+>
+> ## Evidence
+> For absent, empty, name/tag-only, unobservable, and mismatched targets, prove the exact named `TargetVerify` stage fails before SSM and Start. Prove the valid observable target advances. Use focused remote Rust/deploy evidence and bounded L1/L3 review.
+>
+> ## Dependencies and non-goals
+> Requires approved governance and exact assignment of this row. Do not add environment fallback, alternate target discovery, deploy, launch, or trading. Related architecture: issue 1016.
+
+### DRAFT-A2B
+
+**Title:** Execute exact-binary credential and storage fail-closed negatives
+
+**Body:**
+
+> ## Problem
+> Workflow-level evidence does not yet prove that the exact produced executable stops at the correct pre-arm stage when SSM credentials are missing or required storage is unavailable.
+>
+> ## Scope
+> Extend the single `trading-binary` path with generated valid production config, disabled IMDS, missing-credential, and unavailable-storage cases. Modify Rust only for a demonstrated behavioral evidence gap and keep SSM as the sole runtime secret source.
+>
+> ## Evidence
+> Execute the exact produced file and assert the named `secrets-resolve` or storage-prestart failure, no Start, and no raw credential, value, or SSM path output. Prove a substituted executable or duplicate build cannot satisfy the evidence. Record added elapsed time and obtain bounded B2/L3/secrets review.
+>
+> ## Dependencies and non-goals
+> Requires A1 and A2A under legacy gates. Do not add mock authority, environment secrets, alternate storage, fallback, deploy, launch, or trading. Related architecture: issue 1016.
+
+### DRAFT-A3
+
+**Title:** Bind installation and systemd to one immutable content-addressed artifact
+
+**Body:**
+
+> ## Problem
+> Mutable copy/install paths and loosely selected artifacts do not bind main SHA, artifact digest, configuration bundle, installed bytes, and systemd execution to one identity.
+>
+> ## Scope
+> Define one selected-artifact manifest and content-addressed install path. Verify bytes before atomic placement, make the installed executable non-writable by the service user, and render systemd `ExecStart` with that exact path. Candidate installation remains rehearsal-only until A5.
+>
+> ## Evidence
+> Reject a mutable target, wrong digest, wrong main SHA/config bundle, changed bytes, alternate installer input, and mutable-copy launch. Prove template/rendered-unit identity and current installed-byte digest with focused static and remote deploy evidence; obtain bounded L1/L2/S1 review.
+>
+> ## Dependencies and non-goals
+> Requires approved governance and the A4 manifest-interface agreement. Do not add a signer, publisher, database, cache-as-proof, alternate installer, fallback, deploy, launch, or trade during rehearsal. Related architecture: issue 1016.
+
+### DRAFT-A4
+
+**Title:** Make Rust pre-arm readiness the sole constructor of a one-use Start permit
+
+**Body:**
+
+> ## Problem
+> Readiness evidence outside the exact executable can be replayed, persisted, or substituted and therefore cannot safely authorize Start.
+>
+> ## Scope
+> Add a finite Rust pre-arm phase whose private API alone constructs `LiveReadinessPermit`. Make the permit non-cloneable and non-serializable, consume it by value in the sole Start API, and treat persisted launch identity as audit-only. Systemd restart must rerun the complete phase.
+>
+> ## Evidence
+> Prove every stage failure and cancellation, audit-receipt substitution, permit reuse, and restart inheritance cannot reach Start. Prove each restart creates a fresh in-memory permit. Use focused remote Rust/systemd evidence and bounded L2/L3/S1 review.
+>
+> ## Dependencies and non-goals
+> Requires A2A and the A3 manifest interface. Do not add a service, persisted permit, compatibility API, alternate Start route, deploy, launch, or trade. Related architecture: issue 1016.
+
 ### DRAFT-A5
 
 **Title:** Retire legacy deploy authority and activate one immutable exact-artifact launch path
@@ -52,7 +149,7 @@ These are exact proposed issue texts. They are not live issues and assign no aut
 > Reject tag, prior-run, same-SHA, mutable-copy, wrong-path, wrong-digest, wrong-config-bundle, audit-receipt substitution, and restart inheritance. Prove current-executable re-hash and fresh-permit restart behavior. Drill failed cutover with deploy/trading paused and recover only by forward fix. Obtain bounded S1/L2/L3 review.
 >
 > ## Dependencies and non-goals
-> Requires Tasks 3 and 4 under legacy merge gates. Do not add a signer, publisher, cache-as-proof, alternate installer, fallback, deploy, launch, or trade during rehearsal. Related architecture: issue 1016; adjacent deploy tracking: issues 930 and 880.
+> Requires Tasks 3 and 4 plus every applicable Board-B Task 8 migration to be complete on `main` under legacy merge gates. Do not add a signer, publisher, cache-as-proof, alternate installer, fallback, deploy, launch, or trade during rehearsal. Related architecture: issue 1016; adjacent deploy tracking: issues 930 and 880.
 
 ### DRAFT-A6B
 
@@ -71,6 +168,42 @@ These are exact proposed issue texts. They are not live issues and assign no aut
 >
 > ## Dependencies and non-goals
 > Start from fresh `main` after Task 5. Legacy GitHub statuses and Mergify predicates remain active until the governed Task 7 cutover. Do not edit live rules, Mergify state, deploy, launch, or trading. Related architecture: issue 1016.
+
+### DRAFT-A6A
+
+**Title:** Make AI review non-blocking and queue batches single-PR before cutover
+
+**Body:**
+
+> ## Problem
+> Advisory reviewers can still create blocking review state, and multi-PR Mergify batches weaken one-reviewed-head-at-a-time reasoning. These capabilities must be removed without prematurely deleting legacy status predicates.
+>
+> ## Scope
+> Configure advisory reviewers to publish only top-level/non-required output and never submit `REQUEST_CHANGES`. Set both Mergify queue rules to single-PR batches. Update AI workflow/config/deliverables/tests, `.mergify.yml`, `.pr_agent.toml`, and any surviving coupled expectation fixture together. Preserve all four pre-cutover `check-success` predicates exactly.
+>
+> ## Evidence
+> Prove advisory output cannot create an inline/blocking review event, both queue rules admit one PR, and all four legacy status predicates remain. Run targeted workflow/Python/TOML checks and bounded M2/S2/X1 review.
+>
+> ## Dependencies and non-goals
+> Start from fresh `main` after A6B. Do not remove required statuses or Mergify status predicates, mutate the live ruleset, merge, deploy, launch, or trade. Related architecture: issue 1016.
+
+### DRAFT-A7
+
+**Title:** Perform the governed zero-required-status cutover
+
+**Body:**
+
+> ## Problem
+> After operational and queue authority have moved to their surviving owners, GitHub required-status contexts and Mergify `check-success` predicates still retain CI merge authority and must be removed as one governed live cutover.
+>
+> ## Scope
+> Under an operator merge pause, verify native controls, remove both Mergify status-predicate sets and the `main` required-status list, then re-verify live state before lifting the pause. Update `.mergify.yml`, coupled fixtures, and the live ruleset as one issue-owned operation.
+>
+> ## Evidence
+> Prove the same-reviewed-head matrix: green, failed, missing, skipped, cancelled, and unavailable advisory results cannot veto a disposable merge, while missing code-owner/last-push approval or unresolved human threads still block. Confirm both Mergify rules contain no `check-success` predicate and the required-status list is empty; obtain bounded M1-M3/S2/X1 review and required native approval.
+>
+> ## Dependencies and non-goals
+> Requires A5, A6B, and A6A in that fixed order after every applicable Board-B migration. Rollback is an operator merge pause and forward fix, never restoration of broad CI gates. Do not deploy, launch, trade, or merge without the mandated operator/native controls. Related architecture: issue 1016.
 
 ### DRAFT-A9-1
 

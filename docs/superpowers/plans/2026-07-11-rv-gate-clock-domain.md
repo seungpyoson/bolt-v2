@@ -528,13 +528,15 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Run only the permitted cheap gates: `just fmt-check`, `just deny`, `just ci-lint-workflow`, and `just source-fence-static`. Do not run local Rust GREEN or Rust Probe.
   - Do not add a Rust source-text unit test for receipt shape. After implementation,
     use
-    `rg -n 'struct ExitRealizedVolatilityGateReceipt|RealizedVolSnapshot|RealizedVolGateClassification|RealizedVolatilityEvidenceFields' src/strategies/binary_oracle_edge_taker/mod.rs`
-    to locate and inspect the complete receipt definition, proving it owns no full
-    snapshot, classification, or entry-evidence field. Use
-    `rg -n 'fn exit_realized_volatility_gate_receipt_at|classify_rv_gate\(|classify_realized_vol_snapshot\(|evaluation\.clone\(\)' src/strategies/binary_oracle_edge_taker/mod.rs`
-    and inspect the complete capture-to-`ExitSubmissionDecision` path, proving exactly
-    one free-classifier call, no clone-producing classifier call, and a moved rather
-    than cloned `ExitEvaluation`. Record the inspected ranges, run
+    `rg -n 'struct ExitRealizedVolatilityGateReceipt|RealizedVolSnapshot|RealizedVolGateClassification|RealizedVolatilityEvidenceFields' src/strategies/binary_oracle_edge_taker/`
+    to locate and inspect the actual complete receipt definition wherever it is
+    declared, proving it owns no full snapshot, classification, or entry-evidence
+    field. Use
+    `rg -n 'fn exit_realized_volatility_gate_receipt_at|classify_rv_gate\(|classify_realized_vol_snapshot\(|evaluation\.clone\(\)' src/strategies/binary_oracle_edge_taker/`
+    and inspect the complete capture-to-`ExitSubmissionDecision` path across every
+    file it traverses, proving exactly one free-classifier call, no clone-producing
+    classifier call, and a moved rather than cloned `ExitEvaluation`. Record the
+    inspected ranges, run
     `just source-fence-static`, and require the internal adversarial review in Step 7
     to repeat this structural inspection.
   - Commit the coherent implementation and lasting documentation. Keep the PR body head-agnostic: no current SHA, transient check status, or head-specific review receipt.

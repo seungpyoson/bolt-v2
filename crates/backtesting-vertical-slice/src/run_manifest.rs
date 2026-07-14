@@ -940,8 +940,8 @@ impl std::fmt::Display for ManifestError {
             Self::UnsupportedInstrumentIdCharset { instrument_id } => {
                 write!(
                     f,
-                    "instrument id {instrument_id:?} contains ASCII characters outside the \
-                     catalog-directory-safe set (alphanumeric, '.', '_', '-'); such ids \
+                    "instrument id {instrument_id:?} contains characters outside the \
+                     catalog-directory-safe ASCII set (alphanumeric, '.', '_', '-'); such ids \
                      corrupt through the object-store percent-encoding layer and cannot be \
                      queried reliably from an NT catalog"
                 )
@@ -2464,14 +2464,7 @@ fn catalog_input_to_nt_data_config(
     let data_type = parse_data_type_str(input.data_type.as_str())?;
     let (nt_instrument_id, instrument_ids) =
         parse_and_validate_catalog_input_instrument_ids(input)?;
-    let requires_unfiltered_catalog_query =
-        catalog_input_requires_unfiltered_nt_query_for_encoded_directory(input);
-    let instrument_ids = if requires_unfiltered_catalog_query {
-        None
-    } else {
-        instrument_ids
-    };
-    let instrument_id = if instrument_ids.is_some() || requires_unfiltered_catalog_query {
+    let instrument_id = if instrument_ids.is_some() {
         None
     } else {
         Some(nt_instrument_id)
@@ -2563,26 +2556,17 @@ fn parse_and_validate_catalog_input_instrument_ids(
     Ok((nt_instrument_id, instrument_ids))
 }
 
-fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
-    input: &ManifestCatalogInput,
-) -> bool {
-    !input.nt_instrument_id.is_ascii()
-        || input
-            .instrument_ids
-            .as_ref()
-            .is_some_and(|ids| ids.iter().any(|id| !id.is_ascii()))
-}
-
 /// Reject instrument ids whose catalog directory name would be altered by the
 /// object-store percent-encoding layer in a way no query path can survive.
 ///
 /// The catalog directory name is the urisafe form of the id ('/' stripped,
-/// '^' mapped to '_'). Non-ASCII characters in that form are handled by the
-/// unfiltered-query fallback, but ASCII characters that object_store's path
-/// layer percent-encodes at write time corrupt through every encode/decode
-/// layer, including the fallback, so they fail loud here instead of producing
-/// an empty data feed downstream. The safe set (alphanumeric, '.', '_', '-')
-/// is a conservative strict subset of the ASCII object_store stores verbatim;
+/// '^' mapped to '_'). NautilusTrader requires every data config to carry an
+/// instrument or bar selector, so non-ASCII ids cannot use the former
+/// unfiltered-query fallback and must fail closed. ASCII characters that
+/// object_store's path layer percent-encodes at write time likewise fail loud
+/// here instead of producing an empty data feed downstream. The safe set
+/// (ASCII alphanumeric, '.', '_', '-') is a conservative strict subset of the
+/// ASCII object_store stores verbatim;
 /// its INVALID encode set covers controls plus backslash, braces, caret,
 /// percent, backtick, brackets, quote, angle brackets, tilde, hash, pipe,
 /// asterisk, and question mark — note '~' IS encoded, so it is rejected here
@@ -2594,10 +2578,10 @@ fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
 /// late NT node-load failure.
 fn validate_catalog_instrument_id_charset(instrument_id: &str) -> Result<(), ManifestError> {
     let urisafe = instrument_id.replace('/', "").replace('^', "_");
-    let unsupported_ascii = urisafe
+    let unsupported = urisafe
         .chars()
-        .any(|c| c.is_ascii() && !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-'));
-    if unsupported_ascii {
+        .any(|c| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-'));
+    if unsupported {
         return Err(ManifestError::UnsupportedInstrumentIdCharset {
             instrument_id: instrument_id.to_string(),
         });
@@ -3698,19 +3682,19 @@ mod tests {
     }
 
     #[test]
-    fn non_ascii_catalog_input_omits_nt_instrument_filter() {
+    fn non_ascii_catalog_input_fails_closed_without_valid_nt_selector() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].nt_instrument_id = "币安人生USDC.BINANCE".to_string();
 
-        let data = manifest.to_nt_data_config().expect("data config");
+        let error = manifest
+            .to_nt_data_config()
+            .expect_err("non-ASCII catalog id must fail closed");
 
-        assert_eq!(
-            manifest.catalog_inputs[0].nt_instrument_id,
-            "币安人生USDC.BINANCE"
-        );
-        assert!(data.instrument_id().is_none());
-        assert!(data.instrument_ids().is_none());
-        assert!(data.query_identifiers().is_none());
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "币安人生USDC.BINANCE"
+        ));
     }
 
     #[test]

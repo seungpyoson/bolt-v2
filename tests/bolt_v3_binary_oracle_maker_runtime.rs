@@ -60,7 +60,6 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId, TradeId, TraderId, Venue},
     types::{Price, Quantity},
 };
-use nautilus_portfolio::portfolio::Portfolio;
 use rust_decimal::Decimal;
 use std::{
     cell::RefCell,
@@ -1176,14 +1175,9 @@ fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock.borrow_mut().set_time(UnixNanos::from(1_u64));
     let cache = Rc::new(RefCell::new(Cache::default()));
-    let portfolio = Rc::new(RefCell::new(Portfolio::new(
-        clock.clone(),
-        cache.clone(),
-        None,
-    )));
     maker
         .core_mut()
-        .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
+        .register(TraderId::from("TRADER-001"), clock, cache)
         .expect("maker test strategy should register with NT core");
 }
 
@@ -1791,19 +1785,9 @@ fn register_maker_at_runtime_now_with_quote_timer_handler(
             .register_default_handler(TimeEventCallback::from(|_event: TimeEvent| {}));
     }
     let cache = Rc::new(RefCell::new(Cache::default()));
-    let portfolio = Rc::new(RefCell::new(Portfolio::new(
-        clock.clone(),
-        cache.clone(),
-        None,
-    )));
     maker
         .core_mut()
-        .register(
-            TraderId::from("TRADER-001"),
-            clock,
-            cache.clone(),
-            portfolio,
-        )
+        .register(TraderId::from("TRADER-001"), clock, cache.clone())
         .expect("maker test strategy should register with NT core");
     cache
 }

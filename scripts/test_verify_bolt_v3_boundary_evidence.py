@@ -21,7 +21,7 @@ from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
 UNRESOLVABLE_SHA = "1" * 40
-EXPECTED_NT_REV = "afc014a55b51463641cc19c68bffe25cdac6588a"
+EXPECTED_NT_REV = "d636f17604cdbddc28ad40e0e15720e2d19bf860"
 OLD_NT_REV = "0000000000000000000000000000000000000000"
 BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"

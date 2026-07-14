@@ -24,7 +24,7 @@ from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_NT_REV = "afc014a55b51463641cc19c68bffe25cdac6588a"
+EXPECTED_NT_REV = "d636f17604cdbddc28ad40e0e15720e2d19bf860"
 EXPECTED_NT_GIT = "https://github.com/seungpyoson/nautilus_trader.git"
 EXPECTED_NT_LOCK_SOURCE = f"git+{EXPECTED_NT_GIT}?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")

@@ -2601,34 +2601,43 @@ fn rv_clock_domain_amendment_negative_receive_fields_fail_decode_and_encode() {
         );
     }
 
-    let mut manual = sample_exit_evaluation_evidence(true);
-    manual.trigger_ts_init_ms = Some(-1);
+    let mut negative_trigger_init = sample_exit_evaluation_evidence(true);
+    negative_trigger_init.trigger_ts_init_ms = Some(-1);
     let (_temp, _path, writer) = temp_decision_evidence_writer("negative-exit-evaluation-encode");
     let error = writer
-        .record_exit_evaluation(&manual)
-        .expect_err("manual negative receive time must fail durable encoding");
+        .record_exit_evaluation(&negative_trigger_init)
+        .expect_err("manual negative trigger init must fail durable encoding");
     assert!(
         format!("{error:#}").contains("trigger_ts_init_ms"),
         "encode error must name trigger_ts_init_ms: {error:#}"
     );
 
-    for marker in [
-        None,
-        Some(serde_json::Value::Null),
-        Some(serde_json::json!(0_i64)),
-        Some(serde_json::json!(i64::MAX)),
+    for (label, marker) in [
+        ("omitted", None),
+        ("null", Some(serde_json::Value::Null)),
+        ("zero", Some(serde_json::json!(0_i64))),
+        ("i64_max", Some(serde_json::json!(i64::MAX))),
     ] {
         let mut payload = serde_json::to_value(sample_exit_evaluation_evidence(true))
             .expect("sample exit evaluation should serialize");
         if let Some(marker) = marker {
             payload["rv_snapshot_receive_watermark_ms"] = marker;
+        } else {
+            payload
+                .as_object_mut()
+                .expect("evaluation payload should be an object")
+                .remove("rv_snapshot_receive_watermark_ms");
+            assert!(
+                payload.get("rv_snapshot_receive_watermark_ms").is_none(),
+                "omission coverage must decode a payload with no watermark key"
+            );
         }
         let decoded: BoltV3ExitEvaluationEvidence = serde_json::from_value(payload)
             .expect("omitted/null/non-negative watermark must decode");
         let encoded = serde_json::to_value(decoded).expect("valid watermark must encode");
         assert!(
             encoded.get("rv_snapshot_receive_watermark_ms").is_some(),
-            "valid legacy/new watermark forms must survive the durable round trip: {encoded}"
+            "valid {label} watermark form must survive the durable round trip: {encoded}"
         );
     }
 
@@ -2651,7 +2660,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
         as_of_ms: Option<i64>,
         evaluation_receive_ms: Option<i64>,
         watermark_ms: Option<i64>,
-        ready: bool,
+        raw_ready: bool,
+        usable_ready: bool,
+        blockers: &'static [&'static str],
         expected: BoltV3RvGateResult,
     }
 
@@ -2661,7 +2672,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: None,
             evaluation_receive_ms: Some(1_200),
             watermark_ms: Some(1_200),
-            ready: true,
+            raw_ready: false,
+            usable_ready: false,
+            blockers: &[],
             expected: BoltV3RvGateResult::MissingSnapshot,
         },
         Case {
@@ -2669,7 +2682,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(1_200),
             evaluation_receive_ms: None,
             watermark_ms: Some(1_200),
-            ready: true,
+            raw_ready: true,
+            usable_ready: true,
+            blockers: &[],
             expected: BoltV3RvGateResult::MissingEvaluationEventTime,
         },
         Case {
@@ -2677,7 +2692,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(1_200),
             evaluation_receive_ms: Some(1_200),
             watermark_ms: None,
-            ready: true,
+            raw_ready: true,
+            usable_ready: true,
+            blockers: &[],
             expected: BoltV3RvGateResult::RejectedNotReady,
         },
         Case {
@@ -2685,7 +2702,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(1_200),
             evaluation_receive_ms: Some(1_200),
             watermark_ms: Some(1_201),
-            ready: false,
+            raw_ready: false,
+            usable_ready: false,
+            blockers: &[],
             expected: BoltV3RvGateResult::RejectedFutureDated,
         },
         Case {
@@ -2693,7 +2712,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(1_200),
             evaluation_receive_ms: Some(1_701),
             watermark_ms: Some(1_200),
-            ready: false,
+            raw_ready: false,
+            usable_ready: false,
+            blockers: &[],
             expected: BoltV3RvGateResult::RejectedStale,
         },
         Case {
@@ -2701,7 +2722,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(1_200),
             evaluation_receive_ms: Some(1_701),
             watermark_ms: Some(1_200),
-            ready: true,
+            raw_ready: true,
+            usable_ready: false,
+            blockers: &["source_stale"],
             expected: BoltV3RvGateResult::RejectedStale,
         },
         Case {
@@ -2709,7 +2732,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(1_200),
             evaluation_receive_ms: Some(1_200),
             watermark_ms: Some(1_200),
-            ready: false,
+            raw_ready: false,
+            usable_ready: false,
+            blockers: &[],
             expected: BoltV3RvGateResult::RejectedNotReady,
         },
         Case {
@@ -2717,7 +2742,9 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
             as_of_ms: Some(0),
             evaluation_receive_ms: Some(0),
             watermark_ms: Some(0),
-            ready: true,
+            raw_ready: true,
+            usable_ready: true,
+            blockers: &[],
             expected: BoltV3RvGateResult::Accepted,
         },
     ];
@@ -2750,19 +2777,57 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
                     value["rv_snapshot_as_of_ms"] = case
                         .as_of_ms
                         .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
-                    value["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(case.ready);
-                    value["realized_vol"] = serde_json::json!("999");
+                    value["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(case.raw_ready);
+                    value["rv_snapshot_ready"] = serde_json::json!(case.usable_ready);
+                    value["rv_snapshot_blockers"] = serde_json::json!(case.blockers);
+                    value["realized_vol"] = if case.usable_ready {
+                        serde_json::json!("999")
+                    } else {
+                        serde_json::Value::Null
+                    };
                     value = rv_clock_domain_amendment_round_trip_decision_value(value);
                 }
                 RvClockDomainReplayFamily::Evaluation => {
                     value["rv_as_of_ms"] = case
                         .as_of_ms
                         .map_or(serde_json::Value::Null, |value| serde_json::json!(value));
-                    value["rv_ready"] = serde_json::json!(case.ready);
-                    if case.label == "blocker_plus_stale" {
-                        value["rv_blockers"] = serde_json::json!(["source_stale"]);
-                    }
+                    value["rv_ready"] = serde_json::json!(case.usable_ready);
+                    value["rv_blockers"] = serde_json::json!(case.blockers);
                     value = rv_clock_domain_amendment_round_trip_evaluation_value(value);
+                }
+            }
+            let blockers_field = match family {
+                RvClockDomainReplayFamily::Decision => "rv_snapshot_blockers",
+                RvClockDomainReplayFamily::Evaluation => "rv_blockers",
+            };
+            assert_eq!(
+                value.get(blockers_field),
+                Some(&serde_json::json!(case.blockers)),
+                "{} must retain its explicit blocker state",
+                case.label
+            );
+            match family {
+                RvClockDomainReplayFamily::Decision => {
+                    assert_eq!(
+                        value.get("rv_snapshot_has_ready_realized_vol"),
+                        Some(&serde_json::json!(case.raw_ready)),
+                        "{} must retain raw snapshot readiness",
+                        case.label
+                    );
+                    assert_eq!(
+                        value.get("rv_snapshot_ready"),
+                        Some(&serde_json::json!(case.usable_ready)),
+                        "{} must retain usable snapshot readiness",
+                        case.label
+                    );
+                }
+                RvClockDomainReplayFamily::Evaluation => {
+                    assert_eq!(
+                        value.get("rv_ready"),
+                        Some(&serde_json::json!(case.usable_ready)),
+                        "{} must retain usable evaluation readiness",
+                        case.label
+                    );
                 }
             }
             assert_eq!(
@@ -2784,6 +2849,8 @@ fn rv_clock_domain_amendment_records_recompute_gate_from_owned_inputs() {
     high_decision["rv_snapshot_receive_watermark_ms"] = serde_json::json!(high_watermark_ms);
     high_decision["rv_max_source_age_ms"] = serde_json::json!(500_u64);
     high_decision["rv_snapshot_has_ready_realized_vol"] = serde_json::json!(true);
+    high_decision["rv_snapshot_ready"] = serde_json::json!(true);
+    high_decision["rv_snapshot_blockers"] = serde_json::json!([]);
     high_decision["rv_gate_result"] = serde_json::json!("accepted");
     let high_decision = rv_clock_domain_amendment_round_trip_decision_value(high_decision);
     for (field, expected) in [

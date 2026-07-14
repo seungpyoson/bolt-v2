@@ -4464,8 +4464,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
 
 #[derive(Debug, Clone, Copy)]
 enum RvClockDomainBlockedKeyField {
-    ConfiguredTargetId,
-    MarketSelectionRulesetId,
+    ConfiguredTargetAndMarketSelectionRulesetIds,
     MarketSelectionOutcome,
     MarketId,
     UpInstrumentId,
@@ -4492,9 +4491,8 @@ enum RvClockDomainBlockedKeyField {
 }
 
 impl RvClockDomainBlockedKeyField {
-    const ALL: [Self; 25] = [
-        Self::ConfiguredTargetId,
-        Self::MarketSelectionRulesetId,
+    const ALL: [Self; 24] = [
+        Self::ConfiguredTargetAndMarketSelectionRulesetIds,
         Self::MarketSelectionOutcome,
         Self::MarketId,
         Self::UpInstrumentId,
@@ -4527,10 +4525,9 @@ impl RvClockDomainBlockedKeyField {
         changed: bool,
     ) {
         match self {
-            // The runtime snapshot currently derives both fields from the same
-            // configured target. Keep separate cases so the key-field inventory
-            // remains explicit while exercising their only behavioral source.
-            Self::ConfiguredTargetId | Self::MarketSelectionRulesetId => {
+            // The runtime snapshot derives both serialized fields from this one
+            // configured target, so their writer-path transition is necessarily shared.
+            Self::ConfiguredTargetAndMarketSelectionRulesetIds => {
                 strategy.config.configured_target_id =
                     if changed { "<TARGET_B>" } else { "<TARGET_A>" }.to_string();
             }
@@ -4775,6 +4772,51 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
     }));
 }
 
+fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
+    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy);
+    let mut decision = rv_clock_domain_amendment_blocked_decision();
+    decision.evaluation.realized_volatility_receipt.evidence =
+        strategy.realized_volatility_evidence_fields();
+    let baseline = strategy
+        .blocked_entry_strategy_input_evidence_snapshot_at(1_200, &decision)
+        .expect("blocked snapshot should build");
+    let baseline_key = BlockedStrategyInputDedupeKey::from_snapshot(&baseline);
+
+    // Runtime construction aliases both serialized fields to configured_target_id,
+    // so the writer path cannot vary them independently. These are the only
+    // structural assertions: each changes exactly one serialized field to prove
+    // that dropping either field from the key would still be detected.
+    let mut configured_target_changed = baseline.clone();
+    configured_target_changed
+        .configured_target_id
+        .push_str("-changed");
+    assert_eq!(
+        configured_target_changed.market_selection_ruleset_id,
+        baseline.market_selection_ruleset_id
+    );
+    assert_ne!(
+        BlockedStrategyInputDedupeKey::from_snapshot(&configured_target_changed),
+        baseline_key,
+        "configured_target_id must independently remain part of the blocked key"
+    );
+
+    let mut ruleset_changed = baseline.clone();
+    ruleset_changed
+        .market_selection_ruleset_id
+        .push_str("-changed");
+    assert_eq!(
+        ruleset_changed.configured_target_id,
+        baseline.configured_target_id
+    );
+    assert_ne!(
+        BlockedStrategyInputDedupeKey::from_snapshot(&ruleset_changed),
+        baseline_key,
+        "market_selection_ruleset_id must independently remain part of the blocked key"
+    );
+}
+
 #[test]
 fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -4878,6 +4920,7 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
     for field in RvClockDomainBlockedKeyField::ALL {
         rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(field);
     }
+    rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent();
 }
 
 #[test]

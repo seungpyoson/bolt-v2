@@ -3,8 +3,10 @@
   "checkpoint_id": "236b4284fad1",
   "strategy": "manual-commit",
   "branch": "chore/nt-v1-230-pin-refresh",
-  "checkpoints_count": 2,
-  "files_touched": null,
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/superpowers/specs/2026-07-14-nt-v1-230-pin-refresh-design.md"
+  ],
   "sessions": [
     {
       "metadata": "/23/6b4284fad1/0/metadata.json",
@@ -19,13 +21,20 @@
       "compact_transcript": "/23/6b4284fad1/1/transcript.jsonl",
       "content_hash": "/23/6b4284fad1/1/content_hash.txt",
       "prompt": "/23/6b4284fad1/1/prompt.txt"
+    },
+    {
+      "metadata": "/23/6b4284fad1/2/metadata.json",
+      "transcript": "/23/6b4284fad1/2/full.jsonl",
+      "compact_transcript": "/23/6b4284fad1/2/transcript.jsonl",
+      "content_hash": "/23/6b4284fad1/2/content_hash.txt",
+      "prompt": "/23/6b4284fad1/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 24255158,
+    "input_tokens": 24365861,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 2064019456,
-    "output_tokens": 2063172,
-    "api_call_count": 12954
+    "cache_read_tokens": 2065738496,
+    "output_tokens": 2078254,
+    "api_call_count": 12979
   }
 }

@@ -248,7 +248,9 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   requires the copied scalar, rejects zero, and constructs required
   `BinaryOracleEdgeTakerConfig.realized_volatility_max_source_age_ms: u64`.
 - Every entry, exit, and shared production pricing use reads the required config
-  scalar. Option-valued diagnostic boundaries receive `Some(stored_age)`. Delete
+  scalar. `taker_pricing_config` owns it; delete `runtime_taker_pricing_config` and
+  rewire its three callers. Rewire the five direct policy consumers and the pricing
+  test helper. Option-valued diagnostic boundaries receive `Some(stored_age)`. Delete
   `StrategyBuildContext::realized_volatility_max_source_age_ms_for_surface` and
   `RealizedVolSurfaceRuntime::max_source_age_ms_for_surface`; retain runtime/context
   ownership of ingest, subscriptions, and snapshots.
@@ -268,12 +270,15 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   `rv_snapshot_has_ready_realized_vol: Option<bool>`. Evaluation durable/wire fields
   are `rv_snapshot_receive_watermark_ms: Option<i64>` with checked conversion and
   `rv_max_source_age_ms: Option<u64>`; evaluation continues to use existing
-  `rv_ready: bool`. Negative or unrepresentable values are invalid/unreplayable,
-  never cast, saturated, or defaulted.
+  `rv_ready: bool`. Both evaluation `trigger_ts_init_ms` and watermark use
+  `i64::try_from`; failure propagates through the existing write/error path. Negative
+  wire values fail. Nothing wraps, saturates, or becomes `None` on conversion error.
 - Decision keeps existing `realized_vol` gate-filtered semantics. Replay never uses
-  it or the stored gate. It uses the independent optional usable-readiness boolean;
-  evaluation replay uses existing `rv_ready`. Missing legacy reconstruction inputs
-  make the record unreplayable. Replay mirrors free `classify_rv_gate` precedence:
+  it or the stored gate. Decision replay markers are positive max age plus present
+  independent readiness; evaluation's marker is positive max age. Missing markers
+  mean legacy/unreplayable. Once marked, absent snapshot/as-of, evaluation receive,
+  and watermark are meaningful classifier inputs. New decision writes readiness
+  `Some(false)` even for no snapshot. Replay mirrors free `classify_rv_gate` precedence:
   missing snapshot; missing evaluation receive; missing watermark -> not ready;
   future; stale; unusable readiness -> not ready; accepted. The strategy wrapper is
   `classify_realized_vol_gate` and must not redefine that order.
@@ -281,22 +286,12 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   evaluation evidence's historically misnamed `rv_as_of_minus_now_ms` and
   positive-only to decision future-delta evidence. `trigger_ts_init_ms` comes from
   the receipt's evaluation receive input, never `exit_eval_now_ms`.
-- Exact dedupe whitelists:
-  - entry base `{ market_id }`;
-  - entry state `{ reason_category, gate_blocked_by, pricing_blocked_by,
-    fast_venue_available, reference_current_price_available,
-    fast_venue_incoherent, rv }`;
-  - blocked base `{ configured_target_id, market_selection_ruleset_id, market_id,
-    up_instrument_id, down_instrument_id, price_to_beat_source,
-    realized_volatility_surface_id }`;
-  - blocked state `{ typed_market_selection_outcome, gate_blocked_by,
-    pricing_blocked_by, typed_selected_side, fast_venue_available,
-    reference_current_price_available, reference_current_price_failed_over,
-    fast_venue_incoherent, rv }`;
-  - `rv = { gate_result: BoltV3RvGateResult, watermark_present: bool }`.
-  Exclude `interval_open`, non-whitelisted venue/source IDs, RV blockers/source
-  diagnostics/unknown IDs, values/as-of/raw watermarks, prices, ages, jitter,
-  probabilities, counters, and timestamps.
+- Preserve each path's current complete non-RV dedupe key exactly. Store only
+  `{ current_existing_key, rv_seen_mask: u16 }`; never retain prior keys. Map six
+  gate results x watermark presence to bits 0..11. Current-key change clears the
+  mask, so returning to a prior key emits again. For one fixed key each RV bit emits
+  once; raw `Some` value churn is suppressed and presence changes discriminate.
+  Existing resets clear key+mask; existing writer-mark timing is unchanged.
 - Every new Rust test in this task starts with the already-authorized prefix
   `rv_clock_domain_amendment_`.
 
@@ -309,9 +304,12 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Add `rv_clock_domain_amendment_exit_wires_preserve_new_and_legacy_inputs` using
     serialized JSON values during RED. Require decision watermark `1_200u64`, max age
     `500u64`, and independent readiness `true`; require evaluation watermark
-    `1_200i64` and max age `500u64`. Cover omitted/null legacy values, negative and
-    out-of-range checked-conversion rejection, and schema version `15`. Keep both
-    predeploy JSONL fixtures byte-identical.
+    `1_200i64` and max age `500u64`. Prove new missing-snapshot decisions write
+    readiness `Some(false)`. Cover marker omission/null as legacy-unreplayable while
+    marker-present snapshot/evaluation/watermark `None` values replay normally. Add
+    `u64::MAX` conversion tests for both evaluation trigger-init and watermark and
+    negative-wire tests; require the existing error path rather than wrap/saturate/
+    `None`. Pin schema version `15` and keep both predeploy fixtures byte-identical.
   - Add `rv_clock_domain_amendment_runtime_mapping_copies_required_surface_age`,
     `rv_clock_domain_amendment_runtime_mapping_rejects_absent_surface_block`,
     `rv_clock_domain_amendment_runtime_mapping_rejects_unknown_surface`, and
@@ -330,31 +328,30 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     serialized-and-decoded records. Recompute without reading stored gate or
     gate-filtered RV. Lock exact free-function precedence with cases for not-ready +
     future, not-ready + stale, blocker + stale, missing snapshot, missing evaluation,
-    missing watermark, each of six results, and accepted zero. Missing/null legacy
-    reconstruction inputs are explicitly unreplayable, not inferred.
+    missing watermark, each of six results, and accepted zero. Only missing/nonpositive
+    marker fields are legacy/unreplayable; legitimate optional classifier inputs
+    retain their normative meanings after markers are present.
   - Prove a valid configured surface with no snapshot produces `MissingSnapshot` while retaining `Some(max_source_age_ms)` and an otherwise valid forced-flat exit remains available. Unknown surface identity is a startup failure, never a callback error, ordinary `MissingSnapshot`, or an unbounded-age fallback.
 
-- [ ] **Step 2: Add the failing episode-bounded semantic-dedupe tests.**
-  - Add `rv_clock_domain_amendment_entry_skip_episode_tracks_finite_rv_states` and `rv_clock_domain_amendment_blocked_snapshot_episode_tracks_finite_rv_states` in `source_evidence.rs`.
-  - For both paths, cover all twelve gate-category/watermark-presence states exactly
-    once per stable episode and verify the exact nested `rv` projection.
-  - Add `rv_clock_domain_amendment_entry_skip_excluded_churn_is_suppressed` and
-    `rv_clock_domain_amendment_blocked_snapshot_excluded_churn_is_suppressed`.
-    Run more than 100 `A -> B -> A` oscillations and more than 100 changes across the
-    complete exclusion list. Assert only first semantic states emit, including
-    `Some -> None -> Some`, numeric watermark churn, and return after intervention.
-  - Add `rv_clock_domain_amendment_entry_skip_semantic_fields_discriminate` and
-    `rv_clock_domain_amendment_blocked_snapshot_semantic_fields_discriminate`; mutate
-    each whitelisted semantic field independently and require an emission.
-  - Add `rv_clock_domain_amendment_entry_skip_base_fields_start_new_episode` and
-    `rv_clock_domain_amendment_blocked_snapshot_base_fields_start_new_episode`;
-    mutate each whitelisted stable-base field independently. Exercise both real
-    episode-end resets and require the next identical state to emit.
+- [ ] **Step 2: Add the failing current-key RV-mask dedupe tests.**
+  - Add `rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits` and
+    `rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits`.
+    For each fixed current existing key, visit all twelve category/presence bits once
+    and assert twelve emissions plus `rv_seen_mask.count_ones() == 12`.
+  - Add `rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats`: run more
+    than 100 repeats and `A -> B -> A` oscillations after all bits are seen; keep
+    `count_ones() == 12`. Suppress raw `Some(1_200) -> Some(1_201)` churn, but require
+    `Some -> None` to select the paired presence bit.
+  - Add `rv_clock_domain_amendment_existing_key_changes_reset_rv_mask` for both paths.
+    Mutate every field of each current existing key independently and require a reset
+    and emission. Return to a prior key and require another emission, proving no
+    historical-key retention and preserving adjacent-change semantics.
   - Add `rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen` and
     `rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries`: entry-skip
     marks seen even when its writer error is swallowed; blocked-snapshot marks only
     after a successful write and retries after a propagated failure.
-  - Assert emitted records retain exact raw watermark values and gate categories even though the episode set compares only category and presence.
+  - Exercise both existing reset sites and assert they clear current key plus mask.
+    Emitted records retain exact raw watermark values and gate categories.
 
 - [ ] **Step 3: Capture the one authorized local RED.**
   - Run `just fmt-check` so formatting is not discovered remotely.
@@ -373,7 +370,16 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
     the copied scalar and reject zero without resolving IDs. Preserve
     `validate_strategies` cross-reference validation and existing startup errors.
   - Rewire every entry, exit, and shared production pricing call to the required
-    config scalar. Delete both optional policy lookup accessors from
+    config scalar. Set `taker_pricing_config` from it; delete
+    `runtime_taker_pricing_config` and rewire
+    `current_entry_pricing_inputs_for_receive_at`,
+    `current_fair_probability_up_for_receive_at`, and
+    `current_scaled_min_edge_bps_at`. Rewire direct consumers
+    `current_realized_vol_for_gate_at`,
+    `current_realized_vol_source_for_gate_at`,
+    `exit_realized_volatility_gate_fields_at`,
+    `entry_realized_volatility_receipt_at`, and
+    `record_exit_evaluation_evidence`, plus the pricing test helper. Delete both optional policy lookup accessors from
     `registry.rs`/`bolt_v3_realized_volatility_runtime.rs`; retain their ingest,
     subscription, and snapshot responsibilities.
   - Construct `ExitRealizedVolatilityGateReceipt` once before entering `exit_evaluation_with_hold_ev_at`. Remove callback-time policy lookup; pass `Some(stored_age)` only at shared diagnostic Option boundaries. A valid surface with no snapshot is `MissingSnapshot`, not an error, so forced-flat remains available.
@@ -386,30 +392,37 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Preserve decision raw-ready and gate-filtered `realized_vol`. Add independent
     decision `rv_snapshot_has_ready_realized_vol: Option<bool>` durable+wire input;
     evaluation retains `rv_ready`. Serialize receipt watermark to decision
-    `Option<u64>` and evaluation `Option<i64>` with checked conversion; serialize max
-    age as `Option<u64>` on both. Reject invalid conversions; never cast/saturate.
-    Missing/null reconstruction inputs remain legacy-only and unreplayable. Preserve
+    `Option<u64>` and evaluation `Option<i64>`; use `i64::try_from` for both evaluation
+    trigger-init and watermark. Propagate conversion failure through the writer;
+    never cast/saturate/drop. Serialize max age as `Option<u64>` on both. Decision
+    writes readiness `Some(false)` for missing snapshot. Only missing/nonpositive
+    replay markers are legacy/unreplayable; marker-present optional classifier inputs
+    retain their normative meanings. Preserve
     schema version 15 and gate taxonomy; do not add value/source fields to evaluation.
   - Serialize `trigger_ts_init_ms` from `receipt.evaluation_receive_ms`, never from
     `exit_eval_now_ms`. Preserve the existing signed `rv_as_of_minus_now_ms` field's
     snapshot-as-of-minus-trigger-event semantics despite its name.
   - Keep production startup/exit wrappers on their existing `Result` paths. Test helpers may unwrap those same paths only after supplying a real fixture surface policy and matching required config age; no test-only `None`, unlimited-age or alternate fallback path is allowed.
 
-- [ ] **Step 5: Implement episode-bounded semantic entry dedupe.**
-  - Implement only the exact base/state whitelists in this task's Interfaces. Define
-    nested `RvGateDedupeState` and one episode per path containing a stable base plus
-    a `BTreeSet` of complete semantic states (or equivalent bounded seen set).
+- [ ] **Step 5: Implement current-key RV-mask entry dedupe.**
+  - Preserve each existing non-RV key type byte-for-byte in meaning. For each path,
+    store only its current existing key plus `rv_seen_mask: u16`; retain no key
+    history and introduce no `BTreeSet`/Cartesian semantic-state store.
   - Build semantic state directly from `decision.evaluation.realized_volatility_receipt`; never recover required state from optional serialized fields.
-  - On stable-base change, replace the episode and begin an empty seen set. Within a stable base, insert and emit only the first occurrence of each state. Preserve the existing admitted-entry and left-RV-not-ready reset sites as the real episode ends.
-  - On entry-skip, mark the state before its swallow-on-error write so failure cannot create a tight retry loop. On blocked-snapshot, commit the state only after the propagating write succeeds so failure remains retryable.
-  - Keep raw watermark values and every other tick-varying value out of both keys. Do not change `ExitOutcomeKey` or `ExitDecisionDedupeKey`.
+  - Map gate category/presence to bits 0..11. A current-key change replaces the key
+    and clears the mask; returning to an older key therefore emits. For one fixed key,
+    emit only the first occurrence of each bit. Ignore raw `Some` watermark movement.
+  - Preserve existing resets and writer timing exactly. Do not change `ExitOutcomeKey`
+    or `ExitDecisionDedupeKey`. Claim only constant memory and twelve-state RV novelty
+    per current key; evidence volume under existing key churn remains unmeasured.
 
 - [ ] **Step 6: Complete implementation and cheap local verification.**
   - Update `valid_raw_config`, the direct `BinaryOracleEdgeTakerConfig` fixture, and every surface-attaching helper in `pricing.rs`, `source_evidence.rs` and `reference_price.rs` with the matching configured surface age so unrelated exit tests remain on their intended paths.
   - Update the schema document with exact durable/wire types: decision optional
     `u64` watermark, optional `u64` max age, optional independent readiness boolean;
     evaluation optional checked `i64` watermark and optional `u64` max age. Document
-    legacy omission/null as unreplayable, checked conversion, unchanged gate-filtered
+    marker-based legacy replayability, legitimate marker-present optional inputs,
+    `i64::try_from` on both evaluation receive values, unchanged gate-filtered
     decision RV, existing evaluation readiness, schema version 15, and the historical
     delta-field misnomer semantics.
   - Record the fixed-field capacity bound: the two numeric fields are at most 100
@@ -421,8 +434,15 @@ pricing, trigger, and evidence behavior that requires #1354's receive-domain typ
   - Commit the coherent implementation and lasting documentation. Keep the PR body head-agnostic: no current SHA, transient check status, or head-specific review receipt.
 
 - [ ] **Step 7: Close the amendment locally before completion handoff.**
-  - Request internal adversarial review of the complete local source and resolve every local finding before Task 8 performs the single final publish-and-detach handoff.
-  - Do not reply to or resolve GitHub review threads, publish, dispatch CI, run `just verify-remote`, or make transient PR-body claims in this step. Review discussion resumes only after the committed corrections are published and exact-head proof is green in Task 8.
+  - First restore/remove this implementation plan from the final PR diff while keeping
+    the durable design/schema docs. Run the final changed-file census and stop if the
+    plan remains.
+  - Then request internal adversarial review of that exact publishable head and
+    resolve every finding before Task 8. After approval, no source or repository-doc
+    change is allowed; only timeless PR-body GitHub text may change. Publish only the
+    reviewed head.
+  - Do not reply to/resolve GitHub threads, publish, dispatch CI, run
+    `just verify-remote`, or make transient PR-body claims in this step.
 
 ### Task 8: Capacity evidence and completion gates
 
@@ -462,11 +482,7 @@ right: 1
 - [x] State the replay limit exactly: the archive cannot reproduce final receive-domain free `classify_rv_gate` results because it lacks `latest_accepted_receive_ms`, and the historical Binance adapter never produced genuine local receive stamps. The strategy wrapper `classify_realized_vol_gate` preserves that free-function precedence while adding diagnostics. Use production-shaped differentials as classifier proof; do not relabel the capacity counterfactual as a final-classifier replay.
 - [x] Report only the measured open-position counterfactual window: 47,551 bytes over 939.354 seconds. Do not extrapolate or project a future restart size; it remains unmeasured and subject to the 1 MiB fail-closed boundary and #1275 item 13 pre-soak requirement. Bound the two numeric additions at no more than 100 bytes per record and the decision record's numeric-plus-readiness additions at no more than 143 bytes. Pessimistically charging 106 records adds at most 15,158 bytes and remains safely below 1 MiB at that fixed record count. Semantic-entry record-count growth remains unmeasured and therefore is not folded into the historical arithmetic. #763 remains later and depends on #883; do not promote S3 archival into the soak blockers.
 - [ ] After Task 7 is complete, perform one final scope/capacity/documentation consistency review.
-- [ ] Before marking the PR ready, restore/remove
-  `docs/superpowers/plans/2026-07-11-rv-gate-clock-domain.md` from the final PR diff.
-  Keep the durable design and schema docs. Run the final changed-file census and
-  fail the handoff if this implementation plan is still present.
-- [ ] Mark the existing PR draft before the single final publish. Publish the completed draft head once with `just sandbox-safe-push`, verify that the exact remote PR head equals the published local SHA, then detach. Do not dispatch or run `just verify-remote` from the executor.
+- [ ] Mark the existing PR draft before the single final publish. Confirm the plan is absent from the changed-file census and the local head equals the internally approved publishable head. Publish that head once with `just sandbox-safe-push`, verify that the exact remote PR head equals it, then detach. No source/doc change or second publish is authorized. Do not dispatch or run `just verify-remote` from the executor.
 - [ ] The user/reviewer marks that completed draft ready and owns the one final exact-head root/BVS full-CI wave, including root archive execution, root `gate`, BVS archive execution and `backtester-gate`. Iteration-only, skipped, prior-head, probe or no-op results are not proof.
 - [ ] Only after that exact head is GREEN, reply inline to and resolve both existing review threads with the lasting correction and exact-head evidence. Then request external review and refresh the required native review for the same head.
 - [ ] Required approval and merge queue remain reviewer/operator actions; no second implementation publish or executor-owned verification sequence is authorized.

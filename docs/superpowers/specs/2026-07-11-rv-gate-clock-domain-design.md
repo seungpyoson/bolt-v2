@@ -148,6 +148,18 @@ the runtime/context remains responsible for RV ingest, subscriptions, and curren
 snapshots, not strategy-policy lookup. This keeps forced-flat available even when a
 valid configured surface has no current snapshot.
 
+Concretely, `taker_pricing_config` receives the required parsed scalar directly and
+`runtime_taker_pricing_config` is deleted. Its three callers
+(`current_entry_pricing_inputs_for_receive_at`,
+`current_fair_probability_up_for_receive_at`, and
+`current_scaled_min_edge_bps_at`) use `taker_pricing_config`. Direct policy consumers
+in `current_realized_vol_for_gate_at`,
+`current_realized_vol_source_for_gate_at`,
+`exit_realized_volatility_gate_fields_at`,
+`entry_realized_volatility_receipt_at`, and
+`record_exit_evaluation_evidence`, plus the pricing test helper, use the required
+config scalar rather than either deleted accessor.
+
 The receive-domain classifier inputs must remain auditable after the in-memory
 snapshot changes. Each exit evaluation therefore owns one immutable
 `ExitRealizedVolatilityGateReceipt`, captured before any evaluation early return and
@@ -177,8 +189,9 @@ The two existing readiness projections remain deliberately distinct. Decision
 evidence keeps `rv_snapshot_ready = snapshot.ready`; evaluation evidence keeps
 `rv_ready = snapshot.ready_realized_vol().is_some()`. Decision evidence additionally
 stores the independent optional replay input
-`rv_snapshot_has_ready_realized_vol: Option<bool>`, with new records writing
-`Some(snapshot.ready_realized_vol().is_some())`. The existing decision
+`rv_snapshot_has_ready_realized_vol: Option<bool>`, with every new record writing
+`Some(snapshot.ready_realized_vol().is_some())`, including `Some(false)` when the
+snapshot is absent. The existing decision
 `realized_vol` remains gate-filtered output and is not redefined as a replay input.
 A raw-ready snapshot carrying a blocker therefore discriminates the projections,
 and replacement after receipt capture cannot change any of them. One captured signed
@@ -208,20 +221,25 @@ domains. `BoltV3ExitDecisionEvidence` stores
 `rv_snapshot_has_ready_realized_vol: Option<bool>`. `BoltV3ExitEvaluationEvidence`
 stores `rv_snapshot_receive_watermark_ms: Option<i64>` using checked conversion and
 `rv_max_source_age_ms: Option<u64>` while retaining its existing `rv_ready: bool`.
-Negative or otherwise unrepresentable values are invalid/unreplayable; no conversion
-may cast, saturate, or default them. New writes always store the representable
+Both evaluation `trigger_ts_init_ms` and evaluation
+`rv_snapshot_receive_watermark_ms` use `i64::try_from`; conversion failure propagates
+through the existing evidence write/error path and never wraps, saturates, or becomes
+`None`. Negative decoded wire values are invalid. New writes always store the representable
 watermark, `Some(receipt.max_source_age_ms)`, and the decision replay boolean. These
-inputs remain optional only in the existing version-15 durable/wire shape so a
-legacy record that omits one or stores `null` still decodes; such a record is
-unreplayable rather than inferred. This amendment does not bump the evidence schema
-version or alter the six-value gate taxonomy.
+inputs remain optional in the existing version-15 durable/wire shape as explicit
+replay markers. This amendment does not bump the evidence schema version or alter the
+six-value gate taxonomy.
 
 The durable proof is record-local, not dependent on retained strategy memory. It
 replays from reconstruction inputs and must not consult the stored gate result or
-the decision record's gate-filtered `realized_vol`. Decision replay uses only its
-optional independent `rv_snapshot_has_ready_realized_vol`; evaluation replay uses
-its existing `rv_ready`. A record missing any required reconstruction input is
-unreplayable, never assigned a default result.
+the decision record's gate-filtered `realized_vol`. Decision evidence is replayable
+iff `rv_max_source_age_ms = Some(age > 0)` and
+`rv_snapshot_has_ready_realized_vol = Some(bool)`. Evaluation evidence is replayable
+iff `rv_max_source_age_ms = Some(age > 0)`. Missing markers identify legacy evidence
+and are unreplayable. Once those markers are present, `None` snapshot/as-of,
+evaluation-receive, or watermark values are legitimate classifier inputs, not legacy
+defaults. Decision replay uses the independent readiness boolean; evaluation replay
+uses its existing `rv_ready`.
 
 Replay mirrors the free `classify_rv_gate` function exactly, in this normative
 precedence order:
@@ -241,47 +259,30 @@ states that lock precedence: not-ready plus future, not-ready plus stale, and bl
 plus stale, as well as missing snapshot/evaluation/watermark and a valid zero RV.
 Assertions for each record stop at the fields that record's schema owns.
 
-Entry flood guards track semantic state without admitting tick-varying time into
-their keys. The whitelists are exact:
+The two entry flood guards preserve their current complete non-RV dedupe keys
+exactly; this amendment neither shrinks them nor retains historical keys. Each path
+stores only `{ current_existing_key, rv_seen_mask: u16 }`. A key change replaces the
+current key and clears the mask. Consequently, returning to an older non-RV key is a
+new adjacent change and emits again, preserving existing behavior.
 
-- `EntrySkipDedupeBaseKey = { market_id }`.
-- Entry semantic state is `{ reason_category, gate_blocked_by,
-  pricing_blocked_by, fast_venue_available,
-  reference_current_price_available, fast_venue_incoherent, rv }`.
-- `BlockedStrategyInputDedupeBaseKey = { configured_target_id,
-  market_selection_ruleset_id, market_id, up_instrument_id,
-  down_instrument_id, price_to_beat_source,
-  realized_volatility_surface_id }`.
-- Blocked semantic state is `{ typed_market_selection_outcome, gate_blocked_by,
-  pricing_blocked_by, typed_selected_side, fast_venue_available,
-  reference_current_price_available, reference_current_price_failed_over,
-  fast_venue_incoherent, rv }`.
-- In both paths, `rv = { gate_result: BoltV3RvGateResult,
-  watermark_present: bool }`.
+For a fixed current key, the six gate results crossed with watermark absence/presence
+map to bits 0 through 11. In gate order `Accepted`, `MissingSnapshot`,
+`MissingEvaluationEventTime`, `RejectedFutureDated`, `RejectedStale`,
+`RejectedNotReady`, absence uses the even bit and presence the following odd bit.
+The first occurrence of a bit emits and sets it; repeats or oscillations among seen
+bits do not. Changing a raw `Some` watermark value does not emit, while changing
+watermark presence selects the paired bit and does. The existing admitted-entry and
+left-RV-not-ready reset sites clear both current key and mask.
 
-The keys explicitly exclude `interval_open`; venue/source IDs outside the blocked
-base whitelist; RV blockers, source diagnostics, and unknown IDs; RV values,
-as-of values, and raw watermark values; prices, ages, jitter, probabilities,
-counters, and all timestamps. Each path owns an episode with one stable base key and
-a finite seen set of its complete semantic-state values:
-
-- The first occurrence of each semantic state in a stable-base episode emits.
-- Repeated or returning states, including `A -> B -> A` oscillation, remain
-  suppressed after their first occurrence in that episode.
-- Numeric watermark movement with unchanged presence and churn in every excluded
-  field remains suppressed.
-- A stable-base-key change begins a new episode. The entry-skip episode also ends at
-  the existing admitted-entry reset; the blocked-snapshot episode ends at the
-  existing transition out of the RV-not-ready path.
-- Entry-skip preserves its existing mark-even-when-the-swallowed-writer-fails
-  behavior. Blocked-snapshot preserves its existing mark-only-after-the-propagating
-  writer-succeeds behavior.
-
-Tests exercise all twelve RV states exactly once per stable episode, more than 100
-`A -> B -> A` oscillations, more than 100 excluded-field churn events, each semantic
-field, each stable-base field, both real reset sites, and both writer-commit
-semantics. Durable records still retain the exact gate result and raw optional
-watermark even though dedupe's RV projection compares only category and presence.
+Entry-skip preserves mark-before-swallowed-writer-error behavior. Blocked-snapshot
+sets the bit only after its propagating write succeeds, so a failure remains
+retryable. Tests cover all twelve bits once, more than 100 repeats/oscillations with
+`count_ones() == 12`, raw-watermark churn, every field of each existing key,
+returning to a prior key, both resets, and both writer semantics. This precisely
+answers `discussion_r3571669050`: it distinguishes gate diagnoses without retaining
+every historical non-RV combination. Memory is constant and RV novelty is bounded to
+twelve states per current key; evidence-record volume under existing non-RV or
+RV-diagnostic key churn remains unmeasured.
 
 This is the user-approved exception to the earlier report-only dedupe ruling. Other
 dedupe-key findings and the `position_id=None` finding remain report-only under
@@ -405,13 +406,13 @@ watermarks, thresholds, or readiness inputs that they never captured.
 - Rejected observations cannot advance the event or receive watermark.
 - Restart bootstrap with an open position succeeds at or below 1 MiB and enters existing
   blind recovery above 1 MiB.
-- The two approved entry keys use the exact stable-base and semantic-state
-  whitelists above. They record all twelve RV category/presence states once per
-  stable-base episode while suppressing raw watermark advances, excluded-field
-  churn, repeated/returning states, and long alternating-state floods. Every
-  whitelisted semantic/base field discriminates; base changes and the existing real
-  episode-end resets permit states to record again. Other dedupe-key and
-  `position_id=None` findings remain report-only under #1354.
+- The two approved entry guards preserve their existing non-RV keys and add only a
+  twelve-bit RV category/presence mask for the current key. Repeats and raw `Some`
+  watermark churn are suppressed; presence changes select another bit; every current
+  key-field change clears the mask and emits, including a return to a prior key. The
+  existing real reset sites clear key and mask. Other dedupe-key and
+  `position_id=None` findings remain report-only under #1354; total evidence volume
+  under non-RV/RV-diagnostic key churn remains unmeasured.
 - The archived replay reads the existing incident artifact in place; this PR creates
   no new archive upload. Classification and handling of that pre-#883 artifact remain
   with #883/#763.

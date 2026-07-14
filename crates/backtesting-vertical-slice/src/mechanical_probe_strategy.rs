@@ -41,7 +41,7 @@ use nautilus_model::{
     types::Quantity,
 };
 use nautilus_trading::{
-    nautilus_strategy,
+    StrategyNative, nautilus_strategy,
     strategy::{Strategy, StrategyConfig, StrategyCore},
 };
 
@@ -340,7 +340,7 @@ impl DataActor for MechanicalTradeReplayProbe {
                     self.instrument_id
                 )
             })?;
-            quantize_trade_size_to_instrument(instrument, self.instrument_id, self.trade_size)?
+            quantize_trade_size_to_instrument(&instrument, self.instrument_id, self.trade_size)?
         };
         self.trade_size = trade_size;
 

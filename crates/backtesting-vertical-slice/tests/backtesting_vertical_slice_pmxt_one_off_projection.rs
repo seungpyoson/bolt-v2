@@ -288,19 +288,22 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_backtest_node_consumes_l2() {
         .data_type(NautilusDataType::OrderBookDelta)
         .catalog_path(catalog_dir.path().to_str().expect("utf-8 path").to_string())
         .instrument_id(instrument_id)
-        .build();
+        .build()
+        .expect("valid PMXT data config");
     let venue_config = BacktestVenueConfig::builder()
         .name(Ustr::from(venue_name.as_str()))
         .oms_type(OmsType::Netting)
         .account_type(AccountType::Cash)
         .book_type(BookType::L2_MBP)
         .starting_balances(vec![format!("1_000_000 {settlement_currency}")])
-        .build();
+        .build()
+        .expect("valid PMXT venue config");
     let run_config = BacktestRunConfig::builder()
         .id("pmxt-one-off-l2-catalog-proof".to_string())
         .venues(vec![venue_config])
         .data(vec![data_config])
-        .build();
+        .build()
+        .expect("valid PMXT run config");
 
     let mut node = BacktestNode::new(vec![run_config]).expect("construct BacktestNode");
     node.build().expect("build BacktestNode");

@@ -577,7 +577,7 @@ fn nt_catalog_round_trips_trade_ticks_over_minio_s3_uri() -> anyhow::Result<()> 
         .write_instruments(expected_instruments.clone())
         .context("write instrument to MinIO-backed S3 catalog")?;
     catalog
-        .write_to_parquet(trades.clone(), None, None, None)
+        .write_to_parquet(&trades, None, None, None)
         .context("write trade ticks to MinIO-backed S3 catalog")?;
 
     let loaded_instruments = catalog

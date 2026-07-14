@@ -178,7 +178,7 @@ fn binary_option_l2_node_iterations() -> usize {
         .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
         .expect("write binary option instrument");
     catalog
-        .write_to_parquet(deltas.clone(), None, None, None)
+        .write_to_parquet(&deltas, None, None, None)
         .expect("write L2 deltas");
 
     let loaded: Vec<OrderBookDelta> = catalog
@@ -200,19 +200,22 @@ fn binary_option_l2_node_iterations() -> usize {
         .account_type(AccountType::Cash)
         .book_type(BookType::L2_MBP)
         .starting_balances(vec![format!("1_000_000 {L2_SETTLEMENT_CURRENCY}")])
-        .build();
+        .build()
+        .expect("valid L2 venue config");
 
     let data_config = BacktestDataConfig::builder()
         .data_type(NautilusDataType::OrderBookDelta)
         .catalog_path(catalog_path)
         .instrument_id(instrument_id)
-        .build();
+        .build()
+        .expect("valid L2 data config");
 
     let run_config = BacktestRunConfig::builder()
         .id(L2_RUN_IDENTIFIER.to_string())
         .venues(vec![venue_config])
         .data(vec![data_config])
-        .build();
+        .build()
+        .expect("valid L2 run config");
 
     let mut node = BacktestNode::new(vec![run_config]).expect("construct L2 backtest node");
     node.build().expect("build L2 backtest node");
@@ -238,7 +241,7 @@ fn catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy() {
         .write_instruments(vec![InstrumentAny::CurrencyPair(instrument)])
         .expect("write instrument");
     catalog
-        .write_to_parquet(trades, None, None, None)
+        .write_to_parquet(&trades, None, None, None)
         .expect("write trade ticks");
 
     let loaded: Vec<TradeTick> = catalog
@@ -265,29 +268,32 @@ fn catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy() {
         .account_type(AccountType::Cash)
         .book_type(BookType::L1_MBP)
         .starting_balances(vec![format!("1_000_000 {QUOTE_CURRENCY}")])
-        .build();
+        .build()
+        .expect("valid trade-replay venue config");
 
     let data_config = BacktestDataConfig::builder()
         .data_type(NautilusDataType::TradeTick)
         .catalog_path(catalog_path)
         .instrument_id(instrument_id)
-        .build();
+        .build()
+        .expect("valid trade-replay data config");
 
     let run_config = BacktestRunConfig::builder()
         .id(RUN_IDENTIFIER.to_string())
         .venues(vec![venue_config])
         .data(vec![data_config])
-        .build();
+        .build()
+        .expect("valid trade-replay run config");
 
     let mut node = BacktestNode::new(vec![run_config]).expect("construct backtest node");
     node.build().expect("build backtest node");
 
     let bar_type = format!("{instrument_id}-1-MINUTE-LAST-INTERNAL");
-    let strategy_config = HurstVpinDirectionalConfig::new(
-        instrument_id,
-        bar_type.parse().expect("bar type"),
-        Quantity::new(0.010, SIZE_PRECISION),
-    );
+    let strategy_config = HurstVpinDirectionalConfig::builder()
+        .instrument_id(instrument_id)
+        .bar_type(bar_type.parse().expect("bar type"))
+        .trade_size(Quantity::new(0.010, SIZE_PRECISION))
+        .build();
     {
         let engine = node
             .get_engine_mut(RUN_IDENTIFIER)

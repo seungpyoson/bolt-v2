@@ -791,6 +791,10 @@ pub enum ManifestError {
         field: &'static str,
         value: String,
     },
+    InvalidNtConfig {
+        field: &'static str,
+        message: String,
+    },
     InvalidInstrumentId {
         instrument_id: String,
     },
@@ -926,6 +930,9 @@ impl std::fmt::Display for ManifestError {
             }
             Self::InvalidVenueModelParameter { field, value } => {
                 write!(f, "invalid venue model parameter {field}: {value:?}")
+            }
+            Self::InvalidNtConfig { field, message } => {
+                write!(f, "invalid NautilusTrader {field} config: {message}")
             }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
@@ -1575,7 +1582,7 @@ fn manifest_venue_to_nt_config(
     venue: &ManifestVenueConfig,
 ) -> Result<BacktestVenueConfig, ManifestError> {
     ensure_unsupported_nt_venue_surfaces_absent(venue)?;
-    Ok(BacktestVenueConfig::builder()
+    BacktestVenueConfig::builder()
         .name(Ustr::from(&venue.nt_venue))
         .oms_type(parse_oms_type(&venue.oms_type)?)
         .account_type(parse_account_type(&venue.account_type)?)
@@ -1603,7 +1610,11 @@ fn manifest_venue_to_nt_config(
         .maybe_latency_model(resolve_latency_model(venue.latency_model.as_ref())?)
         .maybe_fee_model(resolve_fee_model(venue.fee_model.as_ref())?)
         .price_protection_points(venue.price_protection_points)
-        .build())
+        .build()
+        .map_err(|error| ManifestError::InvalidNtConfig {
+            field: "venue",
+            message: error.to_string(),
+        })
 }
 
 impl BacktestingRunManifest {
@@ -2415,7 +2426,7 @@ impl BacktestingRunManifest {
             .end_time
             .map(|value| manifest_time_to_nanos("end_time", value))
             .transpose()?;
-        Ok(BacktestRunConfig::builder()
+        BacktestRunConfig::builder()
             .id(self.run_id.clone())
             .venues(venues)
             .data(data)
@@ -2430,7 +2441,11 @@ impl BacktestingRunManifest {
             // effect is that `clear_data` (free the data stream) runs instead of
             // `dispose` (free all state).
             .dispose_on_completion(false)
-            .build())
+            .build()
+            .map_err(|error| ManifestError::InvalidNtConfig {
+                field: "run",
+                message: error.to_string(),
+            })
     }
 }
 
@@ -2467,7 +2482,7 @@ fn catalog_input_to_nt_data_config(
         &input.catalog_fs_storage_options,
         &input.catalog_fs_rust_storage_options,
     )?;
-    Ok(BacktestDataConfig::builder()
+    BacktestDataConfig::builder()
         .data_type(data_type)
         .catalog_path(input.catalog_path.clone())
         .maybe_catalog_fs_protocol(catalog_fs_protocol)
@@ -2502,7 +2517,11 @@ fn catalog_input_to_nt_data_config(
         .maybe_filter_expr(input.filter_expr.clone())
         .maybe_client_id(input.client_id.as_deref().map(ClientId::from))
         .maybe_optimize_file_loading(input.optimize_file_loading)
-        .build())
+        .build()
+        .map_err(|error| ManifestError::InvalidNtConfig {
+            field: "data",
+            message: error.to_string(),
+        })
 }
 
 /// Parse and charset-validate every instrument-id surface of a catalog input.

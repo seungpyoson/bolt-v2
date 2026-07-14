@@ -1123,7 +1123,7 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(ticks, None, None, None)
+        .write_to_parquet(&ticks, None, None, None)
         .context("write trade ticks to catalog")?;
 
     Ok(CatalogProjection {
@@ -1306,7 +1306,7 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(deltas, None, None, None)
+        .write_to_parquet(&deltas, None, None, None)
         .context("write order book deltas to catalog")?;
 
     Ok(CatalogProjection {
@@ -1454,7 +1454,7 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(ticks, None, None, None)
+        .write_to_parquet(&ticks, None, None, None)
         .context("write quote ticks to catalog")?;
 
     Ok(CatalogProjection {
@@ -1573,7 +1573,7 @@ pub fn project_canonical_index_to_catalog<S: CatalogInstrumentSpecSource + ?Size
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(updates, None, None, None)
+        .write_to_parquet(&updates, None, None, None)
         .context("write index prices to catalog")?;
 
     Ok(CatalogProjection {
@@ -1708,7 +1708,7 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(updates, None, None, None)
+        .write_to_parquet(&updates, None, None, None)
         .context("write mark prices to catalog")?;
 
     Ok(CatalogProjection {
@@ -1845,7 +1845,7 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(updates, None, None, None)
+        .write_to_parquet(&updates, None, None, None)
         .context("write funding rates to catalog")?;
 
     Ok(CatalogProjection {
@@ -1997,7 +1997,7 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
         .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
-        .write_to_parquet(bars, None, None, None)
+        .write_to_parquet(&bars, None, None, None)
         .context("write bars to catalog")?;
 
     Ok(CatalogProjection {
@@ -5422,10 +5422,10 @@ max_notional = "200000"
             .write_instruments(vec![instrument])
             .expect("write binary option instrument");
         catalog
-            .write_to_parquet(deltas.clone(), None, None, None)
+            .write_to_parquet(&deltas, None, None, None)
             .expect("write order book deltas");
         catalog
-            .write_to_parquet(vec![tick], None, None, None)
+            .write_to_parquet(&[tick], None, None, None)
             .expect("write trade tick");
 
         let loaded_deltas = catalog

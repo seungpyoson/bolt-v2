@@ -1,0 +1,189 @@
+You are the independent adversarial reviewer for bolt-v2’s continuous autonomous-operation design.
+
+  Repository:
+  - Working tree: /Users/spson/Projects/Claude/bolt-v2/.worktrees/autonomous-operation-design
+  - Authoritative base: origin/main
+  - Base SHA: 17bdf952f3e9422c6957b88556dbb4f145046754
+  - Read AGENTS.md completely before reviewing.
+  - Inspect the current source yourself. Do not rely solely on summaries or plan claims.
+  - Treat deployed artifacts and historical branches as incident evidence only, never as the
+  implementation base.
+
+  Review these finalized artifacts:
+  - <ARCHITECTURE_ARTIFACT_PATH>
+  - <INVARIANT_AND_RESOURCE_MATRIX_PATH>
+  - <IMPLEMENTATION_PLAN_PATH>
+  - <MIGRATION_AND_PR_GRAPH_PATH>
+
+  Objective:
+  Determine whether the proposed design and execution plan, if implemented exactly, would make bolt-v2
+  safe to run continuously without routine human supervision for an unbounded operating lifetime.
+
+  The required invariant applies to any arbitrarily long sequence of market events, input oscillations,
+  dependency failures, process crashes, and host restarts:
+
+  1. Disk, recovery data, memory, file descriptors, retry state, pending work, and logs remain bounded by
+  reviewed TOML configuration.
+  2. Bounds depend only on currently active risk and closed semantic state—not event count or uptime.
+  3. Existing risk can always be reconciled, reduced, settled, and accurately reported.
+  4. Restart deterministically recovers every unresolved order, position, exit, and settlement, or remains
+  safely blocked from admitting new risk.
+  5. Normal recovery, rollover, archive handling, and dependency restoration require no operator repair.
+  6. External outages may stop new trading but cannot cause unsafe behavior, unbounded growth, or prevent
+  exits and settlement.
+  7. Automatic operation resumes when dependencies recover and all invariants hold.
+
+  Evidence invariant:
+  For one stable business episode, each canonical semantic state may emit evidence at most once, including
+  across A→B→A recurrence and arbitrary raw-input oscillation.
+
+  Episode identity must exclude:
+  - tick-varying prices;
+  - timestamps;
+  - transient feed flags;
+  - raw diagnostic values;
+  - any other value whose churn can reset a bounded-state guard.
+
+  The active local recovery set must remain below its configured recovery ceiling at all times, including
+  explicitly reserved worst-case capacity for every permitted exit, reconciliation, settlement, and
+  terminal transition.
+
+  S3 may retain historical evidence, but restart safety must never depend on S3 availability.
+
+  Independently verify all of the following against both the plan and current source:
+
+  1. Can any resource grow with total event count or uptime?
+  2. Can volatile input churn reset an evidence or bounded-state guard?
+  3. Can the process cross a capacity boundary before new risk is blocked?
+  4. Is sufficient capacity reserved for every possible exit, reconciliation, settlement, and terminal
+  transition belonging to already-admitted risk?
+  5. Can an S3 outage, slowdown, duplicate response, partial success, or corrupt object cause recovery-
+  critical data loss, unsafe restart, unbounded local growth, or block risk reduction?
+  6. Is recovery-critical truth duplicated across competing authorities?
+  7. Can a crash at any durable transition produce ambiguous state, duplicate external action, lost
+  unresolved risk, or an unrecoverable intermediate state?
+  8. Can repeated market rollover leak subscriptions, tasks, channels, files, instruments, retry episodes,
+  or cache state—or attempt to subscribe to expired instruments?
+  9. Does any ordinary recovery path require an operator?
+  10. Can every claimed bound be tested, calculated, or mechanically inspected?
+  11. Does the migration preserve unresolved production risk and fail closed on ambiguous, corrupt,
+  oversized, or unsupported legacy state?
+  12. Are all intermediate PR states safe, single-path, issue-bound, independently reviewable, and
+  compatible with the declared dependency graph?
+  13. Does the plan preserve exits, reconciliation, and settlement during disk, network, venue, archive,
+  and observability failures?
+  14. Does the verification contract prove bounds independently of soak duration?
+  15. Does the design use one TOML-owned source for runtime bounds, Rust-native AWS integration, and no
+  Python, AWS CLI subprocesses, hardcoded runtime bounds, TODOs, or alternate recovery paths?
+
+  Specifically inspect the existing source for:
+  - the append-only decision-evidence JSONL and its recovery readers;
+  - entry-skip and strategy-input episode/deduplication keys;
+  - risk admission ordering and capacity checks;
+  - settlement and submit-reservation recovery;
+  - runtime-capture queues, buffers, writers, and rotation;
+  - NT cache retention and instrument lifecycle;
+  - logging and catalog retention;
+  - market rollover subscription ordering and cleanup;
+  - every separate durable store that may compete with the proposed authority.
+
+  Required verification must include:
+  - a state-machine or property test whose cardinality reaches a fixed bound under conceptually infinite
+  input oscillation;
+  - large repeated A→B→A sequences;
+  - exact maximum encoded-size accounting;
+  - admission-before-capacity-boundary proof;
+  - reserved-capacity tests for exits and settlement;
+  - crash injection around every durable transition;
+  - restart with an open entry order, managed position, pending exit, pending settlement, and full archive
+  backlog;
+  - S3 unavailable, slow, duplicated, partially successful, checksum-corrupt, and restored cases;
+  - automatic recovery after S3 restoration;
+  - repeated rollover without stale subscriptions or resource growth;
+  - exact-head root and backtester CI;
+  - an adversarial review of the final publishable head.
+
+  Do not request implementation details unless they affect an invariant, interface, failure semantic,
+  migration, resource proof, or verification obligation. Do not redesign the system or leave choices for
+  the implementer. Identify every substantive ambiguity as a blocking finding.
+
+  Your response must begin with:
+
+  CONFIGURED MODEL: <the exact model identifier configured for this Claude Code invocation>
+
+  Then provide exactly one verdict:
+
+  APPROVE
+
+  or
+
+  REQUEST CHANGES
+
+  APPROVE is permitted only if every checklist question has a demonstrated safe answer and the plan
+  contains no unresolved correctness choice.
+
+  For REQUEST CHANGES, list each blocking finding with:
+  - invariant violated;
+  - current-source evidence with file and line;
+  - deficient plan section;
+  - concrete required correction;
+  - verification needed to close it.
+
+  Any “yes” answer to questions 1–9, any untestable claimed bound, or any unresolved ambiguity requires
+  REQUEST CHANGES. Do not weaken the invariant to reach approval.
+
+---
+
+Independently review the autonomous-operation design in:
+
+  Worktree:
+  /Users/spson/Projects/Claude/bolt-v2/.worktrees/autonomous-operation-design
+
+  Commit:
+  fe368f851aae33a064cf0157a1a03ed5e3092a21
+
+  Base:
+  17bdf952f3e9422c6957b88556dbb4f145046754
+
+  First read AGENTS.md, then these four files completely:
+
+  docs/superpowers/specs/2026-07-15-autonomous-operation-architecture.md
+  docs/superpowers/specs/2026-07-15-autonomous-operation-invariant-contract.md
+  docs/superpowers/specs/2026-07-15-autonomous-operation-delivery-verification-contract.md
+  docs/superpowers/specs/2026-07-15-autonomous-operation-migration-pr-contract.md
+
+  Check the contracts against current source. Verify that:
+
+  - No resource can grow with event count or uptime.
+  - Volatile input churn cannot reset bounded guards.
+  - Evidence is emitted once per canonical semantic state.
+  - Episode identity excludes volatile values.
+  - Capacity is reserved before admitting risk.
+  - Exit, reconciliation, redemption, and settlement capacity is protected.
+  - The recovery set always fits its ceiling.
+  - S3 failure cannot cause unsafe restart, data loss, or block risk reduction.
+  - Recovery truth has one authority.
+  - Every crash transition has an unambiguous restart state.
+  - Rollover cannot leak tasks, subscriptions, files, or retry state.
+  - Normal recovery requires no operator.
+  - Dependencies automatically resume after recovery.
+  - Every bound is mechanically testable.
+  - Every intermediate PR state is safe.
+
+  The current provider capability blockers are intentionally fail-closed. They are not defects if the plan
+  proves they cannot be bypassed.
+
+  Return only:
+
+  APPROVE
+
+  or:
+
+  REQUEST CHANGES
+  - Each blocking finding with file/line, current-source evidence, exact required correction, and
+  verification needed.
+
+  Any unresolved correctness ambiguity is REQUEST CHANGES. Do not edit or implement anything.
+
+  Local format, provider-leak, and static source-fence checks are green. Configured reviewer model already
+  recorded: claude-fable-5. Implementation remains blocked until Claude returns APPROVE.

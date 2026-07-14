@@ -4533,7 +4533,14 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
     record_entry(&mut entry_strategy, &entry, baseline_category);
 
     let original_reference = entry_strategy.pricing.last_reference_current_price();
-    entry_strategy.pricing.set_last_reference_fair_value(None);
+    let changed_reference = if original_reference.is_some() {
+        None
+    } else {
+        Some(3_101.0)
+    };
+    entry_strategy
+        .pricing
+        .set_last_reference_fair_value(changed_reference);
     record_entry(&mut entry_strategy, &entry, baseline_category);
     entry_strategy
         .pricing
@@ -4841,7 +4848,6 @@ fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
         RecordingFeeProvider::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
-    register_test_strategy_with_active_instruments(&mut strategy);
     let decision = minimal_entry_submission_decision();
     assert!(
         strategy

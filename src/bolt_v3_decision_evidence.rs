@@ -18,11 +18,22 @@ use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 use crate::bolt_v3_realized_volatility::{
     RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
     RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceDiagnostic,
-    RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    RealizedVolSourceRejectReason, RealizedVolSourceStatus, ValidRealizedVol,
 };
+use crate::bolt_v3_timestamp_domain::LocalReceiveMs;
 #[cfg(test)]
 use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
+
+fn serialize_optional_local_receive_ms<S>(
+    value: &Option<LocalReceiveMs>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    value.map(LocalReceiveMs::value).serialize(serializer)
+}
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -721,6 +732,10 @@ pub struct BoltV3EntrySkipEvidence {
     pub realized_vol: Option<String>,
     pub realized_vol_source_venue: Option<String>,
     pub realized_vol_source_ts_ms: Option<u64>,
+    pub realized_vol_gate_result: Option<BoltV3RvGateResult>,
+    #[serde(serialize_with = "serialize_optional_local_receive_ms")]
+    pub realized_vol_receive_watermark_ms: Option<LocalReceiveMs>,
+    pub realized_vol_snapshot: Option<BoltV3EntryRealizedVolatilitySnapshotEvidence>,
     pub fair_probability_up: Option<String>,
     pub fair_probability_down: Option<String>,
     pub selected_side: Option<BoltV3OutcomeSide>,
@@ -758,6 +773,9 @@ struct BoltV3EntrySkipEvidenceWire {
     realized_vol: Option<String>,
     realized_vol_source_venue: Option<String>,
     realized_vol_source_ts_ms: Option<u64>,
+    realized_vol_gate_result: Option<BoltV3RvGateResult>,
+    realized_vol_receive_watermark_ms: Option<u64>,
+    realized_vol_snapshot: Option<BoltV3EntryRealizedVolatilitySnapshotEvidence>,
     fair_probability_up: Option<String>,
     fair_probability_down: Option<String>,
     selected_side: Option<BoltV3OutcomeSide>,
@@ -783,6 +801,13 @@ impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
         D: serde::Deserializer<'de>,
     {
         let wire = BoltV3EntrySkipEvidenceWire::deserialize(deserializer)?;
+        let realized_vol_gate_result = wire.realized_vol_gate_result.or_else(|| {
+            legacy_admitted_rv_fields(
+                wire.realized_vol.as_deref(),
+                wire.realized_vol_source_venue.as_deref(),
+                wire.realized_vol_source_ts_ms,
+            )
+        });
         Ok(Self {
             strategy_id: wire.strategy_id,
             now_ms: wire.now_ms,
@@ -802,6 +827,11 @@ impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
             realized_vol: wire.realized_vol,
             realized_vol_source_venue: wire.realized_vol_source_venue,
             realized_vol_source_ts_ms: wire.realized_vol_source_ts_ms,
+            realized_vol_gate_result,
+            realized_vol_receive_watermark_ms: wire
+                .realized_vol_receive_watermark_ms
+                .map(LocalReceiveMs::new),
+            realized_vol_snapshot: wire.realized_vol_snapshot,
             fair_probability_up: wire.fair_probability_up,
             fair_probability_down: wire.fair_probability_down,
             selected_side: wire.selected_side,
@@ -821,6 +851,43 @@ impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
             fast_venue_incoherent: wire.fast_venue_incoherent,
         })
     }
+}
+
+fn legacy_admitted_rv_fields(
+    realized_vol: Option<&str>,
+    source_venue: Option<&str>,
+    source_ts_ms: Option<u64>,
+) -> Option<BoltV3RvGateResult> {
+    (realized_vol.is_some_and(valid_legacy_rv_value)
+        && source_venue.is_some_and(|value| !value.is_empty())
+        && source_ts_ms.is_some())
+    .then_some(BoltV3RvGateResult::Accepted)
+}
+
+fn valid_legacy_rv_value(value: &str) -> bool {
+    value
+        .parse::<f64>()
+        .is_ok_and(|value| ValidRealizedVol::new(value).is_some())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3EntryRealizedVolatilitySnapshotEvidence {
+    pub surface_id: String,
+    pub as_of_ms: Option<u64>,
+    pub annualized_decimal: String,
+    pub measured_annualized_decimal: String,
+    pub noise_robust_annualized_decimal: String,
+    pub continuous_annualized_decimal: String,
+    pub jump_annualized_decimal: String,
+    pub forecast_annualized_decimal: String,
+    pub pricing_component: String,
+    pub seconds_per_annum: String,
+    pub aggregation: String,
+    pub sources_used: Vec<String>,
+    pub source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub unknown_source_rejections: BTreeMap<String, u64>,
+    pub blockers: Vec<String>,
+    pub config_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -921,6 +988,9 @@ pub struct BoltV3ExitDecisionEvidence {
     pub rv_surface_id: String,
     pub rv_snapshot_as_of_ms: Option<u64>,
     pub rv_snapshot_ready: bool,
+    pub rv_snapshot_has_ready_realized_vol: Option<bool>,
+    pub rv_snapshot_receive_watermark_ms: Option<u64>,
+    pub rv_max_source_age_ms: Option<u64>,
     pub rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
     pub rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
     pub rv_gate_result: BoltV3ExitRvGateResult,
@@ -974,6 +1044,9 @@ struct BoltV3ExitDecisionEvidenceWire {
     rv_surface_id: String,
     rv_snapshot_as_of_ms: Option<u64>,
     rv_snapshot_ready: bool,
+    rv_snapshot_has_ready_realized_vol: Option<bool>,
+    rv_snapshot_receive_watermark_ms: Option<u64>,
+    rv_max_source_age_ms: Option<u64>,
     rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
     rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
     rv_gate_result: BoltV3ExitRvGateResult,
@@ -1034,6 +1107,9 @@ impl<'de> Deserialize<'de> for BoltV3ExitDecisionEvidence {
             rv_surface_id: wire.rv_surface_id,
             rv_snapshot_as_of_ms: wire.rv_snapshot_as_of_ms,
             rv_snapshot_ready: wire.rv_snapshot_ready,
+            rv_snapshot_has_ready_realized_vol: wire.rv_snapshot_has_ready_realized_vol,
+            rv_snapshot_receive_watermark_ms: wire.rv_snapshot_receive_watermark_ms,
+            rv_max_source_age_ms: wire.rv_max_source_age_ms,
             rv_snapshot_blockers: wire.rv_snapshot_blockers,
             rv_source_diagnostics: wire.rv_source_diagnostics,
             rv_gate_result: wire.rv_gate_result,
@@ -1290,6 +1366,9 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub realized_volatility: String,
     pub realized_volatility_surface_id: String,
     pub realized_volatility_as_of_ms: Option<u64>,
+    pub realized_volatility_gate_result: Option<BoltV3RvGateResult>,
+    #[serde(serialize_with = "serialize_optional_local_receive_ms")]
+    pub realized_volatility_receive_watermark_ms: Option<LocalReceiveMs>,
     pub realized_volatility_annualized_decimal: String,
     pub realized_volatility_measured_annualized_decimal: String,
     pub realized_volatility_noise_robust_annualized_decimal: String,
@@ -1359,6 +1438,8 @@ struct BoltV3StrategyInputEvidenceSnapshotWire {
     realized_volatility: String,
     realized_volatility_surface_id: String,
     realized_volatility_as_of_ms: Option<u64>,
+    realized_volatility_gate_result: Option<BoltV3RvGateResult>,
+    realized_volatility_receive_watermark_ms: Option<u64>,
     realized_volatility_annualized_decimal: String,
     realized_volatility_measured_annualized_decimal: String,
     realized_volatility_noise_robust_annualized_decimal: String,
@@ -1405,6 +1486,9 @@ impl<'de> Deserialize<'de> for BoltV3StrategyInputEvidenceSnapshot {
         D: serde::Deserializer<'de>,
     {
         let wire = BoltV3StrategyInputEvidenceSnapshotWire::deserialize(deserializer)?;
+        let realized_volatility_gate_result = wire
+            .realized_volatility_gate_result
+            .or_else(|| legacy_admitted_strategy_input_rv_fields(&wire));
         Ok(Self {
             strategy_id: wire.strategy_id,
             configured_target_id: wire.configured_target_id,
@@ -1434,6 +1518,10 @@ impl<'de> Deserialize<'de> for BoltV3StrategyInputEvidenceSnapshot {
             realized_volatility: wire.realized_volatility,
             realized_volatility_surface_id: wire.realized_volatility_surface_id,
             realized_volatility_as_of_ms: wire.realized_volatility_as_of_ms,
+            realized_volatility_gate_result,
+            realized_volatility_receive_watermark_ms: wire
+                .realized_volatility_receive_watermark_ms
+                .map(LocalReceiveMs::new),
             realized_volatility_annualized_decimal: wire.realized_volatility_annualized_decimal,
             realized_volatility_measured_annualized_decimal: wire
                 .realized_volatility_measured_annualized_decimal,
@@ -1480,6 +1568,16 @@ impl<'de> Deserialize<'de> for BoltV3StrategyInputEvidenceSnapshot {
             client_order_id: wire.client_order_id,
         })
     }
+}
+
+fn legacy_admitted_strategy_input_rv_fields(
+    wire: &BoltV3StrategyInputEvidenceSnapshotWire,
+) -> Option<BoltV3RvGateResult> {
+    (valid_legacy_rv_value(&wire.realized_volatility)
+        && !wire.realized_volatility_surface_id.is_empty()
+        && wire.realized_volatility_as_of_ms.is_some()
+        && !wire.realized_volatility_sources_used.is_empty())
+    .then_some(BoltV3RvGateResult::Accepted)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1672,6 +1770,8 @@ pub struct BoltV3ExitEvaluationEvidence {
     pub rv_surface_id: String,
     pub rv_as_of_ms: Option<i64>,
     pub rv_ready: bool,
+    pub rv_snapshot_receive_watermark_ms: Option<i64>,
+    pub rv_max_source_age_ms: Option<u64>,
     pub rv_blockers: Vec<String>,
     pub rv_source_diagnostics: Vec<String>,
     pub rv_gate_result: BoltV3RvGateResult,
@@ -1710,6 +1810,8 @@ struct BoltV3ExitEvaluationEvidenceWire {
     rv_surface_id: String,
     rv_as_of_ms: Option<i64>,
     rv_ready: bool,
+    rv_snapshot_receive_watermark_ms: Option<i64>,
+    rv_max_source_age_ms: Option<u64>,
     rv_blockers: Vec<String>,
     rv_source_diagnostics: Vec<String>,
     rv_gate_result: BoltV3RvGateResult,
@@ -1741,6 +1843,19 @@ impl<'de> Deserialize<'de> for BoltV3ExitEvaluationEvidence {
         D: serde::Deserializer<'de>,
     {
         let wire = BoltV3ExitEvaluationEvidenceWire::deserialize(deserializer)?;
+        if wire.trigger_ts_init_ms.is_some_and(i64::is_negative) {
+            return Err(serde::de::Error::custom(
+                "trigger_ts_init_ms must be non-negative",
+            ));
+        }
+        if wire
+            .rv_snapshot_receive_watermark_ms
+            .is_some_and(i64::is_negative)
+        {
+            return Err(serde::de::Error::custom(
+                "rv_snapshot_receive_watermark_ms must be non-negative",
+            ));
+        }
         Ok(Self {
             position_id: wire.position_id,
             market_id: wire.market_id,
@@ -1753,6 +1868,8 @@ impl<'de> Deserialize<'de> for BoltV3ExitEvaluationEvidence {
             rv_surface_id: wire.rv_surface_id,
             rv_as_of_ms: wire.rv_as_of_ms,
             rv_ready: wire.rv_ready,
+            rv_snapshot_receive_watermark_ms: wire.rv_snapshot_receive_watermark_ms,
+            rv_max_source_age_ms: wire.rv_max_source_age_ms,
             rv_blockers: wire.rv_blockers,
             rv_source_diagnostics: wire.rv_source_diagnostics,
             rv_gate_result: wire.rv_gate_result,
@@ -3767,6 +3884,15 @@ impl ExitEvaluationLineOwned {
 }
 
 fn encode_exit_evaluation_line(evidence: &BoltV3ExitEvaluationEvidence) -> Result<Vec<u8>> {
+    if evidence.trigger_ts_init_ms.is_some_and(i64::is_negative) {
+        anyhow::bail!("trigger_ts_init_ms must be non-negative");
+    }
+    if evidence
+        .rv_snapshot_receive_watermark_ms
+        .is_some_and(i64::is_negative)
+    {
+        anyhow::bail!("rv_snapshot_receive_watermark_ms must be non-negative");
+    }
     let envelope = ExitEvaluationLine {
         schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         recorded_at_utc_ns: current_utc_ns(),
@@ -4821,6 +4947,8 @@ mod tests {
             realized_volatility: "1.5".to_string(),
             realized_volatility_surface_id: String::new(),
             realized_volatility_as_of_ms: None,
+            realized_volatility_gate_result: Some(BoltV3RvGateResult::MissingSnapshot),
+            realized_volatility_receive_watermark_ms: None,
             realized_volatility_annualized_decimal: "1.5".to_string(),
             realized_volatility_measured_annualized_decimal: String::new(),
             realized_volatility_noise_robust_annualized_decimal: String::new(),
@@ -4889,7 +5017,15 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            64
+            66
+        );
+        assert_eq!(
+            snapshot_field["realized_volatility_gate_result"],
+            "missing_snapshot"
+        );
+        assert_eq!(
+            snapshot_field["realized_volatility_receive_watermark_ms"],
+            serde_json::Value::Null
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
         assert_eq!(snapshot_field["up_worst_case_edge_basis_points"], "11");
@@ -5049,6 +5185,8 @@ mod tests {
             rv_surface_id: "surface-one".to_string(),
             rv_as_of_ms: Some(1_699_999_995_000),
             rv_ready: true,
+            rv_snapshot_receive_watermark_ms: Some(1_699_999_999_750),
+            rv_max_source_age_ms: Some(30_000),
             rv_blockers: vec!["source_stale".to_string()],
             rv_source_diagnostics: vec!["source-a:ready".to_string()],
             rv_gate_result: BoltV3RvGateResult::RejectedFutureDated,

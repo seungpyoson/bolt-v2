@@ -9,12 +9,14 @@ use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
     bolt_v3_decision_evidence::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3EntryRealizedVolatilitySnapshotEvidence, BoltV3EntrySkipEvidence,
+        BoltV3EntrySkipReasonCategory, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
     bolt_v3_taker_pricing::TakerPricingBlockReason,
+    bolt_v3_timestamp_domain::LocalReceiveMs,
 };
 
 use super::{
@@ -62,6 +64,23 @@ pub(super) struct EntryPricingInputs {
     pub(super) theta_scaled_min_edge_bps: f64,
 }
 
+/// Receive-clock ownership captured once by the entry trigger and shared by
+/// every consumer participating in that evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EntryEvaluationReceiveContext {
+    receive_ms: LocalReceiveMs,
+}
+
+impl EntryEvaluationReceiveContext {
+    pub(super) const fn new(receive_ms: LocalReceiveMs) -> Self {
+        Self { receive_ms }
+    }
+
+    pub(super) const fn receive_ms(self) -> LocalReceiveMs {
+        self.receive_ms
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum EntryPricingBlockReason {
     SpotPriceMissing,
@@ -80,7 +99,7 @@ pub(super) enum EntryPricingBlockReason {
     SizedNotionalUnsupported(OutcomeSide),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct RealizedVolatilityEvidenceFields {
     pub(super) surface_id: String,
     pub(super) as_of_ms: Option<u64>,
@@ -98,6 +117,39 @@ pub(super) struct RealizedVolatilityEvidenceFields {
     pub(super) unknown_source_rejections: BTreeMap<String, u64>,
     pub(super) blockers: Vec<String>,
     pub(super) config_fingerprint: String,
+}
+
+impl RealizedVolatilityEvidenceFields {
+    fn to_durable_snapshot(&self) -> BoltV3EntryRealizedVolatilitySnapshotEvidence {
+        BoltV3EntryRealizedVolatilitySnapshotEvidence {
+            surface_id: self.surface_id.clone(),
+            as_of_ms: self.as_of_ms,
+            annualized_decimal: self.annualized_decimal.clone(),
+            measured_annualized_decimal: self.measured_annualized_decimal.clone(),
+            noise_robust_annualized_decimal: self.noise_robust_annualized_decimal.clone(),
+            continuous_annualized_decimal: self.continuous_annualized_decimal.clone(),
+            jump_annualized_decimal: self.jump_annualized_decimal.clone(),
+            forecast_annualized_decimal: self.forecast_annualized_decimal.clone(),
+            pricing_component: self.pricing_component.clone(),
+            seconds_per_annum: self.seconds_per_annum.clone(),
+            aggregation: self.aggregation.clone(),
+            sources_used: self.sources_used.clone(),
+            source_diagnostics: self.source_diagnostics.clone(),
+            unknown_source_rejections: self.unknown_source_rejections.clone(),
+            blockers: self.blockers.clone(),
+            config_fingerprint: self.config_fingerprint.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct EntryRealizedVolatilityReceipt {
+    pub(super) gate_result: BoltV3RvGateResult,
+    pub(super) receive_watermark_ms: Option<crate::bolt_v3_timestamp_domain::LocalReceiveMs>,
+    pub(super) realized_vol: Option<f64>,
+    pub(super) source_venue: Option<String>,
+    pub(super) source_ts_ms: Option<u64>,
+    pub(super) evidence: RealizedVolatilityEvidenceFields,
 }
 
 pub(super) fn entry_pricing_block_reason_from_taker(
@@ -153,6 +205,7 @@ pub(super) fn push_executable_edge_pricing_block(
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct EntryEvaluation {
     pub(super) gate: EntryGateDecision,
+    pub(super) realized_volatility_receipt: EntryRealizedVolatilityReceipt,
     pub(super) pricing_blocked_by: Vec<EntryPricingBlockReason>,
     pub(super) fair_probability_up: Option<Probability>,
     pub(super) uncertainty_band_probability: Option<Probability>,
@@ -194,6 +247,10 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) realized_vol: Option<f64>,
     pub(super) realized_vol_source_venue: Option<String>,
     pub(super) realized_vol_source_ts_ms: Option<u64>,
+    pub(super) realized_vol_gate_result: BoltV3RvGateResult,
+    pub(super) realized_vol_receive_watermark_ms:
+        Option<crate::bolt_v3_timestamp_domain::LocalReceiveMs>,
+    pub(super) realized_volatility_evidence: RealizedVolatilityEvidenceFields,
     pub(super) pricing_kurtosis: f64,
     pub(super) theta_decay_factor: f64,
     pub(super) theta_scaled_min_edge_bps: Option<f64>,
@@ -269,6 +326,12 @@ pub(super) struct EntrySkipDedupeKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EntrySkipDedupeState {
+    pub(super) current_key: EntrySkipDedupeKey,
+    pub(super) rv_seen_mask: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockedStrategyInputSourceStateKey {
     source_id: String,
     enabled: bool,
@@ -300,6 +363,29 @@ pub(super) struct BlockedStrategyInputDedupeKey {
     realized_volatility_blockers: Vec<String>,
     realized_volatility_source_states: Vec<BlockedStrategyInputSourceStateKey>,
     realized_volatility_unknown_source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BlockedStrategyInputDedupeState {
+    pub(super) current_key: BlockedStrategyInputDedupeKey,
+    pub(super) rv_seen_mask: u16,
+}
+
+pub(super) const fn rv_gate_novelty_bit(
+    gate_result: BoltV3RvGateResult,
+    watermark_present: bool,
+) -> u16 {
+    let gate_index: u32 = match gate_result {
+        BoltV3RvGateResult::Accepted => 0,
+        BoltV3RvGateResult::MissingSnapshot => 1,
+        BoltV3RvGateResult::MissingEvaluationEventTime => 2,
+        BoltV3RvGateResult::RejectedFutureDated => 3,
+        BoltV3RvGateResult::RejectedStale => 4,
+        BoltV3RvGateResult::RejectedNotReady => 5,
+    };
+    let watermark_index = if watermark_present { 1 } else { 0 };
+    let bit_index = gate_index * 2 + watermark_index;
+    1_u16 << bit_index
 }
 
 impl BlockedStrategyInputDedupeKey {
@@ -393,6 +479,10 @@ impl BoltV3EntrySkipEvidence {
             realized_vol: option_evidence_number(fields.realized_vol),
             realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
             realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
+            realized_vol_gate_result: Some(fields.realized_vol_gate_result),
+            realized_vol_receive_watermark_ms: fields.realized_vol_receive_watermark_ms,
+            realized_vol_snapshot: (!fields.realized_volatility_evidence.surface_id.is_empty())
+                .then(|| fields.realized_volatility_evidence.to_durable_snapshot()),
             fair_probability_up: option_evidence_number(fields.fair_probability_up),
             fair_probability_down: option_evidence_number(fields.fair_probability_down),
             selected_side: fields.selected_side.map(outcome_side_to_evidence),

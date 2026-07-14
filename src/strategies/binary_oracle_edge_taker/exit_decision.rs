@@ -13,7 +13,8 @@ use crate::{
     },
     bolt_v3_feed_health::ForcedFlatReason,
     bolt_v3_market_families::OutcomeSide,
-    bolt_v3_timestamp_domain::VenueEventMs,
+    bolt_v3_realized_volatility::RealizedVolBlockReason,
+    bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
 };
 
 use super::{
@@ -30,12 +31,34 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ExitEvaluation {
+    pub(super) realized_volatility_receipt: ExitRealizedVolatilityGateReceipt,
     pub(super) position_outcome_side: Option<OutcomeSide>,
     pub(super) forced_flat_reasons: Vec<ForcedFlatReason>,
     pub(super) hold_ev_bps: Option<f64>,
     pub(super) exit_ev_bps: Option<f64>,
     pub(super) exit_decision: Option<ExitDecision>,
     pub(super) blocked_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ExitRealizedVolatilityGateReceipt {
+    pub(super) gate_result: BoltV3RvGateResult,
+    pub(super) surface_id: String,
+    pub(super) max_source_age_ms: u64,
+    pub(super) evaluation_receive_ms: Option<LocalReceiveMs>,
+    pub(super) snapshot_as_of_ms: Option<u64>,
+    pub(super) snapshot_receive_watermark_ms: Option<LocalReceiveMs>,
+    pub(super) snapshot_ready: bool,
+    pub(super) snapshot_has_ready_realized_vol: bool,
+    pub(super) realized_vol: Option<f64>,
+    pub(super) realized_vol_source_venue: Option<String>,
+    pub(super) realized_vol_source_ts_ms: Option<u64>,
+    pub(super) raw_snapshot_blockers: Vec<RealizedVolBlockReason>,
+    pub(super) source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub(super) snapshot_as_of_minus_trigger_event_ms: Option<i128>,
+    pub(super) fair_probability_up: Option<f64>,
+    pub(super) fair_probability_down: Option<f64>,
+    pub(super) uncertainty_band_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +94,27 @@ pub(super) struct ExitEvaluationTriggerContext {
 }
 
 impl ExitEvaluationTriggerContext {
+    pub(super) const fn from_market_data(
+        source: BoltV3ExitTriggerSource,
+        ts_event_ms: u64,
+        receive_ms: LocalReceiveMs,
+    ) -> Self {
+        Self {
+            source,
+            ts_event_ms,
+            ts_init_ms: Some(receive_ms.value()),
+        }
+    }
+
+    pub(super) const fn from_local_selection_handler(receive_ms: LocalReceiveMs) -> Self {
+        Self::from_market_data(
+            BoltV3ExitTriggerSource::SelectionUpdate,
+            receive_ms.value(),
+            receive_ms,
+        )
+    }
+
+    #[cfg(test)]
     pub(super) const fn new(
         source: BoltV3ExitTriggerSource,
         ts_event_ms: u64,
@@ -85,7 +129,25 @@ impl ExitEvaluationTriggerContext {
 
     #[cfg(test)]
     pub(super) const fn unknown(now_ms: u64) -> Self {
-        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
+        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, Some(now_ms))
+    }
+
+    #[cfg(test)]
+    pub(super) const fn diagnostic_missing(
+        source: BoltV3ExitTriggerSource,
+        ts_event_ms: u64,
+    ) -> Self {
+        Self::new(source, ts_event_ms, None)
+    }
+
+    /// Every runtime trigger is evaluated after it enters the process, so
+    /// `ts_init` is the universal clock for pricing freshness regardless of
+    /// whether the trigger also owns a venue event timestamp.
+    pub(super) const fn receive_ms(self) -> Option<LocalReceiveMs> {
+        match self.ts_init_ms {
+            Some(value) => Some(LocalReceiveMs::new(value)),
+            None => None,
+        }
     }
 
     pub(super) const fn venue_event_ms(self) -> Option<VenueEventMs> {
@@ -145,6 +207,9 @@ pub(super) struct ExitEvaluationLogFields {
     pub(super) rv_surface_id: String,
     pub(super) rv_snapshot_as_of_ms: Option<u64>,
     pub(super) rv_snapshot_ready: bool,
+    pub(super) rv_snapshot_has_ready_realized_vol: Option<bool>,
+    pub(super) rv_snapshot_receive_watermark_ms: Option<u64>,
+    pub(super) rv_max_source_age_ms: Option<u64>,
     pub(super) rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
     pub(super) rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
     pub(super) rv_gate_result: BoltV3ExitRvGateResult,
@@ -260,6 +325,9 @@ impl BoltV3ExitDecisionEvidence {
             rv_surface_id: fields.rv_surface_id.clone(),
             rv_snapshot_as_of_ms: fields.rv_snapshot_as_of_ms,
             rv_snapshot_ready: fields.rv_snapshot_ready,
+            rv_snapshot_has_ready_realized_vol: fields.rv_snapshot_has_ready_realized_vol,
+            rv_snapshot_receive_watermark_ms: fields.rv_snapshot_receive_watermark_ms,
+            rv_max_source_age_ms: fields.rv_max_source_age_ms,
             rv_snapshot_blockers: fields.rv_snapshot_blockers.clone(),
             rv_source_diagnostics: fields.rv_source_diagnostics.clone(),
             rv_gate_result: fields.rv_gate_result,
@@ -394,6 +462,9 @@ mod tests {
             rv_surface_id: "surface-one".to_string(),
             rv_snapshot_as_of_ms: Some(1_200),
             rv_snapshot_ready: true,
+            rv_snapshot_has_ready_realized_vol: Some(true),
+            rv_snapshot_receive_watermark_ms: Some(1_195),
+            rv_max_source_age_ms: Some(500),
             rv_snapshot_blockers: Vec::new(),
             rv_source_diagnostics: Vec::new(),
             rv_gate_result: BoltV3ExitRvGateResult::Accepted,

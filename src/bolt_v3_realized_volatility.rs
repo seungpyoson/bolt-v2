@@ -246,6 +246,11 @@ pub struct RealizedVolObservation {
 pub struct RealizedVolSnapshot {
     pub surface_id: String,
     pub as_of_ms: u64,
+    /// Latest receive timestamp among accepted observations which contribute to
+    /// this surface. Pricing freshness is evaluated only against this watermark;
+    /// `as_of_ms` remains the surface's venue-event-time coordinate for RV math
+    /// and evidence.
+    pub latest_accepted_receive_ms: Option<LocalReceiveMs>,
     pub annualized_realized_vol_decimal: Option<f64>,
     pub measured_annualized_realized_vol_decimal: Option<f64>,
     pub noise_robust_annualized_realized_vol_decimal: Option<f64>,
@@ -301,6 +306,7 @@ impl RealizedVolSnapshot {
         Self {
             surface_id: surface_id.to_string(),
             as_of_ms,
+            latest_accepted_receive_ms: None,
             annualized_realized_vol_decimal: None,
             measured_annualized_realized_vol_decimal: None,
             noise_robust_annualized_realized_vol_decimal: None,
@@ -458,19 +464,15 @@ impl RealizedVolEngine {
         &self.config
     }
 
-    pub fn latest_event_ts(&self) -> Option<VenueEventMs> {
+    pub fn latest_accepted_event_ts(&self) -> Option<VenueEventMs> {
         self.sources
             .values()
-            .flat_map(|state| {
-                [
-                    state
-                        .samples
-                        .back()
-                        .map(|sample| VenueEventMs::new(sample.event_ts_ms)),
-                    state.last_rejected_event_ts_ms.map(VenueEventMs::new),
-                ]
+            .filter_map(|state| {
+                state
+                    .samples
+                    .back()
+                    .map(|sample| VenueEventMs::new(sample.event_ts_ms))
             })
-            .flatten()
             .max()
     }
 
@@ -516,7 +518,8 @@ impl RealizedVolEngine {
             blockers.insert(RealizedVolBlockReason::AnnualizationBasisInvalid);
         }
         for state in self.sources.values() {
-            let diagnostic = source_diagnostic(&self.config, state, as_of_ms);
+            let (diagnostic, latest_used_receive_ms) =
+                source_diagnostic(&self.config, state, as_of_ms);
             if let (true, RealizedVolSourceStatus::Ready, true, Some(value), _) = (
                 state.config.enabled,
                 diagnostic.status,
@@ -533,6 +536,8 @@ impl RealizedVolEngine {
                     noise_robust: diagnostic.noise_robust_annualized_realized_vol_decimal,
                     continuous: diagnostic.continuous_annualized_realized_vol_decimal,
                     jump: diagnostic.jump_annualized_realized_vol_decimal,
+                    latest_accepted_receive_ms: latest_used_receive_ms
+                        .expect("a ready source must contain an accepted sample"),
                 });
             }
             diagnostics.push(diagnostic);
@@ -571,9 +576,14 @@ impl RealizedVolEngine {
             _ => {}
         }
         let ready = blockers.is_empty() && aggregate.is_some();
+        let latest_accepted_receive_ms = ready_values
+            .iter()
+            .map(|value| value.latest_accepted_receive_ms)
+            .max();
         RealizedVolSnapshot {
             surface_id: self.config.surface_id.clone(),
             as_of_ms,
+            latest_accepted_receive_ms,
             annualized_realized_vol_decimal: if ready { aggregate } else { None },
             measured_annualized_realized_vol_decimal: if ready { measured_aggregate } else { None },
             noise_robust_annualized_realized_vol_decimal: if ready {
@@ -802,7 +812,14 @@ struct SourceComputation {
     noise_robust_rv: Option<f64>,
     continuous_rv: Option<f64>,
     jump_rv: Option<f64>,
+    latest_used_receive_ms: Option<LocalReceiveMs>,
     block_reason: Option<RealizedVolBlockReason>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GridPoint<'a> {
+    ts_ms: u64,
+    sample: &'a RealizedVolObservation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -815,13 +832,14 @@ struct ReadySourceValue {
     noise_robust: Option<f64>,
     continuous: Option<f64>,
     jump: Option<f64>,
+    latest_accepted_receive_ms: LocalReceiveMs,
 }
 
 fn source_diagnostic(
     config: &RealizedVolEngineConfig,
     state: &SourceState,
     as_of_ms: u64,
-) -> RealizedVolSourceDiagnostic {
+) -> (RealizedVolSourceDiagnostic, Option<LocalReceiveMs>) {
     let window_start_ms = as_of_ms.saturating_sub(config.window_ms);
     let samples = state
         .samples
@@ -837,7 +855,7 @@ fn source_diagnostic(
     };
     let max_gap = grid
         .windows(2)
-        .map(|pair| pair[1].0.saturating_sub(pair[0].0))
+        .map(|pair| pair[1].ts_ms.saturating_sub(pair[0].ts_ms))
         .max();
     let computation = compute_rv(config, &samples, &grid, coverage_ratio, max_gap, as_of_ms);
     let window_samples = samples
@@ -860,7 +878,8 @@ fn source_diagnostic(
     } else {
         rejection_block_reason.or(computation.block_reason)
     };
-    RealizedVolSourceDiagnostic {
+    let latest_used_receive_ms = computation.latest_used_receive_ms;
+    let diagnostic = RealizedVolSourceDiagnostic {
         source_id: state.config.source_id.clone(),
         source_class: state.config.source_class,
         sample_kind: state.config.sample_kind,
@@ -883,7 +902,8 @@ fn source_diagnostic(
         last_rejected_recv_ts_ms: state.last_rejected_recv_ts_ms,
         rejection_counters: state.rejection_counters.clone(),
         block_reason,
-    }
+    };
+    (diagnostic, latest_used_receive_ms)
 }
 
 fn source_status(
@@ -903,12 +923,12 @@ fn source_status(
     RealizedVolSourceStatus::Blocked
 }
 
-fn grid_prices(
+fn grid_prices<'a>(
     config: &RealizedVolEngineConfig,
-    samples: &[&RealizedVolObservation],
+    samples: &[&'a RealizedVolObservation],
     window_start_ms: u64,
     as_of_ms: u64,
-) -> Vec<(u64, f64)> {
+) -> Vec<GridPoint<'a>> {
     let mut out = Vec::new();
     let mut latest = None;
     let mut index = 0;
@@ -920,7 +940,7 @@ fn grid_prices(
         }
         match latest {
             Some(sample) if ts.saturating_sub(sample.event_ts_ms) <= config.max_source_age_ms => {
-                out.push((ts, sample.price));
+                out.push(GridPoint { ts_ms: ts, sample });
             }
             _ => {}
         }
@@ -938,15 +958,15 @@ fn grid_prices(
 fn compute_rv(
     config: &RealizedVolEngineConfig,
     samples: &[&RealizedVolObservation],
-    grid: &[(u64, f64)],
+    grid: &[GridPoint<'_>],
     coverage_ratio: f64,
     max_gap: Option<u64>,
     as_of_ms: u64,
 ) -> SourceComputation {
-    let Some((last_grid_ts_ms, _)) = grid.last() else {
+    let Some(last_grid_point) = grid.last() else {
         return blocked_computation(RealizedVolBlockReason::NotWarm);
     };
-    if as_of_ms.saturating_sub(*last_grid_ts_ms) > config.max_source_age_ms {
+    if as_of_ms.saturating_sub(last_grid_point.ts_ms) > config.max_source_age_ms {
         return blocked_computation(RealizedVolBlockReason::SourceStale);
     }
     if grid.len() < 2 {
@@ -964,7 +984,9 @@ fn compute_rv(
     let Some(measured) = variance_from_grid(config, grid) else {
         return blocked_computation(RealizedVolBlockReason::NotWarm);
     };
-    let Some(noise_robust_variance) = noise_robust_variance(config, samples, grid, measured) else {
+    let Some((noise_robust_variance, noise_latest_receive_ms)) =
+        noise_robust_variance(config, samples, grid, measured)
+    else {
         return blocked_computation(RealizedVolBlockReason::NotWarm);
     };
     let (continuous_variance, jump_variance) = match config.estimator.jump.policy {
@@ -1004,6 +1026,11 @@ fn compute_rv(
         noise_robust_rv: Some(noise_robust_rv),
         continuous_rv: Some(continuous_rv),
         jump_rv: Some(jump_rv),
+        latest_used_receive_ms: grid
+            .iter()
+            .map(|point| LocalReceiveMs::new(point.sample.recv_ts_ms))
+            .chain(std::iter::once(noise_latest_receive_ms))
+            .max(),
         block_reason: None,
     }
 }
@@ -1015,6 +1042,7 @@ fn blocked_computation(reason: RealizedVolBlockReason) -> SourceComputation {
         noise_robust_rv: None,
         continuous_rv: None,
         jump_rv: None,
+        latest_used_receive_ms: None,
         block_reason: Some(reason),
     }
 }
@@ -1023,12 +1051,12 @@ fn valid_vol_from_variance(variance: f64) -> Option<f64> {
     ValidRealizedVol::new(variance.sqrt()).map(ValidRealizedVol::get)
 }
 
-fn variance_from_grid(config: &RealizedVolEngineConfig, grid: &[(u64, f64)]) -> Option<f64> {
+fn variance_from_grid(config: &RealizedVolEngineConfig, grid: &[GridPoint<'_>]) -> Option<f64> {
     let mut sum = ZERO_F64;
     let mut elapsed_ms = 0;
     for pair in grid.windows(2) {
-        let dt = pair[1].0.saturating_sub(pair[0].0);
-        let log_return = (pair[1].1 / pair[0].1).ln();
+        let dt = pair[1].ts_ms.saturating_sub(pair[0].ts_ms);
+        let log_return = (pair[1].sample.price / pair[0].sample.price).ln();
         if dt == ZERO_MILLIS_U64 || !log_return.is_finite() {
             return None;
         }
@@ -1042,11 +1070,15 @@ fn variance_from_grid(config: &RealizedVolEngineConfig, grid: &[(u64, f64)]) -> 
 fn noise_robust_variance(
     config: &RealizedVolEngineConfig,
     samples: &[&RealizedVolObservation],
-    grid: &[(u64, f64)],
+    grid: &[GridPoint<'_>],
     measured_variance: f64,
-) -> Option<f64> {
+) -> Option<(f64, LocalReceiveMs)> {
+    let base_latest_receive_ms = grid
+        .iter()
+        .map(|point| LocalReceiveMs::new(point.sample.recv_ts_ms))
+        .max()?;
     match &config.estimator.noise.method {
-        RealizedVolNoiseMethod::None => Some(measured_variance),
+        RealizedVolNoiseMethod::None => Some((measured_variance, base_latest_receive_ms)),
         RealizedVolNoiseMethod::CoarserGrid {
             coarse_sampling_interval_ms,
             policy,
@@ -1054,7 +1086,7 @@ fn noise_robust_variance(
             if *coarse_sampling_interval_ms == ZERO_MILLIS_U64 {
                 return None;
             }
-            let (Some((first_grid_ts, _)), Some((last_grid_ts, _))) = (grid.first(), grid.last())
+            let (Some(first_grid_point), Some(last_grid_point)) = (grid.first(), grid.last())
             else {
                 return None;
             };
@@ -1062,14 +1094,22 @@ fn noise_robust_variance(
                 *coarse_sampling_interval_ms,
                 config.max_source_age_ms,
                 samples,
-                first_grid_ts.saturating_sub(*coarse_sampling_interval_ms),
-                *last_grid_ts,
+                first_grid_point
+                    .ts_ms
+                    .saturating_sub(*coarse_sampling_interval_ms),
+                last_grid_point.ts_ms,
             );
             let coarse = variance_from_grid(config, &coarse_grid)?;
-            match policy {
-                RealizedVolCoarserGridPolicy::CoarseOnly => Some(coarse),
-                RealizedVolCoarserGridPolicy::MinBaseCoarse => Some(measured_variance.min(coarse)),
-            }
+            let latest_receive_ms = coarse_grid
+                .iter()
+                .map(|point| LocalReceiveMs::new(point.sample.recv_ts_ms))
+                .chain(std::iter::once(base_latest_receive_ms))
+                .max()?;
+            let variance = match policy {
+                RealizedVolCoarserGridPolicy::CoarseOnly => coarse,
+                RealizedVolCoarserGridPolicy::MinBaseCoarse => measured_variance.min(coarse),
+            };
+            Some((variance, latest_receive_ms))
         }
         RealizedVolNoiseMethod::Subsampled {
             subsamples,
@@ -1078,12 +1118,15 @@ fn noise_robust_variance(
             if *subsamples == ZERO_COUNT_USIZE || *min_ready_subsamples == ZERO_COUNT_USIZE {
                 return None;
             }
-            let (Some((first_grid_ts, _)), Some((last_grid_ts, _))) = (grid.first(), grid.last())
+            let (Some(first_grid_point), Some(last_grid_point)) = (grid.first(), grid.last())
             else {
                 return None;
             };
-            let window_start_ms = first_grid_ts.saturating_sub(config.sampling_interval_ms);
+            let window_start_ms = first_grid_point
+                .ts_ms
+                .saturating_sub(config.sampling_interval_ms);
             let mut variances = Vec::new();
+            let mut latest_receive_ms = base_latest_receive_ms;
             for offset in ZERO_COUNT_USIZE..*subsamples {
                 let offset_ms = ((config.sampling_interval_ms as u128 * offset as u128)
                     / *subsamples as u128) as u64;
@@ -1092,30 +1135,40 @@ fn noise_robust_variance(
                     config.max_source_age_ms,
                     samples,
                     window_start_ms.saturating_add(offset_ms),
-                    *last_grid_ts,
+                    last_grid_point.ts_ms,
                 );
                 if lane.len() < POWER_OF_TWO as usize {
                     continue;
                 }
                 if let Some(variance) = variance_from_grid(config, &lane) {
                     variances.push(variance);
+                    if let Some(lane_latest_receive_ms) = lane
+                        .iter()
+                        .map(|point| LocalReceiveMs::new(point.sample.recv_ts_ms))
+                        .max()
+                    {
+                        latest_receive_ms = latest_receive_ms.max(lane_latest_receive_ms);
+                    }
                 }
             }
             if variances.len() < *min_ready_subsamples {
                 return None;
             }
-            Some(variances.iter().sum::<f64>() / variances.len() as f64)
+            Some((
+                variances.iter().sum::<f64>() / variances.len() as f64,
+                latest_receive_ms,
+            ))
         }
     }
 }
 
-fn grid_prices_with_interval(
+fn grid_prices_with_interval<'a>(
     sampling_interval_ms: u64,
     max_source_age_ms: u64,
-    samples: &[&RealizedVolObservation],
+    samples: &[&'a RealizedVolObservation],
     window_start_ms: u64,
     as_of_ms: u64,
-) -> Vec<(u64, f64)> {
+) -> Vec<GridPoint<'a>> {
     let mut out = Vec::new();
     let mut latest = None;
     let mut index = 0;
@@ -1128,7 +1181,7 @@ fn grid_prices_with_interval(
         if let Some(sample) = latest
             && ts.saturating_sub(sample.event_ts_ms) <= max_source_age_ms
         {
-            out.push((ts, sample.price));
+            out.push(GridPoint { ts_ms: ts, sample });
         }
         let Some(next_ts) = ts.checked_add(sampling_interval_ms) else {
             break;
@@ -1141,12 +1194,12 @@ fn grid_prices_with_interval(
     out
 }
 
-fn bipower_variation(config: &RealizedVolEngineConfig, grid: &[(u64, f64)]) -> Option<f64> {
+fn bipower_variation(config: &RealizedVolEngineConfig, grid: &[GridPoint<'_>]) -> Option<f64> {
     let mut returns = Vec::new();
     let mut elapsed_ms = 0;
     for pair in grid.windows(2) {
-        let dt = pair[1].0.saturating_sub(pair[0].0);
-        let log_return = (pair[1].1 / pair[0].1).ln();
+        let dt = pair[1].ts_ms.saturating_sub(pair[0].ts_ms);
+        let log_return = (pair[1].sample.price / pair[0].sample.price).ln();
         if dt == ZERO_MILLIS_U64 || !log_return.is_finite() {
             return None;
         }
@@ -1264,6 +1317,7 @@ fn aggregate_component(
                 noise_robust: None,
                 continuous: None,
                 jump: None,
+                latest_accepted_receive_ms: value.latest_accepted_receive_ms,
             })
         })
         .collect::<Vec<_>>();

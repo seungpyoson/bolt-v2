@@ -43,6 +43,7 @@ const SETTLEMENT_PINNED_FAILURE: &str = "hold-to-resolution must close exposure 
 const POSITION_MARKET_LIFECYCLE_PINNED_FAILURE: &str =
     "managed position must own its market lifecycle across active-market roll";
 const TEST_LOSS_STATE_MAX_BYTES: u64 = 65_536;
+const TEST_RECOVERY_EVIDENCE_MAX_BYTES: u64 = 1_048_576;
 const TEST_LOSS_ACTION_RETRY_INTERVAL_MS: u64 = 250;
 const TEST_LOSS_ACTION_RETRY_TIMEOUT_MS: u64 = 5_000;
 
@@ -2339,6 +2340,94 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     assert_eq!(explanations.len(), 1);
     assert_eq!(explanations[0].settlement_key, settlement_key);
     assert!(strategy.settled_position_keys.contains(&settlement_key));
+}
+
+fn restart_strategy_with_open_position_at_recovery_path(
+    evidence_path: &std::path::Path,
+) -> BinaryOracleEdgeTaker {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission,
+    );
+    strategy.context =
+        strategy
+            .context
+            .clone()
+            .with_settlement_recovery(Some(BoltV3SettlementRecoveryConfig {
+                path: evidence_path.to_path_buf(),
+                max_bytes: TEST_RECOVERY_EVIDENCE_MAX_BYTES,
+            }));
+    let cache = register_test_strategy(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "recovery-boundary-market",
+        "recovery-boundary-market",
+        "Up",
+        1_000,
+        2_000,
+    );
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("RECOVERY-BOUNDARY-ORDER"),
+        instrument.id(),
+        Some(PositionId::from("P-RECOVERY-BOUNDARY")),
+        OrderSide::Buy,
+    );
+    let position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_instrument(instrument)
+            .expect("test cache should accept recovery-boundary instrument");
+        cache
+            .add_position(&position, NtOmsType::Netting)
+            .expect("test cache should accept recovery-boundary position");
+    }
+    strategy
+}
+
+#[test]
+fn restart_with_open_position_recovers_at_one_mib_boundary() {
+    let temp = tempfile::tempdir().expect("recovery-boundary tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    std::fs::write(
+        &evidence_path,
+        vec![b'\n'; TEST_RECOVERY_EVIDENCE_MAX_BYTES as usize],
+    )
+    .expect("one-MiB valid empty-line evidence fixture should write");
+    let mut strategy = restart_strategy_with_open_position_at_recovery_path(&evidence_path);
+
+    strategy.bootstrap_recovery_from_cache();
+
+    assert!(
+        matches!(strategy.exposure, ExposureState::Managed(_)),
+        "an open position must recover when the whole evidence file is exactly one MiB"
+    );
+}
+
+#[test]
+fn restart_with_open_position_enters_blind_recovery_above_one_mib_boundary() {
+    let temp = tempfile::tempdir().expect("recovery-boundary tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    std::fs::write(
+        &evidence_path,
+        vec![b'\n'; TEST_RECOVERY_EVIDENCE_MAX_BYTES as usize + 1],
+    )
+    .expect("over-one-MiB valid empty-line evidence fixture should write");
+    let mut strategy = restart_strategy_with_open_position_at_recovery_path(&evidence_path);
+
+    strategy.bootstrap_recovery_from_cache();
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed
+        })
+    ));
 }
 
 fn settlement_loss_config(

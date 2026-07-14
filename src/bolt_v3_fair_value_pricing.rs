@@ -11,7 +11,7 @@ use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs},
     bolt_v3_numeric::is_positive_finite,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
-    bolt_v3_timestamp_domain::VenueEventMs,
+    bolt_v3_timestamp_domain::LocalReceiveMs,
 };
 
 use std::collections::BTreeMap;
@@ -35,7 +35,7 @@ pub struct FairValuePricingConfig<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FairValuePricingRequest {
     pub now_ms: u64,
-    pub realized_vol_gate_event_ms: Option<VenueEventMs>,
+    pub realized_vol_gate_receive_ms: LocalReceiveMs,
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
 }
@@ -82,6 +82,24 @@ pub struct FairValuePricingState {
     // not price; those foreign entries are retained under their own keys but are never read
     // by this strategy for pricing.
     latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptedRealizedVolSnapshot {
+    pub snapshot: RealizedVolSnapshot,
+    pub receive_watermark_ms: LocalReceiveMs,
+    pub ready_realized_vol: f64,
+    pub source_venue: Option<String>,
+    pub source_as_of_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RealizedVolGateClassification {
+    Accepted(AcceptedRealizedVolSnapshot),
+    Rejected {
+        gate_result: BoltV3RvGateResult,
+        snapshot: Option<RealizedVolSnapshot>,
+    },
 }
 
 impl FairValuePricingState {
@@ -196,6 +214,42 @@ impl FairValuePricingState {
         self.latest_realized_vol_snapshots.get(surface_id)
     }
 
+    pub fn classify_realized_vol_snapshot(
+        &self,
+        surface_id: &str,
+        evaluation_receive_ms: LocalReceiveMs,
+        max_source_age_ms: Option<u64>,
+    ) -> RealizedVolGateClassification {
+        let snapshot = self.latest_realized_vol_snapshots.get(surface_id);
+        let gate_result =
+            classify_rv_gate(snapshot, Some(evaluation_receive_ms), max_source_age_ms);
+        if gate_result != BoltV3RvGateResult::Accepted {
+            return RealizedVolGateClassification::Rejected {
+                gate_result,
+                snapshot: snapshot.cloned(),
+            };
+        }
+        let snapshot = snapshot
+            .expect("accepted RV classification mechanically requires a snapshot")
+            .clone();
+        let receive_watermark_ms = snapshot
+            .latest_accepted_receive_ms
+            .expect("accepted RV classification mechanically requires a receive watermark");
+        let ready_realized_vol = snapshot
+            .ready_realized_vol()
+            .expect("accepted RV classification mechanically requires a ready value")
+            .get();
+        let (source_venue, _) = realized_vol_source_evidence(&snapshot);
+        let source_as_of_ms = snapshot.as_of_ms;
+        RealizedVolGateClassification::Accepted(AcceptedRealizedVolSnapshot {
+            snapshot,
+            receive_watermark_ms,
+            ready_realized_vol,
+            source_venue,
+            source_as_of_ms,
+        })
+    }
+
     #[cfg(test)]
     pub fn clear_latest_realized_vol_snapshot(&mut self) {
         self.latest_realized_vol_snapshots
@@ -204,24 +258,24 @@ impl FairValuePricingState {
 
     pub fn current_realized_vol_at(
         &self,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<f64> {
         self.current_surfaced_realized_vol_at(
             &self.realized_volatility_surface_id,
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
             max_source_age_ms,
         )
     }
 
     pub fn current_realized_vol_source_at(
         &self,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> (Option<String>, Option<u64>) {
         self.current_surfaced_realized_vol_snapshot_at(
             &self.realized_volatility_surface_id,
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
             max_source_age_ms,
         )
         .map_or((None, None), realized_vol_source_evidence)
@@ -252,7 +306,7 @@ impl FairValuePricingState {
         }
 
         let realized_vol =
-            self.current_realized_vol_for_config_at(config, request.realized_vol_gate_event_ms);
+            self.current_realized_vol_for_config_at(config, request.realized_vol_gate_receive_ms);
         if realized_vol.is_none() {
             blocked_by.push(FairValuePricingBlockReason::RealizedVolNotReady);
         }
@@ -275,13 +329,13 @@ impl FairValuePricingState {
         request: FairValuePricingRequest,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         let inputs = self.fair_value_inputs_at(config, request)?;
-        self.fair_value_pricing_from_inputs(config, request.realized_vol_gate_event_ms, inputs)
+        self.fair_value_pricing_from_inputs(config, request.realized_vol_gate_receive_ms, inputs)
     }
 
     pub fn fair_value_pricing_from_inputs(
         &self,
         config: &FairValuePricingConfig<'_>,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         self.debug_assert_config_surface_matches_state(config);
@@ -300,7 +354,7 @@ impl FairValuePricingState {
             ]);
         };
         let (realized_vol_surface_id, realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.current_realized_vol_evidence_for_config_at(config, realized_vol_gate_event_ms);
+            self.current_realized_vol_evidence_for_config_at(config, realized_vol_gate_receive_ms);
 
         Ok(FairValuePricingResult {
             spot_price: inputs.spot_price,
@@ -318,11 +372,11 @@ impl FairValuePricingState {
     fn current_realized_vol_for_config_at(
         &self,
         config: &FairValuePricingConfig<'_>,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> Option<f64> {
         self.current_surfaced_realized_vol_at(
             config.realized_volatility_surface_id,
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
             config.realized_volatility_max_source_age_ms,
         )
     }
@@ -330,12 +384,12 @@ impl FairValuePricingState {
     fn current_realized_vol_evidence_for_config_at(
         &self,
         config: &FairValuePricingConfig<'_>,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
     ) -> (Option<String>, Option<String>, Option<u64>) {
         let surface_id = config.realized_volatility_surface_id;
         self.current_surfaced_realized_vol_snapshot_at(
             surface_id,
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
             config.realized_volatility_max_source_age_ms,
         )
         .map_or((None, None, None), |snapshot| {
@@ -347,12 +401,12 @@ impl FairValuePricingState {
     fn current_surfaced_realized_vol_at(
         &self,
         surface_id: &str,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<f64> {
         self.current_surfaced_realized_vol_snapshot_at(
             surface_id,
-            realized_vol_gate_event_ms,
+            realized_vol_gate_receive_ms,
             max_source_age_ms,
         )
         .and_then(|snapshot| snapshot.ready_realized_vol())
@@ -362,14 +416,18 @@ impl FairValuePricingState {
     fn current_surfaced_realized_vol_snapshot_at(
         &self,
         surface_id: &str,
-        realized_vol_gate_event_ms: Option<VenueEventMs>,
+        realized_vol_gate_receive_ms: LocalReceiveMs,
         max_source_age_ms: Option<u64>,
     ) -> Option<&RealizedVolSnapshot> {
         let snapshot = self.latest_realized_vol_snapshots.get(surface_id);
         // Single source of truth for the realized-vol staleness gate: the same
         // classification drives both the pricing gate (here) and the RCA exit
         // evidence (#885). The gate admits a snapshot only when `Accepted`.
-        match classify_rv_gate(snapshot, realized_vol_gate_event_ms, max_source_age_ms) {
+        match classify_rv_gate(
+            snapshot,
+            Some(realized_vol_gate_receive_ms),
+            max_source_age_ms,
+        ) {
             BoltV3RvGateResult::Accepted => snapshot,
             BoltV3RvGateResult::MissingSnapshot
             | BoltV3RvGateResult::MissingEvaluationEventTime
@@ -400,6 +458,7 @@ impl FairValuePricingState {
         self.observe_realized_vol_snapshot(RealizedVolSnapshot {
             surface_id: self.realized_volatility_surface_id.clone(),
             as_of_ms: ready_ts_ms,
+            latest_accepted_receive_ms: Some(LocalReceiveMs::new(ready_ts_ms)),
             annualized_realized_vol_decimal: Some(realized_vol),
             measured_annualized_realized_vol_decimal: Some(realized_vol),
             noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
@@ -431,32 +490,35 @@ fn realized_vol_source_evidence(snapshot: &RealizedVolSnapshot) -> (Option<Strin
     )
 }
 
-/// Classify the realized-vol staleness gate for a surface at the consuming
-/// venue event timestamp.
+/// Classify the realized-vol staleness gate in the process-local receive clock.
 ///
 /// Single source of truth for the gate decision: `current_surfaced_realized_vol_snapshot_at`
 /// admits a snapshot only when this returns [`BoltV3RvGateResult::Accepted`], and the #885
 /// exit-evaluation evidence records the same classification so a rejected snapshot is
-/// explainable from disk. The production gate collapses missing event time, future-dated,
-/// stale, and not-ready into a single `None`; this split preserves which condition fired
-/// for RCA.
+/// explainable from disk. Production pricing requests require `LocalReceiveMs`; only this
+/// lower diagnostic boundary accepts `None` so missing receive context remains classifiable
+/// for RCA without being constructible in pricing APIs. The surface's venue-event `as_of_ms`
+/// is deliberately not comparable here:
+/// it belongs to the RV source venue, not necessarily the consuming venue.
 pub fn classify_rv_gate(
     snapshot: Option<&RealizedVolSnapshot>,
-    realized_vol_gate_event_ms: Option<VenueEventMs>,
+    realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
     max_source_age_ms: Option<u64>,
 ) -> BoltV3RvGateResult {
     let Some(snapshot) = snapshot else {
         return BoltV3RvGateResult::MissingSnapshot;
     };
-    let Some(realized_vol_gate_event_ms) = realized_vol_gate_event_ms else {
+    let Some(realized_vol_gate_receive_ms) = realized_vol_gate_receive_ms else {
         return BoltV3RvGateResult::MissingEvaluationEventTime;
     };
-    let snapshot_as_of_ms = VenueEventMs::new(snapshot.as_of_ms);
-    if snapshot_as_of_ms > realized_vol_gate_event_ms {
+    let Some(snapshot_receive_ms) = snapshot.latest_accepted_receive_ms else {
+        return BoltV3RvGateResult::RejectedNotReady;
+    };
+    if snapshot_receive_ms > realized_vol_gate_receive_ms {
         return BoltV3RvGateResult::RejectedFutureDated;
     }
     if max_source_age_ms.is_some_and(|max_age_ms| {
-        realized_vol_gate_event_ms.saturating_duration_since(snapshot_as_of_ms) > max_age_ms
+        realized_vol_gate_receive_ms.saturating_duration_since(snapshot_receive_ms) > max_age_ms
     }) {
         return BoltV3RvGateResult::RejectedStale;
     }
@@ -496,7 +558,7 @@ mod tests {
     fn classify_rv_gate_covers_core_rejection_arms() {
         // Missing snapshot.
         assert_eq!(
-            classify_rv_gate(None, Some(VenueEventMs::new(1_000)), Some(500)),
+            classify_rv_gate(None, Some(LocalReceiveMs::new(1_000)), Some(500)),
             BoltV3RvGateResult::MissingSnapshot
         );
 
@@ -509,7 +571,7 @@ mod tests {
         assert_eq!(
             classify_rv_gate(
                 Some(ready_snapshot),
-                Some(VenueEventMs::new(500)),
+                Some(LocalReceiveMs::new(500)),
                 Some(500)
             ),
             BoltV3RvGateResult::RejectedFutureDated
@@ -518,7 +580,11 @@ mod tests {
         // Present and not in the future, but not ready.
         let not_ready = not_ready_snapshot(1_000);
         assert_eq!(
-            classify_rv_gate(Some(&not_ready), Some(VenueEventMs::new(1_000)), Some(500)),
+            classify_rv_gate(
+                Some(&not_ready),
+                Some(LocalReceiveMs::new(1_000)),
+                Some(500)
+            ),
             BoltV3RvGateResult::RejectedNotReady
         );
 
@@ -526,7 +592,7 @@ mod tests {
         assert_eq!(
             classify_rv_gate(
                 Some(ready_snapshot),
-                Some(VenueEventMs::new(1_000)),
+                Some(LocalReceiveMs::new(1_000)),
                 Some(500)
             ),
             BoltV3RvGateResult::Accepted
@@ -558,7 +624,7 @@ mod tests {
         assert_eq!(
             classify_rv_gate(
                 Some(ready_snapshot),
-                Some(VenueEventMs::new(1_500)),
+                Some(LocalReceiveMs::new(1_500)),
                 Some(500)
             ),
             BoltV3RvGateResult::Accepted,
@@ -567,7 +633,7 @@ mod tests {
         assert_eq!(
             classify_rv_gate(
                 Some(ready_snapshot),
-                Some(VenueEventMs::new(1_501)),
+                Some(LocalReceiveMs::new(1_501)),
                 Some(500)
             ),
             BoltV3RvGateResult::RejectedStale,
@@ -583,7 +649,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     TEST_SURFACE_ID,
-                    Some(VenueEventMs::new(1_000)),
+                    LocalReceiveMs::new(1_000),
                     Some(500),
                 )
                 .is_some()
@@ -593,7 +659,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     TEST_SURFACE_ID,
-                    Some(VenueEventMs::new(500)),
+                    LocalReceiveMs::new(500),
                     Some(500),
                 )
                 .is_none()
@@ -603,7 +669,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     TEST_SURFACE_ID,
-                    Some(VenueEventMs::new(1_501)),
+                    LocalReceiveMs::new(1_501),
                     Some(500),
                 )
                 .is_none()
@@ -613,7 +679,7 @@ mod tests {
             engine
                 .current_surfaced_realized_vol_snapshot_at(
                     "<other_surface>",
-                    Some(VenueEventMs::new(1_000)),
+                    LocalReceiveMs::new(1_000),
                     Some(500),
                 )
                 .is_none()

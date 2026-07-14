@@ -1252,11 +1252,7 @@ fn exit_submit_refreshes_reference_failover_before_forced_flat_check() {
     strategy
         .try_submit_exit_order_for_trigger(
             1_220,
-            ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-                1_220,
-                None,
-            ),
+            ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(1_220)),
         )
         .expect("exit submit evaluation should not fail");
 

@@ -152,12 +152,7 @@ impl GroupingProof {
                 return Ok(());
             }
             Some(ConcreteGroupingProofRef::StructuredOutcome(proof)) => {
-                #[rustfmt::skip]
-                match proof {
-                    StructuredOutcomeGroupingProof {
-                        proof_fingerprint, ..
-                    } => validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?,
-                }
+                validate_structured_outcome_sha_fields(proof)?;
                 return Ok(());
             }
             None => {}
@@ -175,6 +170,18 @@ impl GroupingProof {
         }
         Ok(())
     }
+}
+
+#[rustfmt::skip]
+fn validate_structured_outcome_sha_fields(
+    proof: &StructuredOutcomeGroupingProof,
+) -> Result<(), OutcomeGroupValidationError> {
+    match proof {
+        StructuredOutcomeGroupingProof {
+            proof_fingerprint, ..
+        } => validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?,
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

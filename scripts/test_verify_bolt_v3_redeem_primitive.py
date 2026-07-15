@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the mechanically disabled AO-REDEEM source fence."""
+"""Negative regression tests for the AO-REDEEM structural fence."""
 
 from __future__ import annotations
 
@@ -19,97 +19,162 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         root = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root)
         for relative in verifier.REQUIRED_PATHS:
-            source = REPO_ROOT / relative
-            destination = root / relative
+            source, destination = REPO_ROOT / relative, root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
         return root
 
+    def mutate(self, root: pathlib.Path, relative: str, old: str, new: str) -> None:
+        path = root / relative
+        source = path.read_text(encoding="utf-8")
+        self.assertIn(old, source)
+        path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+    def assert_rejected(self, root: pathlib.Path, needle: str) -> None:
+        errors = verifier.verify(root)
+        self.assertTrue(any(needle in error for error in errors), errors)
+
     def test_current_tree_satisfies_redeem_fence(self) -> None:
         self.assertEqual(verifier.verify(REPO_ROOT), [])
 
-    def test_manifest_drift_fails_closed(self) -> None:
+    def test_manifest_and_source_snapshot_drift_fail_closed(self) -> None:
         root = self.fixture()
-        path = root / verifier.MANIFEST_PATH
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "ccc0596074f4dfd62c944fbca4de252893b82b4b",
-                "0000000000000000000000000000000000000000",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(any("reviewed revision" in error for error in verifier.verify(root)))
-
-    def test_source_snapshot_drift_fails_closed(self) -> None:
+        self.mutate(root, str(verifier.MANIFEST_PATH), verifier.EXPECTED_REVISIONS["adapter"], "0" * 40)
+        self.assert_rejected(root, "reviewed revision")
         root = self.fixture()
-        path = root / "tests/fixtures/bolt_v3/redeem/source/ctf-collateral-adapter.txt"
+        path = root / "tests/fixtures/bolt_v3/redeem/source/relayer-safe-builder.txt"
         path.write_text(path.read_text(encoding="utf-8") + "drift\n", encoding="utf-8")
-        self.assertTrue(any("source snapshot digest" in error for error in verifier.verify(root)))
+        self.assert_rejected(root, "source snapshot digest")
 
-    def test_competing_nonce_cannot_be_claimed_without_conformance(self) -> None:
+    def test_enable_and_alternate_secret_fail_closed(self) -> None:
         root = self.fixture()
-        path = root / verifier.MANIFEST_PATH
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                'competing_same_nonce = "unproven"',
-                'competing_same_nonce = "supported"',
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(any("competing-same-nonce" in error for error in verifier.verify(root)))
-
-    def test_config_cannot_enable_or_add_non_ssm_credentials(self) -> None:
+        self.mutate(root, str(verifier.CONFIG_PATH), "enabled = false", "enabled = true")
+        self.assert_rejected(root, "disabled")
         root = self.fixture()
         path = root / verifier.CONFIG_PATH
-        config = path.read_text(encoding="utf-8")
-        config = config.replace("enabled = false", "enabled = true", 1)
-        config += '\napi_key = "sentinel-secret"\n'
-        path.write_text(config, encoding="utf-8")
-        errors = verifier.verify(root)
-        self.assertTrue(any("mechanically disabled" in error for error in errors))
-        self.assertTrue(any("SSM-only" in error for error in errors))
+        path.write_text(path.read_text(encoding="utf-8") + '\napi_key = "sentinel"\n', encoding="utf-8")
+        self.assert_rejected(root, "SSM-only")
 
-    def test_config_deployment_drift_fails_closed(self) -> None:
-        root = self.fixture()
-        path = root / verifier.CONFIG_PATH
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "0xADa100874d00e3331D00F2007a9c336a65009718",
-                "0x0000000000000000000000000000000000000001",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(any("not manifest-bound" in error for error in verifier.verify(root)))
+    def test_wrapper_alias_reexport_renamed_and_exempt_reachability_fail(self) -> None:
+        cases = {
+            "src/wrapper.rs": "fn wrapper(x: ExactConditionSnapshotLease) { drop(x); }",
+            "src/alias.rs": "use crate::bolt_v3_providers::polymarket::redemption as hidden;",
+            "src/reexport.rs": "pub use crate::bolt_v3_providers::polymarket::redemption::*;",
+            "src/renamed.rs": "use crate::bolt_v3_providers::polymarket::redemption::build_request_pair as prepare;",
+        }
+        for relative, source in cases.items():
+            with self.subTest(relative=relative):
+                root = self.fixture()
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source, encoding="utf-8")
+                self.assert_rejected(root, "structural disabled reachability")
+        for relative, addition, expected in (
+            ("src/bolt_v3_providers/polymarket.rs", "\npub use redemption::*;\n", "provider parent"),
+            ("src/bolt_v3_providers/boundary_registry.rs", "\nuse super::polymarket::redemption::build_request_pair;\n", "boundary registry"),
+        ):
+            root = self.fixture()
+            path = root / relative
+            path.write_text(path.read_text(encoding="utf-8") + addition, encoding="utf-8")
+            self.assert_rejected(root, expected)
 
-    def test_active_caller_and_durable_state_are_rejected(self) -> None:
+    def test_build_generated_and_direct_construction_fail(self) -> None:
         root = self.fixture()
-        path = root / verifier.MODULE_PATH
+        (root / "build.rs").write_text("fn main() { let _: Option<OriginalMayHaveStartedPermit> = None; }", encoding="utf-8")
+        self.assert_rejected(root, "build/generated")
+        root = self.fixture()
+        path = root / "src/direct.rs"
+        path.write_text("fn forge() { let _ = ExactConditionSnapshotLease {}; }", encoding="utf-8")
+        self.assert_rejected(root, "structural disabled reachability")
+
+    def test_production_capability_issuer_clone_and_formatting_fail(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "capability.rs"
         source = path.read_text(encoding="utf-8")
-        source += "\npub async fn submit_redemption() {}\n"
-        source += "\nuse std::fs::File;\n"
-        path.write_text(source, encoding="utf-8")
-        errors = verifier.verify(root)
-        self.assertTrue(any("active caller" in error for error in errors))
-        self.assertTrue(any("durable state" in error for error in errors))
-
-    def test_observability_and_strategy_reachability_are_rejected(self) -> None:
+        insertion = "pub fn forge() -> ExactConditionSnapshotLease { panic!() }\n"
+        path.write_text(insertion + source, encoding="utf-8")
+        self.assert_rejected(root, "production can mint")
         root = self.fixture()
-        module = root / verifier.MODULE_PATH
-        module.write_text(
-            module.read_text(encoding="utf-8") + '\nlog::info!("sentinel");\n',
+        path = root / verifier.REDEMPTION_ROOT / "capability.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(source.replace("pub struct FreshPreSendValidation", "#[derive(Debug, Clone)]\npub struct FreshPreSendValidation", 1), encoding="utf-8")
+        self.assert_rejected(root, "formatting/serialization")
+
+    def test_send_without_durable_permit_and_fence_first_fail(self) -> None:
+        root = self.fixture()
+        path = root / "src/bolt_v3_providers/polymarket/redemption/request.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(source.replace("durable: OriginalMayHaveStartedPermit,", "durable: (),"), encoding="utf-8")
+        self.assert_rejected(root, "capability binding incomplete: authorize_original")
+        root = self.fixture()
+        path = root / "src/bolt_v3_providers/polymarket/redemption/request.rs"
+        source = path.read_text(encoding="utf-8")
+        source = source.replace("impl OriginalMayHaveStartedRequest {", "impl PreparedRequestPair {", 1)
+        path.write_text(source, encoding="utf-8")
+        self.assert_rejected(root, "fence-first")
+
+    def test_provider_registry_terminal_release_and_effect_sink_fail(self) -> None:
+        for symbol in ("ConditionRegistry", "TerminalLeaseCertificate", "write_request"):
+            root = self.fixture()
+            path = root / verifier.REDEMPTION_ROOT / "request.rs"
+            path.write_text(path.read_text(encoding="utf-8") + f"\nstruct {symbol};\n", encoding="utf-8")
+            self.assert_rejected(root, "provider-owned authority")
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "request.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn emit<W: std::io::Write>(_sink: &mut W) {}\n",
             encoding="utf-8",
         )
-        strategy = root / "src/strategies/redeem.rs"
-        strategy.parent.mkdir(parents=True, exist_ok=True)
-        strategy.write_text(
-            "use crate::bolt_v3_providers::polymarket::redemption;\n",
+        self.assert_rejected(root, "arbitrary effect sink")
+
+    def test_arbitrary_string_credentials_and_aggregate_chain_truth_fail(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "config.rs"
+        path.write_text(path.read_text(encoding="utf-8") + "\ntype BadSecret = Zeroizing<String>;\n", encoding="utf-8")
+        self.assert_rejected(root, "credential acquisition")
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "wire.rs"
+        path.write_text(path.read_text(encoding="utf-8") + "\nstruct ChainWire { winner: bool }\n", encoding="utf-8")
+        self.assert_rejected(root, "caller-classified")
+
+    def test_forged_terminal_outcome_provenance_fails(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "request.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn forge() { let _ = SourceBoundVerifiedOutcome::from_raw_verifier(RedemptionResolution::RedemptionFinalized); }\n",
             encoding="utf-8",
         )
-        errors = verifier.verify(root)
-        self.assertTrue(any("observability sink" in error for error in errors))
-        self.assertTrue(any("disabled reachability" in error for error in errors))
+        self.assert_rejected(root, "outcome provenance")
+
+    def test_raw_schema_and_finality_removal_fail(self) -> None:
+        root = self.fixture()
+        self.mutate(root, "src/bolt_v3_providers/polymarket/redemption/wire.rs", "#[serde(deny_unknown_fields)]\nstruct NonceCallWire", "struct NonceCallWire")
+        self.assert_rejected(root, "raw source-bound schema")
+        root = self.fixture()
+        path = root / "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(source.replace("required_confirmations", "ignored_depth"), encoding="utf-8")
+        self.assert_rejected(root, "configured finality")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/wire.rs",
+            "    finalized_head: BoundedWireResponse,\n",
+            "",
+        )
+        self.assert_rejected(root, "response set is partial")
+
+    def test_raw_getter_and_public_payload_field_fail(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "request.rs"
+        path.write_text(path.read_text(encoding="utf-8") + "\nimpl PreparedRequestPair { pub fn body_bytes(&self) -> &[u8] { &[] } }\n", encoding="utf-8")
+        self.assert_rejected(root, "raw/effect surface")
+        root = self.fixture()
+        self.mutate(root, "src/bolt_v3_providers/polymarket/redemption/request.rs", "pub struct PreparedRequestPair {\n    original:", "pub struct PreparedRequestPair {\n    pub original:")
+        self.assert_rejected(root, "public field")
 
 
 if __name__ == "__main__":

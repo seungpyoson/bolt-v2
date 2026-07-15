@@ -60,6 +60,11 @@ client_blob = "2ca627dc7f853d03c9bd7dbbec505e86a944d101"
 endpoints_blob = "b33dfe0d1062e7db2615f1b155f11caf0c31a5d7"
 safe_abi_blob = "5bbd1622d5d561fbe7ec472532deb25ef4f21687"
 config_blob = "18ebf7fe942fddde28bbf717fa15669b631d5cfb"
+response_blob = "8be9b84d6b9e45c021744fac478087c536f6233a"
+state_schema_blob = "daa09af14528ba5be49a0063b359fbc17dc5e505"
+signing_repository = "https://github.com/Polymarket/builder-signing-sdk"
+signing_revision = "d6925b15af8c66f09ab174374b3dce029a8e2f17"
+signing_hmac_blob = "58bf9d925e927a06d50fed38fdc161eba0e86dc7"
 explicit_nonce = "source-proven"
 competing_same_nonce = "unproven"
 submit_path = "/submit"
@@ -75,7 +80,22 @@ client_blob = "6fcf7915301ac0ac0542e9fb1de25e0fd8118af5"
 [source_snapshots]
 standard_sha256 = "b6fcc6b83bc665b716b6b8022a9dc7b73916674385e8b85673b7f084fc1def3e"
 negative_risk_sha256 = "fcdd887f55d6768b2046c63d6e06c6cb4853380bb24e5d02a58dbac6db0cd808"
-relayer_sha256 = "8953e051ee37e72e16dd786a79c302f970e7839bc8ac111d3f666e32d674c1a8"
+relayer_sha256 = "2eca6f416f90d17aa6719254e3970573b395efea5159ccdc5eed67bd6e84a32c"
+
+[wire]
+max_query_items = 7
+max_query_bytes = 4096
+max_transaction_items = 1
+max_header_items = 4
+max_execution_logs = 1
+overflow_probe_bytes = 1
+receipt_schema_repository = "https://github.com/ethereum/execution-apis"
+receipt_schema_revision = "60dbef739bde0db7ac30b6075439e192bfbd087e"
+receipt_schema_blob = "ab67b3a1356ca693e89fa088be2179353654ca3d"
+
+[credential_boundary]
+source = "aws-ssm-capped-sink"
+max_acquisition_bytes = 4096
 
 [activation]
 primitive_enabled = false

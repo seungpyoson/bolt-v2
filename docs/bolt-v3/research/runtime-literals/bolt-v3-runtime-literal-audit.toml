@@ -21082,12 +21082,412 @@ classification = "exit_evidence_conversion_diagnostic_template"
 reason = "Fail-loud diagnostic for a checked durable-evidence projection; it reports the captured delta and does not configure trading behavior."
 
 [[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "32"
+context = "pub keyed_digest: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0"
+context = "storage: Zeroizing::new(vec![0; capacity].into_boxed_slice()),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0"
+context = "len: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0"
+context = "0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "1"
+context = "self.len += 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "16"
+context = "const HEX: &[u8; 16] = b\"0123456789abcdef\";"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "b\"0123456789abcdef\""
+context = "const HEX: &[u8; 16] = b\"0123456789abcdef\";"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "4"
+context = "self.push(HEX[(byte >> 4) as usize])?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0x0f"
+context = "self.push(HEX[(byte & 0x0f) as usize])?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br#\"\\\"\"#"
+context = "b'\"' => self.extend(br#\"\\\"\"#)?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br#\"\\\\\"#"
+context = "b'\\\\' => self.extend(br#\"\\\\\"#)?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0x08"
+context = "0x08 => self.extend(br\"\\b\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br\"\\b\""
+context = "0x08 => self.extend(br\"\\b\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0x0c"
+context = "0x0c => self.extend(br\"\\f\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br\"\\f\""
+context = "0x0c => self.extend(br\"\\f\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br\"\\n\""
+context = "b'\\n' => self.extend(br\"\\n\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br\"\\r\""
+context = "b'\\r' => self.extend(br\"\\r\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br\"\\t\""
+context = "b'\\t' => self.extend(br\"\\t\")?,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0x00"
+context = "0x00..=0x1f => {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "0x1f"
+context = "0x00..=0x1f => {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "string"
+literal = "br\"\\u00\""
+context = "self.extend(br\"\\u00\")?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "32"
+context = "pub(super) fn hash(&self) -> [u8; 32] {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/bounded.rs"
+kind = "number"
+literal = "32"
+context = "pub(super) fn keyed_digest(key: &[u8], value: &[u8]) -> [u8; 32] {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = "20"
+context = "const ADDRESS_BYTES: usize = 20;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = "32"
+context = "const WORD_BYTES: usize = 32;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = "2"
+context = "pre_balances: [[u8; WORD_BYTES]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = "2"
+context = "pub(super) fn parts(&self) -> ([u8; WORD_BYTES], [[u8; WORD_BYTES]; 2], u64) {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = "0"
+context = "&& self.durable_generation != 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = "0"
+context = "&& self.durable_generation != 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "20"
+context = "const ADDRESS_BYTES: usize = 20;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "32"
+context = "const WORD_BYTES: usize = 32;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "4"
+context = "const SELECTOR_BYTES: usize = 4;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "dummy_index_sets: [u64; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "5"
+context = "credential_paths: [Box<str>; 5],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "pub(super) fn adapter_arguments(&self) -> ([u8; ADDRESS_BYTES], [u8; WORD_BYTES], [u64; 2]) {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"redacted redemption configuration failure: {self:?}\""
+context = "\"redacted redemption configuration failure: {self:?}\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| config.adapter.dummy_index_sets.as_slice() != [1, 2]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "|| config.adapter.dummy_index_sets.as_slice() != [1, 2]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"/bolt/\""
+context = "if !path.starts_with(\"/bolt/\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "dummy_index_sets: [1, 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "dummy_index_sets: [1, 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| adapter.reviewed_revision.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| adapter.standard_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| adapter.negative_risk_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| adapter.negative_risk_interface_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| adapter.deployment_table_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"redeemPositions(address,bytes32,bytes32,uint256[])\""
-context = "if manifest.adapter.external_abi != \"redeemPositions(address,bytes32,bytes32,uint256[])\""
+context = "|| adapter.external_abi != \"redeemPositions(address,bytes32,bytes32,uint256[])\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| adapter.ignored_argument_indices != [0, 1, 3]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| adapter.ignored_argument_indices != [0, 1, 3]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "3"
+context = "|| adapter.ignored_argument_indices != [0, 1, 3]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"SAFE\""
+context = "|| manifest.deployment.wallet_type != \"SAFE\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
@@ -21095,199 +21495,247 @@ kind = "string"
 literal = "\"SAFE\""
 context = "|| config.wallet.wallet_type != \"SAFE\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced Safe protocol identity required to validate the disabled redemption profile."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"0\""
-context = "|| manifest.safe.safe_tx_gas != \"0\""
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced zero-gas Safe transaction semantics required for deterministic request bytes."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"0\""
-context = "|| manifest.safe.base_gas != \"0\""
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced zero-gas Safe transaction semantics required for deterministic request bytes."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"0\""
-context = "|| manifest.safe.gas_price != \"0\""
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced zero-gas Safe transaction semantics required for deterministic request bytes."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "65"
-context = "|| manifest.safe.signature_bytes != 65"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Exact packed ECDSA signature width required by the reviewed relayer Safe request schema."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"redemption adapter arguments or Safe modules drifted from provider manifest\""
-context = "\"redemption adapter arguments or Safe modules drifted from provider manifest\""
-classification = "ao_redeem_redacted_diagnostic"
-reason = "Static non-secret validation diagnostic for a mechanically disabled profile."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"https://\""
-context = "if !config.relayer.origin.starts_with(\"https://\")"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Transport scheme constraint; the actual relayer origin remains grouped TOML."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"/submit\""
-context = "|| config.relayer.submit_path != \"/submit\""
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Reviewed relayer route validated against the source-fenced manifest."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"/transaction\""
-context = "|| config.relayer.transaction_path != \"/transaction\""
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Reviewed exact-id relayer query route validated against the source-fenced manifest."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"/nonce\""
-context = "|| config.relayer.nonce_path != \"/nonce\""
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Reviewed exact Safe nonce route validated against the source-fenced manifest."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "string"
-literal = "\"0x\""
-context = ".strip_prefix(\"0x\")"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Ethereum hexadecimal encoding prefix used only for structural address validation."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "40"
-context = "is_hex(value, 40) && value[2..].bytes().all(|byte| byte == b'0')"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Ethereum address hexadecimal width."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "2"
-context = "is_hex(value, 40) && value[2..].bytes().all(|byte| byte == b'0')"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Ethereum hexadecimal prefix width."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "40"
-context = "is_hex(value, 40) && !is_zero_address(value)"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Ethereum address hexadecimal width."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "64"
-context = "is_hex(value, 64) && value[2..].bytes().all(|byte| byte == b'0')"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "EVM bytes32 hexadecimal width."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "2"
-context = "is_hex(value, 64) && value[2..].bytes().all(|byte| byte == b'0')"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Ethereum hexadecimal prefix width."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "0"
-context = "|| manifest.adapter.ignored_argument_indices != [0, 1, 3]"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "1"
-context = "|| manifest.adapter.ignored_argument_indices != [0, 1, 3]"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "3"
-context = "|| manifest.adapter.ignored_argument_indices != [0, 1, 3]"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"nonce()\""
-context = "|| manifest.safe.nonce_abi != \"nonce()\""
+context = "|| safe.nonce_abi != \"nonce()\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"call\""
-context = "|| manifest.safe.operation != \"call\""
+context = "|| safe.operation != \"call\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"0\""
-context = "|| manifest.safe.value != \"0\""
+context = "|| safe.value != \"0\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
-literal = "\"provider manifest ABI or Safe fence semantics drifted\""
-context = "\"provider manifest ABI or Safe fence semantics drifted\".to_string(),"
+literal = "\"0\""
+context = "|| safe.safe_tx_gas != \"0\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| safe.base_gas != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| safe.gas_price != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "65"
+context = "|| safe.signature_bytes != 65"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.reviewed_revision.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.safe_builder_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.types_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.client_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.endpoints_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.safe_abi_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.config_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.response_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.signing_revision.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| relayer.signing_hmac_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"source-proven\""
-context = "if manifest.relayer.explicit_nonce != \"source-proven\""
+context = "|| relayer.explicit_nonce != \"source-proven\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"unproven\""
-context = "|| manifest.relayer.competing_same_nonce != \"unproven\""
+context = "|| relayer.competing_same_nonce != \"unproven\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"https://\""
+context = "|| !config.relayer.origin.starts_with(\"https://\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| wire.max_query_items == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| wire.max_transaction_items != 1"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "4"
+context = "|| wire.max_header_items != 4"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| wire.max_execution_logs != 1"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| wire.overflow_probe_bytes != 1"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| wire.receipt_schema_revision.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| wire.receipt_schema_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.query.max_items == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.query.max_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_request_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
@@ -21295,15 +21743,7 @@ kind = "number"
 literal = "0"
 context = "|| config.relayer.max_response_bytes == 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "1"
-context = "|| config.relayer.max_transaction_items != 1"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
@@ -21311,15 +21751,47 @@ kind = "number"
 literal = "0"
 context = "|| config.relayer.max_transaction_id_bytes == 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "number"
 literal = "0"
-context = "|| config.credentials.max_value_bytes == 0"
+context = "|| config.relayer.max_timestamp_bytes == 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_origin_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_path_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_metadata_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_header_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
@@ -21327,7 +21799,7 @@ kind = "number"
 literal = "0"
 context = "|| config.rpc.max_response_bytes == 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
@@ -21335,7 +21807,7 @@ kind = "number"
 literal = "0"
 context = "|| config.rpc.max_receipt_logs == 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
@@ -21343,119 +21815,655 @@ kind = "number"
 literal = "0"
 context = "|| config.rpc.finality_confirmations == 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.credentials.max_value_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
-literal = "\"/bolt/\""
-context = "if !path.starts_with(\"/bolt/\") || path.chars().any(char::is_whitespace) {"
+literal = "\"aws-ssm-capped-sink\""
+context = "|| manifest.credential_boundary.source != \"aws-ssm-capped-sink\""
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| manifest.credential_boundary.max_acquisition_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.credentials.max_path_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.credentials.key_version == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| manifest.independent_fixture.reviewed_revision.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| manifest.independent_fixture.safe_builder_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "|| manifest.independent_fixture.client_blob.len() != 40"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "64"
+context = "|| manifest.source_snapshots.standard_sha256.len() != 64"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "64"
+context = "|| manifest.source_snapshots.negative_risk_sha256.len() != 64"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "64"
+context = "|| manifest.source_snapshots.relayer_sha256.len() != 64"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0x\""
+context = ".strip_prefix(\"0x\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = [0; N];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "parse_address(value, true).is_ok_and(|address| address == [0; ADDRESS_BYTES])"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "let mut byte_len = 0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "5"
+context = "item_count: 5,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "let mut acquisition = Zeroizing::new(vec![0; max_acquisition_bytes].into_boxed_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "len: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "let mut exact = Zeroizing::new(vec![0; sink.len].into_boxed_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "&paths[0],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "&paths[1],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "&paths[2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "3"
+context = "&paths[3],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "number"
 literal = "4"
-context = "pub fn redaction_values(&self) -> [&str; 4] {"
+context = "&paths[4],"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "32"
+context = "const NONCE_BYTES: usize = 32;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "78"
+context = "const MAX_DECIMAL_BYTES: usize = 78;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0"
+context = "pub const ZERO: Self = Self([0; NONCE_BYTES]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0u8"
+context = "let mut output = [0u8; NONCE_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "10"
+context = "let next = u16::from(*byte) * 10 + carry;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "8"
+context = "carry = next >> 8;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "1"
+context = "let (value, overflow) = byte.overflowing_add(1);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0"
+context = "let mut index = 0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "1"
+context = "index += 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "1"
+context = "item_count: 1,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0"
+context = "output[0] = b'0';"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "1"
+context = "return 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0u8"
+context = "let mut reverse = [0u8; MAX_DECIMAL_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0"
+context = "let mut len = 0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0"
+context = "while quotient.iter().any(|byte| *byte != 0) {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0u16"
+context = "let mut remainder = 0u16;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "8"
+context = "let value = (remainder << 8) | u16::from(*byte);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "10"
+context = "*byte = (value / 10) as u8;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "10"
+context = "remainder = value % 10;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "1"
+context = "len += 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "0"
+context = "for index in 0..len {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/nonce.rs"
+kind = "number"
+literal = "1"
+context = "output[index] = reverse[len - index - 1];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = "start: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = "len: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
 kind = "string"
-literal = "\"SSM credential value violates the configured bound\""
-context = "\"SSM credential value violates the configured bound\".to_string(),"
+literal = "br#\"{\"kind\":\"relayer_transaction\",\"path\":\"#"
+context = "bytes.extend(br#\"{\"kind\":\"relayer_transaction\",\"path\":\"#)?;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"transaction_id\":\"#"
+context = "bytes.extend(br#\",\"transaction_id\":\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"{\"kind\":\"safe_nonce\",\"safe\":\"0x\"#"
+context = "bytes.extend(br#\"{\"kind\":\"safe_nonce\",\"safe\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"calldata\":\"0x\"#"
+context = "bytes.extend(br#\",\"calldata\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"\"}\"#"
+context = "bytes.extend(br#\"\"}\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"{\"kind\":\"finalized_receipt_logs\",\"safe\":\"0x\"#"
+context = "bytes.extend(br#\"{\"kind\":\"finalized_receipt_logs\",\"safe\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"safe_transaction_hash\":\"0x\"#"
+context = "bytes.extend(br#\",\"safe_transaction_hash\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"\",\"required_confirmations\":\"#"
+context = "bytes.extend(br#\"\",\"required_confirmations\":\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"max_logs\":\"#"
+context = "bytes.extend(br#\",\"max_logs\":\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"{\"kind\":\"raw_post_state\",\"target\":\"0x\"#"
+context = "bytes.extend(br#\"{\"kind\":\"raw_post_state\",\"target\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"condition_id\":\"0x\"#"
+context = "bytes.extend(br#\",\"condition_id\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"pre_balances\":[\"0x\"#"
+context = "bytes.extend(br#\",\"pre_balances\":[\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
 kind = "number"
-literal = "32"
-context = "safe_transaction_hash: [u8; 32],"
+literal = "0"
+context = "bytes.append_hex(&prepared.pre_balances()[0])?;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "32"
-context = "chain_transaction_hash: [u8; 32],"
+kind = "string"
+literal = "br#\"\",\"0x\"#"
+context = "bytes.extend(br#\"\",\"0x\"#)?;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "32"
-context = "condition_id: [u8; 32],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "32"
-context = "expected_pre_balances: [[u8; 32]; 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "2"
-context = "expected_pre_balances: [[u8; 32]; 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "6"
-context = "let mut queries = Vec::with_capacity(6);"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "32"
-context = "pub safe_transaction_hash: [u8; 32],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "32"
-context = "pub original_safe_transaction_hash: [u8; 32],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "32"
-context = "pub fence_safe_transaction_hash: [u8; 32],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
 kind = "number"
 literal = "1"
-context = "let Some(expected_next_nonce) = observation.prepared_nonce.checked_add(1) else {"
+context = "bytes.append_hex(&prepared.pre_balances()[1])?;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"\"]}\"#"
+context = "bytes.extend(br#\"\"]}\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"{\"kind\":\"safe_boundary\",\"safe\":\"0x\"#"
+context = "bytes.extend(br#\"{\"kind\":\"safe_boundary\",\"safe\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"factory\":\"0x\"#"
+context = "bytes.extend(br#\",\"factory\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"implementation\":\"0x\"#"
+context = "bytes.extend(br#\",\"implementation\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"fallback_handler\":\"0x\"#"
+context = "bytes.extend(br#\",\"fallback_handler\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\",\"guard\":\"0x\"#"
+context = "bytes.extend(br#\",\"guard\":\"0x\"#)?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"\",\"modules\":[]}\"#"
+context = "bytes.extend(br#\"\",\"modules\":[]}\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = "br#\"{\"kind\":\"finalized_head\"}\"#"
+context = "bytes.extend(br#\"{\"kind\":\"finalized_head\"}\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
 kind = "number"
-literal = "32"
-context = "fn proof_matches(proof: &ExecutionProof, expected_hash: [u8; 32]) -> bool {"
+literal = "0"
+context = "len: 0,"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "1"
+context = "self.len += 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0u8"
+context = "let mut reverse = [0u8; 20];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "20"
+context = "let mut reverse = [0u8; 20];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = "let mut len = 0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = "while value != 0 {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "10"
+context = "reverse[len] = b'0' + (value % 10) as u8;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "10"
+context = "value /= 10;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "1"
+context = "len += 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = "for index in (0..len).rev() {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
@@ -21463,7 +22471,7 @@ kind = "number"
 literal = "20"
 context = "const ADDRESS_BYTES: usize = 20;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
@@ -21471,7 +22479,7 @@ kind = "number"
 literal = "32"
 context = "const WORD_BYTES: usize = 32;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
@@ -21479,55 +22487,327 @@ kind = "number"
 literal = "4"
 context = "const SELECTOR_BYTES: usize = 4;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "string"
-literal = "\"SAFE\""
-context = "transaction_type: \"SAFE\","
+kind = "number"
+literal = "2"
+context = "const INDEX_SET_COUNT: usize = 2;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "string"
-literal = "\"0\""
-context = "operation: \"0\","
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
 literal = "5"
-context = "SELECTOR_BYTES + WORD_BYTES * (5 + profile.config.adapter.dummy_index_sets.len()),"
+context = "const CALLDATA_BYTES: usize = SELECTOR_BYTES + WORD_BYTES * (5 + INDEX_SET_COUNT);"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
-literal = "4"
-context = "calldata.extend_from_slice(&u64_word((WORD_BYTES * 4) as u64));"
+literal = "65"
+context = "const SIGNATURE_BYTES: usize = 65;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "78"
+context = "const MAX_NONCE_DECIMAL_BYTES: usize = 78;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "20"
+context = "const MAX_U64_DECIMAL_BYTES: usize = 20;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "44"
+context = "const BASE64_HMAC_BYTES: usize = 44;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "1,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "pre_balances: [[u8; WORD_BYTES]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "pub(super) fn pre_balances(&self) -> [[u8; WORD_BYTES]; 2] {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0u8"
+context = "let mut fence_calldata = [0u8; CALLDATA_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
 literal = "0"
-context = "let calldata_hash = keccak256(calldata).0;"
+context = "for index in 0..expected.len().min(actual.len()) {"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "difference == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "calldata_hash: keccak256(calldata).0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut stored_calldata = [0; CALLDATA_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "string"
-literal = "\"SAFE\""
-context = "wallet_type: \"SAFE\","
+literal = "b\"0x\""
+context = ".strip_prefix(b\"0x\")"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0u8"
+context = "let mut secret = Zeroizing::new([0u8; WORD_BYTES]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "let derived = keccak256(&public.as_bytes()[1..]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0u8"
+context = "let mut packed = [0u8; SIGNATURE_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "packed[..SIGNATURE_BYTES - 1].copy_from_slice(signature.to_bytes().as_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "packed[SIGNATURE_BYTES - 1] = recovery_id.to_byte() + 27;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "27"
+context = "packed[SIGNATURE_BYTES - 1] = recovery_id.to_byte() + 27;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut nonce_decimal = [0; MAX_NONCE_DECIMAL_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\"{\"type\":\"SAFE\",\"from\":\"0x\"#"
+context = "body.extend(br#\"{\"type\":\"SAFE\",\"from\":\"0x\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\"\",\"proxyWallet\":\"0x\"#"
+context = "body.extend(br#\"\",\"proxyWallet\":\"0x\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\"\",\"signature\":\"0x\"#"
+context = "body.extend(br#\"\",\"signature\":\"0x\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\"\",\"signatureParams\":{\"gasPrice\":\"0\",\"operation\":\"0\",\"safeTxGas\":\"0\",\"baseGas\":\"0\",\"gasToken\":\"0x0000000000000000000000000000000000000000\",\"refundReceiver\":\"0x0000000000000000000000000000000000000000\"},\"metadata\":\"#"
+context = "body.extend(br#\"\",\"signatureParams\":{\"gasPrice\":\"0\",\"operation\":\"0\",\"safeTxGas\":\"0\",\"baseGas\":\"0\",\"gasToken\":\"0x0000000000000000000000000000000000000000\",\"refundReceiver\":\"0x0000000000000000000000000000000000000000\"},\"metadata\":\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut timestamp_bytes = [0; MAX_U64_DECIMAL_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "4"
+context = ".checked_div(4)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = ".and_then(|value| value.checked_add(1))"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "3"
+context = ".and_then(|value| value.checked_mul(3))"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut decoded_secret = Zeroizing::new(vec![0; decoded_capacity].into_boxed_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "b\"POST\""
+context = "hmac.update(b\"POST\");"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut encoded_signature = [0; BASE64_HMAC_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\"{\"POLY_BUILDER_API_KEY\":\"#"
+context = ".extend(br#\"{\"POLY_BUILDER_API_KEY\":\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\",\"POLY_BUILDER_TIMESTAMP\":\"\"#"
+context = ".extend(br#\",\"POLY_BUILDER_TIMESTAMP\":\"\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\"\",\"POLY_BUILDER_PASSPHRASE\":\"#"
+context = ".extend(br#\"\",\"POLY_BUILDER_PASSPHRASE\":\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "br#\",\"POLY_BUILDER_SIGNATURE\":\"\"#"
+context = ".extend(br#\",\"POLY_BUILDER_SIGNATURE\":\"\"#)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = [0; CALLDATA_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut offset = 0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "4"
+context = "append_fixed(&mut output, &mut offset, &u64_word(WORD_BYTES as u64 * 4));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
@@ -21535,7 +22815,7 @@ kind = "string"
 literal = "b\"EIP712Domain(uint256 chainId,address verifyingContract)\""
 context = "let domain_type_hash = keccak256(b\"EIP712Domain(uint256 chainId,address verifyingContract)\");"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
@@ -21543,79 +22823,255 @@ kind = "string"
 literal = "b\"SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)\""
 context = "b\"SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)\","
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut domain = [0; WORD_BYTES * 3];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
 literal = "3"
-context = "let mut domain = Vec::with_capacity(WORD_BYTES * 3);"
+context = "let mut domain = [0; WORD_BYTES * 3];"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "11"
-context = "let mut structure = Vec::with_capacity(WORD_BYTES * 11);"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "0"
-context = "structure.extend_from_slice(&u64_word(0));"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "0"
-context = "structure.extend_from_slice(&address_word([0; ADDRESS_BYTES]));"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
 literal = "2"
-context = "let mut digest_input = Vec::with_capacity(2 + WORD_BYTES * 2);"
+context = "domain[WORD_BYTES..WORD_BYTES * 2].copy_from_slice(&u64_word(chain_id));"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
-literal = "0x19"
-context = "digest_input.extend_from_slice(&[0x19, 0x01]);"
+literal = "2"
+context = "domain[WORD_BYTES * 2..].copy_from_slice(&address_word(safe_address));"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "0x01"
-context = "digest_input.extend_from_slice(&[0x19, 0x01]);"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
 literal = "0"
-context = "Ok(keccak256(digest_input).0)"
+context = "safe_tx_type_hash.0,"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "u64_word(0),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "keccak256(calldata).0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "u64_word(0),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "u64_word(0),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "u64_word(0),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "u64_word(0),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "address_word([0; ADDRESS_BYTES]),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "address_word([0; ADDRESS_BYTES]),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut structure = [0; WORD_BYTES * 11];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "11"
+context = "let mut structure = [0; WORD_BYTES * 11];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "structure[index * WORD_BYTES..(index + 1) * WORD_BYTES].copy_from_slice(&word);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut digest = [0; 2 + WORD_BYTES * 2];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "let mut digest = [0; 2 + WORD_BYTES * 2];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "let mut digest = [0; 2 + WORD_BYTES * 2];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0x01"
+context = "digest[..2].copy_from_slice(&[0x19, 0x01]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0x19"
+context = "digest[..2].copy_from_slice(&[0x19, 0x01]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "digest[..2].copy_from_slice(&[0x19, 0x01]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "digest[2..2 + WORD_BYTES].copy_from_slice(domain_hash.as_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "digest[2..2 + WORD_BYTES].copy_from_slice(domain_hash.as_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "digest[2 + WORD_BYTES..].copy_from_slice(structure_hash.as_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "keccak256(digest).0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "pre_balances: [[u8; WORD_BYTES]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "digest.update(pre_balances[0]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "digest.update(pre_balances[1]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "string"
 literal = "\"0x\""
-context = "let encoded = value.strip_prefix(\"0x\").unwrap_or(value);"
+context = ".strip_prefix(\"0x\")"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = [0; N];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
@@ -21623,108 +23079,772 @@ kind = "number"
 literal = "0"
 context = "let mut word = [0; WORD_BYTES];"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut word = [0; WORD_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "output[0] = b'0';"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "return 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut reverse = [0; MAX_U64_DECIMAL_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut len = 0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "while value != 0 {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "10"
+context = "reverse[len] = b'0' + (value % 10) as u8;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "10"
+context = "value /= 10;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "len += 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "for index in 0..len {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "1"
+context = "output[index] = reverse[len - index - 1];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = Zeroizing::new(vec![0; value.len()].into_boxed_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "20"
+context = "const ADDRESS_BYTES: usize = 20;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "number"
 literal = "32"
-context = "pub transaction_hash: Option<[u8; 32]>,"
+context = "const WORD_BYTES: usize = 32;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "number"
-literal = "32"
-context = "pub body_sha256: [u8; 32],"
+literal = "1"
+context = "1,"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"redacted relayer wire failure: {:?}\""
-context = "\"redacted relayer wire failure: {:?}\","
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"STATE_NEW\""
-context = "\"STATE_NEW\" => Ok(RelayerState::New),"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"STATE_EXECUTED\""
-context = "\"STATE_EXECUTED\" => Ok(RelayerState::Executed),"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"STATE_MINED\""
-context = "\"STATE_MINED\" => Ok(RelayerState::Mined),"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"STATE_INVALID\""
-context = "\"STATE_INVALID\" => Ok(RelayerState::Invalid),"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"STATE_CONFIRMED\""
-context = "\"STATE_CONFIRMED\" => Ok(RelayerState::Confirmed),"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "string"
-literal = "\"STATE_FAILED\""
-context = "\"STATE_FAILED\" => Ok(RelayerState::Failed),"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "number"
-literal = "32"
-context = "fn parse_optional_hash(value: &str, bytes: &[u8]) -> Result<Option<[u8; 32]>, WireParseError> {"
+literal = "0"
+context = "let transaction = exact.0;"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| transaction.value != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"SAFE\""
+context = "|| transaction.transaction_type != \"SAFE\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let post_balances = [parse_word(post.results[0]), parse_word(post.results[1])];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "let post_balances = [parse_word(post.results[0]), parse_word(post.results[1])];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"finalized_head\""
+context = "let common_identity_matches = finalized.query_id == \"finalized_head\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "&& finalized_number.is_some_and(|value| value != [0; WORD_BYTES])"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "&& finalized_hash.is_some_and(|value| value != [0; WORD_BYTES])"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"safe_nonce\""
+context = "&& nonce.query_id == \"safe_nonce\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"raw_post_state\""
+context = "&& post.query_id == \"raw_post_state\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"safe_boundary\""
+context = "&& boundary.query_id == \"safe_boundary\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"original_finalized_receipt_logs\""
+context = "\"original_finalized_receipt_logs\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"fence_finalized_receipt_logs\""
+context = "\"fence_finalized_receipt_logs\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "[Some(first), Some(second)] if [first, second] == [[0; WORD_BYTES]; 2] => {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let Some(receipt) = query.receipts.0.as_ref() else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "return query.canonical_block.0.is_none().then_some(false);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let canonical = query.canonical_block.0.as_ref()?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let log = &receipt.logs.0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let expected_topic = keccak256(b\"ExecutionSuccess(bytes32,uint256)\").0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "b\"ExecutionSuccess(bytes32,uint256)\""
+context = "let expected_topic = keccak256(b\"ExecutionSuccess(bytes32,uint256)\").0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"0x1\""
+context = "let coordinates_match = receipt.status == \"0x1\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "&& receipt_block_number != [0; WORD_BYTES]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "&& receipt_block_hash != [0; WORD_BYTES]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "&& receipt_transaction_hash != [0; WORD_BYTES]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "&& parse_word(log.topics[0]) == Some(expected_topic)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "string"
 literal = "\"0x\""
-context = "let encoded = value.strip_prefix(\"0x\").unwrap_or(value);"
+context = "let Some(encoded) = value.strip_prefix(\"0x\") else {"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "number"
-literal = "2"
-context = "pub pre_balances: [[u8; WORD_BYTES]; 2],"
+literal = "4"
+context = "if encoded.len() != WORD_BYTES * 4 {"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "number"
 literal = "2"
-context = "current_balances: [[u8; WORD_BYTES]; 2],"
+context = "&& bytes[..WORD_BYTES * 2]"
 classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = ".chunks_exact(2)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let Some(high) = hex_nibble(pair[0]) else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "let Some(low) = hex_nibble(pair[1]) else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "4"
+context = "(high << 4) | low == expected"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "let mut carry = required_confirmations.saturating_sub(1);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0xff"
+context = "let sum = u64::from(*byte) + (carry & 0xff);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "8"
+context = "carry = (carry >> 8) + (sum >> 8);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "8"
+context = "carry = (carry >> 8) + (sum >> 8);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "carry == 0 && minimum <= finalized_block"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "item_count: 1,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "byte_len: self.transaction_id.len() + self.transaction_hash.map_or(0, |_| WORD_BYTES),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "item_count: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "byte_len: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "keyed_digest: [0; WORD_BYTES],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "key_version: 0,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"redacted redemption wire failure: {:?}\""
+context = "\"redacted redemption wire failure: {:?}\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"exactly one relayer transaction\""
+context = "formatter.write_str(\"exactly one relayer transaction\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "return Err(de::Error::invalid_length(2, &self));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"zero or one exact execution receipt\""
+context = "formatter.write_str(\"zero or one exact execution receipt\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "return Err(de::Error::invalid_length(2, &self));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"exactly one Safe execution log\""
+context = "formatter.write_str(\"exactly one Safe execution log\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "return Err(de::Error::invalid_length(2, &self));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "topics: [&'a str; 1],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "results: [&'a str; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "modules: [&'a str; 0],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_NEW\""
+context = "\"STATE_NEW\" => Some(RelayerState::New),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_EXECUTED\""
+context = "\"STATE_EXECUTED\" => Some(RelayerState::Executed),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_MINED\""
+context = "\"STATE_MINED\" => Some(RelayerState::Mined),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_INVALID\""
+context = "\"STATE_INVALID\" => Some(RelayerState::Invalid),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_CONFIRMED\""
+context = "\"STATE_CONFIRMED\" => Some(RelayerState::Confirmed),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_FAILED\""
+context = "\"STATE_FAILED\" => Some(RelayerState::Failed),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"0x\""
+context = "let encoded = value.strip_prefix(\"0x\")?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = [0; N];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"0x\""
+context = "let Some(encoded) = value.strip_prefix(\"0x\") else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "if encoded.len() != expected.len() * 2 {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = ".chunks_exact(2)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let Some(high) = hex_nibble(pair[0]) else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "let Some(low) = hex_nibble(pair[1]) else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "4"
+context = "(high << 4) | low == *byte"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"0x\""
+context = "let encoded = value.strip_prefix(\"0x\")?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "2"
+context = "|| encoded.len() > WORD_BYTES * 2"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = [0; WORD_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "while source_index > 0 {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "let low = hex_nibble(encoded.as_bytes()[source_index - 1])?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "source_index -= 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "let value = hex_nibble(encoded.as_bytes()[source_index - 1])?;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "source_index -= 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "1"
+context = "output_index -= 1;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "4"
+context = "output[output_index] = (high << 4) | low;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "10"
+context = "b'a'..=b'f' => Some(value - b'a' + 10),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "10"
+context = "b'A'..=b'F' => Some(value - b'A' + 10),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = "let mut output = Zeroizing::new(vec![0; value.len()].into_boxed_slice());"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."

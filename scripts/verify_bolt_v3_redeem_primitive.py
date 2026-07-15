@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed static fence for the disabled AO-REDEEM primitive."""
+"""Fail-closed structural and source fence for disabled AO-REDEEM."""
 
 from __future__ import annotations
 
@@ -13,14 +13,15 @@ import tomllib
 MANIFEST_PATH = pathlib.Path("ci/polymarket-redemption-provider-manifest.toml")
 CONFIG_PATH = pathlib.Path("config/polymarket-redemption.toml")
 MODULE_PATH = pathlib.Path("src/bolt_v3_providers/polymarket/redemption.rs")
+REDEMPTION_ROOT = pathlib.Path("src/bolt_v3_providers/polymarket/redemption")
 REQUIRED_PATHS = (
     MANIFEST_PATH,
     CONFIG_PATH,
     MODULE_PATH,
-    pathlib.Path("src/bolt_v3_providers/polymarket/redemption/config.rs"),
-    pathlib.Path("src/bolt_v3_providers/polymarket/redemption/query.rs"),
-    pathlib.Path("src/bolt_v3_providers/polymarket/redemption/request.rs"),
-    pathlib.Path("src/bolt_v3_providers/polymarket/redemption/wire.rs"),
+    *(REDEMPTION_ROOT / name for name in (
+        "bounded.rs", "capability.rs", "config.rs", "nonce.rs", "query.rs",
+        "request.rs", "tests.rs", "wire.rs",
+    )),
     pathlib.Path("src/bolt_v3_providers/polymarket.rs"),
     pathlib.Path("src/bolt_v3_providers/boundary_registry.rs"),
     pathlib.Path("tests/bolt_v3_redeem_primitive.rs"),
@@ -40,16 +41,29 @@ EXPECTED_REVISIONS = {
 EXPECTED_BLOBS = {
     ("adapter", "standard_blob"): "4af744d991e0eb4fbf93e72aba051788edb81688",
     ("adapter", "negative_risk_blob"): "698691ab6134ab31fbebb0fa62ffdb7a0395bcb8",
-    ("adapter", "negative_risk_interface_blob"): "9e03079796543609cb8c25292bc42872f3029a3d",
-    ("adapter", "deployment_table_blob"): "78aeefbb48439460ccb2c4e7de04d0aff619b0dd",
     ("relayer", "safe_builder_blob"): "3a05ac53d005d92822582a2a87d6bdbb13827187",
     ("relayer", "types_blob"): "daa09af14528ba5be49a0063b359fbc17dc5e505",
     ("relayer", "client_blob"): "2ca627dc7f853d03c9bd7dbbec505e86a944d101",
-    ("relayer", "endpoints_blob"): "b33dfe0d1062e7db2615f1b155f11caf0c31a5d7",
-    ("relayer", "safe_abi_blob"): "5bbd1622d5d561fbe7ec472532deb25ef4f21687",
-    ("relayer", "config_blob"): "18ebf7fe942fddde28bbf717fa15669b631d5cfb",
-    ("independent_fixture", "safe_builder_blob"): "c9e8cacbe2f0e55c6e8bba230a5e072628136b4f",
-    ("independent_fixture", "client_blob"): "6fcf7915301ac0ac0542e9fb1de25e0fd8118af5",
+    ("relayer", "response_blob"): "8be9b84d6b9e45c021744fac478087c536f6233a",
+    ("wire", "receipt_schema_blob"): "ab67b3a1356ca693e89fa088be2179353654ca3d",
+}
+
+CAPABILITIES = (
+    "ExactConditionSnapshotLease",
+    "SafeNonceBodyCapacityPermit",
+    "FreshPreSendValidation",
+    "OriginalMayHaveStartedPermit",
+    "FenceMayHaveStartedPermit",
+)
+OPERATIONAL_SYMBOLS = set(CAPABILITIES) | {
+    "AuthorizedRequest", "BoundedWireResponse", "ExactQueryResponses", "ExactQuerySet",
+    "FenceMayHaveStartedRequest", "OriginalMayHaveStartedRequest", "build_request_pair",
+    "resolve_credentials",
+}
+FORBIDDEN_PROVIDER_AUTHORITY = {
+    "ConditionRegistry", "ConditionLease", "TerminalLeaseCertificate", "write_request",
+    "mark_dispatched", "complete_verified_resolution", "recover_verified_resolution",
+    "RedemptionAuthority", "SsmSecretResolver", "write_query",
 }
 
 
@@ -58,15 +72,214 @@ def _load_toml(path: pathlib.Path) -> dict:
         return tomllib.load(handle)
 
 
-def verify(root: pathlib.Path) -> list[str]:
+def rust_tokens(source: str) -> list[str]:
+    """Tokenize Rust while discarding comments and literal contents."""
+    tokens: list[str] = []
+    index = 0
+    while index < len(source):
+        if source[index].isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index + 2)
+            index = len(source) if end < 0 else end + 1
+            continue
+        if source.startswith("/*", index):
+            depth, index = 1, index + 2
+            while index < len(source) and depth:
+                if source.startswith("/*", index):
+                    depth, index = depth + 1, index + 2
+                elif source.startswith("*/", index):
+                    depth, index = depth - 1, index + 2
+                else:
+                    index += 1
+            continue
+        raw = re.match(r'(?:b|c)?r(#+)?"', source[index:])
+        if raw:
+            hashes = raw.group(1) or ""
+            index += raw.end()
+            end = source.find('"' + hashes, index)
+            index = len(source) if end < 0 else end + 1 + len(hashes)
+            tokens.append("<literal>")
+            continue
+        if source[index] == '"' or (source[index] in "bc" and source[index + 1:index + 2] == '"'):
+            if source[index] != '"':
+                index += 1
+            index += 1
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                elif source[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            tokens.append("<literal>")
+            continue
+        if source[index].isalpha() or source[index] == "_":
+            end = index + 1
+            while end < len(source) and (source[end].isalnum() or source[end] == "_"):
+                end += 1
+            tokens.append(source[index:end])
+            index = end
+            continue
+        matched = False
+        for punctuation in ("::", "->", "=>", "..=", "..", "==", "!=", "&&", "||"):
+            if source.startswith(punctuation, index):
+                tokens.append(punctuation)
+                index += len(punctuation)
+                matched = True
+                break
+        if not matched:
+            tokens.append(source[index])
+            index += 1
+    return tokens
+
+
+def _contains_sequence(tokens: list[str], sequence: tuple[str, ...]) -> bool:
+    return any(tokens[index:index + len(sequence)] == list(sequence) for index in range(len(tokens) - len(sequence) + 1))
+
+
+def _function_signatures(tokens: list[str]) -> dict[str, list[list[str]]]:
+    signatures: dict[str, list[list[str]]] = {}
+    for index, token in enumerate(tokens[:-2]):
+        if token != "fn":
+            continue
+        name, cursor, parens, angles = tokens[index + 1], index + 2, 0, 0
+        while cursor < len(tokens):
+            current = tokens[cursor]
+            angles += current == "<"
+            angles -= current == ">" and angles > 0
+            parens += current == "("
+            parens -= current == ")" and parens > 0
+            if current in {"{", ";"} and not parens and not angles:
+                break
+            cursor += 1
+        signatures.setdefault(name, []).append(tokens[index:cursor])
+    return signatures
+
+
+def verify_structural_reachability(root: pathlib.Path) -> list[str]:
     errors: list[str] = []
+    provider = pathlib.Path("src/bolt_v3_providers/polymarket.rs")
+    registry = pathlib.Path("src/bolt_v3_providers/boundary_registry.rs")
+    for path in (root / "src").rglob("*.rs"):
+        relative = path.relative_to(root)
+        if relative == MODULE_PATH or str(relative).startswith(str(REDEMPTION_ROOT)):
+            continue
+        tokens = rust_tokens(path.read_text(encoding="utf-8"))
+        if relative == provider:
+            if tokens.count("redemption") != 1 or not _contains_sequence(tokens, ("pub", "mod", "redemption", ";")):
+                errors.append("AO-REDEEM provider parent exceeds the exact module declaration")
+            if OPERATIONAL_SYMBOLS.intersection(tokens):
+                errors.append("AO-REDEEM provider parent references operational authority")
+            continue
+        if relative == registry:
+            allowed = {"POLYMARKET_RELAYER_ADAPTER_ID", "POLYGON_REDEMPTION_RPC_ADAPTER_ID"}
+            if tokens.count("redemption") != 1 or OPERATIONAL_SYMBOLS.intersection(tokens) - allowed:
+                errors.append("AO-REDEEM boundary registry exceeds registered identifiers")
+            continue
+        if "redemption" in tokens or OPERATIONAL_SYMBOLS.intersection(tokens):
+            errors.append(f"AO-REDEEM structural disabled reachability violated by {relative}")
+
+    for relative in (pathlib.Path("build.rs"), pathlib.Path("src/generated.rs")):
+        path = root / relative
+        if path.exists() and OPERATIONAL_SYMBOLS.intersection(rust_tokens(path.read_text(encoding="utf-8"))):
+            errors.append(f"AO-REDEEM build/generated reachability violated by {relative}")
+    return errors
+
+
+def verify_capabilities(root: pathlib.Path) -> list[str]:
+    errors: list[str] = []
+    capability = (root / REDEMPTION_ROOT / "capability.rs").read_text(encoding="utf-8")
+    production, marker, hermetic = capability.partition("#[cfg(test)]")
+    if not marker:
+        errors.append("AO-REDEEM capability issuers are not isolated behind cfg(test)")
+    production_tokens = rust_tokens(production)
+    for name in CAPABILITIES:
+        if not _contains_sequence(production_tokens, ("pub", "struct", name, "{")):
+            errors.append(f"AO-REDEEM linear capability missing: {name}")
+        if _contains_sequence(production_tokens, ("impl", "Clone", "for", name)) or _contains_sequence(production_tokens, ("impl", "Copy", "for", name)):
+            errors.append(f"AO-REDEEM capability is duplicable: {name}")
+        if re.search(rf"derive\([^)]*(?:Debug|Clone|Copy|Serialize)[^)]*\)\s*pub struct {name}\b", production):
+            errors.append(f"AO-REDEEM capability exposes formatting/copy surface: {name}")
+        if re.search(rf"pub\s+(?:const\s+)?fn\s+\w+[^{{;]*->\s*{name}\b", production):
+            errors.append(f"AO-REDEEM production can mint capability: {name}")
+        if name not in hermetic:
+            errors.append(f"AO-REDEEM hermetic issuer missing for {name}")
+
+    request_tokens = rust_tokens((root / REDEMPTION_ROOT / "request.rs").read_text(encoding="utf-8"))
+    signatures = _function_signatures(request_tokens)
+    required_bindings = {
+        "build_request_pair": {"ExactConditionSnapshotLease", "SafeNonceBodyCapacityPermit"},
+        "authorize_original": {"FreshPreSendValidation", "OriginalMayHaveStartedPermit"},
+        "authorize_fence": {"FreshPreSendValidation", "FenceMayHaveStartedPermit"},
+    }
+    for name, required in required_bindings.items():
+        if name not in signatures or not any(required.issubset(signature) for signature in map(set, signatures[name])):
+            errors.append(f"AO-REDEEM capability binding incomplete: {name}")
+    if _contains_sequence(request_tokens, ("impl", "PreparedRequestPair")) and "authorize_fence" in signatures:
+        source = (root / REDEMPTION_ROOT / "request.rs").read_text(encoding="utf-8")
+        if "impl OriginalMayHaveStartedRequest" not in source or source.index("fn authorize_fence") < source.index("impl OriginalMayHaveStartedRequest"):
+            errors.append("AO-REDEEM fence-first remains structurally representable")
+
+    all_source = "\n".join((root / path).read_text(encoding="utf-8") for path in REQUIRED_PATHS if str(path).startswith(str(REDEMPTION_ROOT)) or path == MODULE_PATH)
+    all_tokens = rust_tokens(all_source)
+    for forbidden in FORBIDDEN_PROVIDER_AUTHORITY:
+        if forbidden in all_tokens:
+            errors.append(f"AO-REDEEM provider-owned authority is forbidden: {forbidden}")
+    if "Write" in all_tokens:
+        errors.append("AO-REDEEM arbitrary effect sink is forbidden")
+    for pattern in (r"\basync\s+fn\b", r"\bfn\s+send\b", r"reqwest", r"TcpStream", r"std::fs", r"tokio::fs", r"rusqlite", r"log::", r"tracing::", r"println!"):
+        if re.search(pattern, all_source):
+            errors.append("AO-REDEEM active caller, durable state, or observability sink is forbidden")
+            break
+    outcome_issuer_uses = {
+        path.name
+        for path in (root / REDEMPTION_ROOT).glob("*.rs")
+        if "from_raw_verifier" in path.read_text(encoding="utf-8")
+    }
+    if outcome_issuer_uses != {"query.rs", "wire.rs"}:
+        errors.append("AO-REDEEM verified outcome provenance escapes the raw wire verifier")
+    wire_signatures = _function_signatures(
+        rust_tokens((root / REDEMPTION_ROOT / "wire.rs").read_text(encoding="utf-8"))
+    )
+    if any("RedemptionResolution" in signature for name in ("verify", "verify_after_original", "verify_after_fence") for signature in wire_signatures.get(name, [])):
+        errors.append("AO-REDEEM terminality accepts a caller-classified resolution")
+    return errors
+
+
+def verify_opaque_surfaces(root: pathlib.Path) -> list[str]:
+    errors: list[str] = []
+    source = "\n".join((root / REDEMPTION_ROOT / name).read_text(encoding="utf-8") for name in ("request.rs", "query.rs", "wire.rs", "config.rs", "capability.rs"))
+    payloads = CAPABILITIES + (
+        "PreparedRequestPair", "AuthorizedRequest", "OriginalMayHaveStartedRequest",
+        "FenceMayHaveStartedRequest", "SourceBoundVerifiedOutcome", "BoundedWireResponse",
+        "ExactQueryResponses", "RelayerObservation", "ResolvedRedemptionCredentials",
+    )
+    for name in payloads:
+        match = re.search(rf"(?:pub\s+)?struct\s+{name}(?:<'[^>]+>)?\s*{{([^}}]*)}}", source, re.S)
+        if not match:
+            errors.append(f"AO-REDEEM opaque type missing: {name}")
+            continue
+        if re.search(r"\bpub\s+\w+\s*:", match.group(1)):
+            errors.append(f"AO-REDEEM opaque payload has public field: {name}")
+        prefix = source[max(0, match.start() - 100):match.start()]
+        if re.search(r"derive\([^)]*(?:Debug|Serialize)[^)]*\)", prefix):
+            errors.append(f"AO-REDEEM opaque payload derives formatting/serialization: {name}")
+    for forbidden in ("redaction_values", "raw_bytes", "body_bytes", "write_request", "write_query"):
+        if re.search(rf"pub(?:\([^)]*\))?\s+fn\s+{forbidden}\b", source):
+            errors.append(f"AO-REDEEM raw/effect surface exposed: {forbidden}")
+    return errors
+
+
+def verify(root: pathlib.Path) -> list[str]:
     missing = [str(path) for path in REQUIRED_PATHS if not (root / path).is_file()]
     if missing:
         return [f"AO-REDEEM required path missing: {path}" for path in missing]
-
+    errors: list[str] = []
     try:
-        manifest = _load_toml(root / MANIFEST_PATH)
-        config = _load_toml(root / CONFIG_PATH)
+        manifest, config = _load_toml(root / MANIFEST_PATH), _load_toml(root / CONFIG_PATH)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return [f"AO-REDEEM TOML parse failure: {exc}"]
 
@@ -76,203 +289,91 @@ def verify(root: pathlib.Path) -> list[str]:
     for (section, field), expected in EXPECTED_BLOBS.items():
         if manifest.get(section, {}).get(field) != expected:
             errors.append(f"AO-REDEEM reviewed blob drifted: {section}.{field}")
-
-    adapter = manifest.get("adapter", {})
-    if adapter.get("external_abi") != "redeemPositions(address,bytes32,bytes32,uint256[])":
-        errors.append("AO-REDEEM exact external four-argument ABI is not source-fenced")
-    if adapter.get("external_selector") != "0x01b7037c":
-        errors.append("AO-REDEEM external ABI selector drifted")
-    if adapter.get("ignored_argument_indices") != [0, 1, 3]:
-        errors.append("AO-REDEEM ignored dummy arguments are not exactly source-fenced")
-
-    safe = manifest.get("safe", {})
-    if safe.get("nonce_abi") != "nonce()" or safe.get("nonce_selector") != "0xaffed0e0":
-        errors.append("AO-REDEEM Safe nonce fence ABI drifted")
-    if safe.get("operation") != "call" or safe.get("value") != "0":
-        errors.append("AO-REDEEM fence is not a zero-value Safe call")
-
-    relayer = manifest.get("relayer", {})
-    if relayer.get("explicit_nonce") != "source-proven":
-        errors.append("AO-REDEEM explicit Safe nonce support is not source-proven")
-    if relayer.get("competing_same_nonce") != "unproven":
-        errors.append("AO-REDEEM competing-same-nonce support cannot be claimed without conformance")
-
-    activation = manifest.get("activation", {})
-    if activation != {
-        "primitive_enabled": False,
-        "requires_competing_same_nonce_conformance": True,
-        "has_active_caller": False,
-        "has_durable_state": False,
-    }:
-        errors.append("AO-REDEEM manifest activation contract is not mechanically disabled and pure")
-    if config.get("enabled") is not False:
-        errors.append("AO-REDEEM grouped TOML must remain mechanically disabled")
-    if config.get("provider_manifest_id") != manifest.get("manifest_id"):
-        errors.append("AO-REDEEM grouped TOML is not bound to the provider manifest")
-    configured_relayer = config.get("relayer", {})
-    for field in ("submit_path", "transaction_path", "nonce_path"):
-        if configured_relayer.get(field) != relayer.get(field):
-            errors.append(f"AO-REDEEM relayer {field} is not manifest-bound")
-    if configured_relayer.get("competing_same_nonce_conformance") is not False:
-        errors.append("AO-REDEEM competing-same-nonce profile must fail closed")
-
-    deployment = manifest.get("deployment", {})
-    configured_wallet = config.get("wallet", {})
-    configured_adapter = config.get("adapter", {})
-    for config_section, manifest_section, fields in (
-        (
-            configured_wallet,
-            deployment,
-            ("chain_id", "wallet_type", "safe_address", "safe_factory"),
-        ),
-        (
-            configured_adapter,
-            deployment,
-            ("standard_target", "negative_risk_target", "collateral", "output_asset"),
-        ),
-        (
-            configured_adapter,
-            manifest.get("adapter_arguments", {}),
-            ("dummy_account", "dummy_parent_collection_id", "dummy_index_sets"),
-        ),
-        (
-            configured_wallet,
-            manifest.get("safe_boundary", {}),
-            ("safe_implementation", "fallback_handler", "guard", "modules"),
-        ),
-    ):
-        for field in fields:
-            manifest_field = {
-                "safe_implementation": "implementation",
-            }.get(field, field)
-            configured = config_section.get(field)
-            fenced = manifest_section.get(manifest_field)
-            if isinstance(configured, str) and isinstance(fenced, str):
-                matches = configured.lower() == fenced.lower()
-            else:
-                matches = configured == fenced
-            if not matches:
-                errors.append(f"AO-REDEEM grouped TOML field {field} is not manifest-bound")
-    if manifest.get("safe_boundary", {}).get("verification") != "exact-query-required":
-        errors.append("AO-REDEEM Safe implementation boundary is not exact-query fenced")
+    adapter, safe, relayer = manifest.get("adapter", {}), manifest.get("safe", {}), manifest.get("relayer", {})
+    if adapter.get("external_abi") != "redeemPositions(address,bytes32,bytes32,uint256[])" or adapter.get("ignored_argument_indices") != [0, 1, 3]:
+        errors.append("AO-REDEEM adapter ABI/dummy arguments are not exactly source-fenced")
+    if safe.get("nonce_abi") != "nonce()" or safe.get("nonce_selector") != "0xaffed0e0" or safe.get("operation") != "call" or safe.get("value") != "0":
+        errors.append("AO-REDEEM same-nonce fence ABI drifted")
+    if relayer.get("explicit_nonce") != "source-proven" or relayer.get("competing_same_nonce") != "unproven":
+        errors.append("AO-REDEEM relayer nonce capability is overstated")
+    if manifest.get("activation") != {"primitive_enabled": False, "requires_competing_same_nonce_conformance": True, "has_active_caller": False, "has_durable_state": False}:
+        errors.append("AO-REDEEM manifest is not mechanically disabled and pure")
+    if config.get("enabled") is not False or config.get("provider_manifest_id") != manifest.get("manifest_id"):
+        errors.append("AO-REDEEM grouped TOML is not disabled/manifest-bound")
+    if "registry" in config or "max_condition_slots" in manifest.get("wire", {}):
+        errors.append("AO-REDEEM provider must not own condition registry capacity")
 
     credentials = config.get("credentials", {})
-    expected_credential_fields = {
-        "signer_private_key_ssm_path",
-        "builder_api_key_ssm_path",
-        "builder_api_secret_ssm_path",
-        "builder_passphrase_ssm_path",
-        "max_value_bytes",
+    expected_credentials = {
+        "signer_private_key_ssm_path", "builder_api_key_ssm_path", "builder_api_secret_ssm_path",
+        "builder_passphrase_ssm_path", "redaction_hmac_key_ssm_path", "max_value_bytes",
+        "max_acquisition_bytes", "max_path_bytes", "key_version",
     }
-    if set(credentials) != expected_credential_fields or any(
-        not isinstance(credentials[field], str) or not credentials[field].startswith("/bolt/")
-        for field in expected_credential_fields - {"max_value_bytes"}
-    ):
-        errors.append("AO-REDEEM credentials must use the exact grouped SSM-only schema")
-    forbidden_credential_keys = re.compile(
-        r"^(?:api_key|api_secret|passphrase|private_key|secret|credential)$", re.IGNORECASE
-    )
-    if any(forbidden_credential_keys.match(str(key)) for key in config):
-        errors.append("AO-REDEEM grouped TOML contains a non-SSM credential field")
+    if set(credentials) != expected_credentials or any(not credentials[field].startswith("/bolt/") for field in expected_credentials if field.endswith("_ssm_path")):
+        errors.append("AO-REDEEM credentials must use exact grouped SSM-only capacity schema")
+    boundary = manifest.get("credential_boundary", {})
+    if boundary.get("source") != "aws-ssm-capped-sink" or not isinstance(boundary.get("max_acquisition_bytes"), int) or credentials.get("max_acquisition_bytes", 0) > boundary.get("max_acquisition_bytes", 0):
+        errors.append("AO-REDEEM credential acquisition capacity is not source-owned and manifest-bounded")
+    config_source = (root / REDEMPTION_ROOT / "config.rs").read_text(encoding="utf-8")
+    if "CappedSsmCredentialSource" not in config_source or "CredentialSink" not in config_source or "SsmSecretResolver" in config_source or "Zeroizing<String>" in config_source:
+        errors.append("AO-REDEEM credential acquisition is not sealed, source-owned, capped, and zeroizing")
 
-    source_fixtures = {
-        "tests/fixtures/bolt_v3/redeem/source/ctf-collateral-adapter.txt": (
-            "function redeemPositions(address, bytes32, bytes32 _conditionId, uint256[] calldata)",
-            "CTFHelpers.partition()",
-            "CollateralToken(COLLATERAL_TOKEN).wrap",
-        ),
-        "tests/fixtures/bolt_v3/redeem/source/negative-risk-collateral-adapter.txt": (
-            "function _redeemPositions(bytes32 _conditionId, uint256[] memory)",
-            "balanceOf(address(this)",
-            "INegRiskAdapter(NEG_RISK_ADAPTER).redeemPositions(_conditionId, amounts)",
-        ),
-        "tests/fixtures/bolt_v3/redeem/source/relayer-safe-builder.txt": (
-            "nonce: string",
-            "nonce: args.nonce",
-            'GET_TRANSACTION = "/transaction"',
-            "competing_same_nonce_hosted_acceptance = unproven",
-        ),
+    fixtures = {
+        "ctf-collateral-adapter.txt": ("function redeemPositions(address, bytes32, bytes32 _conditionId, uint256[] calldata)", "CTFHelpers.partition()"),
+        "negative-risk-collateral-adapter.txt": ("function _redeemPositions(bytes32 _conditionId, uint256[] memory)", "INegRiskAdapter(NEG_RISK_ADAPTER).redeemPositions(_conditionId, amounts)"),
+        "relayer-safe-builder.txt": ("nonce: string", "nonce: args.nonce", "STATE_CONFIRMED", "transactionID", "proxyAddress"),
     }
-    for relative, needles in source_fixtures.items():
-        fixture_bytes = (root / relative).read_bytes()
-        text = fixture_bytes.decode("utf-8")
+    digest_fields = {"ctf-collateral-adapter.txt": "standard_sha256", "negative-risk-collateral-adapter.txt": "negative_risk_sha256", "relayer-safe-builder.txt": "relayer_sha256"}
+    for name, needles in fixtures.items():
+        path = root / "tests/fixtures/bolt_v3/redeem/source" / name
+        text = path.read_text(encoding="utf-8")
         for needle in needles:
             if needle not in text:
-                errors.append(f"AO-REDEEM source fixture {relative} lost assertion {needle!r}")
-    snapshot_digests = manifest.get("source_snapshots", {})
-    for relative, field in (
-        ("tests/fixtures/bolt_v3/redeem/source/ctf-collateral-adapter.txt", "standard_sha256"),
-        ("tests/fixtures/bolt_v3/redeem/source/negative-risk-collateral-adapter.txt", "negative_risk_sha256"),
-        ("tests/fixtures/bolt_v3/redeem/source/relayer-safe-builder.txt", "relayer_sha256"),
-    ):
-        digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
-        if snapshot_digests.get(field) != digest:
-            errors.append(f"AO-REDEEM source snapshot digest drifted: {relative}")
+                errors.append(f"AO-REDEEM source fixture {name} lost {needle!r}")
+        if manifest.get("source_snapshots", {}).get(digest_fields[name]) != hashlib.sha256(path.read_bytes()).hexdigest():
+            errors.append(f"AO-REDEEM source snapshot digest drifted: {name}")
 
-    module_sources = "\n".join(
-        (root / path).read_text(encoding="utf-8")
-        for path in REQUIRED_PATHS
-        if str(path).startswith("src/bolt_v3_providers/polymarket/redemption")
-    )
-    for pattern in (r"\basync\s+fn\s+submit", r"\bfn\s+send", r"reqwest", r"TcpStream"):
-        if re.search(pattern, module_sources):
-            errors.append("AO-REDEEM active caller or network transport is forbidden")
-            break
-    for pattern in (r"std::fs", r"tokio::fs", r"File::create", r"OpenOptions", r"rusqlite"):
-        if re.search(pattern, module_sources):
-            errors.append("AO-REDEEM durable state is forbidden")
-            break
-    for pattern in (r"log::", r"tracing::", r"println!", r"eprintln!"):
-        if re.search(pattern, module_sources):
-            errors.append("AO-REDEEM observability sink is forbidden")
-            break
-
-    allowed_references = {
-        pathlib.Path("src/bolt_v3_providers/polymarket.rs"),
-        pathlib.Path("src/bolt_v3_providers/boundary_registry.rs"),
+    wire_source = (root / REDEMPTION_ROOT / "wire.rs").read_text(encoding="utf-8")
+    for raw_type in ("NonceCallWire", "ExecutionQueryWire", "CanonicalBlockWire", "ReceiptWire", "ExecutionLogWire", "PostStateWire", "SafeBoundaryWire", "FinalizedHeadWire"):
+        if not re.search(rf"#\[serde\(deny_unknown_fields\)\]\s*(?:pub\(super\)\s+)?struct {raw_type}\b", wire_source):
+            errors.append(f"AO-REDEEM raw source-bound schema is not closed: {raw_type}")
+    if "struct ChainWire" in wire_source or re.search(r"\b(winner|conflicting_coordinates|safe_execution_succeeded)\s*:", wire_source):
+        errors.append("AO-REDEEM accepts caller-classified chain truth")
+    response_set = re.search(r"pub struct ExactQueryResponses\s*{([^}]*)}", wire_source, re.S)
+    expected_response_fields = {
+        "nonce", "original_execution", "fence_execution", "post_state", "safe_boundary",
+        "finalized_head",
     }
-    for path in (root / "src").rglob("*.rs"):
-        relative = path.relative_to(root)
-        if str(relative).startswith("src/bolt_v3_providers/polymarket/redemption"):
-            continue
-        if relative in allowed_references:
-            continue
-        source = path.read_text(encoding="utf-8")
-        if (
-            "polymarket::redemption" in source
-            or "redemption::build_request_pair" in source
-            or "build_request_pair(" in source
-            or "resolve_competing_nonce(" in source
-        ):
-            errors.append(f"AO-REDEEM disabled reachability violated by {relative}")
+    actual_response_fields = set(re.findall(r"^\s*(\w+)\s*:", response_set.group(1), re.M)) if response_set else set()
+    if actual_response_fields != expected_response_fields:
+        errors.append("AO-REDEEM exact raw response set is partial or open")
+    if "required_confirmations" not in wire_source or "confirmed_at" not in wire_source:
+        errors.append("AO-REDEEM terminal outcomes omit configured finality")
 
-    provider_source = (root / "src/bolt_v3_providers/polymarket.rs").read_text(encoding="utf-8")
-    if provider_source.count("pub mod redemption;") != 1:
-        errors.append("AO-REDEEM pure module is not provider-owned exactly once")
-    cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
-    if 'name = "bolt_v3_redeem_primitive"' not in cargo:
-        errors.append("AO-REDEEM behavior harness is not registered")
-
-    tests = (root / "tests/bolt_v3_redeem_primitive.rs").read_text(encoding="utf-8")
+    errors.extend(verify_structural_reachability(root))
+    errors.extend(verify_capabilities(root))
+    errors.extend(verify_opaque_surfaces(root))
+    tests = "\n".join((root / path).read_text(encoding="utf-8") for path in (REDEMPTION_ROOT / "tests.rs", pathlib.Path("tests/bolt_v3_redeem_primitive.rs")))
     required_tests = (
-        "standard_and_negative_risk_fixtures",
-        "original_and_fence_body_boundaries",
-        "response_loss_requires_exact_queries",
-        "original_wins_only_with_finalized_post_state",
-        "fence_wins_only_with_unchanged_post_state",
-        "unrelated_nonce_fails_closed",
-        "retry_requires_exact_body_bytes",
+        "standard_and_negative_risk_fixtures", "original_and_fence_body_boundaries",
+        "response_loss_requires_exact_queries", "original_wins_only_with_finalized_post_state",
+        "exact_relayer_record_binds_every_source_field",
+        "fence_wins_only_with_unchanged_post_state", "unrelated_nonce_fails_closed",
+        "relayer_states_never_prove_terminal_effect", "retry_requires_exact_body_bytes",
+        "stale_pre_send_token_is_rejected", "fence_first_is_unrepresentable_and_mismatched_fence_is_rejected",
+        "pre_send_balance_and_lease_revalidation_fails_closed",
+        "concurrent_conditions_cannot_share_one_nonce_permit", "full_width_nonce_domain_and_maximum_are_deterministic",
+        "capped_reader_honors_limit_minus_one_limit_and_limit_plus_one",
+        "oversized_credential_acquisition_is_rejected_before_append",
+        "raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields",
+        "sentinel_values_never_appear_in_redacted_projections", "primitive_is_mechanically_disabled",
         "sentinels_do_not_reach_redacted_diagnostics",
-        "primitive_is_mechanically_disabled",
     )
     for name in required_tests:
         if f"fn {name}" not in tests:
             errors.append(f"AO-REDEEM required behavior test missing: {name}")
-
-    registry = (root / "src/bolt_v3_providers/boundary_registry.rs").read_text(encoding="utf-8")
-    for marker in ("POLYMARKET_RELAYER_ADAPTER_ID", "POLYGON_REDEMPTION_RPC_ADAPTER_ID"):
-        if marker not in registry:
-            errors.append(f"AO-REDEEM provider/runtime boundary is not registered: {marker}")
+    if 'name = "bolt_v3_redeem_primitive"' not in (root / "Cargo.toml").read_text(encoding="utf-8"):
+        errors.append("AO-REDEEM behavior harness is not registered")
     return errors
 
 
@@ -280,8 +381,7 @@ def main() -> int:
     root = pathlib.Path(__file__).resolve().parents[1]
     errors = verify(root)
     if errors:
-        for error in errors:
-            print(error, file=sys.stderr)
+        print("\n".join(errors), file=sys.stderr)
         return 1
     print("AO-REDEEM source fence passed")
     return 0

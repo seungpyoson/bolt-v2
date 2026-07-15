@@ -85,7 +85,9 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3.32"
 getrandom = "0.4.2"
 hex = "0.4"
+hmac = "=0.12.1"
 libc = "0.2"
+k256 = { version = "=0.13.4", features = ["ecdsa"] }
 log = "0.4"
 nautilus-common = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
 nautilus-core = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }

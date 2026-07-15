@@ -9,3 +9,26 @@ export const GET_NONCE = "/nonce";
 export const GET_TRANSACTION = "/transaction"
 export const SUBMIT_TRANSACTION = "/submit";
 competing_same_nonce_hosted_acceptance = unproven
+export enum TransactionState {
+    STATE_NEW = "STATE_NEW",
+    STATE_EXECUTED = "STATE_EXECUTED",
+    STATE_MINED = "STATE_MINED",
+    STATE_INVALID = "STATE_INVALID",
+    STATE_CONFIRMED = "STATE_CONFIRMED",
+    STATE_FAILED = "STATE_FAILED",
+}
+export interface TransactionResponse {
+    transactionID: string;
+    transactionHash: string;
+    from: string;
+    to: string;
+    proxyAddress: string;
+    data: string;
+    nonce: string;
+    value: string;
+    state: TransactionState;
+    type: string;
+    metadata: string;
+    createdAt: string;
+    updatedAt: string;
+}

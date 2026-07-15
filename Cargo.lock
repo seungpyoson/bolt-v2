@@ -1770,6 +1770,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.2",
  "hex",
+ "hmac 0.12.1",
+ "k256",
  "libc",
  "log",
  "nautilus-binance",

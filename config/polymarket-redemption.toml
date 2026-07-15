@@ -26,21 +26,35 @@ origin = "https://relayer-v2.polymarket.com"
 submit_path = "/submit"
 transaction_path = "/transaction"
 nonce_path = "/nonce"
+max_origin_bytes = 256
+max_path_bytes = 64
 max_request_bytes = 4096
 max_response_bytes = 2097152
+overflow_probe_bytes = 1
 max_transaction_items = 1
 max_transaction_id_bytes = 256
+max_timestamp_bytes = 64
 max_metadata_bytes = 256
+max_header_bytes = 1024
 competing_same_nonce_conformance = false
 
 [rpc]
 max_response_bytes = 2097152
-max_receipt_logs = 4096
+overflow_probe_bytes = 1
+max_receipt_logs = 1
 finality_confirmations = 128
+
+[query]
+max_items = 7
+max_bytes = 4096
 
 [credentials]
 signer_private_key_ssm_path = "/bolt/polymarket/private-key"
 builder_api_key_ssm_path = "/bolt/polymarket/relayer-builder-api-key"
 builder_api_secret_ssm_path = "/bolt/polymarket/relayer-builder-api-secret"
 builder_passphrase_ssm_path = "/bolt/polymarket/relayer-builder-passphrase"
+redaction_hmac_key_ssm_path = "/bolt/polymarket/redaction-hmac-key"
 max_value_bytes = 4096
+max_acquisition_bytes = 4096
+max_path_bytes = 256
+key_version = 1

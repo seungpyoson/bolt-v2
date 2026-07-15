@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    operator_work_budget::{
+        OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+    },
     run_manifest::MarketStructureFixture,
 };
 
@@ -876,10 +878,9 @@ async fn catalog_projection_for_source_binding_guarded(
         let sha256 = sha256_bytes(&payload);
         let byte_len = payload.len();
         let (_version, create_only_write) = writer
-            .put_create_idempotent_with_disposition(&object_path, payload)
+            .put_create_idempotent_with_disposition_guarded(&object_path, payload, work_budget)
             .await
             .with_context(|| format!("persist catalog object {uri}"))?;
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         objects.push(PersistedCatalogProjectionObject {
             relative_path: relative_key,
             uri,
@@ -910,12 +911,11 @@ async fn catalog_projection_for_source_binding_guarded(
                 .collect(),
         })
         .context("serialize catalog projection manifest")?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let (_version, manifest_create_only_write) = writer
-        .put_create_idempotent_with_disposition(&manifest_path, manifest_payload)
-        .await
-        .with_context(|| format!("persist catalog projection manifest {manifest_uri}"))?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
+    let (_version, manifest_create_only_write) =
+        commit_catalog_projection_manifest(&writer, &manifest_path, manifest_payload, permit)
+            .await
+            .with_context(|| format!("persist catalog projection manifest {manifest_uri}"))?;
     Ok(PersistedCatalogProjection {
         catalog_root_uri,
         manifest_uri,
@@ -924,6 +924,17 @@ async fn catalog_projection_for_source_binding_guarded(
         binding,
         objects,
     })
+}
+
+async fn commit_catalog_projection_manifest(
+    writer: &CreateOnlyArtifactWriter<'_>,
+    manifest_path: &ObjectPath,
+    manifest_payload: Vec<u8>,
+    _permit: OperatorWorkBudgetCommitPermit,
+) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
+    writer
+        .put_create_idempotent_with_disposition(manifest_path, manifest_payload)
+        .await
 }
 
 fn catalog_projection_manifest_sha256(objects: &[PersistedCatalogProjectionObject]) -> String {
@@ -1014,17 +1025,39 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         artifact_root: &ResolvedArtifactRoot,
         probe_id: &str,
     ) -> Result<CreateOnlyProbeTranscript> {
+        let work_budget = OperatorWorkBudgetGuard::unbounded();
+        self.probe_create_only_guarded(artifact_root, probe_id, &work_budget)
+            .await
+    }
+
+    /// Execute the create-only capability probe under the shared operator
+    /// deadline. Every remote create/copy/read is fenced independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::probe_create_only`] and fails when
+    /// the operator work budget expires.
+    pub async fn probe_create_only_guarded(
+        &self,
+        artifact_root: &ResolvedArtifactRoot,
+        probe_id: &str,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<CreateOnlyProbeTranscript> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         ensure_path_token("create_only_probe_id", probe_id, PathTokenMode::AllowEquals)?;
         let probe_uri = artifact_root.create_only_probe_uri(probe_id);
         let path = artifact_root.object_path_for_uri(&probe_uri)?;
         let payload = probe_id.as_bytes().to_vec();
-        self.put_create_idempotent(&path, payload.clone())
+        self.put_create_idempotent_guarded(&path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe setup write {probe_uri}"))?;
 
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         match self.put_create(&path, payload.clone()).await {
             Ok(()) => bail!("create-only probe accepted duplicate write to {probe_uri}"),
-            Err(err) if is_create_only_conflict(&err) => {}
+            Err(err) if is_create_only_conflict(&err) => {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+            }
             Err(err) => {
                 return Err(err).with_context(|| {
                     format!("create-only probe duplicate write failed unexpectedly for {probe_uri}")
@@ -1036,7 +1069,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         let copy_dest_uri = artifact_root.create_only_probe_copy_dest_uri(probe_id);
         let copy_source_path = artifact_root.object_path_for_uri(&copy_source_uri)?;
         let copy_dest_path = artifact_root.object_path_for_uri(&copy_dest_uri)?;
-        self.put_create_idempotent(&copy_source_path, payload.clone())
+        self.put_create_idempotent_guarded(&copy_source_path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe copy source setup {copy_source_uri}"))?;
         self.copy_if_not_exists_idempotent(
@@ -1045,24 +1078,29 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             payload.as_slice(),
             &copy_source_uri,
             &copy_dest_uri,
+            work_budget,
         )
         .await?;
 
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         match self
             .store
             .copy_if_not_exists(&copy_source_path, &copy_dest_path)
             .await
         {
             Ok(()) => bail!("create-only probe accepted duplicate copy to {copy_dest_uri}"),
-            Err(err) if is_object_store_create_only_conflict(&err) => Ok(CreateOnlyProbeTranscript {
-                probe_uri,
-                copy_source_uri,
-                copy_dest_uri,
-                first_create_succeeded: true,
-                duplicate_create_rejected: true,
-                first_copy_succeeded: true,
-                duplicate_copy_rejected: true,
-            }),
+            Err(err) if is_object_store_create_only_conflict(&err) => {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                Ok(CreateOnlyProbeTranscript {
+                    probe_uri,
+                    copy_source_uri,
+                    copy_dest_uri,
+                    first_create_succeeded: true,
+                    duplicate_create_rejected: true,
+                    first_copy_succeeded: true,
+                    duplicate_copy_rejected: true,
+                })
+            }
             Err(err) => Err(err).with_context(|| {
                 format!(
                     "create-only probe duplicate copy-if-not-exists failed unexpectedly for {copy_dest_uri}"
@@ -1078,14 +1116,20 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         expected_payload: &[u8],
         copy_source_uri: &str,
         copy_dest_uri: &str,
+        work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         match self
             .store
             .copy_if_not_exists(copy_source_path, copy_dest_path)
             .await
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                Ok(())
+            }
             Err(err) if is_object_store_create_only_conflict(&err) => {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
                 let existing = self
                     .store
                     .get(copy_dest_path)
@@ -1093,9 +1137,11 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     .with_context(|| {
                         format!("read existing create-only probe copy destination {copy_dest_uri}")
                     })?;
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
                 let existing_bytes = existing.bytes().await.with_context(|| {
                     format!("read existing create-only probe copy bytes {copy_dest_uri}")
                 })?;
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
                 ensure!(
                     existing_bytes.as_ref() == expected_payload,
                     "create-only probe copy destination {copy_dest_uri} already exists with different payload"
@@ -1134,18 +1180,64 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         path: &ObjectPath,
         payload: Vec<u8>,
     ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
+        self.put_create_idempotent_with_disposition_inner(path, payload, None)
+            .await
+    }
+
+    pub(crate) async fn put_create_idempotent_guarded(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<UpdateVersion> {
+        let (version, _disposition) = self
+            .put_create_idempotent_with_disposition_guarded(path, payload, work_budget)
+            .await?;
+        Ok(version)
+    }
+
+    pub(crate) async fn put_create_idempotent_with_disposition_guarded(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
+        self.put_create_idempotent_with_disposition_inner(path, payload, Some(work_budget))
+            .await
+    }
+
+    async fn put_create_idempotent_with_disposition_inner(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        work_budget: Option<&OperatorWorkBudgetGuard>,
+    ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
+        if let Some(work_budget) = work_budget {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        }
         match self
             .store
             .put_opts(path, payload.clone().into(), PutMode::Create.into())
             .await
         {
-            Ok(result) => Ok((result.into(), CreateOnlyWriteDisposition::Created)),
+            Ok(result) => {
+                if let Some(work_budget) = work_budget {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                }
+                Ok((result.into(), CreateOnlyWriteDisposition::Created))
+            }
             Err(err) if is_object_store_create_only_conflict(&err) => {
+                if let Some(work_budget) = work_budget {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                }
                 let existing = self
                     .store
                     .get(path)
                     .await
                     .with_context(|| format!("read existing create-only object {path}"))?;
+                if let Some(work_budget) = work_budget {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                }
                 let version = UpdateVersion {
                     e_tag: existing.meta.e_tag.clone(),
                     version: existing.meta.version.clone(),
@@ -1154,6 +1246,9 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     .bytes()
                     .await
                     .with_context(|| format!("read existing create-only bytes {path}"))?;
+                if let Some(work_budget) = work_budget {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                }
                 ensure!(
                     existing_bytes.as_ref() == payload.as_slice(),
                     "create-only object {path} already exists with different payload"

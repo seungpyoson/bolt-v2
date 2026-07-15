@@ -1283,6 +1283,7 @@ pub(crate) fn run_nt_backtest_node_guarded(
         .as_ref()
         .map(|writer| writer.run_guard_report(&nt_result))
         .transpose()?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     Ok(NtBacktestNodeRun {
         result: nt_result,
         order_terminals,

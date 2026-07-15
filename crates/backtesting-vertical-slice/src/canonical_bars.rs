@@ -467,10 +467,10 @@ pub(crate) fn normalize_csv_native_bars_with_meter(
                 return Err(error).with_context(|| format!("row {index}: malformed csv record"));
             }
         };
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         if fields.iter().all(str::is_empty) {
             continue;
         }
-        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             fields.len() == header_columns.len(),
             "row {index} has {} fields, expected {}",
@@ -2755,6 +2755,43 @@ table_families = ["bars"]
         assert!(
             err.to_string().contains("ingest_run_id"),
             "expected 'ingest_run_id' in error: {err}"
+        );
+    }
+
+    #[test]
+    fn delimiter_only_csv_record_is_metered_before_semantic_skip() {
+        let accepted = accepted_dataset(&schema_with_close());
+        let csv = "open_time,close_time,open,high,low,close,volume\n\
+            1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n\
+            ,,,,,,\n";
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+
+        let error = normalize_csv_native_bars_with_meter(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            csv,
+            42,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect_err("delimiter-only physical record must consume the second source row");
+
+        assert!(
+            error
+                .to_string()
+                .contains("max_source_rows actual 2 exceeds limit 1"),
+            "{error:#}"
         );
     }
 

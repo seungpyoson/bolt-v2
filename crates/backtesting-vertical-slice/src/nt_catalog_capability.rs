@@ -21,6 +21,9 @@ use crate::{
         ArtifactStoreConfig, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
     },
+    operator_work_budget::{
+        OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+    },
     run_manifest::MarketStructureFixture,
 };
 
@@ -1062,7 +1065,9 @@ impl NtCatalogCapabilityRunSpec {
         artifact_store: &ArtifactStoreConfig,
         writer: &CreateOnlyArtifactWriter<'_>,
         evidence: &NtCatalogCapabilityEvidence,
+        work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<NtCatalogCapabilityProofArtifact> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         let artifact_root = artifact_store.resolve()?;
         let plan = self.proof_plan(artifact_store)?;
         let proof_artifact_uri = plan.proof_artifact_uri.clone();
@@ -1076,9 +1081,9 @@ impl NtCatalogCapabilityRunSpec {
         let proof_bytes = crate::reference_artifact::canonical_json_bytes(&proof_document)?;
         let proof_artifact_sha256 = sha256_bytes(&proof_bytes);
         let proof_artifact_path = artifact_root.object_path_for_uri(&proof_artifact_uri)?;
-        let (_version, proof_artifact_create_only_write) = writer
-            .put_create_idempotent_with_disposition(&proof_artifact_path, proof_bytes)
-            .await?;
+        let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
+        let (_version, proof_artifact_create_only_write) =
+            commit_completed_proof(writer, &proof_artifact_path, proof_bytes, permit).await?;
         Ok(NtCatalogCapabilityProofArtifact {
             proof_artifact_uri,
             proof_artifact_sha256,
@@ -1098,9 +1103,45 @@ impl NtCatalogCapabilityRunSpec {
         writer: &CreateOnlyArtifactWriter<'_>,
         evidence: &NtCatalogCapabilityEvidence,
     ) -> Result<NtCatalogCapabilityProofArtifact> {
-        self.persist_completed_proof(artifact_store, writer, evidence)
+        let work_budget = OperatorWorkBudgetGuard::unbounded();
+        self.persist_completed_proof_from_evidence_guarded(
+            artifact_store,
+            writer,
+            evidence,
+            &work_budget,
+        )
+        .await
+    }
+
+    /// Persist a completed proof under the shared operator deadline. The
+    /// terminal proof write consumes a one-use commit permit and is never
+    /// followed by a clock check in this protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::persist_completed_proof_from_evidence`]
+    /// and fails when the operator work budget expires before commitment.
+    pub async fn persist_completed_proof_from_evidence_guarded(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        writer: &CreateOnlyArtifactWriter<'_>,
+        evidence: &NtCatalogCapabilityEvidence,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<NtCatalogCapabilityProofArtifact> {
+        self.persist_completed_proof(artifact_store, writer, evidence, work_budget)
             .await
     }
+}
+
+async fn commit_completed_proof(
+    writer: &CreateOnlyArtifactWriter<'_>,
+    proof_artifact_path: &object_store::path::Path,
+    proof_bytes: Vec<u8>,
+    _permit: OperatorWorkBudgetCommitPermit,
+) -> Result<(object_store::UpdateVersion, CreateOnlyWriteDisposition)> {
+    writer
+        .put_create_idempotent_with_disposition(proof_artifact_path, proof_bytes)
+        .await
 }
 
 impl NtCatalogCapabilityProofDocument {

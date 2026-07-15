@@ -1245,10 +1245,10 @@ fn normalize_csv_native_trades_with_meter(
                 return Err(error).with_context(|| format!("row {index}: malformed csv record"));
             }
         };
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         if fields.iter().all(str::is_empty) {
             continue;
         }
-        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             fields.len() == header_columns.len(),
             "row {index} has {} fields, expected {}",
@@ -3712,6 +3712,53 @@ seller_side_values = ["Sell"]
             &guard,
         )
         .expect_err("malformed second record must consume the second source row");
+
+        assert!(
+            error
+                .to_string()
+                .contains("max_source_rows actual 2 exceeds limit 1"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn delimiter_only_csv_record_is_metered_before_semantic_skip() {
+        let mapping = CsvTradeMappingConfig {
+            has_headers: true,
+            trade_id_column: "id".to_string(),
+            timestamp_column: "timestamp".to_string(),
+            timestamp_unit: CsvTimestampUnit::Milliseconds,
+            price_column: "price".to_string(),
+            size_column: "volume".to_string(),
+            side_column: "side".to_string(),
+            buyer_side_values: vec!["buy".to_string()],
+            seller_side_values: vec!["sell".to_string()],
+        };
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,617.2,0.3,buy,0\n\
+            ,,,,,\n";
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+
+        let error = normalize_csv_native_trades_with_meter(
+            &accepted_dataset(),
+            &identity(),
+            &mapping,
+            csv,
+            0,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect_err("delimiter-only physical record must consume the second source row");
 
         assert!(
             error

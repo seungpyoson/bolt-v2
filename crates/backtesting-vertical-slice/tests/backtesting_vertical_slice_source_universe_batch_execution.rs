@@ -398,6 +398,56 @@ fn expired_fresh_record_never_invokes_runner_and_continue_on_error_progresses() 
 }
 
 #[test]
+fn runner_commit_is_not_retroactively_failed_when_deadline_expires_at_return() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let object_bytes = b"accepted object bytes".to_vec();
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read execution pack"))
+            .expect("parse execution pack");
+    let record = pack.records.first().expect("single record");
+    let mut fetcher = StaticFetcher {
+        expected_source_url: record.source_url.clone(),
+        object_bytes,
+        calls: 0,
+    };
+    let clock = Arc::new(BatchFakeClock::default());
+    let guard_factory = BatchFakeGuardFactory {
+        clock: Arc::clone(&clock),
+    };
+    let mut runner = CommittingExpiringRunner { clock, calls: 0 };
+
+    let report = execute_source_universe_batch_with_guard_factory(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: true,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+        &guard_factory,
+    )
+    .expect("a runner-authorized commit remains a completed record");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert_eq!(report.failed_record_count, 0);
+    assert_eq!(runner.calls, 1);
+    assert!(
+        fixture
+            .output_dir
+            .join(&record.operator_run_id)
+            .join("conversion-checkpoint.json")
+            .is_file(),
+        "the terminal marker and typed batch result cannot contradict each other"
+    );
+}
+
+#[test]
 fn http_source_universe_fetcher_rejects_zero_timeout() {
     match HttpSourceUniverseObjectFetcher::new(Some(0), None) {
         Ok(_) => panic!("zero timeout accepted"),
@@ -2759,6 +2809,37 @@ impl SourceUniverseWorkBudgetGuardFactory for BatchFakeGuardFactory {
 struct ExpiringFirstFetcher {
     object_bytes_by_sequence: std::collections::BTreeMap<u64, Vec<u8>>,
     clock: Arc<BatchFakeClock>,
+}
+
+struct CommittingExpiringRunner {
+    clock: Arc<BatchFakeClock>,
+    calls: usize,
+}
+
+impl SourceUniverseOperatorRunner for CommittingExpiringRunner {
+    fn run(
+        &mut self,
+        _record: &SourceUniverseExecutionPackRecord,
+        _object_bytes: &[u8],
+        _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+        output_dir: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
+        self.calls += 1;
+        fs::write(
+            output_dir.join("conversion-checkpoint.json"),
+            b"synthetic committed checkpoint",
+        )?;
+        let remaining = work_budget
+            .remaining_wall_time(OperatorWorkBudgetStage::Finalize)?
+            .expect("validated backfill guard has a wall deadline");
+        self.clock.advance(remaining);
+        Ok(SourceUniverseBatchExecutionRunOutput {
+            canonical_rows: 7,
+            nt_catalog_rows: 7,
+            catalog_hash: sha256_hex(b"catalog-hash"),
+        })
+    }
 }
 
 impl SourceUniverseObjectFetcher for ExpiringFirstFetcher {

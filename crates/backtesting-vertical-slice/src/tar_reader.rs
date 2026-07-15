@@ -85,9 +85,21 @@ pub fn gzip_tar_members<R: Read>(
     reader: R,
     member_suffix: &str,
     max_member_bytes: u64,
-) -> GzipTarMembers<R> {
-    GzipTarMembers {
-        decoder: MultiGzDecoder::new(reader),
+) -> TarMembers<MultiGzDecoder<R>> {
+    tar_members(MultiGzDecoder::new(reader), member_suffix, max_member_bytes)
+}
+
+/// Walk an already-decoded tar stream through the same bounded member parser.
+///
+/// This seam lets callers wrap the decompressed byte stream with cooperative
+/// read checks while preserving one tar parsing implementation.
+pub fn tar_members<R: Read>(
+    reader: R,
+    member_suffix: &str,
+    max_member_bytes: u64,
+) -> TarMembers<R> {
+    TarMembers {
+        reader,
         member_suffix: member_suffix.to_string(),
         max_member_bytes,
         done: false,
@@ -98,14 +110,14 @@ pub fn gzip_tar_members<R: Read>(
 ///
 /// Created by [`gzip_tar_members`]. Holds the streaming [`MultiGzDecoder`] and the
 /// member filter; it never buffers more than one member's bytes at a time.
-pub struct GzipTarMembers<R: Read> {
-    decoder: MultiGzDecoder<R>,
+pub struct TarMembers<R: Read> {
+    reader: R,
     member_suffix: String,
     max_member_bytes: u64,
     done: bool,
 }
 
-impl<R: Read> GzipTarMembers<R> {
+impl<R: Read> TarMembers<R> {
     /// Advance to and return the next matching member, or `Ok(None)` at
     /// end-of-archive.
     ///
@@ -115,7 +127,7 @@ impl<R: Read> GzipTarMembers<R> {
     fn next_member(&mut self) -> Result<Option<TarMember>> {
         loop {
             let mut header = [0u8; TAR_BLOCK];
-            match read_full_block(&mut self.decoder, &mut header)? {
+            match read_full_block(&mut self.reader, &mut header)? {
                 BlockRead::Eof => return Ok(None),
                 BlockRead::Truncated(read) => {
                     bail!("tar header truncated: read {read} of {TAR_BLOCK} bytes")
@@ -157,8 +169,8 @@ impl<R: Read> GzipTarMembers<R> {
             self.max_member_bytes
         );
         let mut bytes = vec![0u8; usize_from_size(size, name)?];
-        read_exact_member(&mut self.decoder, &mut bytes, name)?;
-        consume_padding(&mut self.decoder, size, name)?;
+        read_exact_member(&mut self.reader, &mut bytes, name)?;
+        consume_padding(&mut self.reader, size, name)?;
         String::from_utf8(bytes).with_context(|| format!("tar member {name:?} is not valid UTF-8"))
     }
 
@@ -167,7 +179,7 @@ impl<R: Read> GzipTarMembers<R> {
     /// member's declared size.
     fn skip_member_data(&mut self, name: &str, size: u64) -> Result<()> {
         let total = padded_len(size, name)?;
-        let consumed = std::io::copy(&mut (&mut self.decoder).take(total), &mut std::io::sink())
+        let consumed = std::io::copy(&mut (&mut self.reader).take(total), &mut std::io::sink())
             .with_context(|| format!("skip tar member {name:?}"))?;
         ensure!(
             consumed == total,
@@ -177,7 +189,7 @@ impl<R: Read> GzipTarMembers<R> {
     }
 }
 
-impl<R: Read> Iterator for GzipTarMembers<R> {
+impl<R: Read> Iterator for TarMembers<R> {
     type Item = Result<TarMember>;
 
     fn next(&mut self) -> Option<Self::Item> {

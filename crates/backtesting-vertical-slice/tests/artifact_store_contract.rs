@@ -4,7 +4,16 @@ use object_store::{
     ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
-use std::{fmt, fs, io::Write, path::Path};
+use std::{
+    fmt, fs,
+    io::Write,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use backtesting_vertical_slice::{
     artifact_store::{
@@ -15,7 +24,9 @@ use backtesting_vertical_slice::{
         CatalogProjectionBinding, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
         StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
+        persist_catalog_projection_for_source_binding_guarded,
     },
+    backfill_execution_plan::BackfillExecutionWorkBudget,
     conversion_boundary::{CONVERSION_MANIFEST_FILE, ConversionCatalogMetadata},
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
@@ -24,6 +35,7 @@ use backtesting_vertical_slice::{
         SYNTHETIC_SOURCE_PROOF_ID,
     },
     operator::{CATALOG_DIR, RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
+    operator_work_budget::{OperatorWorkBudget, OperatorWorkBudgetClock, OperatorWorkBudgetGuard},
     result_contract::BacktestResultContract,
     run_manifest::{ManifestArtifactStoreSsmParameters, MarketStructureFixture},
 };
@@ -38,6 +50,34 @@ const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
     1,1772323201665,617.2,0.3,buy,0\n\
     2,1772323312219,617.9,0.1456,sell,0\n\
     3,1772323312236,617,0.1544,sell,0\n";
+
+struct ObservationExpiryClock {
+    observations: AtomicUsize,
+    expires_after_observation: usize,
+}
+
+impl OperatorWorkBudgetClock for ObservationExpiryClock {
+    fn now(&self) -> Duration {
+        if self.observations.fetch_add(1, Ordering::SeqCst) >= self.expires_after_observation {
+            Duration::from_secs(1)
+        } else {
+            Duration::ZERO
+        }
+    }
+}
+
+fn one_second_guard(clock: Arc<ObservationExpiryClock>) -> OperatorWorkBudgetGuard {
+    OperatorWorkBudgetGuard::with_clock(
+        OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+            max_source_rows: 1,
+            max_projected_row_groups: 10,
+            max_wall_seconds: 1,
+            require_object_selection_metadata: false,
+        }),
+        clock,
+    )
+    .expect("guard")
+}
 
 fn gzip(text: &str) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -808,6 +848,64 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     );
 }
 
+#[tokio::test]
+async fn capability_proof_expiry_after_preparation_writes_no_terminal_proof() {
+    let fixture = committed_capability_proof_fixture();
+    let root = fixture.artifact_store.resolve().expect("artifact root");
+    let evidence = successful_capability_evidence(&root, &fixture.nt_catalog_capability_proof);
+    let plan = fixture
+        .nt_catalog_capability_proof
+        .proof_plan(&fixture.artifact_store)
+        .expect("proof plan");
+    let proof_path = root
+        .object_path_for_uri(&plan.proof_artifact_uri)
+        .expect("proof path");
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
+        observations: AtomicUsize::new(0),
+        expires_after_observation: 2,
+    }));
+
+    let error = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &writer,
+            &evidence,
+            &guard,
+        )
+        .await
+        .expect_err("expiry after proof preparation must fence the terminal put");
+
+    assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+    assert!(store.head(&proof_path).await.is_err());
+}
+
+#[tokio::test]
+async fn capability_proof_commit_is_not_invalidated_by_a_later_clock_observation() {
+    let fixture = committed_capability_proof_fixture();
+    let root = fixture.artifact_store.resolve().expect("artifact root");
+    let evidence = successful_capability_evidence(&root, &fixture.nt_catalog_capability_proof);
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
+        observations: AtomicUsize::new(0),
+        expires_after_observation: 3,
+    }));
+
+    fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &writer,
+            &evidence,
+            &guard,
+        )
+        .await
+        .expect("terminal permit authorizes the proof commit without a post-commit clock check");
+}
+
 #[test]
 fn rejects_local_or_non_s3_canonical_artifact_roots() {
     let mut config = artifact_config();
@@ -993,6 +1091,29 @@ async fn create_only_probe_requires_duplicate_create_rejection() {
 }
 
 #[tokio::test]
+async fn create_only_probe_expiry_after_setup_writes_no_probe_object() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
+        observations: AtomicUsize::new(0),
+        expires_after_observation: 2,
+    }));
+    let probe_uri = root.create_only_probe_uri("probe-run-expiry");
+    let probe_path = root
+        .object_path_for_uri(&probe_uri)
+        .expect("probe path under root");
+
+    let error = writer
+        .probe_create_only_guarded(&root, "probe-run-expiry", &guard)
+        .await
+        .expect_err("expiry before the first irreversible probe write must fail closed");
+
+    assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+    assert!(store.head(&probe_path).await.is_err());
+}
+
+#[tokio::test]
 async fn create_only_probe_replays_existing_same_payload_sentinels() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();
@@ -1157,6 +1278,47 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         catalog_object.create_only_write,
         CreateOnlyWriteDisposition::Created
     );
+}
+
+#[tokio::test]
+async fn catalog_projection_expiry_after_local_hashing_writes_no_object() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = CatalogDispatchConfig {
+        bindings: vec![CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "projection-expiry".to_string(),
+        }],
+    };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    fs::write(temp.path().join("metadata.json"), br#"{"schema":"nt"}"#).expect("metadata");
+    let store = InMemory::new();
+    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
+        observations: AtomicUsize::new(0),
+        expires_after_observation: 2,
+    }));
+    let object_uri = format!(
+        "{}metadata.json",
+        root.nt_catalog_projection_root("projection-expiry")
+    );
+    let object_path = root
+        .object_path_for_uri(&object_uri)
+        .expect("catalog object path");
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &guard,
+    )
+    .await
+    .expect_err("expiry after local hashing must fence the immutable object put");
+
+    assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+    assert!(store.head(&object_path).await.is_err());
 }
 
 #[cfg(unix)]

@@ -2045,11 +2045,6 @@ where
                 &work_budget,
             )
         })
-        .and_then(|run_output| {
-            work_budget
-                .check_deadline(OperatorWorkBudgetStage::Finalize)
-                .map(|()| run_output)
-        })
         .with_context(|| format!("run operator {}", record.operator_run_id));
     let record_output_dir = match output_claim
         .revalidate(output_root_lease, &record.operator_run_id)

@@ -546,6 +546,7 @@ async fn persist_durable_contract_artifact(
         )
     })?;
     if committed {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         let existing = read_object_store_object(store, &path)
             .await?
             .with_context(|| format!("committed durable artifact {uri} is missing"))?;
@@ -555,7 +556,7 @@ async fn persist_durable_contract_artifact(
         );
     } else {
         writer
-            .put_create_idempotent(&path, payload)
+            .put_create_idempotent_guarded(&path, payload, work_budget)
             .await
             .with_context(|| format!("persist durable contract artifact {uri}"))?;
     }
@@ -980,24 +981,60 @@ pub fn validate_run_spec_manifest_for_object_hash_with_registry(
     }
 }
 
-fn read_limited_csv_text<R: Read>(
+struct DeadlineCheckedReader<'a, R> {
+    inner: R,
+    work_budget: &'a OperatorWorkBudgetGuard,
+}
+
+impl<'a, R> DeadlineCheckedReader<'a, R> {
+    fn new(inner: R, work_budget: &'a OperatorWorkBudgetGuard) -> Self {
+        Self { inner, work_budget }
+    }
+}
+
+impl<R: Read> Read for DeadlineCheckedReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.work_budget
+            .check_deadline(OperatorWorkBudgetStage::Decode)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+        let read = self.inner.read(buffer)?;
+        self.work_budget
+            .check_deadline(OperatorWorkBudgetStage::Decode)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+        Ok(read)
+    }
+}
+
+fn read_limited_bytes<R: Read>(
     reader: R,
     max_decoded_bytes: u64,
     context_label: &str,
-) -> Result<String> {
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<u8>> {
     let read_limit = max_decoded_bytes
         .checked_add(1)
         .context("converter.raw_payload.max_decoded_bytes is too large")?;
-    let mut limited = reader.take(read_limit);
+    let mut limited = DeadlineCheckedReader::new(reader, work_budget).take(read_limit);
     let mut bytes = Vec::new();
     limited
         .read_to_end(&mut bytes)
         .with_context(|| format!("decode {context_label}"))?;
+    let decoded_len = u64::try_from(bytes.len()).context("decoded byte length does not fit u64")?;
     ensure!(
-        bytes.len() as u64 <= max_decoded_bytes,
+        decoded_len <= max_decoded_bytes,
         "decoded text byte length {} exceeds converter.raw_payload.max_decoded_bytes {max_decoded_bytes}",
         bytes.len()
     );
+    Ok(bytes)
+}
+
+fn read_limited_csv_text<R: Read>(
+    reader: R,
+    max_decoded_bytes: u64,
+    context_label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<String> {
+    let bytes = read_limited_bytes(reader, max_decoded_bytes, context_label, work_budget)?;
     String::from_utf8(bytes).with_context(|| format!("decode {context_label} as UTF-8 text"))
 }
 
@@ -1014,28 +1051,37 @@ enum DecodedPayload {
     ParquetBytes(Vec<u8>),
 }
 
-fn decode_object_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Result<DecodedPayload> {
+fn decode_object_payload(
+    config: &RawPayloadConfig,
+    object_bytes: &[u8],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<DecodedPayload> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     validate_raw_payload_config(config)?;
     match config.container {
         RawPayloadContainer::CsvGzip => Ok(DecodedPayload::Text(read_limited_csv_text(
             flate2::read::GzDecoder::new(object_bytes),
             config.max_decoded_bytes,
             "gzip csv object",
+            work_budget,
         )?)),
         RawPayloadContainer::CsvText => Ok(DecodedPayload::Text(read_limited_csv_text(
             Cursor::new(object_bytes),
             config.max_decoded_bytes,
             "plain csv object",
+            work_budget,
         )?)),
         RawPayloadContainer::JsonlText => Ok(DecodedPayload::Text(read_limited_csv_text(
             Cursor::new(object_bytes),
             config.max_decoded_bytes,
             "plain jsonl object",
+            work_budget,
         )?)),
         RawPayloadContainer::JsonlGzip => Ok(DecodedPayload::Text(read_limited_csv_text(
             flate2::read::GzDecoder::new(object_bytes),
             config.max_decoded_bytes,
             "gzip jsonl object",
+            work_budget,
         )?)),
         RawPayloadContainer::SingleJsonlZip => {
             let mut member = crate::zip_reader::zip_member_reader(object_bytes)
@@ -1050,7 +1096,9 @@ fn decode_object_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Resu
                 &mut member,
                 config.max_decoded_bytes,
                 "single-member zip jsonl object",
+                work_budget,
             )?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
             member.verify().context("verify jsonl zip member")?;
             Ok(DecodedPayload::Text(text))
         }
@@ -1072,6 +1120,7 @@ fn decode_object_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Resu
                 member,
                 config.max_decoded_bytes,
                 &format!("zip member {member_name:?}"),
+                work_budget,
             )?))
         }
         RawPayloadContainer::TarGzipJsonl => {
@@ -1083,16 +1132,21 @@ fn decode_object_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Resu
                 .max_member_bytes
                 .context("converter.raw_payload.max_member_bytes is required for tar_gzip_jsonl")?;
             let mut members = Vec::new();
-            for member in crate::tar_reader::gzip_tar_members(
-                Cursor::new(object_bytes),
-                member_suffix,
-                max_member_bytes,
-            ) {
+            let decoder = flate2::read::MultiGzDecoder::new(Cursor::new(object_bytes));
+            let reader = DeadlineCheckedReader::new(decoder, work_budget);
+            for member in crate::tar_reader::tar_members(reader, member_suffix, max_member_bytes) {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
                 members.push(member.context("stream gzip tar jsonl member")?);
+                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
             }
             Ok(DecodedPayload::TarMembers(members))
         }
-        RawPayloadContainer::ParquetFile => Ok(DecodedPayload::ParquetBytes(object_bytes.to_vec())),
+        RawPayloadContainer::ParquetFile => Ok(DecodedPayload::ParquetBytes(read_limited_bytes(
+            Cursor::new(object_bytes),
+            config.max_object_bytes,
+            "parquet object",
+            work_budget,
+        )?)),
     }
 }
 
@@ -1120,12 +1174,18 @@ struct CompletedOutputInputs<'a> {
 }
 
 fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArtifacts> {
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let conversion_checkpoint: ConversionCheckpoint =
         read_json_artifact(&inputs.conversion_checkpoint_path)?;
     ensure!(
         conversion_checkpoint.content_hash()? == inputs.conversion_checkpoint_hash,
         "completed conversion checkpoint hash changed after inspection"
     );
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let conversion_manifest: ConversionManifest =
         read_json_artifact(&inputs.conversion_manifest_path)?;
     ensure!(
@@ -1136,6 +1196,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_manifest.output_catalog_uri == inputs.artifact_uris.nt_catalog_uri,
         "completed conversion output_catalog_uri does not match current run manifest"
     );
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let conversion_catalog_metadata: ConversionCatalogMetadata =
         read_json_artifact(&inputs.catalog_metadata_path)?;
     ensure!(
@@ -1153,6 +1216,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     let conversion_catalog_metadata_hash = conversion_catalog_metadata
         .content_hash()
         .context("hash completed catalog metadata")?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
 
     let actual_catalog_hash = logical_catalog_hash(&inputs.catalog_root)
         .with_context(|| format!("verify catalog hash {}", inputs.catalog_root.display()))?;
@@ -1162,9 +1228,15 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         inputs.expected_catalog_hash,
         actual_catalog_hash
     );
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let canonical_table =
         CanonicalTradesTable::read_parquet(&inputs.canonical_artifact_path, inputs.accepted)?;
     let actual_metadata = actual_nt_market_data_metadata(&inputs.catalog_root)?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let canonical_rows = u64::try_from(canonical_table.rows.len())
         .context("canonical row count does not fit u64")?;
     let projected_row_groups =
@@ -1206,6 +1278,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     let read_back =
         read_back_trade_ticks(&inputs.catalog_root, &conversion_manifest.nt_instrument_id)
             .context("read back completed NT catalog")?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     ensure!(
         read_back.len() == canonical_table.rows.len(),
         "completed NT catalog read-back count {} does not match canonical rows {}",
@@ -1220,6 +1295,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         run_guard_report,
         ..
     } = run_nt_backtest_node_guarded(&inputs.manifest, inputs.work_budget)?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let expected = expected_iterations(
         &canonical_table.rows,
         inputs.manifest.start_time,
@@ -1297,21 +1375,36 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     };
     redact_operator_contract(&mut output, &inputs.catalog_root);
     output.contract = verify_completed_result_contract(&inputs.contract_path, &output.contract)?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::Finalize)?;
 
-    atomic_write(
-        &inputs.proof_path,
-        serde_json::to_string_pretty(&inputs.accepted_source_proof)
-            .context("serialize accepted source proof")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", inputs.proof_path.display()))?;
-    atomic_write(
-        &inputs.run_manifest_path,
-        serde_json::to_string_pretty(&inputs.spec_manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", inputs.run_manifest_path.display()))?;
+    run_budgeted_stage(
+        inputs.work_budget,
+        OperatorWorkBudgetStage::Finalize,
+        || {
+            atomic_write(
+                &inputs.proof_path,
+                serde_json::to_string_pretty(&inputs.accepted_source_proof)
+                    .context("serialize accepted source proof")?
+                    .as_bytes(),
+            )
+            .with_context(|| format!("write {}", inputs.proof_path.display()))
+        },
+    )?;
+    run_budgeted_stage(
+        inputs.work_budget,
+        OperatorWorkBudgetStage::Finalize,
+        || {
+            atomic_write(
+                &inputs.run_manifest_path,
+                serde_json::to_string_pretty(&inputs.spec_manifest.to_artifact_manifest()?)
+                    .context("serialize resolved run manifest")?
+                    .as_bytes(),
+            )
+            .with_context(|| format!("write {}", inputs.run_manifest_path.display()))
+        },
+    )?;
 
     Ok(RunArtifacts {
         verified_sha256: inputs.verified_sha256,
@@ -1337,6 +1430,17 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
 fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+fn run_budgeted_stage<T>(
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    work_budget.check_deadline(stage)?;
+    let output = operation()?;
+    work_budget.check_deadline(stage)?;
+    Ok(output)
 }
 
 /// Run the vertical slice from a parsed [`RunSpec`] and the raw bytes
@@ -1477,7 +1581,7 @@ fn run_from_run_spec_inner(
 
     work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     let DecodedPayload::Text(csv_text) =
-        decode_object_payload(&spec.converter.raw_payload, object_bytes)?
+        decode_object_payload(&spec.converter.raw_payload, object_bytes, work_budget)?
     else {
         anyhow::bail!(
             "single-table trade entry requires a text payload container, got {:?}",
@@ -1576,29 +1680,33 @@ fn run_from_run_spec_inner(
     })?;
     redact_operator_contract(&mut output, &catalog_root);
 
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
-    atomic_write(
-        &proof_path,
-        serde_json::to_string_pretty(&accepted_proof)
-            .context("serialize accepted source proof")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", proof_path.display()))?;
-    atomic_write(
-        &contract_path,
-        serde_json::to_string_pretty(&output.contract)
-            .context("serialize result contract")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", contract_path.display()))?;
-    atomic_write(
-        &run_manifest_path,
-        serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", run_manifest_path.display()))?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &proof_path,
+            serde_json::to_string_pretty(&accepted_proof)
+                .context("serialize accepted source proof")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", proof_path.display()))
+    })?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &contract_path,
+            serde_json::to_string_pretty(&output.contract)
+                .context("serialize result contract")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", contract_path.display()))
+    })?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &run_manifest_path,
+            serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
+                .context("serialize resolved run manifest")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", run_manifest_path.display()))
+    })?;
     if reuse_completed_output {
         write_completed_conversion_artifacts_guarded(
             output_dir,
@@ -1738,7 +1846,7 @@ where
     // may create or verify content on an idempotent run-prefix replay.
     work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let create_only_probe_transcript = writer
-        .probe_create_only(&artifact_root, create_only_probe_id)
+        .probe_create_only_guarded(&artifact_root, create_only_probe_id, work_budget)
         .await?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let nt_catalog_capability_evidence = build_capability_evidence(
@@ -1748,13 +1856,13 @@ where
     )?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let nt_catalog_capability_proof_artifact = nt_catalog_capability_proof
-        .persist_completed_proof_from_evidence(
+        .persist_completed_proof_from_evidence_guarded(
             artifact_store,
             &writer,
             &nt_catalog_capability_evidence,
+            work_budget,
         )
         .await?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let persisted = persist_catalog_projection_for_source_binding_guarded(
         store,
         &artifact_root,
@@ -1765,7 +1873,6 @@ where
         work_budget,
     )
     .await?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
 
     artifacts.output.conversion_catalog_metadata = artifacts
         .output
@@ -3002,7 +3109,7 @@ fn run_multi_table_from_run_spec_with_registry(
     // canonical tables in memory to re-prove read-back equality and the
     // engine-iteration expectation without re-projecting verified subroots.
     work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
-    let payload = decode_object_payload(&spec.converter.raw_payload, object_bytes)?;
+    let payload = decode_object_payload(&spec.converter.raw_payload, object_bytes, work_budget)?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     let tables = normalize_tables_for_kind(
         adapter.kind,
@@ -3205,6 +3312,7 @@ fn run_multi_table_from_run_spec_with_registry(
 
     // Gate 5: ONE BacktestNode run over the N-input manifest.
     let nt_run = run_nt_backtest_node_guarded(&local_manifest, work_budget)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let nt_result = nt_run.result;
     let config_override_report = nt_run.config_override_report;
     let run_guard_report = nt_run.run_guard_report;
@@ -3212,10 +3320,12 @@ fn run_multi_table_from_run_spec_with_registry(
     let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
     let mut expected = 0usize;
     for table in &planned {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
         expected += table
             .table
             .windowed_count(window_start, window_end)
             .context("compute expected engine iterations for projected table")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     }
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         anyhow::bail!("backtest did not consume the accepted data: {reason}");
@@ -3309,35 +3419,44 @@ fn run_multi_table_from_run_spec_with_registry(
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
 
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
-    atomic_write(
-        &proof_path,
-        serde_json::to_string_pretty(&accepted_proof)
-            .context("serialize accepted source proof")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", proof_path.display()))?;
-    atomic_write(
-        &contract_path,
-        serde_json::to_string_pretty(&contract)
-            .context("serialize result contract")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", contract_path.display()))?;
-    atomic_write(
-        &run_manifest_path,
-        serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", run_manifest_path.display()))?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &proof_path,
+            serde_json::to_string_pretty(&accepted_proof)
+                .context("serialize accepted source proof")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", proof_path.display()))
+    })?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &contract_path,
+            serde_json::to_string_pretty(&contract)
+                .context("serialize result contract")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", contract_path.display()))
+    })?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &run_manifest_path,
+            serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
+                .context("serialize resolved run manifest")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", run_manifest_path.display()))
+    })?;
     let conversion_tables_path = if planned.len() > 1 {
         let records: Vec<ConversionTableRecord> = planned
             .iter()
             .zip(catalog_hashes.iter())
             .map(|(table, hash)| table.record(hash.clone()))
             .collect();
-        Some(write_conversion_tables_index(output_dir, &records)?)
+        Some(run_budgeted_stage(
+            work_budget,
+            OperatorWorkBudgetStage::Finalize,
+            || write_conversion_tables_index(output_dir, &records),
+        )?)
     } else {
         None
     };
@@ -3419,18 +3538,27 @@ fn run_multi_from_completed_output(
     let accepted = inputs.accepted;
     let planned = inputs.planned;
 
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let conversion_checkpoint: ConversionCheckpoint =
         read_json_artifact(&inputs.conversion_checkpoint_path)?;
     ensure!(
         conversion_checkpoint.content_hash()? == inputs.conversion_checkpoint_hash,
         "completed conversion checkpoint hash changed after inspection"
     );
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let conversion_manifest: ConversionManifest =
         read_json_artifact(&inputs.conversion_manifest_path)?;
     ensure!(
         conversion_manifest.content_hash()? == inputs.conversion_manifest_hash,
         "completed conversion manifest hash changed after inspection"
     );
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let conversion_catalog_metadata: ConversionCatalogMetadata =
         read_json_artifact(&inputs.catalog_metadata_path)?;
     ensure!(
@@ -3444,12 +3572,18 @@ fn run_multi_from_completed_output(
     let conversion_catalog_metadata_hash = conversion_catalog_metadata
         .content_hash()
         .context("hash completed catalog metadata")?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
 
     // Recompute every projected subroot hash and prove read-back equality
     // against the re-normalized tables; bind the index records exactly when
     // the conversion produced more than one table.
     let mut catalog_hashes = Vec::with_capacity(planned.len());
     for table in &planned {
+        inputs
+            .work_budget
+            .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
         let actual_hash = logical_catalog_hash(&table.subroot)
             .with_context(|| format!("verify catalog hash {}", table.subroot.display()))?;
         assert_planned_read_back(table)?;
@@ -3459,12 +3593,21 @@ fn run_multi_from_completed_output(
             table.canonical_path.display()
         );
         catalog_hashes.push(actual_hash);
+        inputs
+            .work_budget
+            .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     }
     let (actual_rows, actual_row_groups) =
         planned
             .iter()
             .try_fold((0_u64, 0_u64), |(rows, row_groups), table| {
+                inputs
+                    .work_budget
+                    .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
                 let metadata = actual_nt_market_data_metadata(&table.subroot)?;
+                inputs
+                    .work_budget
+                    .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
                 Ok((
                     rows.checked_add(metadata.rows)
                         .context("completed actual projected row total overflow")?,
@@ -3493,7 +3636,13 @@ fn run_multi_from_completed_output(
         actual_row_groups,
         OperatorWorkBudgetStage::CatalogProjection,
     )?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let index_records = validate_conversion_tables_index(inputs.output_dir, &conversion_manifest)?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     if planned.len() > 1 {
         let records = index_records.as_deref().with_context(|| {
             format!(
@@ -3555,6 +3704,9 @@ fn run_multi_from_completed_output(
         multi_selector_provenance(spec, &planned)?;
 
     let nt_run = run_nt_backtest_node_guarded(&local_manifest, inputs.work_budget)?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let nt_result = nt_run.result;
     let config_override_report = nt_run.config_override_report;
     let run_guard_report = nt_run.run_guard_report;
@@ -3562,10 +3714,16 @@ fn run_multi_from_completed_output(
     let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
     let mut expected = 0usize;
     for table in &planned {
+        inputs
+            .work_budget
+            .check_deadline(OperatorWorkBudgetStage::Backtest)?;
         expected += table
             .table
             .windowed_count(window_start, window_end)
             .context("compute expected engine iterations for projected table")?;
+        inputs
+            .work_budget
+            .check_deadline(OperatorWorkBudgetStage::Backtest)?;
     }
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         anyhow::bail!("backtest did not consume the accepted data: {reason}");
@@ -3615,21 +3773,36 @@ fn run_multi_from_completed_output(
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
     let contract = verify_completed_result_contract(&inputs.contract_path, &contract)?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::Finalize)?;
 
-    atomic_write(
-        &inputs.proof_path,
-        serde_json::to_string_pretty(&inputs.accepted_proof)
-            .context("serialize accepted source proof")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", inputs.proof_path.display()))?;
-    atomic_write(
-        &inputs.run_manifest_path,
-        serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", inputs.run_manifest_path.display()))?;
+    run_budgeted_stage(
+        inputs.work_budget,
+        OperatorWorkBudgetStage::Finalize,
+        || {
+            atomic_write(
+                &inputs.proof_path,
+                serde_json::to_string_pretty(&inputs.accepted_proof)
+                    .context("serialize accepted source proof")?
+                    .as_bytes(),
+            )
+            .with_context(|| format!("write {}", inputs.proof_path.display()))
+        },
+    )?;
+    run_budgeted_stage(
+        inputs.work_budget,
+        OperatorWorkBudgetStage::Finalize,
+        || {
+            atomic_write(
+                &inputs.run_manifest_path,
+                serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
+                    .context("serialize resolved run manifest")?
+                    .as_bytes(),
+            )
+            .with_context(|| format!("write {}", inputs.run_manifest_path.display()))
+        },
+    )?;
 
     let conversion_tables_path =
         (planned.len() > 1).then(|| inputs.output_dir.join(CONVERSION_TABLES_FILE));
@@ -4306,23 +4479,26 @@ fn write_published_catalog_proof(
     proof: &PublishedCatalogProof,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
-    write_conversion_checkpoint(
-        output_dir,
-        &ConversionCheckpoint::started(
-            run.output.conversion_checkpoint.fingerprint.clone(),
-            run.output.conversion_checkpoint.updated_at.clone(),
-        ),
-    )?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        write_conversion_checkpoint(
+            output_dir,
+            &ConversionCheckpoint::started(
+                run.output.conversion_checkpoint.fingerprint.clone(),
+                run.output.conversion_checkpoint.updated_at.clone(),
+            ),
+        )
+        .map(|_| ())
+    })?;
     let proof_path = output_dir.join(PUBLISHED_CATALOG_PROOF_FILE);
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
-    atomic_write(
-        &proof_path,
-        serde_json::to_string_pretty(proof)
-            .context("serialize published catalog proof")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", proof_path.display()))?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &proof_path,
+            serde_json::to_string_pretty(proof)
+                .context("serialize published catalog proof")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", proof_path.display()))
+    })?;
 
     run.output.conversion_catalog_metadata = run
         .output
@@ -4341,20 +4517,22 @@ fn write_published_catalog_proof(
         .contract
         .validate()
         .map_err(|error| anyhow::anyhow!("updated result contract rejected: {error}"))?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
-    write_pending_conversion_artifacts(
-        output_dir,
-        &run.output.conversion_manifest,
-        &run.output.conversion_catalog_metadata,
-    )?;
-    atomic_write(
-        &run.contract_path,
-        serde_json::to_string_pretty(&run.output.contract)
-            .context("serialize updated result contract")?
-            .as_bytes(),
-    )
-    .with_context(|| format!("write {}", run.contract_path.display()))?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        write_pending_conversion_artifacts(
+            output_dir,
+            &run.output.conversion_manifest,
+            &run.output.conversion_catalog_metadata,
+        )
+    })?;
+    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+        atomic_write(
+            &run.contract_path,
+            serde_json::to_string_pretty(&run.output.contract)
+                .context("serialize updated result contract")?
+                .as_bytes(),
+        )
+        .with_context(|| format!("write {}", run.contract_path.display()))
+    })?;
     write_completed_conversion_artifacts_guarded(
         output_dir,
         &run.output.conversion_manifest,
@@ -4426,7 +4604,10 @@ fn artifact_relative_path(root: &Path, file: &Path) -> Result<String> {
 mod tests {
     use std::{
         io::{Cursor, Write},
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::Duration,
     };
 
@@ -4550,6 +4731,21 @@ mod tests {
             *self.now.lock().expect("clock mutex") = now;
         }
     }
+
+    struct ExpiringReadClock {
+        observations: AtomicUsize,
+        expires_after_observation: usize,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for ExpiringReadClock {
+        fn now(&self) -> Duration {
+            if self.observations.fetch_add(1, Ordering::SeqCst) >= self.expires_after_observation {
+                Duration::from_secs(1)
+            } else {
+                Duration::ZERO
+            }
+        }
+    }
     /// The committed run-spec, with the accepted-object hash rebound to a locally
     /// reproducible synthetic object (the real staged object is not committed).
     fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
@@ -4659,11 +4855,18 @@ mod tests {
         }
     }
 
+    fn decode_test_payload(
+        config: &RawPayloadConfig,
+        object_bytes: &[u8],
+    ) -> Result<DecodedPayload> {
+        decode_object_payload(config, object_bytes, &OperatorWorkBudgetGuard::unbounded())
+    }
+
     #[test]
     fn decode_jsonl_text_payload_decodes_within_bound() {
         let config = payload_config(RawPayloadContainer::JsonlText);
         let payload =
-            decode_object_payload(&config, b"{\"a\":1}\n{\"a\":2}\n").expect("jsonl text decodes");
+            decode_test_payload(&config, b"{\"a\":1}\n{\"a\":2}\n").expect("jsonl text decodes");
         match payload {
             DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n{\"a\":2}\n"),
             DecodedPayload::TarMembers(_) | DecodedPayload::ParquetBytes(_) => {
@@ -4673,10 +4876,72 @@ mod tests {
     }
 
     #[test]
+    fn decode_stops_when_deadline_expires_between_guarded_reads() {
+        let mut config = payload_config(RawPayloadContainer::JsonlText);
+        config.max_object_bytes = 262_144;
+        config.max_decoded_bytes = 262_144;
+        let clock = Arc::new(ExpiringReadClock {
+            observations: AtomicUsize::new(0),
+            expires_after_observation: 3,
+        });
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            clock,
+        )
+        .expect("guard");
+        let bytes = vec![b'x'; 131_072];
+
+        let error = decode_object_payload(&config, &bytes, &guard)
+            .err()
+            .expect("decode must stop at the cooperative deadline");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("decode"), "{error:#}");
+    }
+
+    #[test]
+    fn nonterminal_stage_checks_deadline_after_its_operation() {
+        let clock = Arc::new(TestWorkBudgetClock::default());
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            clock.clone(),
+        )
+        .expect("guard");
+        let output = tempfile::NamedTempFile::new().expect("output file");
+
+        let error = run_budgeted_stage(&guard, OperatorWorkBudgetStage::Finalize, || {
+            fs::write(output.path(), b"nonterminal finalization bytes")?;
+            clock.set(Duration::from_secs(1));
+            Ok(())
+        })
+        .expect_err("expiry after a nonterminal operation must be observed");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert_eq!(
+            fs::read(output.path()).expect("written nonterminal bytes"),
+            b"nonterminal finalization bytes"
+        );
+    }
+
+    #[test]
     fn decode_jsonl_text_payload_rejects_decoded_bytes_over_bound() {
         let config = payload_config(RawPayloadContainer::JsonlText);
         let oversize = vec![b'x'; 65];
-        let err = decode_object_payload(&config, &oversize)
+        let err = decode_test_payload(&config, &oversize)
             .err()
             .expect("over-bound jsonl text must be rejected");
         assert!(err.to_string().contains("max_decoded_bytes"), "{err}");
@@ -4686,7 +4951,7 @@ mod tests {
     fn decode_jsonl_gzip_payload_decodes_and_bounds_decoded_bytes() {
         let config = payload_config(RawPayloadContainer::JsonlGzip);
         let payload =
-            decode_object_payload(&config, &gzip("{\"a\":1}\n")).expect("jsonl gzip decodes");
+            decode_test_payload(&config, &gzip("{\"a\":1}\n")).expect("jsonl gzip decodes");
         match payload {
             DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n"),
             DecodedPayload::TarMembers(_) | DecodedPayload::ParquetBytes(_) => {
@@ -4695,7 +4960,7 @@ mod tests {
         }
 
         let oversize_text = "y".repeat(65);
-        let err = decode_object_payload(&config, &gzip(&oversize_text))
+        let err = decode_test_payload(&config, &gzip(&oversize_text))
             .err()
             .expect("over-bound decoded jsonl gzip must be rejected");
         assert!(err.to_string().contains("max_decoded_bytes"), "{err}");
@@ -4705,7 +4970,7 @@ mod tests {
     fn decode_single_jsonl_zip_payload_decodes_with_crc_verification() {
         let mut config = payload_config(RawPayloadContainer::SingleJsonlZip);
         config.max_decoded_bytes = 128;
-        let payload = decode_object_payload(&config, &zip_single_csv("book.data", "{\"a\":1}\n"))
+        let payload = decode_test_payload(&config, &zip_single_csv("book.data", "{\"a\":1}\n"))
             .expect("jsonl zip decodes");
         match payload {
             DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n"),
@@ -4715,7 +4980,7 @@ mod tests {
         }
 
         config.max_decoded_bytes = 4;
-        let err = decode_object_payload(&config, &zip_single_csv("book.data", "{\"a\":1}\n"))
+        let err = decode_test_payload(&config, &zip_single_csv("book.data", "{\"a\":1}\n"))
             .err()
             .expect("over-bound jsonl zip must be rejected");
         assert!(err.to_string().contains("max_decoded_bytes"), "{err}");
@@ -4731,7 +4996,7 @@ mod tests {
             ("skip.txt", b"not jsonl".as_slice()),
             ("b.jsonl", b"{\"seq\":2}\n".as_slice()),
         ]);
-        let payload = decode_object_payload(&config, &archive).expect("tar gzip decodes");
+        let payload = decode_test_payload(&config, &archive).expect("tar gzip decodes");
         match payload {
             DecodedPayload::TarMembers(members) => {
                 assert_eq!(members.len(), 2, "only matching members are streamed");
@@ -4752,7 +5017,7 @@ mod tests {
         config.member_suffix = Some(".jsonl".to_string());
         config.max_member_bytes = Some(8);
         let archive = gzip_tar(&[("big.jsonl", b"{\"seq\":111111}\n".as_slice())]);
-        let err = decode_object_payload(&config, &archive)
+        let err = decode_test_payload(&config, &archive)
             .err()
             .expect("over-bound tar member must be rejected");
         assert!(
@@ -4765,7 +5030,7 @@ mod tests {
     fn decode_parquet_file_passes_object_bytes_through() {
         let config = payload_config(RawPayloadContainer::ParquetFile);
         let bytes = b"PAR1synthetic-not-read-here".to_vec();
-        let payload = decode_object_payload(&config, &bytes).expect("parquet passthrough");
+        let payload = decode_test_payload(&config, &bytes).expect("parquet passthrough");
         match payload {
             DecodedPayload::ParquetBytes(passthrough) => assert_eq!(passthrough, bytes),
             DecodedPayload::Text(_) | DecodedPayload::TarMembers(_) => {

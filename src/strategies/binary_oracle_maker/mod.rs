@@ -13,11 +13,7 @@
 //! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
 //! it does not copy taker behaviour.
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::atomic::{AtomicU16, Ordering},
-};
+use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
 use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
@@ -114,8 +110,6 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
-    #[cfg(test)]
-    requote_throttle_novelty: LegacyRequoteThrottleNoveltyMask,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,47 +127,6 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
 pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub quote: MakerRuntimeQuoteDecision,
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
-}
-
-#[derive(Debug, Default)]
-struct LegacyRequoteThrottleNoveltyMask(AtomicU16);
-
-#[cfg(not(test))]
-static REQUOTE_THROTTLE_NOVELTY: LegacyRequoteThrottleNoveltyMask =
-    LegacyRequoteThrottleNoveltyMask::new();
-const _: [(); std::mem::size_of::<u16>()] =
-    [(); std::mem::size_of::<LegacyRequoteThrottleNoveltyMask>()];
-
-impl LegacyRequoteThrottleNoveltyMask {
-    const DOMAIN_CARDINALITY: u32 = 12;
-
-    const fn new() -> Self {
-        Self(AtomicU16::new(0))
-    }
-
-    fn mark_once(&self, leg: Leg, bound_by: BoltV3RequoteThrottleBound) -> bool {
-        let leg_index = match leg {
-            Leg::Yes => 0,
-            Leg::No => 1,
-        };
-        let bound_index = match bound_by {
-            BoltV3RequoteThrottleBound::SubmitCommandWindow => 0,
-            BoltV3RequoteThrottleBound::RestCallWindow => 1,
-            BoltV3RequoteThrottleBound::MinInterval => 2,
-            BoltV3RequoteThrottleBound::WindowCap => 3,
-            BoltV3RequoteThrottleBound::OutOfOrderTs => 4,
-            BoltV3RequoteThrottleBound::Overflow => 5,
-        };
-        let bit_index = leg_index * 6 + bound_index;
-        debug_assert!(bit_index < Self::DOMAIN_CARDINALITY);
-        let bit = 1_u16 << bit_index;
-        self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0
-    }
-
-    #[cfg(test)]
-    fn retained_cardinality(&self) -> u32 {
-        self.0.load(Ordering::Relaxed).count_ones()
-    }
 }
 
 impl BoltV3RequoteThrottleEvidence {
@@ -289,17 +242,6 @@ impl std::fmt::Debug for BinaryOracleMaker {
 }
 
 impl BinaryOracleMaker {
-    fn requote_throttle_novelty(&self) -> &LegacyRequoteThrottleNoveltyMask {
-        #[cfg(test)]
-        {
-            &self.requote_throttle_novelty
-        }
-        #[cfg(not(test))]
-        {
-            &REQUOTE_THROTTLE_NOVELTY
-        }
-    }
-
     pub fn new(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> Self {
         let oms_type = config
             .oms_type
@@ -319,8 +261,6 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
-            #[cfg(test)]
-            requote_throttle_novelty: LegacyRequoteThrottleNoveltyMask::new(),
         }
     }
 
@@ -379,9 +319,6 @@ impl BinaryOracleMaker {
             return Ok(());
         };
         let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
-        if !self.requote_throttle_novelty().mark_once(leg, bound_by) {
-            return Ok(());
-        }
         let evidence = BoltV3RequoteThrottleEvidence::from_requote_throttle(
             self.config.strategy_id.clone(),
             family_key,
@@ -1103,64 +1040,6 @@ mod tests {
     fn builder_kind_is_archetype_key() {
         assert_eq!(BinaryOracleMakerBuilder::kind(), "binary_oracle_maker");
         assert_eq!(BinaryOracleMakerBuilder::kind(), KEY);
-    }
-
-    #[test]
-    fn requote_legacy_mask_is_constant_under_distinct_raw_family_churn() {
-        let novelty = LegacyRequoteThrottleNoveltyMask::default();
-        let mut emissions = 0_u64;
-        for index in 0..100_000_u64 {
-            let volatile_family = format!("raw-family-{index}");
-            let volatile_action = if index % 2 == 0 {
-                BoltV3RequoteActionCostClass::FreshSubmit
-            } else {
-                BoltV3RequoteActionCostClass::CancelResubmit
-            };
-            let _ = (volatile_family, volatile_action);
-            emissions += u64::from(
-                novelty.mark_once(Leg::No, BoltV3RequoteThrottleBound::SubmitCommandWindow),
-            );
-            assert_eq!(novelty.retained_cardinality(), 1);
-        }
-        assert_eq!(emissions, 1);
-        assert_eq!(std::mem::size_of_val(&novelty), 2);
-    }
-
-    #[test]
-    fn requote_legacy_mask_suppresses_large_a_b_a_cycle() {
-        let novelty = LegacyRequoteThrottleNoveltyMask::default();
-        let mut emissions = 0_u64;
-        for index in 0..10_000_u64 {
-            let bound = if index % 2 == 0 {
-                BoltV3RequoteThrottleBound::SubmitCommandWindow
-            } else {
-                BoltV3RequoteThrottleBound::RestCallWindow
-            };
-            emissions += u64::from(novelty.mark_once(Leg::No, bound));
-        }
-        assert_eq!(emissions, 2);
-        assert_eq!(novelty.retained_cardinality(), 2);
-    }
-
-    #[test]
-    fn requote_legacy_mask_has_exact_twelve_state_domain() {
-        let novelty = LegacyRequoteThrottleNoveltyMask::default();
-        let bounds = [
-            BoltV3RequoteThrottleBound::SubmitCommandWindow,
-            BoltV3RequoteThrottleBound::RestCallWindow,
-            BoltV3RequoteThrottleBound::MinInterval,
-            BoltV3RequoteThrottleBound::WindowCap,
-            BoltV3RequoteThrottleBound::OutOfOrderTs,
-            BoltV3RequoteThrottleBound::Overflow,
-        ];
-        for leg in [Leg::Yes, Leg::No] {
-            for bound in bounds {
-                assert!(novelty.mark_once(leg, bound));
-            }
-        }
-        assert_eq!(novelty.retained_cardinality(), 12);
-        assert_eq!(LegacyRequoteThrottleNoveltyMask::DOMAIN_CARDINALITY, 12);
-        assert_eq!(std::mem::size_of_val(&novelty), 2);
     }
 
     #[test]

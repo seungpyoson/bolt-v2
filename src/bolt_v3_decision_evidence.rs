@@ -3,7 +3,10 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -21,7 +24,6 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus, ValidRealizedVol,
 };
 use crate::bolt_v3_timestamp_domain::LocalReceiveMs;
-#[cfg(test)]
 use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 
@@ -77,43 +79,60 @@ pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
 pub const BOLT_V3_ORDER_LIFECYCLE_GATE_ID: &str = "bolt_v3.order_lifecycle";
 pub const BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND: &str = "order_lifecycle";
 
-/// Single source of truth for the upper bound on retained reject-episode maps. Both
-/// the submit-admission reject-episode map and the venue/NT order-reject observer
-/// feed key by high-cardinality identifiers (instrument ids churn, e.g. Polymarket
-/// token ids), so without a cap either map grows unbounded over a long-running node.
-/// Eviction is oldest-first and only resets an evidence-sampling counter; it never
-/// touches any trading decision. Set generously so eviction is rare in practice.
-pub(crate) const BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES: usize = 4096;
+// Pre-Capsule suppression is deliberately process-global and conservative: no
+// volatile field can select storage, clear a bit, or create a new episode. The
+// first three masks are the frozen six-byte legacy diagnostic boundary. The
+// remaining masks close every non-recovery producer over an exact enum domain.
+const BLOCKED_RV_DOMAIN: u32 = 12;
+const ENTRY_SKIP_DOMAIN: u32 = 16;
+const REQUOTE_THROTTLE_DOMAIN: u32 = 12;
+const BASKET_ADMISSION_DOMAIN: u32 = 12;
+const EXIT_DECISION_DOMAIN: u32 = 4;
+const EXIT_EVALUATION_DOMAIN: u32 = 24;
+const LOSS_GOVERNOR_HALT_DOMAIN: u32 = 5;
+pub(crate) const ORDER_REJECT_DOMAIN: u32 = 28;
+const VENUE_TRUTH_CAPTURE_FAILURE_DOMAIN: u32 = 1;
+const VENUE_TRUTH_DIVERGENCE_DOMAIN: u32 = 3;
+pub const BOLT_V3_NON_RECOVERY_MAX_EMISSIONS: u32 = BLOCKED_RV_DOMAIN
+    + ENTRY_SKIP_DOMAIN
+    + REQUOTE_THROTTLE_DOMAIN
+    + BASKET_ADMISSION_DOMAIN
+    + EXIT_DECISION_DOMAIN
+    + EXIT_EVALUATION_DOMAIN
+    + LOSS_GOVERNOR_HALT_DOMAIN
+    + ORDER_REJECT_DOMAIN
+    + VENUE_TRUTH_CAPTURE_FAILURE_DOMAIN
+    + VENUE_TRUTH_DIVERGENCE_DOMAIN;
+const _: [(); 117] = [(); BOLT_V3_NON_RECOVERY_MAX_EMISSIONS as usize];
 
-/// Implemented by reject-episode value types so the shared bounded-map helper can
-/// rank episodes by age (oldest-first) without knowing the concrete struct.
-pub(crate) trait EpisodeFirstNs {
-    /// Nanosecond timestamp of the first observation in this episode. Smaller is
-    /// older, and the oldest episode is evicted first when the map exceeds its cap.
-    fn first_ns(&self) -> u64;
+static BLOCKED_RV_NOVELTY: AtomicU16 = AtomicU16::new(0);
+static ENTRY_SKIP_NOVELTY: AtomicU16 = AtomicU16::new(0);
+static REQUOTE_THROTTLE_NOVELTY: AtomicU16 = AtomicU16::new(0);
+const _: [(); 6] = [(); std::mem::size_of::<AtomicU16>() * 3];
+static BASKET_ADMISSION_NOVELTY: AtomicU16 = AtomicU16::new(0);
+static EXIT_DECISION_NOVELTY: AtomicU8 = AtomicU8::new(0);
+static EXIT_EVALUATION_NOVELTY: AtomicU32 = AtomicU32::new(0);
+static LOSS_GOVERNOR_HALT_NOVELTY: AtomicU8 = AtomicU8::new(0);
+static ORDER_REJECT_NOVELTY: AtomicU32 = AtomicU32::new(0);
+static VENUE_TRUTH_CAPTURE_FAILURE_NOVELTY: AtomicU8 = AtomicU8::new(0);
+static VENUE_TRUTH_DIVERGENCE_NOVELTY: AtomicU8 = AtomicU8::new(0);
+
+fn mark_u8_once(mask: &AtomicU8, index: u32, domain: u32) -> bool {
+    debug_assert!(index < domain && domain <= u8::BITS);
+    let bit = 1_u8 << index;
+    mask.fetch_or(bit, Ordering::Relaxed) & bit == 0
 }
 
-/// While `map` exceeds `cap`, drop the entry with the smallest `first_ns` (oldest
-/// episode). A single linear scan per eviction is adequate at this cap and avoids
-/// pulling in an LRU dependency. Shared by every reject-episode map so the eviction
-/// semantics live in exactly one place. Eviction only discards an evidence-sampling
-/// counter; a later reject for the same key simply re-starts its episode.
-pub(crate) fn evict_oldest_episodes_over_cap<V: EpisodeFirstNs>(
-    map: &mut BTreeMap<String, V>,
-    cap: usize,
-) {
-    while map.len() > cap {
-        let oldest_key = map
-            .iter()
-            .min_by_key(|(_, episode)| episode.first_ns())
-            .map(|(key, _)| key.clone());
-        match oldest_key {
-            Some(key) => {
-                map.remove(&key);
-            }
-            None => break,
-        }
-    }
+fn mark_u16_once(mask: &AtomicU16, index: u32, domain: u32) -> bool {
+    debug_assert!(index < domain && domain <= u16::BITS);
+    let bit = 1_u16 << index;
+    mask.fetch_or(bit, Ordering::Relaxed) & bit == 0
+}
+
+fn mark_u32_once(mask: &AtomicU32, index: u32, domain: u32) -> bool {
+    debug_assert!(index < domain && domain <= u32::BITS);
+    let bit = 1_u32 << index;
+    mask.fetch_or(bit, Ordering::Relaxed) & bit == 0
 }
 
 pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
@@ -2074,11 +2093,206 @@ impl JsonlBoltV3DecisionEvidenceWriter {
     }
 }
 
+const fn rv_gate_index(result: BoltV3RvGateResult) -> u32 {
+    match result {
+        BoltV3RvGateResult::Accepted => 0,
+        BoltV3RvGateResult::MissingSnapshot => 1,
+        BoltV3RvGateResult::MissingEvaluationEventTime => 2,
+        BoltV3RvGateResult::RejectedFutureDated => 3,
+        BoltV3RvGateResult::RejectedStale => 4,
+        BoltV3RvGateResult::RejectedNotReady => 5,
+    }
+}
+
+const fn entry_skip_index(reason: BoltV3EntrySkipReasonCategory) -> u32 {
+    match reason {
+        BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => 0,
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked => 1,
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked => 2,
+        BoltV3EntrySkipReasonCategory::NoSideSelected => 3,
+        BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => 4,
+        BoltV3EntrySkipReasonCategory::InstrumentIdMissing => 5,
+        BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => 6,
+        BoltV3EntrySkipReasonCategory::EntryPriceMissing => 7,
+        BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => 8,
+        BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => 9,
+        BoltV3EntrySkipReasonCategory::QuantityNotPositive => 10,
+        BoltV3EntrySkipReasonCategory::PositionContractInvalid => 11,
+        BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => 12,
+        BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => 13,
+        BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => 14,
+        BoltV3EntrySkipReasonCategory::Unclassified => 15,
+    }
+}
+
+const fn basket_admission_index(outcome: &BoltV3BasketAdmissionOutcome) -> u32 {
+    match outcome {
+        BoltV3BasketAdmissionOutcome::Admitted => 0,
+        BoltV3BasketAdmissionOutcome::RejectedBasketNotionalCapExceeded => 1,
+        BoltV3BasketAdmissionOutcome::RejectedMaxOpenBasketCapExceeded => 2,
+        BoltV3BasketAdmissionOutcome::RejectedStaleScannerEvidence => 3,
+        BoltV3BasketAdmissionOutcome::RejectedStaleSubmitRecheck => 4,
+        BoltV3BasketAdmissionOutcome::RejectedNonPositiveCandidateCost => 5,
+        BoltV3BasketAdmissionOutcome::RejectedNonPositiveEdge => 6,
+        BoltV3BasketAdmissionOutcome::RejectedEdgeThreshold => 7,
+        BoltV3BasketAdmissionOutcome::RejectedMissingGroupingProof => 8,
+        BoltV3BasketAdmissionOutcome::RejectedMissingSettlementRules => 9,
+        BoltV3BasketAdmissionOutcome::RejectedRetryBudgetExceeded => 10,
+        BoltV3BasketAdmissionOutcome::RejectedSubmitSlots => 11,
+    }
+}
+
+const fn exit_decision_index(outcome: BoltV3ExitDecisionOutcome) -> u32 {
+    match outcome {
+        BoltV3ExitDecisionOutcome::Exit => 0,
+        BoltV3ExitDecisionOutcome::ExitFailClosed => 1,
+        BoltV3ExitDecisionOutcome::Hold => 2,
+        BoltV3ExitDecisionOutcome::Blocked => 3,
+    }
+}
+
+const fn stale_loss_index(reason: BoltV3StaleLossReason) -> u32 {
+    match reason {
+        BoltV3StaleLossReason::MissingSnapshot => 0,
+        BoltV3StaleLossReason::SourceEmpty => 1,
+        BoltV3StaleLossReason::FutureDated => 2,
+        BoltV3StaleLossReason::AgeExceeded => 3,
+        BoltV3StaleLossReason::MissingRequiredField => 4,
+    }
+}
+
+const fn reject_source_index(source: BoltV3RejectSource) -> u32 {
+    match source {
+        BoltV3RejectSource::SubmitAdmission => 0,
+        BoltV3RejectSource::Venue => 1,
+        BoltV3RejectSource::NtExecution => 2,
+        BoltV3RejectSource::Internal => 3,
+    }
+}
+
+const fn reject_reason_index(reason: BoltV3OrderRejectReason) -> u32 {
+    match reason {
+        BoltV3OrderRejectReason::AdmissionRejected => 0,
+        BoltV3OrderRejectReason::PrecisionRejected => 1,
+        BoltV3OrderRejectReason::MinSizeRejected => 2,
+        BoltV3OrderRejectReason::MinNotionalRejected => 3,
+        BoltV3OrderRejectReason::InsufficientBalance => 4,
+        BoltV3OrderRejectReason::DuplicateClientOrderId => 5,
+        BoltV3OrderRejectReason::Other => 6,
+    }
+}
+
+pub(crate) const fn order_reject_novelty_index(
+    source: BoltV3RejectSource,
+    reason: BoltV3OrderRejectReason,
+) -> u32 {
+    reject_source_index(source) * 7 + reject_reason_index(reason)
+}
+
+const fn venue_truth_divergence_index(class: VenueTruthDivergenceAlarmClass) -> u32 {
+    match class {
+        VenueTruthDivergenceAlarmClass::TrueDivergence => 0,
+        VenueTruthDivergenceAlarmClass::OrderingViolation => 1,
+        VenueTruthDivergenceAlarmClass::SilentChannel => 2,
+    }
+}
+
+fn claim_blocked_rv(gate: BoltV3RvGateResult, watermark_present: bool) -> bool {
+    mark_u16_once(
+        &BLOCKED_RV_NOVELTY,
+        rv_gate_index(gate) * 2 + u32::from(watermark_present),
+        BLOCKED_RV_DOMAIN,
+    )
+}
+
+fn claim_entry_skip(reason: BoltV3EntrySkipReasonCategory) -> bool {
+    mark_u16_once(
+        &ENTRY_SKIP_NOVELTY,
+        entry_skip_index(reason),
+        ENTRY_SKIP_DOMAIN,
+    )
+}
+
+fn claim_basket_admission(outcome: &BoltV3BasketAdmissionOutcome) -> bool {
+    mark_u16_once(
+        &BASKET_ADMISSION_NOVELTY,
+        basket_admission_index(outcome),
+        BASKET_ADMISSION_DOMAIN,
+    )
+}
+
+fn claim_exit_decision(outcome: BoltV3ExitDecisionOutcome) -> bool {
+    mark_u8_once(
+        &EXIT_DECISION_NOVELTY,
+        exit_decision_index(outcome),
+        EXIT_DECISION_DOMAIN,
+    )
+}
+
+fn claim_exit_evaluation(outcome: BoltV3ExitDecisionOutcome, gate: BoltV3RvGateResult) -> bool {
+    mark_u32_once(
+        &EXIT_EVALUATION_NOVELTY,
+        exit_decision_index(outcome) * 6 + rv_gate_index(gate),
+        EXIT_EVALUATION_DOMAIN,
+    )
+}
+
+fn claim_loss_halt(reason: BoltV3StaleLossReason) -> bool {
+    mark_u8_once(
+        &LOSS_GOVERNOR_HALT_NOVELTY,
+        stale_loss_index(reason),
+        LOSS_GOVERNOR_HALT_DOMAIN,
+    )
+}
+
+fn claim_order_reject(source: BoltV3RejectSource, reason: BoltV3OrderRejectReason) -> bool {
+    mark_u32_once(
+        &ORDER_REJECT_NOVELTY,
+        order_reject_novelty_index(source, reason),
+        ORDER_REJECT_DOMAIN,
+    )
+}
+
+fn claim_requote_throttle(leg: u32, bound: u32) -> bool {
+    mark_u16_once(
+        &REQUOTE_THROTTLE_NOVELTY,
+        leg * 6 + bound,
+        REQUOTE_THROTTLE_DOMAIN,
+    )
+}
+
+fn claim_venue_truth_capture_failure() -> bool {
+    mark_u8_once(
+        &VENUE_TRUTH_CAPTURE_FAILURE_NOVELTY,
+        0,
+        VENUE_TRUTH_CAPTURE_FAILURE_DOMAIN,
+    )
+}
+
+fn claim_venue_truth_divergence(class: VenueTruthDivergenceAlarmClass) -> bool {
+    mark_u8_once(
+        &VENUE_TRUTH_DIVERGENCE_NOVELTY,
+        venue_truth_divergence_index(class),
+        VENUE_TRUTH_DIVERGENCE_DOMAIN,
+    )
+}
+
 impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     fn record_strategy_input_snapshot(
         &self,
         snapshot: &BoltV3StrategyInputEvidenceSnapshot,
     ) -> Result<()> {
+        if snapshot.client_order_id.is_empty() {
+            let gate = snapshot
+                .realized_volatility_gate_result
+                .unwrap_or(BoltV3RvGateResult::MissingSnapshot);
+            if !claim_blocked_rv(
+                gate,
+                snapshot.realized_volatility_receive_watermark_ms.is_some(),
+            ) {
+                return Ok(());
+            }
+        }
         let line = encode_strategy_input_snapshot_line(snapshot)?;
         self.append_line(&line)
     }
@@ -2097,6 +2311,9 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         &self,
         decision: &BoltV3BasketAdmissionDecisionEvidence,
     ) -> Result<()> {
+        if !claim_basket_admission(&decision.outcome) {
+            return Ok(());
+        }
         let line = encode_basket_admission_decision_line(decision)?;
         self.append_line(&line)
     }
@@ -2126,26 +2343,41 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     }
 
     fn record_entry_skip(&self, skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+        if !claim_entry_skip(skip.reason_category) {
+            return Ok(());
+        }
         let line = encode_entry_skip_line(skip)?;
         self.append_line(&line)
     }
 
     fn record_exit_decision(&self, decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+        if !claim_exit_decision(decision.exit_decision) {
+            return Ok(());
+        }
         let line = encode_exit_decision_line(decision)?;
         self.append_line(&line)
     }
 
     fn record_exit_evaluation(&self, evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+        if !claim_exit_evaluation(evidence.exit_decision, evidence.rv_gate_result) {
+            return Ok(());
+        }
         let line = encode_exit_evaluation_line(evidence)?;
         self.append_line(&line)
     }
 
     fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        if !claim_loss_halt(evidence.stale_reason) {
+            return Ok(());
+        }
         let line = encode_loss_governor_halt_line(evidence)?;
         self.append_line(&line)
     }
 
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
+        if !claim_order_reject(evidence.reject_source, evidence.reject_reason) {
+            return Ok(());
+        }
         let line = encode_order_reject_line(evidence)?;
         self.append_line(&line)
     }
@@ -2156,6 +2388,22 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     }
 
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+        let leg = match throttle.leg.as_str() {
+            "yes" => 0,
+            "no" => 1,
+            other => anyhow::bail!("unregistered requote throttle leg `{other}`"),
+        };
+        let bound = match throttle.bound_by {
+            BoltV3RequoteThrottleBound::SubmitCommandWindow => 0,
+            BoltV3RequoteThrottleBound::RestCallWindow => 1,
+            BoltV3RequoteThrottleBound::MinInterval => 2,
+            BoltV3RequoteThrottleBound::WindowCap => 3,
+            BoltV3RequoteThrottleBound::OutOfOrderTs => 4,
+            BoltV3RequoteThrottleBound::Overflow => 5,
+        };
+        if !claim_requote_throttle(leg, bound) {
+            return Ok(());
+        }
         let line = encode_requote_throttle_line(throttle)?;
         self.append_line(&line)
     }
@@ -2185,11 +2433,17 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,
     ) -> Result<()> {
+        if !claim_venue_truth_capture_failure() {
+            return Ok(());
+        }
         let line = encode_venue_truth_capture_failure_line(evidence)?;
         self.append_line(&line)
     }
 
     fn record_venue_truth_divergence(&self, evidence: &VenueTruthDivergenceEvidence) -> Result<()> {
+        if !claim_venue_truth_divergence(evidence.alarm_class) {
+            return Ok(());
+        }
         let line = encode_venue_truth_divergence_line(evidence)?;
         self.append_line(&line)
     }
@@ -5445,5 +5699,131 @@ mod tests {
             BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
         );
         assert_eq!(decoded.divergence, evidence);
+    }
+
+    #[test]
+    fn production_novelty_storage_has_fixed_large_sequence_and_failure_bound() {
+        const CHILD_ENV: &str = "BOLT_V3_EVIDENCE_NOVELTY_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current test binary should be available"),
+            )
+            .arg("production_novelty_storage_has_fixed_large_sequence_and_failure_bound")
+            .arg("--test-threads=1")
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("fresh novelty child should launch");
+            assert!(
+                output.status.success(),
+                "fresh novelty child failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        let rv = [
+            BoltV3RvGateResult::Accepted,
+            BoltV3RvGateResult::MissingSnapshot,
+            BoltV3RvGateResult::MissingEvaluationEventTime,
+            BoltV3RvGateResult::RejectedFutureDated,
+            BoltV3RvGateResult::RejectedStale,
+            BoltV3RvGateResult::RejectedNotReady,
+        ];
+        let entry = [
+            BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered,
+            BoltV3EntrySkipReasonCategory::EntryGateBlocked,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            BoltV3EntrySkipReasonCategory::NoSideSelected,
+            BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive,
+            BoltV3EntrySkipReasonCategory::InstrumentIdMissing,
+            BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache,
+            BoltV3EntrySkipReasonCategory::EntryPriceMissing,
+            BoltV3EntrySkipReasonCategory::QuantityRoundingFailed,
+            BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional,
+            BoltV3EntrySkipReasonCategory::QuantityNotPositive,
+            BoltV3EntrySkipReasonCategory::PositionContractInvalid,
+            BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported,
+            BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable,
+            BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
+            BoltV3EntrySkipReasonCategory::Unclassified,
+        ];
+        let basket = [
+            BoltV3BasketAdmissionOutcome::Admitted,
+            BoltV3BasketAdmissionOutcome::RejectedBasketNotionalCapExceeded,
+            BoltV3BasketAdmissionOutcome::RejectedMaxOpenBasketCapExceeded,
+            BoltV3BasketAdmissionOutcome::RejectedStaleScannerEvidence,
+            BoltV3BasketAdmissionOutcome::RejectedStaleSubmitRecheck,
+            BoltV3BasketAdmissionOutcome::RejectedNonPositiveCandidateCost,
+            BoltV3BasketAdmissionOutcome::RejectedNonPositiveEdge,
+            BoltV3BasketAdmissionOutcome::RejectedEdgeThreshold,
+            BoltV3BasketAdmissionOutcome::RejectedMissingGroupingProof,
+            BoltV3BasketAdmissionOutcome::RejectedMissingSettlementRules,
+            BoltV3BasketAdmissionOutcome::RejectedRetryBudgetExceeded,
+            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots,
+        ];
+        let exits = [
+            BoltV3ExitDecisionOutcome::Exit,
+            BoltV3ExitDecisionOutcome::ExitFailClosed,
+            BoltV3ExitDecisionOutcome::Hold,
+            BoltV3ExitDecisionOutcome::Blocked,
+        ];
+        let stale = [
+            BoltV3StaleLossReason::MissingSnapshot,
+            BoltV3StaleLossReason::SourceEmpty,
+            BoltV3StaleLossReason::FutureDated,
+            BoltV3StaleLossReason::AgeExceeded,
+            BoltV3StaleLossReason::MissingRequiredField,
+        ];
+        let sources = [
+            BoltV3RejectSource::SubmitAdmission,
+            BoltV3RejectSource::Venue,
+            BoltV3RejectSource::NtExecution,
+            BoltV3RejectSource::Internal,
+        ];
+        let reasons = [
+            BoltV3OrderRejectReason::AdmissionRejected,
+            BoltV3OrderRejectReason::PrecisionRejected,
+            BoltV3OrderRejectReason::MinSizeRejected,
+            BoltV3OrderRejectReason::MinNotionalRejected,
+            BoltV3OrderRejectReason::InsufficientBalance,
+            BoltV3OrderRejectReason::DuplicateClientOrderId,
+            BoltV3OrderRejectReason::Other,
+        ];
+
+        let mut counts = [0_u32; 10];
+        for index in 0..100_000_usize {
+            counts[0] += u32::from(claim_blocked_rv(
+                rv[index % rv.len()],
+                (index / rv.len()) % 2 == 0,
+            ));
+            counts[1] += u32::from(claim_entry_skip(entry[index % entry.len()]));
+            counts[2] += u32::from(claim_requote_throttle(
+                ((index / 6) % 2) as u32,
+                (index % 6) as u32,
+            ));
+            counts[3] += u32::from(claim_basket_admission(&basket[index % basket.len()]));
+            counts[4] += u32::from(claim_exit_decision(exits[index % exits.len()]));
+            counts[5] += u32::from(claim_exit_evaluation(
+                exits[index % exits.len()],
+                rv[(index / exits.len()) % rv.len()],
+            ));
+            counts[6] += u32::from(claim_loss_halt(stale[index % stale.len()]));
+            counts[7] += u32::from(claim_order_reject(
+                sources[index % sources.len()],
+                reasons[(index / sources.len()) % reasons.len()],
+            ));
+            counts[8] += u32::from(claim_venue_truth_capture_failure());
+            counts[9] += u32::from(claim_venue_truth_divergence(match index % 3 {
+                0 => VenueTruthDivergenceAlarmClass::TrueDivergence,
+                1 => VenueTruthDivergenceAlarmClass::OrderingViolation,
+                _ => VenueTruthDivergenceAlarmClass::SilentChannel,
+            }));
+        }
+        assert_eq!(counts, [12, 16, 12, 12, 4, 24, 5, 28, 1, 3]);
+        assert_eq!(
+            counts.into_iter().sum::<u32>(),
+            BOLT_V3_NON_RECOVERY_MAX_EMISSIONS
+        );
     }
 }

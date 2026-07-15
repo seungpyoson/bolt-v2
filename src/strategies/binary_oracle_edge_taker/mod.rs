@@ -164,19 +164,18 @@ mod entry_decision;
 use self::entry_decision::{
     EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields, EntryEvaluationReceiveContext,
     EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs, EntryRealizedVolatilityReceipt,
-    EntrySubmissionDecision, ForcedFlatEvidenceInputs, LegacyBlockedRvNoveltyMask,
-    LegacyEntrySkipNoveltyMask, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
-    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
-    entry_skip_reason_category_from_str, process_blocked_rv_novelty, process_entry_skip_novelty,
+    EntrySubmissionDecision, ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields,
+    entry_block_reason_to_evidence, entry_pricing_block_reason_from_taker,
+    entry_pricing_block_reason_to_evidence, entry_skip_reason_category_from_str,
     push_executable_edge_pricing_block,
 };
 
 mod exit_decision;
 
 use self::exit_decision::{
-    ExitDecision, ExitDecisionDedupeKey, ExitEvaluation, ExitEvaluationLogFields,
-    ExitEvaluationTriggerContext, ExitOutcomeKey, ExitRealizedVolatilityGateReceipt,
-    ExitSubmissionDecision, evaluate_exit_decision, exit_decision_evidence_from_optional,
+    ExitDecision, ExitEvaluation, ExitEvaluationLogFields, ExitEvaluationTriggerContext,
+    ExitRealizedVolatilityGateReceipt, ExitSubmissionDecision, evaluate_exit_decision,
+    exit_decision_evidence_from_optional,
 };
 
 mod orders;
@@ -754,11 +753,6 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
-    #[cfg(test)]
-    blocked_rv_novelty: LegacyBlockedRvNoveltyMask,
-    #[cfg(test)]
-    entry_skip_novelty: LegacyEntrySkipNoveltyMask,
-    last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
     latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
@@ -777,12 +771,6 @@ pub struct BinaryOracleEdgeTaker {
     /// Flood guard for entry-evaluation log volume: last gate+pricing block-reason
     /// sets. WARN/INFO only on set change (blocked↔unblocked); full field dump is debug.
     last_entry_block_reason_sets: Option<(Vec<EntryBlockReason>, Vec<EntryPricingBlockReason>)>,
-    /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
-    /// recorded per open position. A durable record is emitted only when this key
-    /// changes (or on an actual submit), collapsing adjacent identical ticks while
-    /// retaining only the current outcome. A restored prior outcome records again;
-    /// the per-tick tracing log is unaffected.
-    last_exit_evidence_outcome: Option<(PositionId, ExitOutcomeKey)>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
     /// Test-only observability for live-strike fetch attempts. Records each
@@ -842,28 +830,6 @@ enum EntryRejectClass {
 }
 
 impl BinaryOracleEdgeTaker {
-    fn blocked_rv_novelty(&self) -> &LegacyBlockedRvNoveltyMask {
-        #[cfg(test)]
-        {
-            &self.blocked_rv_novelty
-        }
-        #[cfg(not(test))]
-        {
-            process_blocked_rv_novelty()
-        }
-    }
-
-    fn entry_skip_novelty(&self) -> &LegacyEntrySkipNoveltyMask {
-        #[cfg(test)]
-        {
-            &self.entry_skip_novelty
-        }
-        #[cfg(not(test))]
-        {
-            process_entry_skip_novelty()
-        }
-    }
-
     fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Self {
         let pricing = PricingState::from_config(&taker_pricing_config(&config));
         let reference_price_selector = reference_price_selector_from_config(&config);
@@ -903,11 +869,6 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
-            #[cfg(test)]
-            blocked_rv_novelty: LegacyBlockedRvNoveltyMask::default(),
-            #[cfg(test)]
-            entry_skip_novelty: LegacyEntrySkipNoveltyMask::default(),
-            last_recorded_exit_decision: None,
             pricing,
             latest_signal_quote: None,
             latest_selected_reference_quote: None,
@@ -923,7 +884,6 @@ impl BinaryOracleEdgeTaker {
             terminal_settlement_keys: BTreeSet::new(),
             last_entry_block_reason_sets: None,
             settlement_close_fetch_attempts: BTreeMap::new(),
-            last_exit_evidence_outcome: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
             #[cfg(test)]
@@ -1270,9 +1230,17 @@ impl BinaryOracleEdgeTaker {
                 )?,
             )?;
         }
-        self.context
+        if let Err(error) = self
+            .context
             .decision_evidence()
-            .record_settlement(&evidence)?;
+            .record_settlement(&evidence)
+        {
+            log::error!(
+                "binary_oracle_edge_taker settlement evidence write failed without blocking settlement: strategy_id={} settlement_key={} error={error:#}",
+                self.config.strategy_id,
+                evidence.settlement_key,
+            );
+        }
         self.settled_position_keys.insert(settlement_key);
         self.settlement_close_fetch_attempts
             .remove(&evidence.settlement_key);
@@ -1388,7 +1356,7 @@ impl BinaryOracleEdgeTaker {
     /// The only terminal-settlement transition. Eligibility is already encoded by
     /// [`TerminalSettlementEligibility`], so no caller can release a pending,
     /// live-manageable, or nonterminal position. The transition first ensures
-    /// canonical durable evidence, then releases exposure, and finally attempts
+    /// canonical evidence, then releases exposure, and finally attempts
     /// the fallible operator-health mutation/report.
     fn apply_terminal_settlement_transition(
         &mut self,
@@ -1424,10 +1392,17 @@ impl BinaryOracleEdgeTaker {
             lifecycle,
         };
         if evidence_state == TerminalEvidenceState::PersistCanonical {
-            self.context
+            if let Err(error) = self
+                .context
                 .decision_evidence()
                 .record_terminal_settlement(&terminal_evidence)
-                .context("failed to persist canonical terminal settlement evidence")?;
+            {
+                log::error!(
+                    "binary_oracle_edge_taker terminal settlement evidence write failed without blocking settlement: strategy_id={} settlement_key={} error={error:#}",
+                    self.config.strategy_id,
+                    settlement_key,
+                );
+            }
         }
         self.terminal_settlement_keys.insert(settlement_key.clone());
         self.settlement_booking_error_keys
@@ -4291,7 +4266,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    /// Returns `true` when a new skip was recorded (not evidence-deduped).
+    /// Returns `true` when the skip reached the production evidence authority.
     fn record_entry_skip_once(
         &mut self,
         now_ms: u64,
@@ -4301,9 +4276,6 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<bool> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
-        if !self.entry_skip_novelty().mark_once(reason_category) {
-            return Ok(false);
-        }
         let evidence = BoltV3EntrySkipEvidence::from_entry_skip(
             self.config.strategy_id.clone(),
             now_ms,
@@ -4312,8 +4284,8 @@ impl BinaryOracleEdgeTaker {
             &fields,
             forced_flat_inputs,
         );
-        // Preserve the existing mark-before-swallowed-writer-error contract: a
-        // telemetry failure must not spin on the same semantic skip state.
+        // The evidence authority marks novelty before I/O. A telemetry failure
+        // therefore cannot spin on the same semantic state.
         if let Err(error) = self
             .context
             .decision_evidence()
@@ -4383,16 +4355,6 @@ impl BinaryOracleEdgeTaker {
             &fields,
             self.exit_forced_flat_evidence_inputs(),
         );
-        let key = ExitDecisionDedupeKey {
-            market_id: evidence.market_id.clone(),
-            position_id: evidence.position_id.clone(),
-            forced_flat_reasons: evidence.forced_flat_reasons.clone(),
-            exit_decision: evidence.exit_decision,
-            blocked_reason: evidence.blocked_reason,
-        };
-        if self.last_recorded_exit_decision.as_ref() == Some(&key) {
-            return Ok(());
-        }
         if let Err(error) = self
             .context
             .decision_evidence()
@@ -4407,7 +4369,6 @@ impl BinaryOracleEdgeTaker {
                 self.config.strategy_id
             );
         }
-        self.last_recorded_exit_decision = Some(key);
         Ok(())
     }
 
@@ -6490,22 +6451,28 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<()> {
-        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
-        let gate_result = decision.evaluation.realized_volatility_receipt.gate_result;
-        let watermark_present = decision
-            .evaluation
-            .realized_volatility_receipt
-            .receive_watermark_ms
-            .is_some();
-        if !self
-            .blocked_rv_novelty()
-            .mark_once(gate_result, watermark_present)
+        let snapshot = match self
+            .blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)
         {
-            return Ok(());
-        }
-        self.context
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                log::error!(
+                    "binary_oracle_edge_taker blocked entry evidence build failed without blocking decline: strategy_id={} error={error:#}",
+                    self.config.strategy_id,
+                );
+                return Ok(());
+            }
+        };
+        if let Err(error) = self
+            .context
             .decision_evidence()
-            .record_strategy_input_snapshot(&snapshot)?;
+            .record_strategy_input_snapshot(&snapshot)
+        {
+            log::error!(
+                "binary_oracle_edge_taker blocked entry evidence write failed without blocking decline: strategy_id={} error={error:#}",
+                self.config.strategy_id,
+            );
+        }
         Ok(())
     }
 
@@ -6770,7 +6737,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     /// Evaluate and (if admitted) submit an exit order, then record durable #885
-    /// exit-evaluation evidence flood-gated by [`ExitOutcomeKey`].
+    /// exit-evaluation evidence through the finite-state evidence authority.
     ///
     /// `trigger_context` supplies the receive timestamp used for realized-volatility
     /// consumption. Every production trigger has one; a structurally absent receive
@@ -7019,39 +6986,16 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
-    /// Emit immutable #885 exit-evaluation evidence flood-gated by
-    /// [`ExitOutcomeKey`]. Evidence construction and writer failures are record-local:
-    /// they are logged after the existing dedupe mark and never alter trading state.
+    /// Emit immutable #885 exit-evaluation evidence. The production evidence
+    /// authority applies the closed finite-state mask before performing I/O.
     fn record_exit_evaluation_evidence(
         &mut self,
         now_ms: u64,
         decision: &ExitSubmissionDecision,
         trigger_context: ExitEvaluationTriggerContext,
-        submitted: bool,
+        _submitted: bool,
     ) {
         let log_fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
-        let exit_decision = exit_decision_evidence_from_optional(decision.evaluation.exit_decision);
-        let outcome_key = ExitOutcomeKey {
-            exit_decision,
-            submission_blocked_reason: decision.blocked_reason,
-            rv_gate_result: decision.evaluation.realized_volatility_receipt.gate_result,
-        };
-
-        // Flood guard: collapse a per-tick exit flood (same outcome key) into a single
-        // current outcome for the one open position. An actual submit always records
-        // (it is a distinct, rare event). A restored prior outcome records again, and
-        // the per-tick tracing log above is untouched.
-        if let Some(position_id) = log_fields.position_id {
-            let changed =
-                self.last_exit_evidence_outcome.as_ref() != Some(&(position_id, outcome_key));
-            if changed {
-                self.last_exit_evidence_outcome = Some((position_id, outcome_key));
-            }
-            if !submitted && !changed {
-                return;
-            }
-        }
-
         let evidence = match self.build_exit_evaluation_evidence(
             now_ms,
             decision,
@@ -8262,8 +8206,6 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
-        // A closed position cannot retain the current exit-evidence guard state.
-        self.last_exit_evidence_outcome = None;
         let managed_position_close = match &self.exposure {
             ExposureState::Managed(position)
                 if position.position.position_id == event.position_id =>

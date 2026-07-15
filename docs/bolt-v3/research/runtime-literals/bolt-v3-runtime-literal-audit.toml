@@ -11731,6 +11731,7 @@ classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
 
 # Outcome-group shared model canonical evidence labels.
+
 [[allowed]]
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
@@ -11914,6 +11915,7 @@ literal = '''"kind"'''
 context = '''"kind".to_string(),'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
 [[allowed]]
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
@@ -12665,6 +12667,7 @@ literal = '''"kind"'''
 context = '''"kind".to_string(),'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
 [[allowed]]
 path = "src/bolt_v3_market_families/outcome_group.rs"
 kind = "string"
@@ -17600,6 +17603,7 @@ literal = '''"venue_structured_fields"'''
 context = '''SettlementSourceKind::VenueStructuredFields => "venue_structured_fields",'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group settlement-source label in canonical evidence; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
@@ -19522,6 +19526,7 @@ classification = '''requote_throttle_structural_unit_cost'''
 reason = '''A standalone cancel consumes exactly one venue REST token; this is structural accounting, not an operator-tunable value.'''
 
 # --- #885 Slice 2: loss-governor stale-halt evidence (RCA #885) ---
+
 [[allowed]]
 path = "src/bolt_v3_loss_runtime_feed.rs"
 kind = "number"
@@ -19644,38 +19649,6 @@ reason = "Sentinel component of the stale loss-governor halt key used when no sn
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = "1"
-context = '''episode.count = episode.count.saturating_add(1);'''
-classification = "submit_admission_loss_halt_episode_identity"
-reason = "Increments the stale loss-governor halt episode count by one per repeated halt; structural identity, not a config-owned value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = "1"
-context = '''count: 1,'''
-classification = "submit_admission_loss_halt_episode_identity"
-reason = "First stale loss-governor halt in an episode is recorded as count one; the episode counter is observability state (RCA #885), not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = "1"
-context = '''(1, 0)'''
-classification = "submit_admission_loss_halt_episode_identity"
-reason = "A new stale loss-governor halt episode initializes its count to one (first halt); observability identity, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = "0"
-context = '''(1, 0)'''
-classification = "submit_admission_loss_halt_episode_identity"
-reason = "A new stale loss-governor halt episode initializes elapsed-since-first-halt to zero (no prior halt yet); observability identity, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"admitted"'''
 context = '''BoltV3AdmissionOutcome::Admitted => "admitted",'''
@@ -19793,14 +19766,6 @@ literal = '''"{}/{}/{}"'''
 context = '''"{}/{}/{}",'''
 classification = "submit_admission_order_reject_episode_key_template"
 reason = "Stable episode-key template joining instrument, side, and admission outcome while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = "0"
-context = '''count: 0,'''
-classification = "submit_admission_order_reject_episode_counter_identity"
-reason = "A new submit-admission order-reject episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_order_reject_observer_feed.rs"
@@ -19957,14 +19922,6 @@ reason = "Best-effort substring used only to classify raw venue/NT reject text i
 [[allowed]]
 path = "src/bolt_v3_order_reject_observer_feed.rs"
 kind = "number"
-literal = "0"
-context = '''const REJECT_OBSERVER_INITIAL_EPISODE_COUNT: u32 = 0;'''
-classification = "order_reject_observer_episode_counter_identity"
-reason = "A new venue/NT order-reject observer episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_order_reject_observer_feed.rs"
-kind = "number"
 literal = "1"
 context = '''const REJECT_OBSERVER_EPISODE_INCREMENT: u32 = 1;'''
 classification = "order_reject_observer_episode_counter_increment"
@@ -19977,14 +19934,6 @@ literal = '''"{}/{}/{}"'''
 context = '''"{}/{}/{}",'''
 classification = "order_reject_observer_episode_key_template"
 reason = "Stable episode-key template joining instrument, reject source, and reject reason while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "number"
-literal = "4096"
-context = '''pub(crate) const BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES: usize = 4096;'''
-classification = "reject_evidence_episode_map_bound"
-reason = "Single-source upper bound on retained reject-episode maps (submit-admission reject episodes and the venue/NT order-reject observer feed) so the durable RCA #885 observability maps cannot grow unbounded under high-cardinality instrument ids; oldest-first eviction discards only a sampling counter and never gates submissions."
 
 [[allowed]]
 path = "src/bolt_v3_order_reject_observer_feed.rs"
@@ -20779,14 +20728,6 @@ classification = "operator_health_counter_identity"
 reason = "A not-configured input-health surface has zero observed reference sources; it is observability output state, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_order_reject_observer_feed.rs"
-kind = "number"
-literal = "0_u32"
-context = '''.fold(0_u32, |total, episode| total.saturating_add(episode.count));'''
-classification = "order_reject_observer_episode_counter_identity"
-reason = "Reject-observer retry totals fold from zero before observed episodes contribute counts; this is observability aggregation state, not an operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_order_execution.rs"
 kind = "string"
 literal = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
@@ -20889,6 +20830,7 @@ literal = '''"input_health_transition_emitter_configured"'''
 context = '''"input_health_transition_emitter_configured",'''
 classification = "chainlink_reference_config_debug_field"
 reason = "Debug output field name that reports whether live input-health transition emission was attached before NT registration; it is not an operator runtime value."
+
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
 kind = "string"
@@ -20968,70 +20910,6 @@ literal = '''"realized_volatility_max_source_age_ms"'''
 context = '''"realized_volatility_max_source_age_ms",'''
 classification = "strategy_runtime_schema_field"
 reason = "Derived runtime config field populated from the selected root realized-volatility surface policy; the value remains TOML-owned."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "0"
-context = '''BoltV3RvGateResult::Accepted => 0,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the Accepted RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "1"
-context = '''BoltV3RvGateResult::MissingSnapshot => 1,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the MissingSnapshot RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "2"
-context = '''BoltV3RvGateResult::MissingEvaluationEventTime => 2,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the MissingEvaluationEventTime RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "3"
-context = '''BoltV3RvGateResult::RejectedFutureDated => 3,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedFutureDated RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "4"
-context = '''BoltV3RvGateResult::RejectedStale => 4,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedStale RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "5"
-context = '''BoltV3RvGateResult::RejectedNotReady => 5,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedNotReady RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "2"
-context = '''let bit_index = gate_index * 2 + watermark_index;'''
-classification = "rv_gate_novelty_dimension_count"
-reason = "Each closed RV gate category has exactly two evidence states, receive-watermark absent or present; this is a bounded schema dimension, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "1_u16"
-context = '''1_u16 << bit_index'''
-classification = "rv_gate_novelty_bit_identity"
-reason = "One-hot identity used to mark an observed category-and-watermark-presence state in the bounded u16 evidence mask."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
@@ -21195,14 +21073,6 @@ reason = "Stable fail-closed validation diagnostic; it does not configure runtim
 
 [[allowed]]
 path = "src/bolt_v3_evidence_identity.rs"
-kind = "string"
-literal = '''b"bolt-v3-evidence-episode-v1"'''
-context = '''const EVIDENCE_EPISODE_ENCODING_TAG: &[u8] = b"bolt-v3-evidence-episode-v1";'''
-classification = "evidence_identity_encoding_schema"
-reason = "Versioned domain tag for the sealed canonical evidence-episode encoder; it frames durable identity bytes and is not trading policy."
-
-[[allowed]]
-path = "src/bolt_v3_evidence_identity.rs"
 kind = "number"
 literal = "0"
 context = '''EvidenceNegRiskMode::Disabled => 0,'''
@@ -21218,257 +21088,905 @@ classification = "evidence_identity_encoding_discriminant"
 reason = "Canonical byte discriminant for the closed enabled neg-risk identity variant; it is encoding schema, not runtime policy."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "12"
-context = '''pub(super) const DOMAIN_CARDINALITY: u32 = 12;'''
-classification = "legacy_blocked_rv_novelty_domain"
-reason = "Closed six-gate-by-two-watermark diagnostic novelty domain required by #1354; it sizes a fixed u16 mask and does not configure trading."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "16"
-context = '''pub(super) const DOMAIN_CARDINALITY: u32 = 16;'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Closed cardinality of the sixteen entry-skip reason variants required by #1354; it describes a fixed u16 mask, not trading policy."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "1_u16"
-context = '''let bit = 1_u16 << index;'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Single-bit seed for the closed entry-skip monotone novelty mask; it is structural bitset arithmetic, not a runtime threshold."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "0"
-context = '''BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => 0,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "\"yes\" => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3BasketAdmissionOutcome::Admitted => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3ExitDecisionOutcome::Exit => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3OrderRejectReason::AdmissionRejected => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3RejectSource::SubmitAdmission => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3RequoteThrottleBound::SubmitCommandWindow => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3RvGateResult::Accepted => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "BoltV3StaleLossReason::MissingSnapshot => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "VenueTruthDivergenceAlarmClass::TrueDivergence => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "mask.fetch_or(bit, Ordering::Relaxed) & bit == 0"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "mask.fetch_or(bit, Ordering::Relaxed) & bit == 0"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "mask.fetch_or(bit, Ordering::Relaxed) & bit == 0"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static BASKET_ADMISSION_NOVELTY: AtomicU16 = AtomicU16::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static BLOCKED_RV_NOVELTY: AtomicU16 = AtomicU16::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static ENTRY_SKIP_NOVELTY: AtomicU16 = AtomicU16::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static EXIT_DECISION_NOVELTY: AtomicU8 = AtomicU8::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static EXIT_EVALUATION_NOVELTY: AtomicU32 = AtomicU32::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static LOSS_GOVERNOR_HALT_NOVELTY: AtomicU8 = AtomicU8::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static ORDER_REJECT_NOVELTY: AtomicU32 = AtomicU32::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static REQUOTE_THROTTLE_NOVELTY: AtomicU16 = AtomicU16::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static VENUE_TRUTH_CAPTURE_FAILURE_NOVELTY: AtomicU8 = AtomicU8::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "0"
+context = "static VENUE_TRUTH_DIVERGENCE_NOVELTY: AtomicU8 = AtomicU8::new(0);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "1"
-context = '''BoltV3EntrySkipReasonCategory::EntryGateBlocked => 1,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "\"no\" => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "2"
-context = '''BoltV3EntrySkipReasonCategory::EntryPricingBlocked => 2,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3BasketAdmissionOutcome::RejectedBasketNotionalCapExceeded => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "3"
-context = '''BoltV3EntrySkipReasonCategory::NoSideSelected => 3,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3EntrySkipReasonCategory::EntryGateBlocked => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "4"
-context = '''BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => 4,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3ExitDecisionOutcome::ExitFailClosed => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "5"
-context = '''BoltV3EntrySkipReasonCategory::InstrumentIdMissing => 5,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3OrderRejectReason::PrecisionRejected => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "6"
-context = '''BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => 6,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3RejectSource::Venue => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "7"
-context = '''BoltV3EntrySkipReasonCategory::EntryPriceMissing => 7,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3RequoteThrottleBound::RestCallWindow => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "8"
-context = '''BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => 8,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3RvGateResult::MissingSnapshot => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "9"
-context = '''BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => 9,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+literal = "1"
+context = "BoltV3StaleLossReason::SourceEmpty => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "1"
+context = "VenueTruthDivergenceAlarmClass::OrderingViolation => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "1"
+context = "const VENUE_TRUTH_CAPTURE_FAILURE_DOMAIN: u32 = 1;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "10"
-context = '''BoltV3EntrySkipReasonCategory::QuantityNotPositive => 10,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "BoltV3BasketAdmissionOutcome::RejectedRetryBudgetExceeded => 10,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "10"
+context = "BoltV3EntrySkipReasonCategory::QuantityNotPositive => 10,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "11"
-context = '''BoltV3EntrySkipReasonCategory::PositionContractInvalid => 11,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "BoltV3BasketAdmissionOutcome::RejectedSubmitSlots => 11,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "11"
+context = "BoltV3EntrySkipReasonCategory::PositionContractInvalid => 11,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "117"
+context = "const _: [(); 117] = [(); BOLT_V3_NON_RECOVERY_MAX_EMISSIONS as usize];"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "12"
-context = '''BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => 12,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => 12,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "12"
+context = "const BASKET_ADMISSION_DOMAIN: u32 = 12;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "12"
+context = "const BLOCKED_RV_DOMAIN: u32 = 12;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "12"
+context = "const REQUOTE_THROTTLE_DOMAIN: u32 = 12;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "13"
-context = '''BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => 13,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => 13,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "14"
-context = '''BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => 14,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => 14,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "15"
-context = '''BoltV3EntrySkipReasonCategory::Unclassified => 15,'''
-classification = "legacy_entry_skip_novelty_domain"
-reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+context = "BoltV3EntrySkipReasonCategory::Unclassified => 15,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "12"
-context = '''const DOMAIN_CARDINALITY: u32 = 12;'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Closed two-leg-by-six-bound diagnostic novelty domain required by #1354; it sizes a fixed u16 mask and does not configure trading."
+literal = "16"
+context = "const ENTRY_SKIP_DOMAIN: u32 = 16;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "0"
-context = '''Leg::Yes => 0,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-row index for the closed YES leg diagnostic domain; it does not control quoting behavior."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "1"
-context = '''Leg::No => 1,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-row index for the closed NO leg diagnostic domain; it does not control quoting behavior."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "0"
-context = '''BoltV3RequoteThrottleBound::SubmitCommandWindow => 0,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "1"
-context = '''BoltV3RequoteThrottleBound::RestCallWindow => 1,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "2"
-context = '''BoltV3RequoteThrottleBound::MinInterval => 2,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "3"
-context = '''BoltV3RequoteThrottleBound::WindowCap => 3,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "4"
-context = '''BoltV3RequoteThrottleBound::OutOfOrderTs => 4,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
-kind = "number"
-literal = "5"
-context = '''BoltV3RequoteThrottleBound::Overflow => 5,'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "1_u16"
-context = '''let bit = 1_u16 << bit_index;'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Single-bit seed for the closed requote-throttle monotone novelty mask; it is structural bitset arithmetic, not a runtime threshold."
+context = "let bit = 1_u16 << index;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "1_u32"
+context = "let bit = 1_u32 << index;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "1_u8"
+context = "let bit = 1_u8 << index;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3BasketAdmissionOutcome::RejectedMaxOpenBasketCapExceeded => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3EntrySkipReasonCategory::EntryPricingBlocked => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3ExitDecisionOutcome::Hold => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3OrderRejectReason::MinSizeRejected => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3RejectSource::NtExecution => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3RequoteThrottleBound::MinInterval => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3RvGateResult::MissingEvaluationEventTime => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "BoltV3StaleLossReason::FutureDated => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "VenueTruthDivergenceAlarmClass::SilentChannel => 2,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "2"
+context = "rv_gate_index(gate) * 2 + u32::from(watermark_present),"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "24"
+context = "const EXIT_EVALUATION_DOMAIN: u32 = 24;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "28"
+context = "pub(crate) const ORDER_REJECT_DOMAIN: u32 = 28;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3BasketAdmissionOutcome::RejectedStaleScannerEvidence => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3EntrySkipReasonCategory::NoSideSelected => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3ExitDecisionOutcome::Blocked => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3OrderRejectReason::MinNotionalRejected => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3RejectSource::Internal => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3RequoteThrottleBound::WindowCap => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3RvGateResult::RejectedFutureDated => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "BoltV3StaleLossReason::AgeExceeded => 3,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "const VENUE_TRUTH_DIVERGENCE_DOMAIN: u32 = 3;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "3"
+context = "const _: [(); 6] = [(); std::mem::size_of::<AtomicU16>() * 3];"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "BoltV3BasketAdmissionOutcome::RejectedStaleSubmitRecheck => 4,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => 4,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "BoltV3OrderRejectReason::InsufficientBalance => 4,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "BoltV3RequoteThrottleBound::OutOfOrderTs => 4,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "BoltV3RvGateResult::RejectedStale => 4,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "BoltV3StaleLossReason::MissingRequiredField => 4,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4"
+context = "const EXIT_DECISION_DOMAIN: u32 = 4;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "5"
+context = "BoltV3BasketAdmissionOutcome::RejectedNonPositiveCandidateCost => 5,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "5"
+context = "BoltV3EntrySkipReasonCategory::InstrumentIdMissing => 5,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "5"
+context = "BoltV3OrderRejectReason::DuplicateClientOrderId => 5,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "5"
+context = "BoltV3RequoteThrottleBound::Overflow => 5,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "5"
+context = "BoltV3RvGateResult::RejectedNotReady => 5,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "5"
+context = "const LOSS_GOVERNOR_HALT_DOMAIN: u32 = 5;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "6"
-context = '''let bit_index = leg_index * 6 + bound_index;'''
-classification = "legacy_requote_throttle_novelty_domain"
-reason = "Fixed row width for six closed requote-throttle bound variants; it is bitset shape, not a runtime threshold."
+context = "BoltV3BasketAdmissionOutcome::RejectedNonPositiveEdge => 6,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = "0"
-context = '''Self(AtomicU16::new(0))'''
-classification = "legacy_evidence_novelty_empty_seed"
-reason = "Zero initializes each process-lifetime monotone diagnostic mask with no observed states; it is fixed storage state, not runtime policy."
+literal = "6"
+context = "BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => 6,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_maker/mod.rs"
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "6"
+context = "BoltV3OrderRejectReason::Other => 6,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "6"
+context = "const _: [(); 6] = [(); std::mem::size_of::<AtomicU16>() * 3];"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "6"
+context = "exit_decision_index(outcome) * 6 + rv_gate_index(gate),"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "6"
+context = "leg * 6 + bound,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "7"
+context = "BoltV3BasketAdmissionOutcome::RejectedEdgeThreshold => 7,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "7"
+context = "BoltV3EntrySkipReasonCategory::EntryPriceMissing => 7,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "7"
+context = "reject_source_index(source) * 7 + reject_reason_index(reason)"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "8"
+context = "BoltV3BasketAdmissionOutcome::RejectedMissingGroupingProof => 8,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "8"
+context = "BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => 8,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "9"
+context = "BoltV3BasketAdmissionOutcome::RejectedMissingSettlementRules => 9,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "9"
+context = "BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => 9,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = "\"no\""
+context = "\"no\" => 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = "\"yes\""
+context = "\"yes\" => 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
 kind = "number"
 literal = "0"
-context = '''Self(AtomicU16::new(0))'''
-classification = "legacy_evidence_novelty_empty_seed"
-reason = "Zero initializes the process-lifetime maker diagnostic mask with no observed states; it is fixed storage state, not runtime policy."
+context = "EvidenceEpisodeScope::Market => encoded.push(0),"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "1"
+context = "EvidenceEpisodeScope::System => encoded.push(1),"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "2"
+context = "encoded.push(2);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "9"
+context = "pub const MAX: u8 = 9;"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = "b\"bolt-v3-evidence-episode-v2\""
+context = "const EVIDENCE_EPISODE_ENCODING_TAG: &[u8] = b\"bolt-v3-evidence-episode-v2\";"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "0"
+context = "let active_episode_count = self.state_counts.iter().filter(|count| **count > 0).count();"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "0"
+context = "state_counts: [0; ORDER_REJECT_DOMAIN as usize],"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "0_u32"
+context = ".fold(0_u32, u32::saturating_add);"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "elapsed_ns: 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "elapsed_since_first_halt_ns: 0,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "retry_count: 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "retry_count: 1,"
+classification = "evidence_fixed_canonical_domain_structure"
+reason = "This literal defines the fixed canonical state encoding or monotone novelty storage required by issue #1354; it is protocol structure, not an operator-tunable runtime value."

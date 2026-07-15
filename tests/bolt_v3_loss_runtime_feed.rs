@@ -460,7 +460,7 @@ fn stale_loss_halt_emits_populated_loss_governor_halt_evidence() {
 }
 
 #[test]
-fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
+fn stale_loss_halt_evidence_has_no_producer_counter_sampling_or_reset() {
     let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
         writer.clone(),
@@ -482,7 +482,7 @@ fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
 
     let records = writer.loss_governor_halts();
     let retry_counts: Vec<u32> = records.iter().map(|record| record.retry_count).collect();
-    assert_eq!(retry_counts, vec![1, 2, 4, 8, 16]);
+    assert_eq!(retry_counts, vec![1; 20]);
     assert!(
         records
             .iter()
@@ -492,17 +492,17 @@ fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
     admission.update_loss_snapshot(loss_snapshot_at(3_000));
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 3_100)
-        .expect("fresh loss snapshot should reset stale-halt sampling")
+        .expect("fresh loss snapshot should admit")
         .commit_submitted();
     admission.update_loss_snapshot(loss_snapshot_at(3_000));
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 4_001)
-        .expect_err("recurring stale loss snapshot should restart sampling at one");
+        .expect_err("recurring stale loss snapshot should halt again");
 
     let reset_records = writer.loss_governor_halts();
-    assert_eq!(reset_records.len(), 6);
-    assert_eq!(reset_records[5].retry_count, 1);
-    assert_eq!(reset_records[5].elapsed_since_first_halt_ns, 0);
+    assert_eq!(reset_records.len(), 21);
+    assert_eq!(reset_records[20].retry_count, 1);
+    assert_eq!(reset_records[20].elapsed_since_first_halt_ns, 0);
 }
 
 #[test]

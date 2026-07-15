@@ -42,10 +42,10 @@ class EvidenceRegistryVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = pathlib.Path(temp_dir)
             shutil.copytree(ROOT / "src", temp_root / "src")
-            (temp_root / "scripts").mkdir()
-            shutil.copy2(
-                ROOT / "scripts/migrate_bolt_v3_decision_evidence_to_v15.py",
-                temp_root / "scripts/migrate_bolt_v3_decision_evidence_to_v15.py",
+            shutil.copytree(
+                ROOT / "scripts",
+                temp_root / "scripts",
+                ignore=shutil.ignore_patterns("test_*", "__pycache__"),
             )
             path = temp_root / relative_path
             source = path.read_text(encoding="utf-8")
@@ -73,10 +73,10 @@ class EvidenceRegistryVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = pathlib.Path(temp_dir)
             shutil.copytree(ROOT / "src", temp_root / "src")
-            (temp_root / "scripts").mkdir()
-            shutil.copy2(
-                ROOT / "scripts/migrate_bolt_v3_decision_evidence_to_v15.py",
-                temp_root / "scripts/migrate_bolt_v3_decision_evidence_to_v15.py",
+            shutil.copytree(
+                ROOT / "scripts",
+                temp_root / "scripts",
+                ignore=shutil.ignore_patterns("test_*", "__pycache__"),
             )
             path = temp_root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,7 +385,7 @@ DECISION_EVIDENCE_KIND = "strategy_input_snapshot"
 """,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Python evidence I/O authority", result.stderr)
+        self.assertIn("Python raw-I/O closed census mismatch", result.stderr)
 
     def test_new_rust_raw_reader_is_rejected_by_whole_tree_census(self) -> None:
         result = self.run_with_added_file(
@@ -402,6 +402,40 @@ fn load_records(path: &Path) -> std::io::Result<String> {
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("whole-tree raw-I/O census mismatch", result.stderr)
+
+    def test_rust_raw_io_function_pointer_is_rejected(self) -> None:
+        result = self.run_with_added_file(
+            "src/innocent_alias.rs",
+            """use std::path::Path;
+
+fn load(path: &Path) {
+    let reader = std::fs::read;
+    let _ = reader(path);
+}
+""",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("whole-tree raw-I/O census mismatch", result.stderr)
+
+    def test_rust_module_macro_with_raw_io_is_rejected(self) -> None:
+        marker = "impl BinaryOracleEdgeTaker {"
+        injected = """macro_rules! hidden_read {
+    ($path:expr) => { std::fs::read($path) };
+}
+
+"""
+        result = self.run_with_source_mutation(
+            "src/strategies/binary_oracle_edge_taker/mod.rs", marker, injected + marker
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("raw I/O in module macro", result.stderr)
+
+    def test_rust_reader_cross_module_raw_helper_is_rejected(self) -> None:
+        marker = "fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {\n    read_decision_evidence_jsonl_lines(path)?"
+        replacement = "fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {\n    let _ = read_file_bounded(path, 1);\n    read_decision_evidence_jsonl_lines(path)?"
+        result = self.run_with_source_mutation("src/shadow_pnl.rs", marker, replacement)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Rust evidence reader reaches unregistered raw-I/O helper", result.stderr)
 
     def test_reader_root_list_shrinkage_is_rejected(self) -> None:
         source = REGISTRY.read_text(encoding="utf-8")
@@ -424,6 +458,97 @@ fn load_records(path: &Path) -> std::io::Result<String> {
         result = self.run_verifier(mutated)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("producer census must cover the complete src tree", result.stderr)
+
+    def test_handler_sweep_roots_cannot_be_emptied_or_shrunk(self) -> None:
+        source = REGISTRY.read_text(encoding="utf-8")
+        for replacement in ('handler_sweep_roots = []', 'handler_sweep_roots = ["src/strategies"]'):
+            with self.subTest(replacement=replacement):
+                mutated = source.replace(
+                    'handler_sweep_roots = ["src/strategies", "src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"]',
+                    replacement,
+                    1,
+                )
+                result = self.run_verifier(mutated)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("handler_sweep_roots", result.stderr)
+
+    def test_cfg_not_test_producer_is_counted_as_production(self) -> None:
+        marker = "impl BinaryOracleEdgeTaker {"
+        injected = """#[cfg(not(test))]
+fn production_only_alias(writer: &dyn BoltV3DecisionEvidenceWriter, evidence: &BoltV3EntrySkipEvidence) {
+    writer.record_entry_skip(evidence);
+}
+
+"""
+        result = self.run_with_source_mutation(
+            "src/strategies/binary_oracle_edge_taker/mod.rs", marker, injected + marker
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("producer callsite census mismatch", result.stderr)
+
+    def test_module_level_macro_with_exact_record_method_is_rejected(self) -> None:
+        marker = "impl BinaryOracleEdgeTaker {"
+        injected = """macro_rules! hidden_record {
+    ($writer:expr, $value:expr) => { $writer.record_entry_skip($value) };
+}
+
+"""
+        result = self.run_with_source_mutation(
+            "src/strategies/binary_oracle_edge_taker/mod.rs", marker, injected + marker
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("macro_or_out_of_function_record_call", result.stderr)
+
+    def test_reader_registry_shrink_from_twenty_to_seventeen_is_rejected(self) -> None:
+        source = REGISTRY.read_text(encoding="utf-8")
+        start = source.index("[[reader]]")
+        producer = source.index("[[producer]]")
+        reader_text = source[start:producer]
+        blocks = reader_text.split("[[reader]]")[1:]
+        self.assertEqual(len(blocks), 20)
+        mutated = source[:start] + "".join(
+            "[[reader]]" + block for block in blocks[:17]
+        ) + source[producer:]
+        result = self.run_verifier(mutated)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exactly 20 rows", result.stderr)
+
+    def test_python_path_open_without_marker_is_rejected(self) -> None:
+        result = self.run_with_added_file(
+            "scripts/innocent_name.py",
+            "from pathlib import Path\n\ndef load(path: Path):\n    with path.open() as handle:\n        return handle.read()\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Python raw-I/O closed census mismatch", result.stderr)
+
+    def test_python_read_text_function_pointer_without_marker_is_rejected(self) -> None:
+        result = self.run_with_added_file(
+            "scripts/innocent_alias.py",
+            "from pathlib import Path\n\ndef load(path: Path):\n    reader = path.read_text\n    return reader()\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Python raw-I/O closed census mismatch", result.stderr)
+
+    def test_python_reader_cross_module_raw_helper_is_rejected(self) -> None:
+        marker = "def migrate_file_bytes(path: Path, payload: bytes) -> bytes:\n"
+        replacement = (
+            marker
+            + "    require_text_file(path.parent, path, [])\n"
+        )
+        result = self.run_with_source_mutation(
+            "scripts/migrate_bolt_v3_decision_evidence_to_v15.py", marker, replacement
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Python evidence reader reaches unregistered raw-I/O helper", result.stderr)
+
+    def test_evidence_authority_is_not_wholesale_exempt_from_raw_io_census(self) -> None:
+        marker = "fn serialize_optional_local_receive_ms"
+        injected = "fn unregistered_authority_reader(path: &Path) { let _ = std::fs::read(path); }\n\n"
+        result = self.run_with_source_mutation(
+            "src/bolt_v3_decision_evidence.rs", marker, injected + marker
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("whole-tree raw-I/O census mismatch", result.stderr)
 
     def test_mispointed_reader_is_rejected(self) -> None:
         source = REGISTRY.read_text(encoding="utf-8")
@@ -470,26 +595,26 @@ fn load_records(path: &Path) -> std::io::Result<String> {
         self.assertIn(marker, source)
         mutated = source.replace(
             marker,
-            'recovery_bearing = true\nsuppression = "finite-episode"',
+            'recovery_bearing = true\nsuppression = "finite-monotone-mask"',
             1,
         )
         result = self.run_verifier(mutated)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("recovery-bearing producer", result.stderr)
 
-    def test_finite_suppression_without_gamma_binding_is_rejected(self) -> None:
+    def test_non_recovery_unsuppressed_row_is_rejected(self) -> None:
         source = REGISTRY.read_text(encoding="utf-8")
-        marker = 'recovery_bearing = false\nsuppression = "current-state-bounded"'
+        marker = 'recovery_bearing = false\nsuppression = "finite-monotone-mask"'
         self.assertIn(marker, source)
         result = self.run_verifier(
             source.replace(
                 marker,
-                'recovery_bearing = false\nsuppression = "finite-episode"',
+                'recovery_bearing = false\nsuppression = "unsuppressed"',
                 1,
             )
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("deferred until typed Gamma binding exists", result.stderr)
+        self.assertIn("requires finite monotone suppression", result.stderr)
 
     def test_identity_type_excludes_forbidden_volatile_fields(self) -> None:
         result = self.run_verifier()
@@ -547,73 +672,73 @@ fn load_records(path: &Path) -> std::io::Result<String> {
 
     def test_unbounded_edge_mask_shape_is_rejected(self) -> None:
         result = self.run_with_source_mutation(
-            "src/strategies/binary_oracle_edge_taker/mod.rs",
-            "entry_skip_novelty: LegacyEntrySkipNoveltyMask",
-            "entry_skip_novelty: Vec<LegacyEntrySkipNoveltyMask>",
+            "src/bolt_v3_decision_evidence.rs",
+            "static ENTRY_SKIP_NOVELTY: AtomicU16",
+            "static ENTRY_SKIP_NOVELTY: AtomicU32",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("exact type", result.stderr)
+        self.assertIn("missing exact production mask", result.stderr)
 
     def test_dynamic_maker_mask_shape_is_rejected(self) -> None:
         result = self.run_with_source_mutation(
-            "src/strategies/binary_oracle_maker/mod.rs",
-            "requote_throttle_novelty: LegacyRequoteThrottleNoveltyMask",
-            "requote_throttle_novelty: Vec<LegacyRequoteThrottleNoveltyMask>",
+            "src/bolt_v3_decision_evidence.rs",
+            "static REQUOTE_THROTTLE_NOVELTY: AtomicU16",
+            "static REQUOTE_THROTTLE_NOVELTY: Vec<AtomicU16>",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("exact type", result.stderr)
+        self.assertIn("missing exact production mask", result.stderr)
 
     def test_parallel_guard_history_is_rejected(self) -> None:
         result = self.run_with_source_mutation(
-            "src/strategies/binary_oracle_edge_taker/mod.rs",
-            "entry_skip_novelty: LegacyEntrySkipNoveltyMask,",
-            "entry_skip_novelty: LegacyEntrySkipNoveltyMask,\n    entry_skip_history: Vec<String>,",
+            "src/bolt_v3_decision_evidence.rs",
+            "static ENTRY_SKIP_NOVELTY: AtomicU16 = AtomicU16::new(0);",
+            "static ENTRY_SKIP_NOVELTY: AtomicU16 = AtomicU16::new(0);\nstatic ENTRY_SKIP_HISTORY_NOVELTY: AtomicU16 = AtomicU16::new(0);",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("parallel or aliased entry_skip state", result.stderr)
+        self.assertIn("novelty static census mismatch", result.stderr)
 
     def test_nested_guard_collection_is_rejected(self) -> None:
         result = self.run_with_source_mutation(
-            "src/strategies/binary_oracle_maker/mod.rs",
-            "requote_throttle_novelty: LegacyRequoteThrottleNoveltyMask,",
-            "requote_throttle_novelty: LegacyRequoteThrottleNoveltyMask,\n    requote_throttle_archive: Option<Vec<String>> ,",
+            "src/bolt_v3_decision_evidence.rs",
+            "static REQUOTE_THROTTLE_NOVELTY: AtomicU16 = AtomicU16::new(0);",
+            "static REQUOTE_THROTTLE_NOVELTY: AtomicU16 = AtomicU16::new(0);\nstatic REQUOTE_ARCHIVE_NOVELTY: AtomicU16 = AtomicU16::new(0);",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("parallel or aliased requote_throttle state", result.stderr)
+        self.assertIn("novelty static census mismatch", result.stderr)
 
     def test_map_set_and_type_aliased_guard_histories_are_rejected(self) -> None:
         mutations = (
-            "entry_skip_by_market: BTreeMap<String, u16>",
-            "entry_skip_seen: BTreeSet<String>",
-            "entry_skip_archive: EntrySkipArchive",
+            "ENTRY_SKIP_BY_MARKET_NOVELTY",
+            "ENTRY_SKIP_SET_NOVELTY",
+            "ENTRY_SKIP_ARCHIVE_NOVELTY",
         )
         for field in mutations:
             with self.subTest(field=field):
                 result = self.run_with_source_mutation(
-                    "src/strategies/binary_oracle_edge_taker/mod.rs",
-                    "entry_skip_novelty: LegacyEntrySkipNoveltyMask,",
-                    f"entry_skip_novelty: LegacyEntrySkipNoveltyMask,\n    {field},",
+                    "src/bolt_v3_decision_evidence.rs",
+                    "static ENTRY_SKIP_NOVELTY: AtomicU16 = AtomicU16::new(0);",
+                    f"static ENTRY_SKIP_NOVELTY: AtomicU16 = AtomicU16::new(0);\nstatic {field}: AtomicU16 = AtomicU16::new(0);",
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("parallel or aliased entry_skip state", result.stderr)
+                self.assertIn("novelty static census mismatch", result.stderr)
 
     def test_mask_reset_method_is_rejected(self) -> None:
         result = self.run_with_source_mutation(
-            "src/strategies/binary_oracle_maker/mod.rs",
-            "impl LegacyRequoteThrottleNoveltyMask {",
-            "impl LegacyRequoteThrottleNoveltyMask {\n    fn reset(&mut self) { self.0 = 0; }",
+            "src/bolt_v3_decision_evidence.rs",
+            "fn mark_u16_once(mask: &AtomicU16, index: u32, domain: u32) -> bool {",
+            "fn mark_u16_once(mask: &AtomicU16, index: u32, domain: u32) -> bool {\n    mask.store(0, Ordering::Relaxed);",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("storage may only change monotonically", result.stderr)
+        self.assertIn("must only change by fetch_or", result.stderr)
 
     def test_atomic_store_mutation_helper_is_rejected(self) -> None:
         result = self.run_with_source_mutation(
-            "src/strategies/binary_oracle_maker/mod.rs",
-            "impl LegacyRequoteThrottleNoveltyMask {",
-            "impl LegacyRequoteThrottleNoveltyMask {\n    fn initialize(&self) { self.0.store(0, Ordering::Relaxed); }",
+            "src/bolt_v3_decision_evidence.rs",
+            "fn mark_u8_once(mask: &AtomicU8, index: u32, domain: u32) -> bool {",
+            "fn mark_u8_once(mask: &AtomicU8, index: u32, domain: u32) -> bool {\n    mask.swap(0, Ordering::Relaxed);",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("non-monotone atomic operations", result.stderr)
+        self.assertIn("must only change by fetch_or", result.stderr)
 
 
 if __name__ == "__main__":

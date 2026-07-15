@@ -246,15 +246,6 @@ pub(super) enum ExitDecision {
     Exit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ExitDecisionDedupeKey {
-    pub(super) market_id: Option<String>,
-    pub(super) position_id: Option<String>,
-    pub(super) forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
-    pub(super) exit_decision: BoltV3ExitDecisionOutcome,
-    pub(super) blocked_reason: Option<BoltV3ExitBlockedReason>,
-}
-
 impl BoltV3ExitDecisionEvidence {
     pub(super) fn from_exit_decision(
         strategy_id: String,
@@ -386,18 +377,6 @@ fn exit_block_reason_to_evidence(reason: &str) -> BoltV3ExitBlockedReason {
         }
         _ => unreachable!("unknown exit blocked reason `{reason}`"),
     }
-}
-
-/// Stable key for #885 exit-evaluation evidence flood-gating. Two exit evaluations
-/// with the same key produce the same RCA story, so only the first is recorded
-/// durably (subsequent identical ticks are suppressed). Deliberately excludes the
-/// client_order_id (re-minted per attempt) and timestamps so a per-tick flood
-/// collapses to one record in the bounded current-state guard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ExitOutcomeKey {
-    pub(super) exit_decision: BoltV3ExitDecisionOutcome,
-    pub(super) submission_blocked_reason: Option<&'static str>,
-    pub(super) rv_gate_result: BoltV3RvGateResult,
 }
 
 /// Map the strategy-internal [`ExitDecision`] to the closed evidence enum. `None`

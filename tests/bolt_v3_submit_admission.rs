@@ -428,25 +428,11 @@ fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
 }
 
 #[test]
-fn sustained_rejects_over_distinct_keys_bound_the_reject_episode_map() {
-    // RCA #885 R1: the reject-episode map is cleared only on an Admitted outcome.
-    // Under a sustained-reject regime with rotating high-cardinality instrument ids
-    // (and no admit ever firing), the map must NOT grow without bound. Drive
-    // `cap + margin` DISTINCT instrument ids, each over the notional cap so the
-    // outcome is RejectedNotionalCapExceeded, with NO interleaved admit, and assert
-    // the map is held at the shared cap rather than the number of inserted keys.
-    //
-    // Without the bound this asserts `len() == cap + margin` (every key retained)
-    // and fails; with the bound it asserts `len() == cap`.
+fn sustained_rejects_over_distinct_keys_do_not_change_admission_behavior() {
     let admission = limited_admission(u32::MAX, Decimal::new(1, 0));
-    let cap = BoltV3SubmitAdmissionState::reject_episode_capacity();
-    let margin = 5usize;
-    let inserted = cap + margin;
 
-    for index in 0..inserted {
+    for index in 0..10_000_usize {
         let mut request = submit_request(Decimal::new(2, 0));
-        // Distinct instrument id per iteration => distinct stable_episode_key
-        // (`{instrument_id}/{side}/{outcome}`), so each reject is a new episode.
         request.instrument_id = format!("instrument-{index}");
         let error = admission
             .admit(&request)
@@ -457,13 +443,7 @@ fn sustained_rejects_over_distinct_keys_bound_the_reject_episode_map() {
         ));
     }
 
-    // No admit ever fired, so the only thing keeping the map finite is eviction.
     assert_eq!(admission.admitted_order_count(), 0);
-    assert_eq!(
-        admission.reject_episode_count(),
-        cap,
-        "reject-episode map must be bounded at the shared cap, not the {inserted} inserted keys"
-    );
 }
 
 #[test]
@@ -1969,7 +1949,7 @@ fn loss_governor_halt_is_mece_with_order_reject_evidence() {
 }
 
 #[test]
-fn single_order_reject_evidence_samples_power_of_two_attempts_and_links_churn() {
+fn single_order_reject_evidence_has_no_producer_counter_sampling() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = limited_admission_with_writer(writer.clone(), 0, Decimal::new(1, 0));
 
@@ -1988,23 +1968,14 @@ fn single_order_reject_evidence_samples_power_of_two_attempts_and_links_churn() 
 
     let rejects = writer.order_rejects();
     let retry_counts: Vec<u32> = rejects.iter().map(|reject| reject.retry_count).collect();
-    assert_eq!(retry_counts, vec![1, 2, 4, 8]);
+    assert_eq!(retry_counts, vec![1; 8]);
     for reject in rejects {
-        let expected_prior = if reject.retry_count == 1 {
-            None
-        } else {
-            Some(format!("client-order-{}", reject.retry_count - 1))
-        };
-        assert_eq!(
-            reject.prior_client_order_id, expected_prior,
-            "emitted reject at count {} should point to the immediately preceding attempt",
-            reject.retry_count
-        );
+        assert_eq!(reject.prior_client_order_id, None);
     }
 }
 
 #[test]
-fn single_order_reject_episode_resets_after_admitted_submit() {
+fn single_order_reject_payload_is_independent_of_admitted_submit() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(1, 0));
 
@@ -2025,7 +1996,7 @@ fn single_order_reject_episode_resets_after_admitted_submit() {
     accepted.client_order_id = "accepted-client-order".to_string();
     admission
         .admit_at(&accepted, 2_000)
-        .expect("within-cap submit should reset reject episodes")
+        .expect("within-cap submit should remain admitted")
         .commit_submitted();
 
     let mut rejected_after_accept = submit_request(Decimal::new(2, 0));
@@ -2040,10 +2011,10 @@ fn single_order_reject_episode_resets_after_admitted_submit() {
 
     let rejects = writer.order_rejects();
     let retry_counts: Vec<u32> = rejects.iter().map(|reject| reject.retry_count).collect();
-    assert_eq!(retry_counts, vec![1, 2, 1]);
+    assert_eq!(retry_counts, vec![1, 1, 1, 1]);
     let reset_reject = rejects
         .last()
-        .expect("reject after accept should restart the episode");
+        .expect("reject after accept should be recorded");
     assert_eq!(reset_reject.retry_count, 1);
     assert_eq!(reset_reject.prior_client_order_id, None);
     assert_eq!(reset_reject.client_order_id, "reject-after-accept");

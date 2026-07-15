@@ -3,7 +3,9 @@ source_module = "src/bolt_v3_decision_evidence.rs"
 identity_module = "src/bolt_v3_evidence_identity.rs"
 closed_families = ["risk", "market", "system"]
 allowed_classifications = ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]
-allowed_suppression = ["unsuppressed", "current-state-bounded", "legacy-monotone-mask", "finite-episode"]
+allowed_suppression = ["unsuppressed", "finite-monotone-mask"]
+non_recovery_max_emissions = 117
+legacy_diagnostic_storage_bytes = 6
 handler_sweep_roots = ["src/strategies", "src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"]
 non_evidence_per_tick_appenders = []
 producer_census_roots = ["src"]
@@ -219,10 +221,12 @@ classification = "state-observation"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once::record_strategy_input_snapshot::1"]
 named_readers = ["read_latest_entry_decision_evidence_chain", "shadow_pnl_read_admitted_entry_chains", "shadow_pnl_read_jsonl_lines", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "process-lifetime monotone suppression over the six RV gate results and watermark-presence dimension; payload churn cannot reset a bit"
-dedupe_key_evidence = "one process-global private AtomicU16 mask with a closed 12-bit domain, compile-time u16 size proof, and no outer key or reset path"
+repeat_semantics = "production-authority monotone suppression over six RV gate results and watermark presence; payload churn and writer failure cannot reset a bit"
+dedupe_key_evidence = "one process-global AtomicU16 in the JSONL authority; exact 12-state Cartesian domain and no outer key or reset path"
 recovery_bearing = false
-suppression = "legacy-monotone-mask"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["accepted", "missing_snapshot", "missing_evaluation_event_time", "rejected_future_dated", "rejected_stale", "rejected_not_ready"], ["watermark_absent", "watermark_present"]]
+max_emissions = 12
 owner_decision_required = false
 
 [[producer]]
@@ -290,10 +294,12 @@ call_sites = [
   "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::5",
 ]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "append-complete pending owner decision"
-dedupe_key_evidence = "none"
+repeat_semantics = "production-authority monotone suppression over the closed 12-outcome domain"
+dedupe_key_evidence = "one process-global AtomicU16 in the JSONL authority; identifiers and amounts are payload only"
 recovery_bearing = false
-suppression = "unsuppressed"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["admitted", "rejected_basket_notional_cap_exceeded", "rejected_max_open_basket_cap_exceeded", "rejected_stale_scanner_evidence", "rejected_stale_submit_recheck", "rejected_non_positive_candidate_cost", "rejected_non_positive_edge", "rejected_edge_threshold", "rejected_missing_grouping_proof", "rejected_missing_settlement_rules", "rejected_retry_budget_exceeded", "rejected_submit_slots"]]
+max_emissions = 12
 owner_decision_required = true
 
 [[producer]]
@@ -365,10 +371,12 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once::record_entry_skip::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "process-lifetime monotone suppression over the closed 16-value reason-category domain; payload churn cannot reset a bit"
-dedupe_key_evidence = "one process-global private AtomicU16 mask with one bit per BoltV3EntrySkipReasonCategory, compile-time u16 size proof, and no outer key or reset path"
+repeat_semantics = "production-authority monotone suppression over the closed 16-value reason-category domain"
+dedupe_key_evidence = "one process-global AtomicU16 in the JSONL authority; payload churn cannot reset a bit"
 recovery_bearing = false
-suppression = "legacy-monotone-mask"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["strategy_core_not_registered", "entry_gate_blocked", "entry_pricing_blocked", "no_side_selected", "sized_notional_not_positive", "instrument_id_missing", "instrument_missing_from_cache", "entry_price_missing", "quantity_rounding_failed", "limit_notional_exceeds_sized_notional", "quantity_not_positive", "position_contract_invalid", "entry_position_contract_unsupported", "historical_entry_fee_unavailable", "one_position_invariant_violation", "unclassified"]]
+max_emissions = 16
 owner_decision_required = false
 
 [[producer]]
@@ -383,10 +391,12 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once::record_exit_decision::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "bounded current-state suppression only; restored A records again until AO-CAPSULE supplies stable episode identity"
-dedupe_key_evidence = "single Option guard over market/position/forced-flat/outcome/block reason"
+repeat_semantics = "production-authority monotone suppression over four canonical outcomes; A-B-A emits at most two states"
+dedupe_key_evidence = "one process-global AtomicU8 in the JSONL authority; market, position, forced-flat detail, and block reason are payload only"
 recovery_bearing = false
-suppression = "current-state-bounded"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["exit", "exit_fail_closed", "hold", "blocked"]]
+max_emissions = 4
 owner_decision_required = false
 
 [[producer]]
@@ -401,10 +411,12 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_evaluation_evidence::record_exit_evaluation::1"]
 named_readers = ["read_exit_evaluation_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "one current outcome per live position; restored outcomes record again and submitted events stay append-complete"
-dedupe_key_evidence = "single Option guard for the one-position invariant; terminal close clears it"
+repeat_semantics = "production-authority monotone suppression over four outcomes by six RV gate results; position absence and submission fields cannot reset state"
+dedupe_key_evidence = "one process-global AtomicU32 in the JSONL authority; exact 24-state Cartesian domain"
 recovery_bearing = false
-suppression = "current-state-bounded"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["exit", "exit_fail_closed", "hold", "blocked"], ["accepted", "missing_snapshot", "missing_evaluation_event_time", "rejected_future_dated", "rejected_stale", "rejected_not_ready"]]
+max_emissions = 24
 owner_decision_required = false
 
 [[producer]]
@@ -419,10 +431,12 @@ classification = "already-deduped"
 handler_reachability = ["quote", "timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_stale_loss_governor_halt::record_loss_governor_halt::1"]
 named_readers = ["read_loss_governor_halt_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "existing bounded exponential sampling remains unchanged"
-dedupe_key_evidence = "stable halt reason/source; retry and elapsed fields excluded"
+repeat_semantics = "production-authority monotone suppression over five stale-loss reasons"
+dedupe_key_evidence = "one process-global AtomicU8 in the JSONL authority; source, retries, counters, and elapsed time are payload only"
 recovery_bearing = false
-suppression = "unsuppressed"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["missing_snapshot", "source_empty", "future_dated", "age_exceeded", "missing_required_field"]]
+max_emissions = 5
 owner_decision_required = false
 
 [[producer]]
@@ -440,10 +454,12 @@ call_sites = [
   "src/bolt_v3_submit_admission.rs::record_submit_admission_order_reject::record_order_reject::1",
 ]
 named_readers = ["read_order_reject_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "existing bounded exponential sampling remains unchanged"
-dedupe_key_evidence = "stable reject source/reason/instrument/side; attempt id, retry, elapsed excluded"
+repeat_semantics = "production-authority monotone suppression over four reject sources by seven reject reasons"
+dedupe_key_evidence = "one process-global AtomicU32 in the JSONL authority; identifiers, retry, elapsed, and raw reason are payload only"
 recovery_bearing = false
-suppression = "unsuppressed"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["submit_admission", "venue", "nt_execution", "internal"], ["admission_rejected", "precision_rejected", "min_size_rejected", "min_notional_rejected", "insufficient_balance", "duplicate_client_order_id", "other"]]
+max_emissions = 28
 owner_decision_required = false
 
 [[producer]]
@@ -476,10 +492,12 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge::record_requote_throttle::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "process-lifetime monotone suppression over two legs and six bound reasons; family/action payload churn cannot reset a bit"
-dedupe_key_evidence = "one process-global private AtomicU16 mask with a closed 12-bit leg/bound domain, compile-time u16 size proof, and no outer key or reset path"
+repeat_semantics = "production-authority monotone suppression over two legs and six bound reasons"
+dedupe_key_evidence = "one process-global AtomicU16 in the JSONL authority; family and action class remain payload only"
 recovery_bearing = false
-suppression = "legacy-monotone-mask"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["yes", "no"], ["submit_command_window", "rest_call_window", "min_interval", "window_cap", "out_of_order_ts", "overflow"]]
+max_emissions = 12
 owner_decision_required = false
 
 [[producer]]
@@ -560,10 +578,12 @@ classification = "no-named-reader"
 handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_venue_truth_capture_failure::record_venue_truth_capture_failure::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "append-complete pending owner decision"
-dedupe_key_evidence = "none"
+repeat_semantics = "production-authority singleton monotone suppression; all capture diagnostics are payload"
+dedupe_key_evidence = "one process-global AtomicU8 in the JSONL authority"
 recovery_bearing = false
-suppression = "unsuppressed"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["capture_failure"]]
+max_emissions = 1
 owner_decision_required = true
 
 [[producer]]
@@ -578,8 +598,10 @@ classification = "no-named-reader"
 handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_venue_truth_divergence_evidence::record_venue_truth_divergence::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "append-complete pending owner decision"
-dedupe_key_evidence = "none"
+repeat_semantics = "production-authority monotone suppression over the three alarm classes"
+dedupe_key_evidence = "one process-global AtomicU8 in the JSONL authority; account, field, values, explanation, and time are payload only"
 recovery_bearing = false
-suppression = "unsuppressed"
+suppression = "finite-monotone-mask"
+canonical_state_axes = [["true_divergence", "ordering_violation", "silent_channel"]]
+max_emissions = 3
 owner_decision_required = true

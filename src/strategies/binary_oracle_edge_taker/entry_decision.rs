@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    sync::atomic::{AtomicU16, Ordering},
-};
+use std::collections::BTreeMap;
 
 use nautilus_model::{
     enums::OrderSide,
@@ -314,104 +311,6 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) submission_quantity_value: Option<f64>,
     pub(super) submission_client_order_id: Option<ClientOrderId>,
     pub(super) submission_blocked_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct LegacyBlockedRvNoveltyMask(AtomicU16);
-
-static BLOCKED_RV_NOVELTY: LegacyBlockedRvNoveltyMask = LegacyBlockedRvNoveltyMask::new();
-const _: [(); std::mem::size_of::<u16>()] = [(); std::mem::size_of::<LegacyBlockedRvNoveltyMask>()];
-
-impl LegacyBlockedRvNoveltyMask {
-    pub(super) const DOMAIN_CARDINALITY: u32 = 12;
-
-    const fn new() -> Self {
-        Self(AtomicU16::new(0))
-    }
-
-    pub(super) fn mark_once(
-        &self,
-        gate_result: BoltV3RvGateResult,
-        watermark_present: bool,
-    ) -> bool {
-        let bit = rv_gate_novelty_bit(gate_result, watermark_present);
-        debug_assert!(bit.trailing_zeros() < Self::DOMAIN_CARDINALITY);
-        self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0
-    }
-
-    #[cfg(test)]
-    pub(super) fn retained_cardinality(&self) -> u32 {
-        self.0.load(Ordering::Relaxed).count_ones()
-    }
-}
-
-#[derive(Debug, Default)]
-pub(super) struct LegacyEntrySkipNoveltyMask(AtomicU16);
-
-static ENTRY_SKIP_NOVELTY: LegacyEntrySkipNoveltyMask = LegacyEntrySkipNoveltyMask::new();
-const _: [(); std::mem::size_of::<u16>()] = [(); std::mem::size_of::<LegacyEntrySkipNoveltyMask>()];
-
-impl LegacyEntrySkipNoveltyMask {
-    pub(super) const DOMAIN_CARDINALITY: u32 = 16;
-
-    const fn new() -> Self {
-        Self(AtomicU16::new(0))
-    }
-
-    pub(super) fn mark_once(&self, reason: BoltV3EntrySkipReasonCategory) -> bool {
-        let index = entry_skip_reason_index(reason);
-        debug_assert!(index < Self::DOMAIN_CARDINALITY);
-        let bit = 1_u16 << index;
-        self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0
-    }
-
-    #[cfg(test)]
-    pub(super) fn retained_cardinality(&self) -> u32 {
-        self.0.load(Ordering::Relaxed).count_ones()
-    }
-}
-
-pub(super) const fn process_blocked_rv_novelty() -> &'static LegacyBlockedRvNoveltyMask {
-    &BLOCKED_RV_NOVELTY
-}
-
-pub(super) const fn process_entry_skip_novelty() -> &'static LegacyEntrySkipNoveltyMask {
-    &ENTRY_SKIP_NOVELTY
-}
-
-const fn entry_skip_reason_index(reason: BoltV3EntrySkipReasonCategory) -> u32 {
-    match reason {
-        BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => 0,
-        BoltV3EntrySkipReasonCategory::EntryGateBlocked => 1,
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked => 2,
-        BoltV3EntrySkipReasonCategory::NoSideSelected => 3,
-        BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => 4,
-        BoltV3EntrySkipReasonCategory::InstrumentIdMissing => 5,
-        BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => 6,
-        BoltV3EntrySkipReasonCategory::EntryPriceMissing => 7,
-        BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => 8,
-        BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => 9,
-        BoltV3EntrySkipReasonCategory::QuantityNotPositive => 10,
-        BoltV3EntrySkipReasonCategory::PositionContractInvalid => 11,
-        BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => 12,
-        BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => 13,
-        BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => 14,
-        BoltV3EntrySkipReasonCategory::Unclassified => 15,
-    }
-}
-
-const fn rv_gate_novelty_bit(gate_result: BoltV3RvGateResult, watermark_present: bool) -> u16 {
-    let gate_index: u32 = match gate_result {
-        BoltV3RvGateResult::Accepted => 0,
-        BoltV3RvGateResult::MissingSnapshot => 1,
-        BoltV3RvGateResult::MissingEvaluationEventTime => 2,
-        BoltV3RvGateResult::RejectedFutureDated => 3,
-        BoltV3RvGateResult::RejectedStale => 4,
-        BoltV3RvGateResult::RejectedNotReady => 5,
-    };
-    let watermark_index = if watermark_present { 1 } else { 0 };
-    let bit_index = gate_index * 2 + watermark_index;
-    1_u16 << bit_index
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

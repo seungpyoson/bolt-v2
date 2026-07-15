@@ -1,16 +1,12 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use nautilus_common::msgbus::{TypedHandler, subscribe_order_events, unsubscribe_order_events};
 use nautilus_model::{events::OrderEventAny, identifiers::AccountId};
 
 use crate::{
     bolt_v3_decision_evidence::{
-        BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES, BoltV3DecisionEvidenceWriter,
-        BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource, EpisodeFirstNs,
-        evict_oldest_episodes_over_cap,
+        BoltV3DecisionEvidenceWriter, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+        BoltV3RejectSource, ORDER_REJECT_DOMAIN, order_reject_novelty_index,
     },
     bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter,
     nt_runtime_capture::order_events_pattern,
@@ -35,7 +31,6 @@ const REJECT_REASON_TOO_SMALL_NEEDLE: &str = "too small";
 const REJECT_REASON_INSUFFICIENT_NEEDLE: &str = "insufficient";
 const REJECT_REASON_BALANCE_NEEDLE: &str = "balance";
 const REJECT_REASON_DUPLICATE_NEEDLE: &str = "duplicate";
-const REJECT_OBSERVER_INITIAL_EPISODE_COUNT: u32 = 0;
 const REJECT_OBSERVER_EPISODE_INCREMENT: u32 = 1;
 /// Placeholder substituted for a wallet/proxy address run (a `0x`-prefixed hex
 /// run or a bare run of >= `REJECT_REASON_ADDR_HEX_MIN_LEN` hex characters) in
@@ -53,19 +48,6 @@ const REJECT_REASON_MAX_LEN: usize = 256;
 /// Appended when the redacted reason text is truncated at the length cap.
 const REJECT_REASON_TRUNCATION_MARKER: &str = "...";
 const OPERATOR_HEALTH_REASON_ORDER_REJECT_OBSERVER: &str = stringify!(order_reject_observer);
-
-#[derive(Debug, Clone)]
-struct RejectObserverEpisode {
-    count: u32,
-    first_ns: u64,
-    last_client_order_id: String,
-}
-
-impl EpisodeFirstNs for RejectObserverEpisode {
-    fn first_ns(&self) -> u64 {
-        self.first_ns
-    }
-}
 
 pub struct OrderRejectObserverFeedSubscription {
     order_events: Option<TypedHandler<OrderEventAny>>,
@@ -123,7 +105,9 @@ impl Drop for OrderRejectObserverFeedSubscription {
 pub struct BoltV3OrderRejectObserverFeed {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     account_id: AccountId,
-    episodes: BTreeMap<String, RejectObserverEpisode>,
+    state_counts: [u32; ORDER_REJECT_DOMAIN as usize],
+    state_first_ns: [Option<u64>; ORDER_REJECT_DOMAIN as usize],
+    latest_client_order_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,23 +127,22 @@ impl BoltV3OrderRejectObserverFeed {
         Self {
             decision_evidence,
             account_id,
-            episodes: BTreeMap::new(),
+            state_counts: [0; ORDER_REJECT_DOMAIN as usize],
+            state_first_ns: [None; ORDER_REJECT_DOMAIN as usize],
+            latest_client_order_id: None,
         }
     }
 
     #[must_use]
     pub fn health_snapshot(&self) -> BoltV3OrderRejectObserverHealthSnapshot {
-        let active_episode_count = self.episodes.len();
+        let active_episode_count = self.state_counts.iter().filter(|count| **count > 0).count();
         let total_retry_count = self
-            .episodes
-            .values()
-            .fold(0_u32, |total, episode| total.saturating_add(episode.count));
-        let oldest_episode_first_ns = self.episodes.values().map(|episode| episode.first_ns).min();
-        let latest_client_order_id = self
-            .episodes
-            .values()
-            .max_by_key(|episode| episode.first_ns)
-            .map(|episode| episode.last_client_order_id.clone());
+            .state_counts
+            .iter()
+            .copied()
+            .fold(0_u32, u32::saturating_add);
+        let oldest_episode_first_ns = self.state_first_ns.iter().flatten().copied().min();
+        let latest_client_order_id = self.latest_client_order_id.clone();
         BoltV3OrderRejectObserverHealthSnapshot {
             active_episode_count,
             total_retry_count,
@@ -200,48 +183,13 @@ impl BoltV3OrderRejectObserverFeed {
             reject_source_key(reject_source),
             reject_reason_key(reject_reason)
         );
-        let mut episode_inserted = false;
-        let (prior_client_order_id, retry_count, elapsed_ns) = if let Some(episode) =
-            self.episodes.get_mut(&stable_episode_key)
-        {
-            // Existing episode: prior id comes from the pre-increment count.
-            let prior_client_order_id = if episode.count > REJECT_OBSERVER_INITIAL_EPISODE_COUNT {
-                Some(episode.last_client_order_id.clone())
-            } else {
-                None
-            };
-            episode.count = episode
-                .count
-                .saturating_add(REJECT_OBSERVER_EPISODE_INCREMENT);
-            episode.last_client_order_id = client_order_id.clone();
-            (
-                prior_client_order_id,
-                episode.count,
-                ts_event_ns.saturating_sub(episode.first_ns),
-            )
-        } else {
-            // First reject for this key: insert at the post-increment count and
-            // flag so eviction runs (the map only grows on this branch).
-            episode_inserted = true;
-            let first_count =
-                REJECT_OBSERVER_INITIAL_EPISODE_COUNT + REJECT_OBSERVER_EPISODE_INCREMENT;
-            let first_ns = ts_event_ns;
-            self.episodes.insert(
-                stable_episode_key.clone(),
-                RejectObserverEpisode {
-                    count: first_count,
-                    first_ns,
-                    last_client_order_id: client_order_id.clone(),
-                },
-            );
-            (None, first_count, ts_event_ns.saturating_sub(first_ns))
-        };
-        if episode_inserted {
-            self.evict_oldest_episodes_over_cap();
-        }
-        if !retry_count.is_power_of_two() {
-            return true;
-        }
+        let state_index = order_reject_novelty_index(reject_source, reject_reason) as usize;
+        let prior_client_order_id = self.latest_client_order_id.replace(client_order_id.clone());
+        self.state_counts[state_index] =
+            self.state_counts[state_index].saturating_add(REJECT_OBSERVER_EPISODE_INCREMENT);
+        let first_ns = *self.state_first_ns[state_index].get_or_insert(ts_event_ns);
+        let retry_count = self.state_counts[state_index];
+        let elapsed_ns = ts_event_ns.saturating_sub(first_ns);
 
         let evidence = BoltV3OrderRejectEvidence {
             reject_source,
@@ -279,15 +227,6 @@ impl BoltV3OrderRejectObserverFeed {
             );
         }
         true
-    }
-
-    /// Bound the episode map: while it exceeds the cap, drop the entry with the
-    /// smallest `first_ns` (oldest episode). Eviction only discards an
-    /// evidence-sampling counter, so a later reject for the same instrument simply
-    /// re-starts its episode; no trading state is touched. Delegates to the shared
-    /// `evict_oldest_episodes_over_cap` helper so the bound lives in one place.
-    fn evict_oldest_episodes_over_cap(&mut self) {
-        evict_oldest_episodes_over_cap(&mut self.episodes, BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
     }
 }
 
@@ -537,32 +476,11 @@ mod tests {
     }
 
     #[test]
-    fn evict_oldest_episodes_bounds_the_map() {
-        let mut episodes: BTreeMap<String, RejectObserverEpisode> = BTreeMap::new();
-        // Insert one past the cap, with strictly increasing first_ns so the oldest
-        // (first_ns == 0) is unambiguous.
-        let over_cap = BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES + 1;
-        for index in 0..over_cap {
-            episodes.insert(
-                format!("instrument-{index}/venue/other"),
-                RejectObserverEpisode {
-                    count: REJECT_OBSERVER_EPISODE_INCREMENT,
-                    first_ns: index as u64,
-                    last_client_order_id: String::new(),
-                },
-            );
-        }
-        assert_eq!(episodes.len(), over_cap);
-        let oldest_key = "instrument-0/venue/other".to_string();
-        assert!(episodes.contains_key(&oldest_key));
-
-        evict_oldest_episodes_over_cap(&mut episodes, BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
-
-        assert_eq!(episodes.len(), BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
-        assert!(
-            !episodes.contains_key(&oldest_key),
-            "the oldest episode (smallest first_ns) must be evicted first"
-        );
+    fn reject_observer_health_storage_has_fixed_canonical_domain() {
+        let counts = [0_u32; ORDER_REJECT_DOMAIN as usize];
+        let first_ns = [None::<u64>; ORDER_REJECT_DOMAIN as usize];
+        assert_eq!(counts.len(), 28);
+        assert_eq!(first_ns.len(), 28);
     }
 }
 

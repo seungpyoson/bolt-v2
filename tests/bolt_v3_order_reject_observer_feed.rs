@@ -194,7 +194,7 @@ fn submitted_accepted_and_filled_events_are_not_recorded() {
 }
 
 #[test]
-fn same_episode_rejects_emit_exponential_samples_with_previous_client_order_id() {
+fn same_state_rejects_reach_the_production_authority_without_producer_sampling() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
     let mut feed =
         BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
@@ -215,7 +215,7 @@ fn same_episode_rejects_emit_exponential_samples_with_previous_client_order_id()
             .iter()
             .map(|record| record.retry_count)
             .collect::<Vec<_>>(),
-        vec![1, 2, 4, 8]
+        (1..=9).collect::<Vec<_>>()
     );
     assert_eq!(
         records
@@ -225,8 +225,13 @@ fn same_episode_rejects_emit_exponential_samples_with_previous_client_order_id()
         vec![
             None,
             Some("client-order-1"),
+            Some("client-order-2"),
             Some("client-order-3"),
-            Some("client-order-7")
+            Some("client-order-4"),
+            Some("client-order-5"),
+            Some("client-order-6"),
+            Some("client-order-7"),
+            Some("client-order-8")
         ]
     );
     assert!(records.iter().all(

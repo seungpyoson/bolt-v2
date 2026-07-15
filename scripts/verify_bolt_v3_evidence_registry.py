@@ -10,6 +10,7 @@ import pathlib
 import re
 import sys
 import tomllib
+import hashlib
 from typing import Any
 
 from rust_source_scanner import (
@@ -30,6 +31,8 @@ ROOT_KEYS = {
     "closed_families",
     "allowed_classifications",
     "allowed_suppression",
+    "non_recovery_max_emissions",
+    "legacy_diagnostic_storage_bytes",
     "handler_sweep_roots",
     "non_evidence_per_tick_appenders",
     "producer_census_roots",
@@ -59,6 +62,8 @@ PRODUCER_KEYS = {
     "recovery_bearing",
     "suppression",
     "owner_decision_required",
+    "canonical_state_axes",
+    "max_emissions",
 }
 
 FROZEN_FAMILIES = {
@@ -105,10 +110,13 @@ EXPECTED_CLASSIFICATIONS = {
 }
 EXPECTED_SUPPRESSION = {
     "unsuppressed",
-    "current-state-bounded",
-    "legacy-monotone-mask",
-    "finite-episode",
+    "finite-monotone-mask",
 }
+FROZEN_HANDLER_SWEEP_ROOTS = [
+    "src/strategies",
+    "src/bolt_v3_live_node.rs",
+    "src/bolt_v3_live_node",
+]
 EXPECTED_HANDLER_CLASSES = {"quote", "book", "timer", "index-price", "startup"}
 EXPECTED_NON_EVIDENCE_RECORD_NAME_COLLISIONS = {
     "src/bolt_v3_capital_admission_runtime_feed.rs::record_venue_truth_settlement::record_settlement::1",
@@ -186,6 +194,16 @@ class RustFunction:
     body: tuple[RustToken, ...]
 
 
+def rust_attribute_is_test_only(tokens: list[RustToken], start: int, end: int) -> bool:
+    values = [token.value.removeprefix("r#") for token in tokens[start:end]]
+    if values == ["test"]:
+        return True
+    if not values or values[0] != "cfg" or "test" not in values:
+        return False
+    # `cfg(not(test))` and `cfg(any(test, ...))` both have production builds.
+    return "not" not in values and "any" not in values
+
+
 def rust_function_definitions(path: pathlib.Path) -> list[RustFunction]:
     masked = strip_rust_comments_and_literals(path.read_text(encoding="utf-8"))
     tokenized = rust_tokens_and_delimiter_pairs(masked)
@@ -197,10 +215,9 @@ def rust_function_definitions(path: pathlib.Path) -> list[RustFunction]:
         if token.value != "#" or tokens[index + 1].value != "[":
             continue
         attribute_end = pairs.get(index + 1)
-        if attribute_end is None or "test" not in {
-            item.value.removeprefix("r#")
-            for item in tokens[index + 2 : attribute_end]
-        }:
+        if attribute_end is None or not rust_attribute_is_test_only(
+            tokens, index + 2, attribute_end
+        ):
             continue
         cursor = attribute_end + 1
         while cursor < len(tokens) and tokens[cursor].value not in {"{", ";"}:
@@ -297,10 +314,9 @@ def rust_record_calls(path: pathlib.Path, methods: set[str]) -> set[str]:
         if token.value != "#" or tokens[index + 1].value != "[":
             continue
         attribute_end = pairs.get(index + 1)
-        if attribute_end is None or "test" not in {
-            item.value.removeprefix("r#")
-            for item in tokens[index + 2 : attribute_end]
-        }:
+        if attribute_end is None or not rust_attribute_is_test_only(
+            tokens, index + 2, attribute_end
+        ):
             continue
         cursor = attribute_end + 1
         while cursor < len(tokens) and tokens[cursor].value not in {"{", ";"}:
@@ -318,6 +334,19 @@ def rust_record_calls(path: pathlib.Path, methods: set[str]) -> set[str]:
         if predecessor == "fn" or (predecessor in {".", "::"} and successor == "("):
             continue
         violations.append(f"{path.relative_to(ROOT)}::<module>::{method}")
+    global_call_count = sum(
+        1
+        for index, token in enumerate(tokens[:-1])
+        if not any(start < index < end for start, end in test_items)
+        and token.value.removeprefix("r#") in methods
+        and index > 0
+        and tokens[index - 1].value in {".", "::"}
+        and tokens[index + 1].value == "("
+    )
+    if global_call_count != len(calls):
+        violations.append(
+            f"{path.relative_to(ROOT)}::<module>::macro_or_out_of_function_record_call"
+        )
     if violations:
         raise RegistryError(
             f"producer structural authority forbids alias/wrapper/macro dispatch: {sorted(violations)}"
@@ -407,14 +436,38 @@ FROZEN_NON_EVIDENCE_RAW_IO = {
     "src/source_canonicalization.rs::read_file_bounded",
     "src/venue_contract.rs::load_and_validate",
 }
+FROZEN_EVIDENCE_AUTHORITY_RAW_IO = {
+    "src/bolt_v3_decision_evidence.rs::append_line",
+    "src/bolt_v3_decision_evidence.rs::open_decision_evidence_append_existing_no_follow",
+    "src/bolt_v3_decision_evidence.rs::open_decision_evidence_append_new_no_follow",
+    "src/bolt_v3_decision_evidence.rs::open_decision_evidence_file_no_follow",
+    "src/bolt_v3_decision_evidence.rs::read_kind_evidence",
+    "src/bolt_v3_decision_evidence.rs::read_latest_entry_decision_evidence_chain",
+    "src/bolt_v3_decision_evidence.rs::read_submit_reservation_recovery_evidence",
+}
+PYTHON_RAW_IO_CENSUS_COUNT = 153
+PYTHON_RAW_IO_CENSUS_SHA256 = "f987523822dca813254510807624f66a36baeebe8ba1efbf1906e59185636907"
 
 
 def rust_function_calls(function: RustFunction) -> set[str]:
-    return {
+    calls = {
         token.value.removeprefix("r#")
         for index, token in enumerate(function.body[:-1])
         if function.body[index + 1].value == "("
     }
+    values = [token.value.removeprefix("r#") for token in function.body]
+    aliases: dict[str, str] = {}
+    for index in range(1, len(values) - 2):
+        if values[index] != "=":
+            continue
+        alias = values[index - 1]
+        cursor = index + 1
+        target = values[cursor]
+        while cursor + 2 < len(values) and values[cursor + 1] == "::":
+            cursor += 2
+            target = values[cursor]
+        aliases[alias] = target
+    return {aliases.get(call, call) for call in calls}
 
 
 def rust_function_has_raw_io(function: RustFunction) -> bool:
@@ -428,6 +481,8 @@ def rust_function_has_raw_io(function: RustFunction) -> bool:
             predecessor = values[index - 1] if index else None
             if predecessor in {".", "::"}:
                 return True
+        if value in RUST_RAW_IO_METHODS and index and values[index - 1] == "::":
+            return True
     return False
 
 
@@ -441,20 +496,53 @@ def python_function_definitions(path: pathlib.Path) -> dict[str, ast.AST]:
 
 
 def python_function_has_raw_read(node: ast.AST) -> bool:
+    raw_methods = {
+        "open",
+        "read",
+        "read_bytes",
+        "read_text",
+        "readline",
+        "readlines",
+    }
+    aliases = {
+        child.targets[0].id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Assign)
+        and len(child.targets) == 1
+        and isinstance(child.targets[0], ast.Name)
+        and isinstance(child.value, ast.Attribute)
+        and child.value.attr in raw_methods
+    }
     for child in ast.walk(node):
         if not isinstance(child, ast.Call):
             continue
-        if isinstance(child.func, ast.Attribute) and child.func.attr in {
-            "read",
-            "read_bytes",
-            "read_text",
-            "readline",
-            "readlines",
-        }:
+        if isinstance(child.func, ast.Attribute) and child.func.attr in raw_methods:
             return True
-        if isinstance(child.func, ast.Name) and child.func.id == "open":
+        if isinstance(child.func, ast.Name) and child.func.id in aliases | {"open"}:
             return True
     return False
+
+
+def python_function_calls(node: ast.AST) -> set[str]:
+    aliases: dict[str, str] = {}
+    for child in ast.walk(node):
+        if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(
+            child.targets[0], ast.Name
+        ):
+            target = child.targets[0].id
+            if isinstance(child.value, ast.Name):
+                aliases[target] = child.value.id
+            elif isinstance(child.value, ast.Attribute):
+                aliases[target] = child.value.attr
+    calls: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        if isinstance(child.func, ast.Name):
+            calls.add(aliases.get(child.func.id, child.func.id))
+        elif isinstance(child.func, ast.Attribute):
+            calls.add(child.func.attr)
+    return calls
 
 
 def validate_frozen_rust_io_authority(data: dict[str, Any]) -> None:
@@ -468,18 +556,63 @@ def validate_frozen_rust_io_authority(data: dict[str, Any]) -> None:
             if "tests" in path.relative_to(ROOT).parts:
                 continue
             relative = str(path.relative_to(ROOT))
-            if relative == RUST_EVIDENCE_AUTHORITY:
-                continue
+            masked = strip_rust_comments_and_literals(path.read_text(encoding="utf-8"))
+            tokenized = rust_tokens_and_delimiter_pairs(masked)
+            if tokenized is None:
+                raise RegistryError(f"Rust structural parse failed for {relative}")
+            tokens, pairs = tokenized
+            for index in range(len(tokens) - 3):
+                if [token.value for token in tokens[index : index + 2]] != [
+                    "macro_rules",
+                    "!",
+                ]:
+                    continue
+                opening = next(
+                    (
+                        cursor
+                        for cursor in range(index + 2, len(tokens))
+                        if tokens[cursor].value == "{"
+                    ),
+                    None,
+                )
+                if opening is not None and rust_function_has_raw_io(
+                    RustFunction("<macro>", tuple(tokens[opening + 1 : pairs[opening]]))
+                ):
+                    raise RegistryError(
+                        f"evidence I/O authority rejects raw I/O in module macro {relative}"
+                    )
             observed.update(
                 f"{relative}::{function.symbol}"
                 for function in rust_function_definitions(path)
                 if function.symbol != "fmt" and rust_function_has_raw_io(function)
             )
-    if observed != FROZEN_NON_EVIDENCE_RAW_IO:
+    expected = FROZEN_NON_EVIDENCE_RAW_IO | FROZEN_EVIDENCE_AUTHORITY_RAW_IO
+    if observed != expected:
         raise RegistryError(
             "evidence I/O authority whole-tree raw-I/O census mismatch: "
-            f"new={sorted(observed - FROZEN_NON_EVIDENCE_RAW_IO)} "
-            f"missing={sorted(FROZEN_NON_EVIDENCE_RAW_IO - observed)}"
+            f"new={sorted(observed - expected)} "
+            f"missing={sorted(expected - observed)}"
+        )
+
+
+def validate_frozen_python_io_authority(data: dict[str, Any]) -> None:
+    observed: set[str] = set()
+    for relative_root in data["reader_census_roots"]:
+        root = ROOT / relative_root
+        if relative_root != "scripts":
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if "tests" in path.relative_to(ROOT).parts or path.name.startswith("test_"):
+                continue
+            relative = str(path.relative_to(ROOT))
+            for symbol, node in python_function_definitions(path).items():
+                if python_function_has_raw_read(node):
+                    observed.add(f"{relative}::{symbol}")
+    digest = hashlib.sha256("\n".join(sorted(observed)).encode()).hexdigest()
+    if len(observed) != PYTHON_RAW_IO_CENSUS_COUNT or digest != PYTHON_RAW_IO_CENSUS_SHA256:
+        raise RegistryError(
+            "Python raw-I/O closed census mismatch: "
+            f"count={len(observed)} digest={digest}"
         )
 
 
@@ -487,6 +620,7 @@ def validate_structural_reader_authority(
     registered: set[tuple[str, str]], data: dict[str, Any]
 ) -> None:
     validate_frozen_rust_io_authority(data)
+    validate_frozen_python_io_authority(data)
     rust_by_path: dict[str, list[RustFunction]] = {}
     python_by_path: dict[str, dict[str, ast.AST]] = {}
     for path, symbol in registered:
@@ -548,51 +682,85 @@ def validate_structural_reader_authority(
                     )
                 pending.extend(rust_function_calls(function) & set(by_symbol))
 
-    for relative_root in data["reader_census_roots"]:
-        root = ROOT / relative_root
-        paths = [root] if root.is_file() else sorted(root.rglob("*.py"))
-        for path in paths:
-            if (
-                not path.is_file()
-                or "tests" in path.relative_to(ROOT).parts
-                or path.name.startswith("test_")
-            ):
+    all_rust: dict[str, list[tuple[str, RustFunction]]] = {}
+    for path in sorted((ROOT / "src").rglob("*.rs")):
+        if "tests" in path.relative_to(ROOT).parts:
+            continue
+        relative = str(path.relative_to(ROOT))
+        for function in rust_function_definitions(path):
+            all_rust.setdefault(function.symbol, []).append((relative, function))
+    registered_rust = {
+        (path, symbol) for path, symbol in registered if path.endswith(".rs")
+    }
+    allowed_authority_helpers = {
+        tuple(item.split("::", 1)) for item in FROZEN_EVIDENCE_AUTHORITY_RAW_IO
+    }
+    for root_key in registered_rust:
+        pending = [root_key]
+        visited: set[tuple[str, str]] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
                 continue
-            relative = str(path.relative_to(ROOT))
-            source = path.read_text(encoding="utf-8")
-            if relative == PYTHON_EVIDENCE_AUTHORITY:
-                functions = python_by_path.setdefault(relative, python_function_definitions(path))
-                for symbol, node in functions.items():
-                    if python_function_has_raw_read(node) and symbol != "plan_migrations":
+            visited.add(current)
+            path, symbol = current
+            candidates = [
+                function
+                for candidate_path, function in all_rust.get(symbol, [])
+                if candidate_path == path
+            ]
+            if not candidates:
+                raise RegistryError(f"reader call graph lost {path}::{symbol}")
+            for function in candidates:
+                for called in rust_function_calls(function):
+                    for called_path, called_function in all_rust.get(called, []):
+                        called_key = (called_path, called)
+                        if (
+                            rust_function_has_raw_io(called_function)
+                            and called_key not in registered_rust
+                            and called_key not in allowed_authority_helpers
+                        ):
+                            raise RegistryError(
+                                "Rust evidence reader reaches unregistered raw-I/O helper "
+                                f"{path}::{symbol} -> {called_path}::{called}"
+                            )
+                        pending.append(called_key)
+
+    all_python: dict[str, list[tuple[str, ast.AST]]] = {}
+    for path in sorted((ROOT / "scripts").rglob("*.py")):
+        if "tests" in path.relative_to(ROOT).parts or path.name.startswith("test_"):
+            continue
+        relative = str(path.relative_to(ROOT))
+        for symbol, node in python_function_definitions(path).items():
+            all_python.setdefault(symbol, []).append((relative, node))
+    registered_python = {
+        (path, symbol) for path, symbol in registered if path.endswith(".py")
+    }
+    for root_key in registered_python:
+        pending = [root_key]
+        visited: set[tuple[str, str]] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            path, symbol = current
+            node = python_function_definitions(ROOT / path)[symbol]
+            for called in python_function_calls(node):
+                for called_path, called_node in all_python.get(called, []):
+                    called_key = (called_path, called)
+                    if python_function_has_raw_read(called_node) and called_key not in registered_python:
                         raise RegistryError(
-                            "Python evidence I/O authority rejects unregistered reader "
-                            f"{relative}::{symbol}"
+                            "Python evidence reader reaches unregistered raw-I/O helper "
+                            f"{path}::{symbol} -> {called_path}::{called}"
                         )
-                continue
-            tree = ast.parse(source, filename=str(path))
-            declares_evidence_authority = any(
-                isinstance(node, ast.Name) and "DECISION_EVIDENCE" in node.id
-                for node in ast.walk(tree)
-            )
-            if not declares_evidence_authority:
-                continue
-            functions = {
-                node.name: node
-                for node in ast.walk(tree)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            }
-            raw_readers = sorted(
-                symbol for symbol, node in functions.items() if python_function_has_raw_read(node)
-            )
-            if raw_readers:
-                raise RegistryError(
-                    "Python evidence I/O authority rejects new tool readers: "
-                    f"{relative}::{raw_readers}"
-                )
+                    pending.append(called_key)
 
 
 def validate_readers(data: dict[str, Any]) -> set[str]:
     rows = data["reader"]
+    if len(rows) != 20:
+        raise RegistryError(f"reader census must contain exactly 20 rows, found {len(rows)}")
     names: set[str] = set()
     paths: set[tuple[str, str]] = set()
     for index, row in enumerate(rows):
@@ -666,7 +834,13 @@ def validate_producers(
         not in {"read_kind_evidence", "runtime_read_decision_evidence_jsonl_lines"}
     }
     for index, row in enumerate(rows):
-        require_exact_keys(row, PRODUCER_KEYS, f"producer[{index}]")
+        unknown = set(row) - PRODUCER_KEYS
+        required = PRODUCER_KEYS - {"canonical_state_axes", "max_emissions"}
+        missing = required - set(row)
+        if unknown or missing:
+            raise RegistryError(
+                f"producer[{index}]: unknown={sorted(unknown)} missing={sorted(missing)}"
+            )
         name = row["name"]
         if name in names:
             raise RegistryError(f"producer[{index}]: duplicate name {name!r}")
@@ -694,6 +868,33 @@ def validate_producers(
             raise RegistryError(f"producer {name}: unknown suppression")
         if row["recovery_bearing"] and row["suppression"] != "unsuppressed":
             raise RegistryError(f"recovery-bearing producer {name} must remain unsuppressed")
+        if row["recovery_bearing"]:
+            if set(row) & {"canonical_state_axes", "max_emissions"}:
+                raise RegistryError(
+                    f"recovery-bearing producer {name} cannot declare suppression state"
+                )
+        else:
+            if row["suppression"] != "finite-monotone-mask":
+                raise RegistryError(
+                    f"non-recovery producer {name} requires finite monotone suppression"
+                )
+            axes = row.get("canonical_state_axes")
+            if not isinstance(axes, list) or not axes:
+                raise RegistryError(f"producer {name}: canonical state axes are required")
+            cardinality = 1
+            for axis in axes:
+                if (
+                    not isinstance(axis, list)
+                    or not axis
+                    or any(not isinstance(item, str) or not item for item in axis)
+                    or len(axis) != len(set(axis))
+                ):
+                    raise RegistryError(f"producer {name}: invalid canonical state axis")
+                cardinality *= len(axis)
+            if row.get("max_emissions") != cardinality:
+                raise RegistryError(
+                    f"producer {name}: max_emissions must equal domain product {cardinality}"
+                )
         if row["classification"] == "no-named-reader" and not row["owner_decision_required"]:
             raise RegistryError(f"producer {name}: no-named-reader row requires owner decision")
         if row["classification"] == "no-named-reader" and any(
@@ -735,11 +936,16 @@ def validate_producers(
             for call_site in row["call_sites"]
         ):
             raise RegistryError("blocked snapshot row must own only its structural blocked callsite")
-        if row["suppression"] == "finite-episode":
-            raise RegistryError(
-                f"producer {name}: finite episode suppression is deferred until typed Gamma binding exists"
-            )
         methods[row["method"]] = methods.get(row["method"], 0) + 1
+
+    finite_total = sum(
+        row["max_emissions"] for row in rows if not row["recovery_bearing"]
+    )
+    if finite_total != data["non_recovery_max_emissions"]:
+        raise RegistryError(
+            "registry: non-recovery maximum emission sum mismatch "
+            f"computed={finite_total} declared={data['non_recovery_max_emissions']}"
+        )
 
     actual_methods = source_trait_methods(source)
     if len(actual_methods) != 19:
@@ -781,6 +987,10 @@ def validate_header_contract(data: dict[str, Any]) -> None:
         raise RegistryError("registry: producer census exclusions differ from reviewed collisions")
     if data["reader_census_roots"] != ["src", "scripts"]:
         raise RegistryError("registry: reader census must cover src and scripts")
+    if data["handler_sweep_roots"] != FROZEN_HANDLER_SWEEP_ROOTS:
+        raise RegistryError("registry: handler_sweep_roots differs from frozen full sweep")
+    if data["legacy_diagnostic_storage_bytes"] != 6:
+        raise RegistryError("registry: legacy diagnostic storage must remain exactly six bytes")
 
 
 def validate_handler_append_sweep(data: dict[str, Any]) -> None:
@@ -855,6 +1065,7 @@ def validate_identity_type(data: dict[str, Any]) -> None:
         "logical_target_id",
         "logical_venue_id",
         "market",
+        "scope",
     }
     missing = sorted(token for token in required if token not in episode_body)
     if missing:
@@ -873,6 +1084,26 @@ def validate_identity_type(data: dict[str, Any]) -> None:
         r"pub fn encode_canonical\s*\(&self\)\s*->\s*Vec<u8>", source
     ):
         raise RegistryError("identity: canonical encoder contract is missing")
+    if not re.search(r"pub struct RiskOrdinal\s*\(u8\)", source):
+        raise RegistryError("identity: RiskOrdinal must remain a sealed u8 newtype")
+    if "impl TryFrom<u8> for RiskOrdinal" not in source or "value <= Self::MAX" not in source:
+        raise RegistryError("identity: RiskOrdinal requires validated 0..=9 construction")
+    if "pub const MAX: u8 = 9" not in source:
+        raise RegistryError("identity: RiskOrdinal maximum must remain 9")
+    if not re.search(
+        r"pub enum EvidenceEpisodeScope\s*\{\s*Market,\s*System,\s*Risk\(RiskOrdinal\)",
+        source,
+        re.DOTALL,
+    ):
+        raise RegistryError("identity: explicit market/system/risk scope is missing")
+    for fragment in (
+        "EvidenceEpisodeScope::Market => encoded.push(0)",
+        "EvidenceEpisodeScope::System => encoded.push(1)",
+        "EvidenceEpisodeScope::Risk(ordinal)",
+        "encoded.push(ordinal.get())",
+    ):
+        if fragment not in source:
+            raise RegistryError(f"identity: canonical scope encoding missing {fragment!r}")
     for path in ROOT.joinpath("src").rglob("*.rs"):
         if path == ROOT / data["identity_module"]:
             continue
@@ -1063,65 +1294,59 @@ def reject_mask_resets(path: pathlib.Path, field_names: set[str]) -> None:
 
 
 def validate_bounded_guard_shapes() -> None:
-    edge_path = ROOT / "src/strategies/binary_oracle_edge_taker/mod.rs"
-    entry_path = ROOT / "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-    maker_path = ROOT / "src/strategies/binary_oracle_maker/mod.rs"
-    edge_fields = rust_named_struct_fields(edge_path, "BinaryOracleEdgeTaker")
-    maker_fields = rust_named_struct_fields(maker_path, "BinaryOracleMaker")
-    expected_edge = {
-        "blocked_rv_novelty": ("LegacyBlockedRvNoveltyMask",),
-        "entry_skip_novelty": ("LegacyEntrySkipNoveltyMask",),
-        "last_recorded_exit_decision": ("Option", "<", "ExitDecisionDedupeKey", ">"),
-        "last_exit_evidence_outcome": (
-            "Option", "<", "(", "PositionId", ",", "ExitOutcomeKey", ")", ">"
-        ),
-    }
-    expected_maker = {
-        "requote_throttle_novelty": ("LegacyRequoteThrottleNoveltyMask",),
-    }
-    for field, expected_type in expected_edge.items():
-        if edge_fields.get(field) != expected_type:
-            raise RegistryError(
-                f"guard shape: edge field {field} must have exact type {expected_type}"
-            )
-    for field, expected_type in expected_maker.items():
-        if maker_fields.get(field) != expected_type:
-            raise RegistryError(
-                f"guard shape: maker field {field} must have exact type {expected_type}"
-            )
-    edge_source = edge_path.read_text(encoding="utf-8")
-    maker_source = maker_path.read_text(encoding="utf-8")
-    for field in ("blocked_rv_novelty", "entry_skip_novelty"):
-        if not re.search(rf"#\[cfg\(test\)\]\s*{field}\s*:", edge_source):
-            raise RegistryError(f"guard shape: {field} instance storage must remain test-only")
-    if not re.search(
-        r"#\[cfg\(test\)\]\s*requote_throttle_novelty\s*:", maker_source
-    ):
-        raise RegistryError(
-            "guard shape: requote_throttle_novelty instance storage must remain test-only"
-        )
-    guarded_fragments = {
-        "blocked_strategy_input": {"blocked_rv_novelty"},
-        "entry_skip": {"entry_skip_novelty"},
-        "requote_throttle": {"requote_throttle_novelty"},
-    }
-    all_fields = set(edge_fields) | set(maker_fields)
-    for fragment, allowed in guarded_fragments.items():
-        unexpected = sorted(field for field in all_fields if fragment in field and field not in allowed)
-        if unexpected:
-            raise RegistryError(
-                f"guard shape: parallel or aliased {fragment} state forbidden {unexpected}"
-            )
-    masks = (
-        (entry_path, "LegacyBlockedRvNoveltyMask", "BLOCKED_RV_NOVELTY", 12),
-        (entry_path, "LegacyEntrySkipNoveltyMask", "ENTRY_SKIP_NOVELTY", 16),
-        (maker_path, "LegacyRequoteThrottleNoveltyMask", "REQUOTE_THROTTLE_NOVELTY", 12),
+    authority = (ROOT / RUST_EVIDENCE_AUTHORITY).read_text(encoding="utf-8")
+    strategy_sources = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "src/strategies").rglob("*.rs")
+        if "tests" not in path.relative_to(ROOT).parts
     )
-    for path, type_name, static_name, cardinality in masks:
-        validate_private_u16_newtype(path, type_name, static_name, cardinality)
-    reject_mask_resets(edge_path, {"blocked_rv_novelty", "entry_skip_novelty"})
-    reject_mask_resets(maker_path, {"requote_throttle_novelty"})
-    strategy_sources = edge_source + maker_source
+    production_function_tokens = " ".join(
+        token.value
+        for path in (ROOT / "src/strategies").rglob("*.rs")
+        if "tests" not in path.relative_to(ROOT).parts
+        for function in rust_function_definitions(path)
+        for token in function.body
+    )
+    forbidden_strategy_state = (
+        r"struct\s+Legacy(?:BlockedRv|EntrySkip|RequoteThrottle)NoveltyMask",
+        r"(?:blocked_rv_novelty|entry_skip_novelty|requote_throttle_novelty)\s*:",
+        r"(?:last_recorded_exit_decision|last_exit_evidence_outcome)\s*:",
+        r"struct\s+(?:ExitDecisionDedupeKey|ExitOutcomeKey)",
+    )
+    present = [pattern for pattern in forbidden_strategy_state if re.search(pattern, strategy_sources)]
+    if present:
+        raise RegistryError(f"guard shape: producer-local/test-only state forbidden {present}")
+    expected_statics = {
+        "BLOCKED_RV_NOVELTY": "AtomicU16",
+        "ENTRY_SKIP_NOVELTY": "AtomicU16",
+        "REQUOTE_THROTTLE_NOVELTY": "AtomicU16",
+        "BASKET_ADMISSION_NOVELTY": "AtomicU16",
+        "EXIT_DECISION_NOVELTY": "AtomicU8",
+        "EXIT_EVALUATION_NOVELTY": "AtomicU32",
+        "LOSS_GOVERNOR_HALT_NOVELTY": "AtomicU8",
+        "ORDER_REJECT_NOVELTY": "AtomicU32",
+        "VENUE_TRUTH_CAPTURE_FAILURE_NOVELTY": "AtomicU8",
+        "VENUE_TRUTH_DIVERGENCE_NOVELTY": "AtomicU8",
+    }
+    for name, atomic in expected_statics.items():
+        if not re.search(rf"static {name}: {atomic} = {atomic}::new\(0\)", authority):
+            raise RegistryError(f"guard shape: missing exact production mask {name}")
+    observed_statics = set(re.findall(r"static\s+([A-Z][A-Z0-9_]*NOVELTY)\s*:", authority))
+    if observed_statics != set(expected_statics):
+        raise RegistryError(
+            "guard shape: production novelty static census mismatch "
+            f"new={sorted(observed_statics - set(expected_statics))} "
+            f"missing={sorted(set(expected_statics) - observed_statics)}"
+        )
+    if "const _: [(); 6] = [(); std::mem::size_of::<AtomicU16>() * 3];" not in authority:
+        raise RegistryError("guard shape: three legacy masks require exact six-byte proof")
+    if "const _: [(); 117] = [(); BOLT_V3_NON_RECOVERY_MAX_EMISSIONS as usize];" not in authority:
+        raise RegistryError("guard shape: mechanically summed 117-state proof is missing")
+    if re.search(r"(?:store|swap|fetch_and)\s*\(", authority):
+        raise RegistryError("guard shape: novelty storage must only change by fetch_or")
+    for forbidden in ("is_power_of_two", "evict_oldest", "last_recorded_exit", "last_exit_evidence"):
+        if forbidden in production_function_tokens + authority:
+            raise RegistryError(f"guard shape: forbidden sampling/reset mechanism {forbidden}")
     if "EvidenceEpisodeId" in strategy_sources:
         raise RegistryError("guard shape: incomplete episode identity cannot enable suppression")
 

@@ -1,12 +1,13 @@
 //! Stable, non-temporal evidence-episode schema and canonical encoder.
 //!
 //! #1354 deliberately provides no production constructor or consumer. The future
-//! Capsule-owned bind-once Gamma authority supplies construction; risk ordinals,
-//! retirement, and restart exact-once authority remain outside this slice.
+//! Capsule-owned bind-once Gamma authority supplies episode construction and risk
+//! ordinal allocation. This module only seals the validated `0..9` representation;
+//! retirement and restart exact-once authority remain outside this slice.
 
 use std::{error::Error, fmt};
 
-const EVIDENCE_EPISODE_ENCODING_TAG: &[u8] = b"bolt-v3-evidence-episode-v1";
+const EVIDENCE_EPISODE_ENCODING_TAG: &[u8] = b"bolt-v3-evidence-episode-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct NonEmptyEvidenceIdentity(String);
@@ -30,6 +31,39 @@ impl NonEmptyEvidenceIdentity {
 pub enum EvidenceNegRiskMode {
     Disabled,
     Enabled,
+}
+
+/// Validated, non-replenishing risk slot allocated by the future Capsule owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RiskOrdinal(u8);
+
+impl RiskOrdinal {
+    pub const MAX: u8 = 9;
+
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for RiskOrdinal {
+    type Error = EvidenceIdentityError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value <= Self::MAX {
+            Ok(Self(value))
+        } else {
+            Err(EvidenceIdentityError::InvalidRiskOrdinal(value))
+        }
+    }
+}
+
+/// Frozen evidence-family scope. Only risk evidence carries an ordinal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EvidenceEpisodeScope {
+    Market,
+    System,
+    Risk(RiskOrdinal),
 }
 
 /// One member of the venue-defined, ordered binary outcome binding.
@@ -144,6 +178,7 @@ pub struct EvidenceEpisodeId {
     logical_target_id: NonEmptyEvidenceIdentity,
     logical_venue_id: NonEmptyEvidenceIdentity,
     market: EvidenceMarketIdentity,
+    scope: EvidenceEpisodeScope,
 }
 
 impl EvidenceEpisodeId {
@@ -153,6 +188,7 @@ impl EvidenceEpisodeId {
         logical_target_id: String,
         logical_venue_id: String,
         market: EvidenceMarketIdentity,
+        scope: EvidenceEpisodeScope,
     ) -> Result<Self, EvidenceIdentityError> {
         Ok(Self {
             logical_strategy_id: NonEmptyEvidenceIdentity::new(
@@ -165,6 +201,7 @@ impl EvidenceEpisodeId {
             )?,
             logical_venue_id: NonEmptyEvidenceIdentity::new("logical_venue_id", logical_venue_id)?,
             market,
+            scope,
         })
     }
 
@@ -186,6 +223,11 @@ impl EvidenceEpisodeId {
     #[must_use]
     pub const fn market(&self) -> &EvidenceMarketIdentity {
         &self.market
+    }
+
+    #[must_use]
+    pub const fn scope(&self) -> EvidenceEpisodeScope {
+        self.scope
     }
 
     /// Canonical, collision-resistant field framing for the future Capsule-owned
@@ -210,6 +252,14 @@ impl EvidenceEpisodeId {
             encode_component(&mut encoded, outcome.normalized_outcome().as_bytes());
             encode_component(&mut encoded, outcome.clob_token_id().as_bytes());
         }
+        match self.scope() {
+            EvidenceEpisodeScope::Market => encoded.push(0),
+            EvidenceEpisodeScope::System => encoded.push(1),
+            EvidenceEpisodeScope::Risk(ordinal) => {
+                encoded.push(2);
+                encoded.push(ordinal.get());
+            }
+        }
         encoded
     }
 }
@@ -224,6 +274,7 @@ pub enum EvidenceIdentityError {
     Empty(&'static str),
     InvalidOrderedOutcomeIndexes([u16; 2]),
     DuplicateClobTokenId,
+    InvalidRiskOrdinal(u8),
 }
 
 impl fmt::Display for EvidenceIdentityError {
@@ -239,6 +290,12 @@ impl fmt::Display for EvidenceIdentityError {
             Self::DuplicateClobTokenId => {
                 formatter.write_str("evidence CLOB token identity is duplicated")
             }
+            Self::InvalidRiskOrdinal(value) => {
+                write!(
+                    formatter,
+                    "evidence risk ordinal must be in 0..=9, got {value}"
+                )
+            }
         }
     }
 }
@@ -248,11 +305,11 @@ impl Error for EvidenceIdentityError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        EvidenceEpisodeId, EvidenceIdentityError, EvidenceMarketIdentity, EvidenceNegRiskMode,
-        EvidenceOutcomeIdentity,
+        EvidenceEpisodeId, EvidenceEpisodeScope, EvidenceIdentityError, EvidenceMarketIdentity,
+        EvidenceNegRiskMode, EvidenceOutcomeIdentity, RiskOrdinal,
     };
 
-    fn episode() -> EvidenceEpisodeId {
+    fn episode_with_scope(scope: EvidenceEpisodeScope) -> EvidenceEpisodeId {
         let outcomes = [
             EvidenceOutcomeIdentity::new(0, "up".to_string(), "token-up".to_string()).unwrap(),
             EvidenceOutcomeIdentity::new(1, "down".to_string(), "token-down".to_string()).unwrap(),
@@ -270,8 +327,13 @@ mod tests {
             "target".to_string(),
             "venue".to_string(),
             market,
+            scope,
         )
         .unwrap()
+    }
+
+    fn episode() -> EvidenceEpisodeId {
+        episode_with_scope(EvidenceEpisodeScope::Market)
     }
 
     #[test]
@@ -316,6 +378,7 @@ mod tests {
             "target".to_string(),
             "venue".to_string(),
             changed_market,
+            EvidenceEpisodeScope::Market,
         )
         .unwrap();
         assert_ne!(changed_episode, baseline);
@@ -335,6 +398,7 @@ mod tests {
             "c".to_string(),
             "venue".to_string(),
             baseline.market().clone(),
+            EvidenceEpisodeScope::Market,
         )
         .unwrap();
         let ambiguous_right = EvidenceEpisodeId::new(
@@ -342,6 +406,7 @@ mod tests {
             "bc".to_string(),
             "venue".to_string(),
             baseline.market().clone(),
+            EvidenceEpisodeScope::Market,
         )
         .unwrap();
         assert_ne!(
@@ -387,5 +452,33 @@ mod tests {
             .expect_err("duplicate token ids must fail"),
             EvidenceIdentityError::DuplicateClobTokenId
         );
+    }
+
+    #[test]
+    fn risk_ordinal_accepts_exact_frozen_range() {
+        assert_eq!(RiskOrdinal::try_from(0).unwrap().get(), 0);
+        assert_eq!(RiskOrdinal::try_from(9).unwrap().get(), 9);
+        assert_eq!(
+            RiskOrdinal::try_from(10).unwrap_err(),
+            EvidenceIdentityError::InvalidRiskOrdinal(10)
+        );
+    }
+
+    #[test]
+    fn canonical_scope_and_risk_ordinal_are_distinct() {
+        let market = episode_with_scope(EvidenceEpisodeScope::Market).encode_canonical();
+        let system = episode_with_scope(EvidenceEpisodeScope::System).encode_canonical();
+        let risk_zero = episode_with_scope(EvidenceEpisodeScope::Risk(
+            RiskOrdinal::try_from(0).unwrap(),
+        ))
+        .encode_canonical();
+        let risk_nine = episode_with_scope(EvidenceEpisodeScope::Risk(
+            RiskOrdinal::try_from(9).unwrap(),
+        ))
+        .encode_canonical();
+        assert_ne!(market, system);
+        assert_ne!(market, risk_zero);
+        assert_ne!(system, risk_zero);
+        assert_ne!(risk_zero, risk_nine);
     }
 }

@@ -2020,13 +2020,6 @@ matched_terms = ["volatility"]
 classification = "not_iv_options"
 
 [[surfaces]]
-surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.fn"
-evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
-symbol = "fn"
-matched_terms = ["volatility"]
-classification = "not_iv_options"
-
-[[surfaces]]
 surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.py_new"
 evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
 symbol = "py_new"
@@ -2177,13 +2170,6 @@ classification = "not_iv_options"
 surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_wick_size"
 evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
 symbol = "CandleWickSize"
-matched_terms = ["volatility"]
-classification = "not_iv_options"
-
-[[surfaces]]
-surface_id = "nt.crates.indicators.src.volatility.fuzzy.fn"
-evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
-symbol = "fn"
 matched_terms = ["volatility"]
 classification = "not_iv_options"
 

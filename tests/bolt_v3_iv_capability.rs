@@ -234,6 +234,23 @@ fn option_chain_manager_scan_handles_public_const_functions_as_named_surfaces() 
 }
 
 #[test]
+fn committed_capability_ledger_contains_no_synthetic_fn_surfaces() {
+    let fixture = load_capability_ledger_fixture(&repo_path(
+        "tests/fixtures/bolt_v3_iv/capability-ledger.toml",
+    ))
+    .unwrap();
+
+    for surface in &fixture.surfaces {
+        assert_ne!(surface.symbol, "fn", "synthetic public symbol in ledger");
+        assert!(
+            !surface.surface_id.ends_with(".fn"),
+            "synthetic public surface ID in ledger: {}",
+            surface.surface_id
+        );
+    }
+}
+
+#[test]
 fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
     let candidate = IvCapabilityCandidate {
         surface_id: "nt.model.unclassified_candidate".to_string(),

@@ -2,10 +2,21 @@
 
 `contract_version`: `backfill-table-contract.v1`
 
-This contract defines canonical table families, identity columns, evidence
-states, and venue/product coverage for historical data backfills. It is a
-source-proof and schema coordination document, not permission to write canonical
-S3 objects.
+This contract defines canonical table families, identity columns, and row/schema
+contracts for historical data backfills. It also preserves the original
+evidence-state and venue/product investigation as historical context. It is not
+permission to acquire data or write canonical S3 objects.
+
+Authority boundary: this contract remains the canonical table-family, row,
+identity-column, and schema vocabulary. It no longer authorizes acquisition
+sources or governs venue/product coverage. `Required Evidence State`, `Product
+Families To Enumerate`, `Initial Evidence Matrix`, and `Venue Notes` below are
+historical, non-authorizing investigation context. Source selection, exhaustive
+coverage state, and implementation ownership are governed by
+`historical-data-acquisition-architecture.v1.md`. Until its exhaustive registry
+lands, every Binance product/table-family cell is `excluded_by_policy` with the
+reason `owner choice: Binance is intentionally excluded despite breadth loss`;
+nothing in this contract may override that policy.
 
 Canonical writes remain blocked until an `artifact_root`, source proof records,
 sample schema checks, and write manifest format are approved.

@@ -34,7 +34,7 @@ race_key = "put-mode-create-race.bin"
 transcript_key = "no-overwrite-proof.json"
 writer_count = 8
 payload_stem = "logical-artifact-payload"
-requirement_ref = "normalization-catalog-plan.v3.md §4.3.5"
+requirement_ref = "historical-data-acquisition-architecture.v1.md §Immutable Publication Protocol"
 proof_name = "ingest_manifest.no_overwrite_proof"
 
 [catalog]

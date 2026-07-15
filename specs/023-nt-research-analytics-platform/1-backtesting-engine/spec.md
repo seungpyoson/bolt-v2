@@ -354,6 +354,12 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
   an artifact-local handle; cross-run consumers use the committed Artifact Index
   snapshot.
 
+Historical backtest input is stricter than bulk discovery. A run selects
+explicit dataset-manifest URI and digest values, verifies the exact versioned
+objects, and passes NT a sealed local catalog view. The per-kind latest pointer
+cannot select, substitute, or advance run input, and a raw S3 catalog URI is
+not a production binding path.
+
 ## Artifact Lifecycle Policy
 
 - Default retention is forever.

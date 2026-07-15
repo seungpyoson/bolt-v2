@@ -1,3 +1,10 @@
+# Historical source-availability evidence only. This file does not authorize
+# acquisition or replay. The owner-approved Binance policy is
+# excluded_by_policy for every product/table-family cell with reason
+# "owner choice: Binance is intentionally excluded despite breadth loss".
+# The exhaustive replacement registry is an issue-owned #437 implementation
+# slice governed by historical-data-acquisition-architecture.v1.md.
+
 contract_version = "backfill-table-contract.v1"
 schema_version = "backfill-evidence-matrix.v1"
 requested_start_utc = "2025-06-01T00:00:00Z"

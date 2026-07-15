@@ -266,6 +266,17 @@ Rules:
   used by the caller that just produced the artifact. Cross-run discovery uses
   the committed artifact index snapshot.
 
+### Historical Dataset Input Boundary
+
+Artifact Index pointers and snapshots may advertise available datasets, but
+they never select bytes for a backtest. A run pins explicit dataset-manifest
+URI and SHA-256 values. The manifest binds normalized paths, byte lengths,
+content hashes, and S3 version IDs. Bolt verifies the selected objects and
+composes a sealed local catalog view; NT reads only that view. Raw S3 catalog
+paths, independently joined latest pointers, and validate-then-relist behavior
+are invalid production inputs. General Artifact Index discovery for results
+and derived artifacts is unchanged.
+
 ## Result And Promotion Boundary
 
 `BacktestResultContract` is an objective evidence and lookup contract. It may

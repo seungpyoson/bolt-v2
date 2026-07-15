@@ -1,5 +1,10 @@
 # v3 Phase-0 — load-bearing-primitive proof (ConditionalCatalogWriter)
 
+> Historical evidence only. `normalization-catalog-plan.v3.md` is superseded
+> and removed from live authority by
+> `historical-data-acquisition-architecture.v1.md`. The transcript below is
+> preserved as provenance and does not authorize implementation.
+
 Empirical proof that the panel's "load-bearing wall" (plan v3 §4.3 ConditionalCatalogWriter) works against the **live bolt-v2 dependency pins** (object_store 0.13.2, arrow/parquet 58.3.0, sha2 0.10). Run as a throwaway probe; this file is the durable record. When the Phase-0 build starts properly, this code seeds the isolated catalog-projector crate (under epic #437 / #438).
 
 ## What it proves

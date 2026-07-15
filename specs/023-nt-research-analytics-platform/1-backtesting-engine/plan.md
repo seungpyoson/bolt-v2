@@ -69,6 +69,12 @@ that creates a canonical artifact publishes its index record, while consumers
 read upstream records without mutating them. Cross-kind reads follow manifest
 lineage ids/version/hash; they do not join independently read latest snapshots.
 
+Historical backtest input is stricter than bulk discovery. A run selects
+explicit dataset-manifest URI and digest values, verifies the exact versioned
+objects, and passes NT a sealed local catalog view. The per-kind latest pointer
+cannot select, substitute, or advance run input, and a raw S3 catalog URI is
+not a production binding path.
+
 Lifecycle policy:
 
 - Retain canonical artifacts forever by default.

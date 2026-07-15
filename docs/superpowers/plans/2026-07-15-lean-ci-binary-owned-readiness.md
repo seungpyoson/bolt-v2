@@ -7,7 +7,10 @@ Governing decision: /private/tmp/1016-lean-ci-decision-packet-r2.md
 Governing decision SHA-256: b2d6a5c9952078c695c2cff54352c1dbec8813974ca3469b6e6515730e3651db
 External approval: Claude Code CLI (Anthropic), model claude-fable-5,
   /private/tmp/cmux-1016-lean-ci-plan-claude-r2-review.md, conclusion APPROVE.
-The approved source plan is preserved except for adjudicated PR #1391 governance corrections: exact issue ownership for every implementation slice and completion of every applicable Task 8 family before Task 5.
+The approved source plan was initially preserved except for adjudicated PR #1391 governance corrections: exact issue ownership for every implementation slice and completion of every applicable Task 8 family before Task 5. This durable copy now also carries the governed reconciliation below.
+Governed remote-verification reconciliation: /private/tmp/1016-fast-probe-cold-warm-design.md,
+SHA-256 30e30cb9fd8c125597593ff3e677a89761c4a3365c60c7cb4b533a380ac3f974,
+inspected against main at 37e619b3fbd65fc041a05399ecf1750b8999567a.
 -->
 
 # Lean CI and Binary-Owned Readiness Implementation Plan
@@ -16,21 +19,24 @@ The approved source plan is preserved except for adjudicated PR #1391 governance
 
 **Goal:** Make CI small, visible evidence about the real Rust trading binary, remove CI as merge authority, and keep deployment and trading fail-closed inside the exact installed binary's `ops launch` path.
 
-**Architecture:** One unconditional `trading-binary` workflow runs locked nextest, builds the ARM64 release binary, and executes those exact bytes for positive and negative evidence. One content-addressed install path invokes a finite Rust pre-arm phase that alone can construct a one-use `LiveReadinessPermit`; Start consumes that value by move. Native human review governs merges, while the binary—not a CI result, cache, tag, or receipt—governs arming.
+**Architecture:** One explicit trusted producer can seed one exact root or Backtester host target or build the ARM64 release binary; `root-artifact` is build-only and executes those exact bytes for positive and negative evidence. A separate explicit exact-SHA targeted probe runs one configured root or Backtester target. One content-addressed install path invokes a finite Rust pre-arm phase that alone can construct a one-use `LiveReadinessPermit`; Start consumes that value by move. Native human review governs merges, while the binary—not a CI result, cache, tag, or receipt—governs arming.
 
-**Tech Stack:** Rust, Cargo nextest, cargo-zigbuild, GitHub Actions on the existing ARM managed runner, Mergify, systemd, TOML, AWS SDK for SSM.
+**Tech Stack:** Rust, Cargo nextest, cargo-zigbuild, pinned sccache-wrapped rustc, GitHub Actions on proven isolated managed runners, Mergify, systemd, TOML, AWS SDK for SSM.
 
 ## Global constraints
 
-- Authoritative planning base: `main` at `17bdf952f3e9422c6957b88556dbb4f145046754`; refresh every implementation slice from then-current `main` after each merge.
-- Governing design: `/private/tmp/1016-lean-ci-decision-packet-r2.md`, SHA-256 `b2d6a5c9952078c695c2cff54352c1dbec8813974ca3469b6e6515730e3651db`.
+- Authoritative reconciliation base: `main` at `37e619b3fbd65fc041a05399ecf1750b8999567a`; refresh every implementation slice from then-current `main` after each merge.
+- Governing durable design: `docs/superpowers/specs/2026-07-15-lean-ci-binary-owned-readiness-design.md`; the original decision packet is `/private/tmp/1016-lean-ci-decision-packet-r2.md`, SHA-256 `b2d6a5c9952078c695c2cff54352c1dbec8813974ca3469b6e6515730e3651db`.
 - Preserve criteria M1-M3, B1-B3, L1-L3, S1-S3, and X1-X3. No slice may weaken a criterion to make its proof pass.
 - #1016 owns architecture only. Every implementation branch requires an already assigned issue that owns its exact ledger row; Task 0 drafts missing ownership, and an operator must create and assign that issue before the branch starts. Never use a negated closing keyword next to an issue number.
 - One implementer owns a file set at a time. Read-only audits and reviews may run in parallel.
 - No trusted App, external publisher, service, database, signer, ceremony, persisted permit, compatibility adapter, result carry-forward, cache-as-proof, alternate installer, or fallback path.
 - A launch log or receipt is audit-only. It is never read to authorize Start or a restart.
 - Before zero-status cutover, current legacy exact-head gates remain mandatory. Use cheap non-compile local checks; publish a draft and use remote Rust verification rather than local compile-heavy Cargo commands.
-- After zero-status cutover, `trading-binary` remains visible exact-head evidence but cannot authorize or veto merge. Native approval by node `U_kgDOEZMFhA`, stale-review dismissal, last-push approval, and human thread resolution remain mandatory.
+- Until zero-status cutover, the required `gate` and `backtester-gate` reporters stay always present on every pull request. Do not path-filter, rename, delete, or weaken them.
+- After zero-status cutover, heavy Rust evidence is explicit, exact-SHA, workspace-and-target-specific only and cannot authorize or veto merge. Native approval by node `U_kgDOEZMFhA`, stale-review dismissal, last-push approval, and human thread resolution remain mandatory.
+- Root and Backtester remain separate workspaces. Routing either returns a reviewed finite explicit target set or `UNCLASSIFIED` with no command; no unknown path broadens to both workspaces, a whole workspace, or full CI.
+- One pinned sccache-wrapped compiler path is mandatory. Cache is acceleration only; no direct/uncached retry, archive restore, prior result, carry-forward, sidecar, aggregate fallback, scheduler, or alternate public path may survive.
 - No deploy, launch, trade, Mergify/ruleset mutation, or PR merge is implied by this plan.
 
 ## Dependency and concurrency map
@@ -38,7 +44,7 @@ The approved source plan is preserved except for adjudicated PR #1391 governance
 | Lane | Depends on | Parallel work | Conflicting ownership |
 |---|---|---|---|
 | 0 Governance | approved plan | none | governance and issue metadata |
-| 1 Binary evidence | 0 | 2A, read-only predicate census | workflow runner/config files |
+| 1 Explicit producer evidence | 0 | 2A, read-only predicate census | producer workflow, runner, compiler-wrapper, and config files |
 | 2A Strict live target | 0 | 1, 3 design audit | `src/main.rs`, deploy config/docs |
 | 2B Exact CLI negatives | 1, 2A | 3 | workflow and profile test evidence |
 | 3 Immutable install | 0, interface agreement with 4 | 1, 2A | deploy installer/unit files |
@@ -48,7 +54,7 @@ The approved source plan is preserved except for adjudicated PR #1391 governance
 | 6A Advisory/queue config | 6B | read-only audits | AI files and `.mergify.yml`; if any Mergify expectation/preflight mirror survives 6B, 6A exclusively owns its coupled files |
 | 7 Governed zero-status cutover | 5, 6B, 6A | none | `.mergify.yml`, any surviving coupled fixture, and the live required-status ruleset under an operator merge pause |
 | 8 Runtime-invariant migrations | 2-4, complete ledger | independent semantic families; every applicable family must merge before Task 5 | Rust owners plus one old fence family |
-| 9 Broad debt deletions | 7, relevant Task 8 family | non-conflicting deletion slices | CI/meta Python and workflow files |
+| 9 Broad debt deletions | A9.2 preparation: 1 and 2B; A9.2 public cutover/deletion and other authority deletion: 7 plus relevant Task 8 family | non-conflicting preparation/deletion slices | CI/meta Python, workflow, routing, and measured harness files |
 | 10 Measurement | 7 and representative 9 slices | read-only reporting | no production owner |
 
 Task 5 is the common predecessor of the fixed `6B → 6A → 7` chain. Every applicable Task 8 family completes before Task 5; Task 8 cannot depend on or be deferred into that chain.
@@ -71,23 +77,26 @@ Task 5 is the common predecessor of the fixed `6B → 6A → 7` chain. Every app
 - [ ] Run `git diff --check` and the repository's targeted documentation/static checks. Obtain bounded internal adversarial review before publishing the docs-only draft.
 - [ ] Stop if any implementation row lacks an exact assigned owning issue or if native review rules are absent. No implementation branch starts from an unapproved governance state.
 
-### Task 1: Add one informational `trading-binary` lane
+### Task 1: Add one explicit trusted producer
 
 **Files:**
-- Create: `.github/workflows/trading-binary.yml`.
-- Modify: `ci/github-actions-runners.toml`, `ci/rust-verification.toml` only for the single runner/tool contract; do not add it to merge-required registries.
+- Create: one explicit producer workflow; do not create a second producer or compatibility entrypoint.
+- Modify: `ci/github-actions-runners.toml`, `ci/rust-verification.toml`, the existing sccache setup/stats action, and existing TOML command/input owners only as needed for the single runner/compiler contract; do not add the producer to merge-required registries.
 - Test/inspect: `.github/actionlint.yaml`, `tests/bolt_v3_prod_profile.rs`.
 
-**Interface:** the workflow emits a human-readable record `{head_sha, binary_sha256, overlay_ids, config_bundle_sha256[]}` and an artifact/manifest for later operator selection. The record has no verdict consumer.
+**Interface:** one `workflow_dispatch` producer accepts an exact trusted SHA and one mutually exclusive operation: `root-seed`, `backtester-seed`, or `root-artifact`. It emits target-specific cache metrics or the root artifact record `{head_sha, binary_sha256, overlay_ids, config_bundle_sha256[]}` and manifest for later operator selection. No output has a verdict or authority consumer.
 
-- [ ] Trigger the static workflow only on post-merge `push` to `main` plus manual `workflow_dispatch`—not pull requests, tags, or schedules—as the minimal informational evidence policy Task 10 will measure; every invocation on the existing `${{ vars.CI_RUNNER_MANAGED_HEAVY }}` ARM runner runs `cargo nextest run --locked` followed by `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked`.
-- [ ] Set one `BINARY` path to `target/aarch64-unknown-linux-gnu/release/bolt-v2`, hash it, execute only that path afterward, and re-hash it at the end; any digest change fails the lane.
-- [ ] Enumerate tracked `config/profiles/*.overlay.toml` deterministically and compare the workflow evidence set with the repository set; omission, duplication, or unknown overlay fails.
-- [ ] For each overlay, invoke the exact binary's `ops generate-live-config` and `ops verify-live-config`, then exercise malformed/unknown configuration rejection. Invoke plain `run` once and require the existing `ops launch` rejection.
-- [ ] Keep the workflow name and job graph static. Negative search must find no draft/docs/no-op/deferred/tag/actor/label classifier, inherited result, archive reuse, or fallback scanner.
+- [ ] Keep the producer explicit-only: no `push`, `pull_request`, `merge_group`, tag, or schedule trigger. Validate the exact SHA and operation before a managed runner or cache-write role is selected.
+- [ ] `root-seed` and `backtester-seed` each compile one exact configured host target in only its selected workspace and emit cache objects plus non-authoritative metrics. They emit no product artifact or test authority.
+- [ ] `root-artifact` performs exactly one locked ARM64 release build, stages and hashes only the produced binary, executes only those bytes for configured positive and fail-closed evidence, and re-hashes them at the end. It runs no locked/full nextest, broad test, or targeted Cargo test suite.
+- [ ] Enumerate tracked `config/profiles/*.overlay.toml` deterministically and compare the artifact evidence set with the repository set; omission, duplication, or unknown overlay fails. Invoke the exact binary for config generation/verification, malformed/unknown rejection, and the plain-`run` rejection.
+- [ ] Root and Backtester select separate manifests, locks, target directories, commands, warmth identities, and evidence records. A producer operation cannot silently select the other workspace or an aggregate target.
+- [ ] Preinstall and checksum/version-pin one sccache binary, always set it as `RUSTC_WRAPPER`, and fail before Cargo if the wrapper or configuration is invalid. Backend degradation remains inside the wrapper; there is no direct/uncached retry or archive/result fallback.
+- [ ] Prove provider isolation and bounded capacity with at least five simultaneous producer requests: exactly one active writer, finite rejection/overflow, no cancellation of the accepted run, isolated ephemeral disks, and no repository scheduler/backlog.
+- [ ] Negative search must find no automatic heavy trigger, hidden Cargo test, inherited result, archive reuse, carry-forward, binary sidecar, prior-result substitution, retry without the wrapper, or authorization consumer.
 - [ ] Run locally: `just fmt-check`, `just deny`, `just ci-lint-workflow`, and bare actionlint through the existing public recipe; expected result is success without a Rust compile.
 - [ ] Publish a draft with `just sandbox-safe-push`, run `just verify-remote`, and prove B1-B3 at the exact head. Record wall time and managed runner-minutes.
-- [ ] Rollback is deletion of this advisory workflow; current gates remain unchanged.
+- [ ] Rollback before any consumer is deletion of the non-authoritative producer; current gates remain unchanged and no alternate producer is restored.
 
 ### Task 2A: Make live target verification strict
 
@@ -106,13 +115,13 @@ Task 5 is the common predecessor of the fixed `6B → 6A → 7` chain. Every app
 ### Task 2B: Prove exact-binary secret and storage negatives
 
 **Files:**
-- Modify: `.github/workflows/trading-binary.yml`.
+- Modify: the single explicit producer workflow's `root-artifact` evidence operation.
 - Modify only if behavior evidence is missing: `src/main.rs`, `src/bolt_v3_secrets.rs`, `tests/bolt_v3_prod_profile.rs`.
 
 - [ ] Run the exact binary's `secrets resolve` against valid generated production config with environment/shared credential sources and IMDS disabled. Require non-zero at `secrets-resolve`, field-context-only output, and no raw SSM path or value.
 - [ ] Separately run exact-binary `ops prestart-check` with missing, unreadable, and insufficient storage catalogs. Require non-zero at prestart and no Start marker.
 - [ ] Add Rust tests only for a demonstrated behavioral gap; reuse existing redaction/profile tests otherwise.
-- [ ] Re-hash the binary after all cases and require equality with Task 1's digest.
+- [ ] Do not add another build or any Cargo test. Re-hash the binary after all cases and require equality with Task 1's `root-artifact` digest.
 - [ ] Prove B2 remotely at the draft exact head. A cosmetic failure before the named stage is a failed proof, not success.
 
 ### Task 3: Install one content-addressed immutable artifact
@@ -255,22 +264,28 @@ Task 8 begins only after Tasks 2-4 and the complete predicate ledger. Every appl
 
 ### Task 9: Delete non-authoritative CI/Python debt in bounded waves
 
-**Candidate files after Task 8 evidence:**
+**Candidate files by assigned wave:**
+- A9.2 targeted-probe/archive closure: `.github/workflows/rust-probe.yml`, `.github/workflows/debug-test.yml`, `.github/workflows/backtester-ci.yml`, `.github/scripts/run-rust-probe.sh`, `scripts/rust_verification.py`, archive/fingerprint/cache/sidecar scripts and tests, root and Backtester TOML/justfile owners, and only the root/Backtester test-harness files required by measured target decomposition.
 - `.github/workflows/merge-readiness-finalizer.yml`, `.github/workflows/coverage-enforcer.yml`, `.github/workflows/dispatch-ci-cancel.yml`, `.github/workflows/ai-review-coding-plan-smoke.yml`.
 - `scripts/verify_ci_workflow_hygiene.py`, `scripts/test_verify_ci_workflow_hygiene.py`, `scripts/merge_readiness.py`, `scripts/test_merge_readiness.py`, `scripts/coverage_enforcer.py`, `scripts/test_coverage_enforcer.py`, `scripts/cancel_obsolete_dispatch_runs.py`, `scripts/test_cancel_obsolete_dispatch_runs.py`, `scripts/lane_governor.py`, `scripts/test_lane_governor.py`, `scripts/verify_lane_governance.py`, `scripts/test_verify_lane_governance.py`, and non-runtime residue in `scripts/run_fences.py` plus its tests.
 
+- [ ] In an issue-named A9.2 preparation slice under unchanged pre-Task-7 gates, measure clean/warm compile latency and source/module fan-in for every routed root and Backtester target. Split only targets that miss the rehearsed budget; preserve exact test semantics and one inventory, with no aggregate compatibility harness. The measured 75 Backtester modules/40,730 lines, 90,894 root lines, and 131,624 combined lines are context only.
+- [ ] Reuse the existing suggestion/dispatch wrapper to route every changed path to a reviewed finite set of explicit `(workspace, build class, Cargo target, selector)` tuples or `UNCLASSIFIED`. A finite result prints one separately authorized command per target; `UNCLASSIFIED` prints none and never broadens to both workspaces, a whole workspace, or full CI.
+- [ ] Before public activation, dispatch at least five simultaneous candidate probes per workspace and prove isolated ephemeral disks, the selected finite provider cap/overflow behavior, and non-cancellation. Do not add a repository scheduler or unbounded backlog.
+- [ ] After Task 7 and caller migration, replace the legacy Rust Probe public contract and Debug Test atomically with one exact-SHA, one-workspace, one-target, read-only probe. Then delete the complete root and Backtester archive/fingerprint/reuse/carry-forward/sidecar/compile-retry/fallback closure; no dual accepted debug path, dormant mode, or compatibility alias survives.
+- [ ] Delete automatic root and Backtester compile lanes on pull requests, merge groups, and `main` pushes only after Task 7. Backtester-only and documentation-only changes must consume zero root Cargo minutes; root binary-only changes must consume zero Backtester Cargo minutes; proven root path-dependency changes select explicit targets in both.
 - [ ] Create one PR per assigned issue or named non-conflicting slice; exact live callers and imports must be zero or removed in that slice.
 - [ ] Delete dynamic classifiers, gate names, merge-readiness/finalizer, provenance/carry-forward, archive/fingerprint/cache reuse, duplicated Rust execution, CI self-governance, and obsolete reporting with no named consumer.
-- [ ] Demote Backtester, host-health, actionlint, fmt/clippy, dependency, AI, coverage, flaky, storage, and cost lanes to advisory/manual/scheduled form; do not add an aggregator.
-- [ ] For each slice run targeted Python/static tests that remain, `git diff --check`, negative residue search, internal adversarial review, and exact-head advisory evidence. Record lines, jobs, runner-minutes, and latency removed.
+- [ ] Make any surviving non-heavy Backtester, host-health, actionlint, fmt/clippy, dependency, AI, coverage, flaky, storage, and cost evidence advisory/manual/scheduled with a named consumer; do not add an aggregator.
+- [ ] For each slice run targeted Python/static tests that remain, `git diff --check`, negative residue search, internal adversarial review, and exact-head advisory evidence. Record cost, automatic frequency, cold/warm latency, routing, bounded parallelism/disk, and failure-output outcomes. Record file, line, branch, and module counts only as diagnostic telemetry.
 - [ ] Revert only a non-authority deletion slice if its surviving invariant proof fails. Never reintroduce a fallback result, queue veto, tag deploy, or mutable install path.
 
 ### Task 10: Measure and close the program
 
 **Files:** update the durable program ledger and CI cost/governance documentation only.
 
-- [ ] Compare equivalent PR, post-merge `push`-to-`main`, manual `workflow_dispatch`, scheduled, and deploy events with the frozen baseline: workflows/jobs, wall time, managed runner-minutes, duplicate checks per SHA, Python executable lines, failure causes, and binary/live proof coverage; measure Task 1's post-merge/manual-only trigger policy.
-- [ ] Demonstrate one static binary-evidence graph, one immutable install/launch graph, zero required CI statuses, and no advisory authorization edge.
+- [ ] Compare equivalent PR, merge-group, `main`-push, explicit probe/producer, scheduled, and deploy events with the frozen baseline: workflows/jobs, wall time, managed runner-minutes, duplicate checks per SHA, failure causes, and binary/live proof coverage. Heavy automatic frequency must be zero.
+- [ ] Demonstrate one public targeted-probe graph, one explicit producer graph, one immutable install/launch graph, zero required CI statuses, and no advisory authorization edge.
 - [ ] Record a diff-inventory attestation that the 36,704–38,043-line trusted-control-plane rehearsal was not merged, except for independently reviewed runtime slices that stand on their own evidence.
 - [ ] Record exact merged PRs and main SHAs for every ledger row. Keep broader issues open when accepted scope remains.
 - [ ] Obtain one final architecture review against all 15 criteria and required native approval for documentation. Success is lower cost/latency and less policy code with no lost trading invariant.
@@ -282,7 +297,7 @@ Task 8 begins only after Tasks 2-4 and the complete predicate ledger. Every appl
 3. Cheap local non-compile checks only.
 4. Separate internal adversarial reviewer maps every requirement to evidence and reports exact base/head, changed files, remaining scope, and cleanliness.
 5. Resolve findings before publication. Push draft with `just sandbox-safe-push`; use `just verify-remote` for exact-head Rust feedback while legacy gates apply.
-6. External/native review only after the applicable exact-head evidence is green and threads are resolved. Before Task 7, use the required full gate; after Task 7, `trading-binary` is evidence and native review remains authority.
+6. External/native review only after the applicable exact-head evidence is adjudicated and threads are resolved. Before Task 7, use the required full gates; after Task 7, use the proportionate explicit exact-target evidence and keep native review as authority.
 7. Merge only through `just merge-queue`; after Task 6B it is mechanical admission, not a CI verdict engine.
 
 ## Criterion traceability
@@ -292,13 +307,13 @@ Task 8 begins only after Tasks 2-4 and the complete predicate ledger. Every appl
 | M1 | Zero required CI statuses and no advisory veto | 0, 6A, 6B, 7 |
 | M2 | Native controls plus one-PR Mergify queues | 0, 6A, 7 |
 | M3 | Accepted red-main risk with separate fail-closed live authority | 0, 7 |
-| B1 | Unconditional locked nextest and ARM64 release build | 1 |
-| B2 | Exact-file overlay, secret, storage, and negative evidence | 1, 2B |
+| B1 | Explicit producer; target-specific seeds; build-only locked ARM64 `root-artifact` with no Cargo tests | 1 |
+| B2 | Exact-file overlay, secret, storage, and fail-closed evidence against the one produced artifact | 1, 2B |
 | B3 | Visible evidence with no merge/install/live authority | 1, 6B, 7 |
 | L1 | Exact commit/digests, strict target, ordered pre-arm checks | 2A, 3, 4 |
 | L2 | One immutable installer and permit-consuming Start path | 3, 4, 5 |
 | L3 | Finite in-process one-use permit with no substitute | 4, 5 |
-| S1 | One evidence path and one install/launch path | 1, 3-5, 9 |
+| S1 | One targeted-probe path, one producer path, and one install/launch path | 1, 3-5, 9 |
 | S2 | One policy owner and mechanical-only queue admission | 6A, 6B, 7, 9 |
 | S3 | Complete deletion boundary without re-encoding debt | 8, 9 |
 | X1 | Safe ordering through operational and merge cutovers | 0, 5-7 |
@@ -308,6 +323,6 @@ Task 8 begins only after Tasks 2-4 and the complete predicate ledger. Every appl
 ## Plan-level stop conditions
 
 - Any failed internal resolution criterion returns the design to the owner; no third correction loop.
-- Any missing exact implementation issue assignment, overlapping implementer file set, stale main, absent native review control, ambiguous artifact identity, or second operational path stops that slice.
+- Any missing exact implementation issue assignment, overlapping implementer file set, stale main, absent native review control, ambiguous artifact identity, `UNCLASSIFIED` route, second compiler path, or second public probe/producer/operational path stops that slice.
 - Any negative case that reaches Start, logs credential material/raw SSM paths, or accepts a persisted receipt as authority stops all operational cutover work.
 - Any cutover failure pauses merge, deploy, or trading as appropriate and receives a forward fix. It does not restore the rejected CI maze or legacy deploy path.

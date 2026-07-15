@@ -20,7 +20,6 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use bolt_v2::{
     ReferencePriceUpdate, ReferenceQuoteProvenance,
-    bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
     bolt_v3_config::{
         BacktestConfigOverrideReport, LoadedStrategy, apply_backtest_config_override,
         load_bolt_v3_config,
@@ -39,6 +38,7 @@ use bolt_v2::{
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
     strategies::{
         production_strategy_registry,
         registry::{FeeProvider, StrategyBuildContext},

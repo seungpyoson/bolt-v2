@@ -1,9 +1,9 @@
+use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
+
 use std::{cell::RefCell, rc::Rc};
 
 use anyhow::{Context, Result};
-use bolt_v2::strategies::registry::{
-    BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError,
-};
+use bolt_v2::strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError};
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::identifiers::StrategyId;
 use nautilus_system::trader::Trader;

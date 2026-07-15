@@ -32,7 +32,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicI64, Ordering},
     },
 };
@@ -66,6 +66,11 @@ use bolt_v2::{
         ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
     },
+    bolt_v3_strategy_registration::{
+        BoltV3IvQueryHandleRegistry, StrategyRegistrationContext, StrategyRuntimeCapabilities,
+        assemble_strategy_build_context,
+    },
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
@@ -161,6 +166,122 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
 
 fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
     Arc::new(move || now_unix_secs)
+}
+
+fn assembly_context<'a>(
+    loaded: &'a bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    resolved: &'a ResolvedBoltV3Secrets,
+    capabilities: StrategyRuntimeCapabilities,
+) -> StrategyRegistrationContext<'a> {
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    StrategyRegistrationContext {
+        loaded,
+        strategy: &loaded.strategies[0],
+        strategy_kind: "test_strategy",
+        capabilities,
+        resolved,
+        decision_evidence: decision_evidence.clone(),
+        submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence)),
+        iv_query_handles: Arc::new(BoltV3IvQueryHandleRegistry::empty()),
+        order_execution_policy:
+            bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        realized_volatility_runtime: Arc::new(Mutex::new(
+            bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
+                loaded,
+            )
+            .expect("test realized-volatility runtime should assemble"),
+        )),
+        settlement_runtime_sink: None,
+        settlement_recovery: None,
+        settlement_health_transition_emitter: None,
+    }
+}
+
+#[test]
+fn shared_strategy_assembly_installs_polymarket_rv_and_settlement_capabilities() {
+    let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: true,
+        },
+    );
+
+    let assembled = assemble_strategy_build_context(&context)
+        .expect("configured Polymarket client should assemble a strategy build context");
+
+    assert_eq!(assembled.execution_venue(), Venue::from("POLYMARKET"));
+    assert!(assembled.realized_volatility_capability().is_some());
+    assert!(assembled.settlement_capability().is_some());
+    assert_eq!(assembled.settlement_account_id(), Some("POLYMARKET-001"));
+    assert_eq!(
+        assembled.settlement_currency(),
+        Some(nautilus_model::types::Currency::pUSD())
+    );
+}
+
+#[test]
+fn shared_strategy_assembly_supports_inline_hyperliquid_without_settlement_capability() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    loaded.root.clients.insert(
+        "hyperliquid_perps".to_string(),
+        hyperliquid_execution_client(
+            "/bolt/hyperliquid/master_api_wallet/private_key",
+            "/bolt/hyperliquid/master_api_wallet/account_address",
+        ),
+    );
+    loaded.strategies[0].config.execution_client_id = "hyperliquid_perps".into();
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: false,
+        },
+    );
+
+    let assembled = assemble_strategy_build_context(&context)
+        .expect("inline Hyperliquid client should assemble through the shared boundary");
+
+    assert_eq!(assembled.execution_venue(), Venue::from("HYPERLIQUID"));
+    assert!(assembled.realized_volatility_capability().is_some());
+    assert!(assembled.settlement_capability().is_none());
+    assert_eq!(assembled.settlement_account_id(), None);
+    assert_eq!(assembled.settlement_currency(), None);
+}
+
+#[test]
+fn shared_strategy_assembly_fails_closed_when_execution_client_is_missing() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    loaded.strategies[0].config.execution_client_id = "missing_execution".into();
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: false,
+        },
+    );
+
+    let error = assemble_strategy_build_context(&context)
+        .err()
+        .expect("missing execution client must fail closed during shared assembly");
+    assert!(
+        error.to_string().contains(
+            "execution_client_id `missing_execution` is not present in loaded clients for execution-venue resolution"
+        ),
+        "{error}"
+    );
 }
 
 fn data_only_client_from_toml(value: &str) -> ClientBlock {

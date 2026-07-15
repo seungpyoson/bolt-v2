@@ -34,6 +34,7 @@ use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 use anyhow::Context;
 use nautilus_model::{
+    data::{QuoteTick, TradeTick},
     enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
@@ -3029,13 +3030,54 @@ fn basket_submit_request(
 }
 
 #[derive(Debug, Clone)]
+pub struct OrderValuationContext<'a> {
+    pub last_quote: Option<QuoteTick>,
+    pub last_trade: Option<TradeTick>,
+    pub instrument: Option<&'a InstrumentAny>,
+}
+
+impl OrderValuationContext<'_> {
+    pub const fn empty() -> Self {
+        Self {
+            last_quote: None,
+            last_trade: None,
+            instrument: None,
+        }
+    }
+
+    pub fn prices_for_order(&self, order: &OrderAny) -> (Option<Price>, Option<Price>) {
+        let uses_submitted_notional = order.is_quote_quantity()
+            && matches!(order, OrderAny::Market(_))
+            && order.order_side() == OrderSide::Buy;
+        if !order.is_quote_quantity() || uses_submitted_notional {
+            return (None, None);
+        }
+
+        let quote_side_price = self.last_quote.and_then(|quote| match order.order_side() {
+            OrderSide::Buy => Some(quote.ask_price),
+            OrderSide::Sell => Some(quote.bid_price),
+            _ => None,
+        });
+        let last_price = match order {
+            OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
+                quote_side_price.or_else(|| self.last_trade.map(|trade| trade.price))
+            }
+            OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
+            OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {
+                order.trigger_price()
+            }
+            _ => order.price(),
+        };
+        (last_price, quote_side_price)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BoltV3SubmitAdmissionRequestInput<'a> {
     pub execution_client_id: &'a str,
     pub intent: &'a BoltV3OrderIntentEvidence,
     pub order: &'a OrderAny,
-    pub instrument: Option<&'a InstrumentAny>,
-    pub quote_quantity_last_price: Option<Price>,
-    pub quote_quantity_reference_price: Option<Price>,
+    pub valuation: OrderValuationContext<'a>,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
 }
@@ -3062,8 +3104,10 @@ where
             client_order_id
         )
     })?;
+    let (quote_quantity_last_price, quote_quantity_reference_price) =
+        input.valuation.prices_for_order(input.order);
     let notional = if input.order.is_quote_quantity() {
-        let instrument = input.instrument.with_context(|| {
+        let instrument = input.valuation.instrument.with_context(|| {
             format!(
                 "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
                 client_order_id
@@ -3074,8 +3118,8 @@ where
             instrument,
             price,
             quantity,
-            input.quote_quantity_last_price,
-            input.quote_quantity_reference_price,
+            quote_quantity_last_price,
+            quote_quantity_reference_price,
         ) {
             Some(base_notional) => base_notional,
             None => {
@@ -3093,6 +3137,7 @@ where
     let max_fee_bps = max_fee_bps_for_price(price)?;
     let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
         let price_ceiling = input
+            .valuation
             .instrument
             .and_then(|instrument| instrument.max_price())
             .map(|ceiling| ceiling.as_decimal());

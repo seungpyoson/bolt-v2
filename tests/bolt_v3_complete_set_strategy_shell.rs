@@ -1,10 +1,31 @@
 use bolt_v2::{
-    bolt_v3_archetypes::complete_set_arbitrage,
+    bolt_v3_complete_set_contract,
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
-    strategies::{complete_set_arbitrage as complete_set_strategy, production_strategy_registry},
+    strategies::{
+        complete_set_arbitrage::{
+            self as complete_set_strategy, archetype as complete_set_arbitrage,
+        },
+        production_strategy_registry,
+    },
     strategy_bindings::{production_runtime_bindings, production_validation_bindings},
 };
 use nautilus_model::enums::{OrderType, TimeInForce};
+
+#[test]
+fn complete_set_runtime_retains_shared_realized_volatility_capability() {
+    assert!(
+        complete_set_arbitrage::RUNTIME_BINDING
+            .capabilities
+            .realized_volatility,
+        "complete-set runtime binding must retain realized-volatility capability"
+    );
+    assert!(
+        !complete_set_arbitrage::RUNTIME_BINDING
+            .capabilities
+            .settlement,
+        "complete-set runtime binding must not opt into settlement capability"
+    );
+}
 
 #[test]
 fn complete_set_source_files_are_registered_for_runtime_activation() {
@@ -95,16 +116,16 @@ fn complete_set_archetype_validates_runtime_schema_scanner_bounds_and_submit_mod
 #[test]
 fn complete_set_submit_modes_map_to_nt_order_templates() {
     assert_eq!(
-        complete_set_arbitrage::supported_submit_modes(),
-        vec![complete_set_arbitrage::CompleteSetSubmitMode::Ioc]
+        bolt_v3_complete_set_contract::supported_submit_modes(),
+        vec![bolt_v3_complete_set_contract::CompleteSetSubmitMode::Ioc]
     );
 
-    let contract = complete_set_arbitrage::submit_mode_contract(
-        complete_set_arbitrage::CompleteSetSubmitMode::Ioc,
+    let contract = bolt_v3_complete_set_contract::submit_mode_contract(
+        bolt_v3_complete_set_contract::CompleteSetSubmitMode::Ioc,
     );
     assert_eq!(
         contract.submit_mode,
-        complete_set_arbitrage::CompleteSetSubmitMode::Ioc
+        bolt_v3_complete_set_contract::CompleteSetSubmitMode::Ioc
     );
     assert_eq!(contract.order_template.order_type, OrderType::Market);
     assert_eq!(contract.order_template.time_in_force, TimeInForce::Ioc);

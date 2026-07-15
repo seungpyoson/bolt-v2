@@ -1,3 +1,4 @@
+mod event_forwarding;
 mod shell;
 
 #[test]

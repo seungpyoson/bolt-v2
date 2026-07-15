@@ -41,6 +41,13 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         call_count=2,
     ),
     RequiredDiscoveryFloorContract(
+        "verify_bolt_v3_dependency_direction.py",
+        "Bolt-v3 dependency direction source files",
+        "entrypoint-terminal",
+        "main",
+        "find_violations returns the floor finding and main returns before stale-allowance checks.",
+    ),
+    RequiredDiscoveryFloorContract(
         "verify_bolt_v3_no_exit_market_command.py",
         "Rust source files under src",
         "helper-terminal",

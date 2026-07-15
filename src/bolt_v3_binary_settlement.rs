@@ -1,8 +1,8 @@
-//! Shared binary-maker settlement accounting.
+//! Shared binary settlement accounting.
 //!
 //! The settlement signal source is deliberately outside this module. Live and
 //! backtest callers pass the resolved terminal payout per leg, and this module
-//! owns the deterministic 0/1 payout accounting for maker inventory lots.
+//! owns the deterministic 0/1 payout accounting for binary inventory lots.
 
 use crate::{
     bolt_v3_maker_inventory::signed_net_yes,
@@ -35,7 +35,7 @@ impl BinarySettlementPayout {
     }
 }
 
-/// One maker inventory lot to settle.
+/// One binary inventory lot to settle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BinarySettlementLot {
     pub leg: Leg,
@@ -86,7 +86,7 @@ impl BinarySettlementResult {
     }
 }
 
-/// Settle one maker inventory lot against the terminal payout.
+/// Settle one binary inventory lot against the terminal payout.
 pub fn settle_binary_lot(
     payout: BinarySettlementPayout,
     lot: BinarySettlementLot,
@@ -114,7 +114,7 @@ pub fn settle_binary_lot(
     })
 }
 
-/// Settle every maker lot for one resolved binary market.
+/// Settle every inventory lot for one resolved binary market.
 pub fn settle_binary_lots(
     payout: BinarySettlementPayout,
     lots: &[BinarySettlementLot],

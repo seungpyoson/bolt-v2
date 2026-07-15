@@ -862,7 +862,7 @@ fn config_module_must_not_hard_type_parameters_field_to_one_archetype() {
     // path-reference the per-archetype binding module
     // (`binary_oracle_edge_taker`). The substrings forbidden below pin
     // that neutrality: a `pub parameters: ParametersBlock`-style
-    // declaration or a `crate::bolt_v3_archetypes::binary_oracle_edge_taker::*`
+    // declaration or a `crate::strategies::binary_oracle_edge_taker::archetype::*`
     // path in core config is a regression. Note: the field name
     // `parameters` itself is lowercase and not on this list, and the
     // archetype dispatch identifier `StrategyArchetype::BinaryOracleEdgeTaker`
@@ -877,7 +877,7 @@ fn config_module_must_not_hard_type_parameters_field_to_one_archetype() {
              source unexpectedly references `{symbol}`. \
              Type the strategy envelope's `parameters` field as a generic raw-TOML \
              container (`toml::Value`) and have \
-             `crate::bolt_v3_archetypes::binary_oracle_edge_taker` deserialize it \
+             `crate::strategies::binary_oracle_edge_taker::archetype` deserialize it \
              into its local ParametersBlock during validation, dispatched via \
              `StrategyArchetype`."
         );
@@ -895,7 +895,7 @@ fn config_module_must_not_own_archetype_parameter_or_order_types() {
     // of the `[parameters]` block, the `[parameters.entry_order]` /
     // `[parameters.exit_order]` rows, and the order-type / time-in-
     // force enums all belong to the archetype binding
-    // (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`). The
+    // (`crate::strategies::binary_oracle_edge_taker::archetype`). The
     // forbidden substrings below pin policy *ownership*: a `pub struct`
     // or `pub enum` definition for any of these names in
     // `src/bolt_v3_config.rs` is a regression. The strategy envelope
@@ -918,7 +918,7 @@ fn config_module_must_not_own_archetype_parameter_or_order_types() {
             "src/bolt_v3_config.rs must not own archetype parameter or order types; \
              source unexpectedly defines `{symbol}`. \
              ParametersBlock and OrderParams belong in \
-             src/bolt_v3_archetypes/binary_oracle_edge_taker.rs and reference \
+             src/strategies/binary_oracle_edge_taker/archetype.rs and reference \
              NT's canonical OrderType / TimeInForce enums; reference the \
              archetype-owned ParametersBlock from the strategy envelope instead \
              of redefining it in core config."
@@ -1013,7 +1013,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     // The `binary_oracle_edge_taker` archetype's required reference-data
     // role, its allowed entry/exit order-combination rules, and the
     // error-message policy that names those rules belong to the
-    // archetype binding (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`),
+    // archetype binding (`crate::strategies::binary_oracle_edge_taker::archetype`),
     // not to core validation. Validate.rs may still dispatch into the
     // archetype validator through the `bolt_v3_archetypes` namespace;
     // the substrings forbidden below pin policy *ownership*, not the
@@ -1050,7 +1050,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
              source unexpectedly references `{symbol}`. \
              Move the archetype's required reference-current-price role, its \
              entry/exit order-combination rules, and the matching error \
-             messages to src/bolt_v3_archetypes/binary_oracle_edge_taker.rs; \
+             messages to src/strategies/binary_oracle_edge_taker/archetype.rs; \
              have validate.rs dispatch into the archetype validator via \
              the `bolt_v3_archetypes` namespace instead."
         );

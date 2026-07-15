@@ -7,6 +7,7 @@ use nautilus_model::identifiers::{InstrumentId, Venue};
 use rust_decimal::Decimal;
 
 use crate::{
+    bolt_v3_outcome_group_proofs::{NegRiskGroupingProof, PolymarketDiscoveryScopeEvidence},
     bolt_v3_outcome_group_sources::{
         OutcomeGroupNonStandardTerminalPayoutBlock, OutcomeGroupRefundConvention,
         OutcomeGroupRoleBindingsBlock, OutcomeGroupSettlementSourceKind, OutcomeGroupSourceConfig,
@@ -17,11 +18,11 @@ use crate::{
         AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
         NormalizedPriceScaleEvidence, OrderConstraintSource, OutcomeGroup,
         OutcomeGroupSourceKind as SharedSourceKind, OutcomeGroupValidationError, OutcomeLeg,
-        OutcomeLegOrderConstraints, OutcomeLegRole, PayoutMatrix, PolymarketDiscoveryScopeEvidence,
-        PositiveSideBinding, PriceScaleAssertionSource, RoleBindingProof, SettlementRules,
-        SettlementSourceKind, TerminalPayoutDerivation, TerminalState, TerminalStateConvention,
-        TerminalStateKind, ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint,
-        derive_standard_payout_matrix, expected_metadata_fingerprint,
+        OutcomeLegOrderConstraints, OutcomeLegRole, PayoutMatrix, PositiveSideBinding,
+        PriceScaleAssertionSource, RoleBindingProof, SettlementRules, SettlementSourceKind,
+        TerminalPayoutDerivation, TerminalState, TerminalStateConvention, TerminalStateKind,
+        ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint, derive_standard_payout_matrix,
+        expected_metadata_fingerprint,
     },
     bolt_v3_providers::polymarket,
 };
@@ -611,7 +612,7 @@ fn grouping_proof(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    Ok(GroupingProof::PolymarketNegRisk {
+    Ok(GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
         neg_risk_market_id: neg_risk_market_id.to_string(),
         discovery_scope: PolymarketDiscoveryScopeEvidence {
             source_id: source.source_id.clone(),
@@ -632,7 +633,7 @@ fn grouping_proof(
             &market_slugs,
             &condition_ids,
         ),
-    })
+    }))
 }
 
 fn polymarket_grouping_proof_fingerprint(

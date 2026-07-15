@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 
-use bolt_v2::bolt_v3_outcome_groups::{
-    AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
-    NormalizedPriceScaleEvidence, OrderConstraintSource, OutcomeGroup, OutcomeGroupSourceKind,
-    OutcomeLeg, OutcomeLegOrderConstraints, OutcomeLegRole, PayoutMatrix,
-    PolymarketDiscoveryScopeEvidence, PositiveSideBinding, PriceScaleAssertionSource,
-    RoleBindingProof, SettlementRules, SettlementSourceKind, TerminalPayoutDerivation,
-    TerminalState, TerminalStateConvention, TerminalStateKind, ValidatedOutcomeGroup,
-    build_leg_map, canonical_fingerprint, derive_standard_payout_matrix,
-    expected_metadata_fingerprint, is_lowercase_sha256, payout_vector_attestation_sha256,
-    role_binding_attestation_sha256, validate_grouping_identity_set,
+use bolt_v2::{
+    bolt_v3_outcome_group_proofs::{NegRiskGroupingProof, PolymarketDiscoveryScopeEvidence},
+    bolt_v3_outcome_groups::{
+        AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
+        NormalizedPriceScaleEvidence, OrderConstraintSource, OutcomeGroup, OutcomeGroupSourceKind,
+        OutcomeLeg, OutcomeLegOrderConstraints, OutcomeLegRole, PayoutMatrix, PositiveSideBinding,
+        PriceScaleAssertionSource, RoleBindingProof, SettlementRules, SettlementSourceKind,
+        TerminalPayoutDerivation, TerminalState, TerminalStateConvention, TerminalStateKind,
+        ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint, derive_standard_payout_matrix,
+        expected_metadata_fingerprint, is_lowercase_sha256, payout_vector_attestation_sha256,
+        role_binding_attestation_sha256, validate_grouping_identity_set,
+    },
 };
 use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use rust_decimal::Decimal;
@@ -199,7 +201,7 @@ fn valid_group() -> OutcomeGroup {
         terminal_states: states,
         tradable_legs: legs,
         payout_matrix,
-        grouping_proof: Some(GroupingProof::PolymarketNegRisk {
+        grouping_proof: Some(GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
             neg_risk_market_id: "neg-risk-market-123".to_string(),
             discovery_scope: PolymarketDiscoveryScopeEvidence {
                 source_id: "world-cup-source".to_string(),
@@ -213,7 +215,7 @@ fn valid_group() -> OutcomeGroup {
                 ["grouping", "neg_risk_market_id"],
                 "neg-risk-market-123",
             )]),
-        }),
+        })),
         role_binding_proof: Some(role_binding_proof),
         settlement_rules: SettlementRules {
             terminal_state_convention: TerminalStateConvention::ExactlyOneWinner,
@@ -258,9 +260,9 @@ fn operator_strings_reject_control_characters_before_metadata_fingerprint_accept
 #[test]
 fn operator_strings_reject_zero_width_format_characters_before_hashing() {
     let mut group = valid_group();
-    let Some(GroupingProof::PolymarketNegRisk {
+    let Some(GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
         discovery_scope, ..
-    }) = &mut group.grouping_proof
+    })) = &mut group.grouping_proof
     else {
         panic!("fixture should use Polymarket grouping proof");
     };
@@ -746,9 +748,9 @@ fn metadata_fingerprint_excludes_operator_policy_but_covers_grouping_identity() 
         expected_metadata_fingerprint(&policy_only)
     );
 
-    if let Some(GroupingProof::PolymarketNegRisk {
+    if let Some(GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
         neg_risk_market_id, ..
-    }) = base.grouping_proof.as_mut()
+    })) = base.grouping_proof.as_mut()
     {
         *neg_risk_market_id = "different-neg-risk".to_string();
     }

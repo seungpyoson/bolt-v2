@@ -40,16 +40,6 @@ pub(super) struct PendingEntryState {
     pub(super) book: OutcomeBookState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PositionMaterializationSpec {
-    pub(super) instrument_id: InstrumentId,
-    pub(super) position_id: PositionId,
-    pub(super) entry_order_side: OrderSide,
-    pub(super) side: PositionSide,
-    pub(super) quantity: Quantity,
-    pub(super) avg_px_open: f64,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingExitState {
     pub(super) client_order_id: ClientOrderId,

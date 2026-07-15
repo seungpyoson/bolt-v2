@@ -39,8 +39,7 @@ use toml::{Value, map::Map};
 
 use nautilus_model::{
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{InstrumentId, StrategyId, Venue},
-    types::Currency,
+    identifiers::{InstrumentId, StrategyId},
 };
 
 use crate::{
@@ -59,15 +58,17 @@ use crate::{
     },
     bolt_v3_providers::{
         ProviderMarketExitOrderConstraints, binding_for_provider_key,
-        resolution_oracle_client_http_timeout_secs, resolve_fee_provider,
+        resolution_oracle_client_http_timeout_secs,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+        StrategyRuntimeCapabilities, assemble_strategy_build_context, execution_account_id,
+        execution_venue_for_client, settlement_currency_for_execution_account,
     },
     strategies::{
         binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
         production_strategy_registry,
-        registry::{StrategyBuildContext, StrategyBuilder},
+        registry::StrategyBuilder,
     },
 };
 
@@ -87,6 +88,10 @@ pub fn validation_binding() -> ArchetypeValidationBinding {
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
     strategy_kind: BinaryOracleEdgeTakerBuilder::kind,
+    capabilities: StrategyRuntimeCapabilities {
+        realized_volatility: true,
+        settlement: true,
+    },
     register: register_runtime_strategy,
 };
 
@@ -320,12 +325,11 @@ fn validate_settlement_currency_derivable(
     strategy: &BoltV3StrategyConfig,
 ) -> Vec<String> {
     let execution_client_id = strategy.execution_client_id.as_str();
-    let Some(client) = root.clients.get(execution_client_id) else {
+    let Some(execution_venue) = execution_venue_for_client(root, execution_client_id) else {
         return vec![format!(
             "{context}: execution_client_id `{execution_client_id}` is not present in loaded clients; cannot derive settlement currency"
         )];
     };
-    let execution_venue = client.venue;
     let Some(account_id) = execution_account_id(root, execution_client_id) else {
         return vec![format!(
             "{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"
@@ -450,47 +454,7 @@ pub fn register_runtime_strategy(
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
     let raw = raw_taker_config(context.strategy, context.loaded)
         .map_err(|error| binding_error(&context, error))?;
-    let fee_provider = resolve_fee_provider(
-        context.loaded,
-        context.strategy.config.execution_client_id.as_str(),
-        context.resolved,
-    )
-    .map_err(|error| binding_message(&context, error.to_string()))?;
-    let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let execution_venue = context
-        .loaded
-        .root
-        .clients
-        .get(execution_client_id)
-        .map(|client| client.venue)
-        .ok_or_else(|| {
-            binding_message(
-                &context,
-                format!(
-                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-                ),
-            )
-        })?;
-    let settlement_account_id =
-        execution_account_id(&context.loaded.root, execution_client_id).map(str::to_string);
-    let settlement_currency = settlement_account_id.as_deref().and_then(|account_id| {
-        settlement_currency_for_execution_account(&context.loaded.root, execution_venue, account_id)
-    });
-    let build_context = StrategyBuildContext::new(
-        fee_provider,
-        context.decision_evidence.clone(),
-        context.submit_admission.clone(),
-        context.order_execution_policy,
-        execution_venue,
-    )
-    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone())
-    .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
-    .with_settlement_recovery(context.settlement_recovery.clone())
-    .with_settlement_account_id(settlement_account_id)
-    .with_settlement_currency(settlement_currency)
-    .with_settlement_health_transition_emitter(
-        context.settlement_health_transition_emitter.clone(),
-    );
+    let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -503,51 +467,10 @@ pub fn register_runtime_strategy(
         .map_err(|error| binding_message(&context, error.to_string()))
 }
 
-fn execution_account_id<'a>(
-    root: &'a BoltV3RootConfig,
-    execution_client_id: &str,
-) -> Option<&'a str> {
-    root.clients
-        .get(execution_client_id)?
-        .execution
-        .as_ref()?
-        .as_table()?
-        .get(stringify!(account_id))?
-        .as_str()
-}
-
-/// Owning settlement-currency derivation for execution accounts.
-///
-/// Match keys: `risk.capital_pools[].venue_id == execution_venue` and
-/// `risk.capital_pools[].account_id == account_id`. Used by the runtime
-/// archetype binding and load-time validation — do not re-derive elsewhere.
-pub(crate) fn settlement_currency_for_execution_account(
-    root: &BoltV3RootConfig,
-    execution_venue: Venue,
-    account_id: &str,
-) -> Option<Currency> {
-    root.risk
-        .capital_pools
-        .as_ref()?
-        .iter()
-        .find(|pool| {
-            pool.venue_id == execution_venue.as_str() && pool.account_id.to_string() == account_id
-        })
-        .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
-}
-
-pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Currency {
-    let pusd = Currency::pUSD();
-    if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
-        pusd
-    } else {
-        Currency::from(configured)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_strategy_registration::settlement_currency_from_config_code;
 
     #[test]
     fn binary_oracle_archetype_maps_settlement_identity_from_capital_pool() {
@@ -2043,8 +1966,8 @@ fn strategy_execution_client_market_exit_order_constraints(
     root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
 ) -> Option<ProviderMarketExitOrderConstraints> {
-    let client = root.clients.get(strategy.execution_client_id.as_str())?;
-    let binding = binding_for_provider_key(client.venue.as_str())?;
+    let execution_venue = execution_venue_for_client(root, strategy.execution_client_id.as_str())?;
+    let binding = binding_for_provider_key(execution_venue.as_str())?;
     Some(binding.market_exit_order_constraints)
 }
 

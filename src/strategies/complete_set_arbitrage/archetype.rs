@@ -5,41 +5,46 @@
 
 use std::collections::BTreeSet;
 
-use nautilus_model::{
-    enums::{OrderType, TimeInForce},
-    identifiers::StrategyId,
-};
+use nautilus_live::node::LiveNode;
+use nautilus_model::identifiers::StrategyId;
 use rust_decimal::Decimal;
 use toml::{Value, map::Map};
 
 use crate::{
     bolt_v3_archetypes::{ArchetypeGateRequirement, ArchetypeValidationBinding},
+    bolt_v3_complete_set_contract::{
+        COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock, CompleteSetSubmitMode,
+        submit_mode_contract,
+    },
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
-    bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
-    bolt_v3_outcome_group_sources::{
-        COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock,
+    bolt_v3_strategy_registration::{
+        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+        StrategyRuntimeCapabilities, assemble_strategy_build_context,
+    },
+    strategies::{
+        complete_set_arbitrage::CompleteSetArbitrageBuilder, production_strategy_registry,
+        registry::StrategyBuilder,
     },
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
+
+/// Complete-set runtime binding assembled by the strategy-layer archetype module.
+pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
+    key: KEY,
+    strategy_kind: CompleteSetArbitrageBuilder::kind,
+    capabilities: StrategyRuntimeCapabilities {
+        realized_volatility: true,
+        settlement: false,
+    },
+    register: register_runtime_strategy,
+};
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
     ArchetypeValidationBinding {
         key: KEY,
         validate_strategy,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompleteSetSubmitMode {
-    Ioc,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompleteSetSubmitModeContract {
-    pub submit_mode: CompleteSetSubmitMode,
-    pub order_template: NtOrderTemplateConfig,
-    pub nt_template_errors: Vec<String>,
 }
 
 pub fn gate_requirements() -> Vec<ArchetypeGateRequirement> {
@@ -52,39 +57,6 @@ pub fn required_reference_data_roles() -> BTreeSet<&'static str> {
 
 pub fn optional_signal_gate_keys(parameters: &toml::Value) -> Result<BTreeSet<String>, String> {
     parse_parameters(parameters).map(|_| BTreeSet::new())
-}
-
-pub fn supported_submit_modes() -> Vec<CompleteSetSubmitMode> {
-    vec![CompleteSetSubmitMode::Ioc]
-}
-
-pub fn submit_mode_contract(mode: CompleteSetSubmitMode) -> CompleteSetSubmitModeContract {
-    let order_template = match mode {
-        CompleteSetSubmitMode::Ioc => NtOrderTemplateConfig {
-            order_type: OrderType::Market,
-            time_in_force: TimeInForce::Ioc,
-            expire_time_unix_nanos: None,
-            trigger_price: None,
-            activation_price: None,
-            trigger_type: None,
-            trigger_instrument_id: None,
-            trailing_offset: None,
-            trailing_offset_type: None,
-            is_post_only: false,
-            is_reduce_only: false,
-            is_quote_quantity: false,
-        },
-    };
-    let nt_template_errors = check_nt_order_template_config(
-        KEY,
-        "parameters.runtime.submit_mode.ioc.order_template",
-        &order_template,
-    );
-    CompleteSetSubmitModeContract {
-        submit_mode: mode,
-        order_template,
-        nt_template_errors,
-    }
 }
 
 pub fn validate_strategy(
@@ -429,18 +401,38 @@ pub fn raw_complete_set_config(
     Ok(Value::Table(table))
 }
 
-impl CompleteSetSubmitMode {
-    pub fn from_config(value: &str) -> Option<Self> {
-        match value {
-            "ioc" => Some(Self::Ioc),
-            _ => None,
-        }
-    }
+pub fn register_runtime_strategy(
+    node: &mut LiveNode,
+    context: StrategyRegistrationContext<'_>,
+) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
+    let raw = raw_complete_set_config(context.strategy, context.loaded)
+        .map_err(|error| binding_message(&context, error.to_string()))?;
+    let build_context = assemble_strategy_build_context(&context)?;
+    let registry = production_strategy_registry()
+        .map_err(|error| binding_message(&context, error.to_string()))?;
+    registry
+        .register_strategy(
+            context.strategy_kind,
+            &raw,
+            &build_context,
+            node.kernel().trader(),
+        )
+        .map_err(|error| binding_message(&context, error.to_string()))
+}
 
-    pub fn as_config(self) -> &'static str {
-        match self {
-            Self::Ioc => "ioc",
-        }
+fn binding_message(
+    context: &StrategyRegistrationContext<'_>,
+    message: String,
+) -> BoltV3StrategyRegistrationError {
+    BoltV3StrategyRegistrationError::Binding {
+        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+        strategy_archetype: context
+            .strategy
+            .config
+            .strategy_archetype
+            .as_str()
+            .to_string(),
+        message,
     }
 }
 

@@ -1,7 +1,7 @@
 //! Shared maker primitives for binary-outcome market families.
 
 use crate::{
-    bolt_v3_maker_settlement::BinarySettlementPayout,
+    bolt_v3_binary_settlement::BinarySettlementPayout,
     bolt_v3_numeric::{UNIT_F64, ZERO_F64, sanitize_probability},
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{
@@ -51,7 +51,7 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     })
 }
 
-pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+pub fn settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
     Some(payout.leg_payout(leg))
 }
 

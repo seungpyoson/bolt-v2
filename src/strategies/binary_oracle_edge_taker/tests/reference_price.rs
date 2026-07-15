@@ -78,10 +78,10 @@ fn prod_btc_5m_startup_derivations_match_composed_config() {
         .iter()
         .find(|strategy| {
             strategy.config.strategy_archetype.as_str()
-                == crate::bolt_v3_archetypes::binary_oracle_edge_taker::KEY
+                == crate::strategies::binary_oracle_edge_taker::archetype::KEY
         })
         .expect("composed profile should include the binary oracle taker strategy");
-    let raw = crate::bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config(
+    let raw = crate::strategies::binary_oracle_edge_taker::archetype::raw_taker_config(
         loaded_strategy,
         &loaded,
     )
@@ -1102,7 +1102,7 @@ fn selected_backup_with_older_timestamp_replaces_previous_source() {
         .reference_price_quotes
         .remove(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("primary quote should be present before simulated source loss");
-    strategy.observe_current_reference_price_selection(
+    strategy.apply_current_reference_price_selection(
         strategy
             .active
             .interval_start_ms
@@ -1294,7 +1294,7 @@ fn cleared_reference_selection_preserves_last_reference_ts_for_forced_flat_grace
     DataActor::on_data(&mut strategy, &update).expect("reference quote should be handled");
     assert_eq!(strategy.active.last_reference_ts_ms, Some(1_100));
 
-    strategy.observe_current_reference_price_selection(1_000, 1_300, 1_250);
+    strategy.apply_current_reference_price_selection(1_000, 1_300, 1_250);
 
     assert_eq!(strategy.active.reference_current_price, None);
     assert_eq!(strategy.active.reference_current_price_source_id, None);
@@ -2133,7 +2133,7 @@ fn cleared_reference_selection_fallback_preserves_selected_source_not_latest_quo
     clock
         .borrow_mut()
         .set_time(UnixNanos::from(1_250_u64 * NANOS_PER_MILLI_U64));
-    strategy.refresh_current_reference_price_selection_at(1_250);
+    strategy.apply_reference_price_selection_at(1_250);
 
     assert_eq!(strategy.active.reference_current_price, None);
     assert_eq!(strategy.active.reference_current_price_source_id, None);

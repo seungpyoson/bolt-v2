@@ -16,13 +16,18 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
+use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
     BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
 };
+use crate::bolt_v3_strategy_context::StrategyBuildContext;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
-use nautilus_model::identifiers::{ClientId, StrategyId};
+use nautilus_model::{
+    identifiers::{ClientId, StrategyId, Venue},
+    types::Currency,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -32,10 +37,17 @@ use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
 pub struct StrategyRuntimeBinding {
     pub key: &'static str,
     pub strategy_kind: fn() -> &'static str,
+    pub capabilities: StrategyRuntimeCapabilities,
     pub register: for<'a> fn(
         &mut LiveNode,
         StrategyRegistrationContext<'a>,
     ) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StrategyRuntimeCapabilities {
+    pub realized_volatility: bool,
+    pub settlement: bool,
 }
 
 #[derive(Clone)]
@@ -52,6 +64,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
     pub strategy_kind: &'static str,
+    pub capabilities: StrategyRuntimeCapabilities,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
@@ -61,6 +74,116 @@ pub struct StrategyRegistrationContext<'a> {
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
     pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+}
+
+pub fn assemble_strategy_build_context(
+    context: &StrategyRegistrationContext<'_>,
+) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
+    let execution_client_id = context.strategy.config.execution_client_id.as_str();
+    let execution_venue = execution_venue_for_client(&context.loaded.root, execution_client_id)
+        .ok_or_else(|| {
+            binding_message(
+                context,
+                format!(
+                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+                ),
+            )
+        })?;
+    let fee_provider = resolve_fee_provider(context.loaded, execution_client_id, context.resolved)
+        .map_err(|error| binding_message(context, error.to_string()))?;
+    let mut build_context = StrategyBuildContext::new(
+        fee_provider,
+        context.decision_evidence.clone(),
+        context.submit_admission.clone(),
+        context.order_execution_policy,
+        execution_venue,
+    );
+    if context.capabilities.realized_volatility {
+        build_context = build_context
+            .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    }
+    if context.capabilities.settlement {
+        let settlement_account_id =
+            execution_account_id(&context.loaded.root, execution_client_id).map(str::to_string);
+        let settlement_currency = settlement_account_id.as_deref().and_then(|account_id| {
+            settlement_currency_for_execution_account(
+                &context.loaded.root,
+                execution_venue,
+                account_id,
+            )
+        });
+        build_context = build_context
+            .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
+            .with_settlement_recovery(context.settlement_recovery.clone())
+            .with_settlement_account_id(settlement_account_id)
+            .with_settlement_currency(settlement_currency)
+            .with_settlement_health_transition_emitter(
+                context.settlement_health_transition_emitter.clone(),
+            );
+    }
+    Ok(build_context)
+}
+
+pub(crate) fn execution_venue_for_client(
+    root: &BoltV3RootConfig,
+    execution_client_id: &str,
+) -> Option<Venue> {
+    root.clients
+        .get(execution_client_id)
+        .map(|client| client.venue)
+}
+
+pub(crate) fn execution_account_id<'a>(
+    root: &'a BoltV3RootConfig,
+    execution_client_id: &str,
+) -> Option<&'a str> {
+    root.clients
+        .get(execution_client_id)?
+        .execution
+        .as_ref()?
+        .as_table()?
+        .get(stringify!(account_id))?
+        .as_str()
+}
+
+pub(crate) fn settlement_currency_for_execution_account(
+    root: &BoltV3RootConfig,
+    execution_venue: Venue,
+    account_id: &str,
+) -> Option<Currency> {
+    root.risk
+        .capital_pools
+        .as_ref()?
+        .iter()
+        .find(|pool| {
+            pool.venue_id == execution_venue.as_str() && pool.account_id.to_string() == account_id
+        })
+        .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
+}
+
+pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Currency {
+    let pusd = Currency::pUSD();
+    if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
+        pusd
+    } else {
+        Currency::from(configured)
+    }
+}
+
+fn binding_message(
+    context: &StrategyRegistrationContext<'_>,
+    message: String,
+) -> BoltV3StrategyRegistrationError {
+    BoltV3StrategyRegistrationError::Binding {
+        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+        strategy_archetype: context
+            .strategy
+            .config
+            .strategy_archetype
+            .as_str()
+            .to_string(),
+        message,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -406,6 +529,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 loaded,
                 strategy,
                 strategy_kind: (binding.strategy_kind)(),
+                capabilities: binding.capabilities,
                 resolved,
                 decision_evidence: decision_evidence.clone(),
                 submit_admission: execution_controls.submit_admission.clone(),

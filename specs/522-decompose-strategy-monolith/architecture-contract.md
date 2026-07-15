@@ -59,13 +59,14 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
   before merging the first code slice that relies on this contract. It must be wired into
   the source-fence CI lane and fail on any `crate::strategies` import or strategy-type
   reference inside `bolt_v3_*` and `bolt_v3_market_families/*`.
-  **Current code already contains pre-existing back-references** (known:
-  `crate::strategies::registry::FeeProvider` used by `bolt_v3_providers/polymarket/fees.rs`,
-  tracked under #446). So the fence ships with a **frozen allowlist of exactly those
-  pre-existing entries** — it is **green on today's code while blocking every NEW
-  violation**. The allowlist may **only shrink** (an entry is removed when its type is
-  relocated to a shared module); **no new entry may ever be added**. The fence — not a
-  manual grep — is the gate.
+  The strategy-owned archetypes now live under `src/strategies/*/archetype.rs`, and
+  live-node registration resolves through `src/strategy_bindings.rs`; production
+  `src/bolt_v3_*` modules therefore have no strategy-layer back-references. The fence's
+  `FINDING_ALLOWANCES` tuple is empty and must stay empty. The allowlist may **only
+  shrink**; **no new entry may ever be added**.
+  Normal source-fence execution mechanically compares the in-tree allowlist with the
+  protected `origin/main` baseline using `--check-shrink-only-vs-main` and requires the
+  current entries to be a subset. The fence — not a manual grep — is the gate.
 
 ## 3. Naming convention
 

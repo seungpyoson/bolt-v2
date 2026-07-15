@@ -29,7 +29,7 @@ classification = "cli_command_name"
 reason = "This is the stable Rust maintenance binary name, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''", "'''
 context = '''.join(", ")'''
@@ -37,7 +37,7 @@ classification = "strategy_archetype_diagnostic_separator"
 reason = "This joins configured reference_data role names in a validation diagnostic; it is not a runtime operator value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''" or "'''
 context = '''.join(" or ")'''
@@ -45,7 +45,7 @@ classification = "strategy_archetype_diagnostic_separator"
 reason = "This joins provider-owned allowed time-in-force labels in a validation diagnostic; it is not a runtime operator value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"binary_oracle_entry_order_unsupported_shape"'''
 context = '''"binary_oracle_entry_order_unsupported_shape";'''
@@ -53,7 +53,7 @@ classification = "strategy_archetype_validation_error_code"
 reason = "Stable machine-readable validation code for unsupported binary-oracle entry order shapes; it identifies the diagnostic class and does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"binary_oracle_entry_order_reduce_only"'''
 context = '''"binary_oracle_entry_order_reduce_only";'''
@@ -61,7 +61,7 @@ classification = "strategy_archetype_validation_error_code"
 reason = "Stable machine-readable validation code for reduce-only binary-oracle entry order rejection; it identifies the diagnostic class and does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"blocked_after_seconds"'''
 context = '''"blocked_after_seconds",'''
@@ -69,7 +69,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target blocked threshold."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"book_impact_cap_bps"'''
 context = '''"book_impact_cap_bps",'''
@@ -77,7 +77,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"cadence_seconds"'''
 context = '''"cadence_seconds",'''
@@ -85,7 +85,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"cadence_slug_token"'''
 context = '''insert_string(&mut table, "cadence_slug_token", target.cadence_slug_token);'''
@@ -93,7 +93,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target cadence slug token."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"client_id"'''
 context = '''"client_id",'''
@@ -101,7 +101,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"configured_target_id"'''
 context = '''"configured_target_id",'''
@@ -109,7 +109,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"edge_threshold_basis_points"'''
 context = '''"edge_threshold_basis_points",'''
@@ -117,7 +117,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"entry_order"'''
 context = '''"entry_order",'''
@@ -125,7 +125,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the nested strategy runtime config table name, populated from bolt-v3 TOML [parameters.entry_order]."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"exit_hysteresis_bps"'''
 context = '''"exit_hysteresis_bps",'''
@@ -133,7 +133,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"exit_order"'''
 context = '''"exit_order",'''
@@ -141,7 +141,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the nested strategy runtime config table name, populated from bolt-v3 TOML [parameters.exit_order]."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"expire_time_unix_nanos"'''
 context = '''"expire_time_unix_nanos",'''
@@ -149,7 +149,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT order expiry timestamp field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trigger_price"'''
 context = '''insert_float(&mut order_table, "trigger_price", trigger_price);'''
@@ -157,7 +157,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT stop-order trigger price field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"activation_price"'''
 context = '''insert_float(&mut order_table, "activation_price", activation_price);'''
@@ -165,7 +165,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop activation price field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trigger_type"'''
 context = '''"trigger_type",'''
@@ -173,7 +173,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT triggered-order trigger type field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trigger_instrument_id"'''
 context = '''"trigger_instrument_id",'''
@@ -181,7 +181,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT triggered-order trigger instrument field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trailing_offset"'''
 context = '''insert_float(&mut order_table, "trailing_offset", trailing_offset);'''
@@ -189,7 +189,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop offset field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trailing_offset_type"'''
 context = '''"trailing_offset_type",'''
@@ -213,7 +213,7 @@ classification = "nt_order_model_invariant"
 reason = "This enforces positive GTD expiry nanos for enabled NT order templates before calling the NT order factory; the expiry value itself is TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"external_order_claims"'''
 context = '''"external_order_claims",'''
@@ -221,7 +221,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"forced_flat_stale_reference_ms"'''
 context = '''"forced_flat_stale_reference_ms",'''
@@ -229,7 +229,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"forced_flat_thin_book_min_liquidity"'''
 context = '''"forced_flat_thin_book_min_liquidity",'''
@@ -237,7 +237,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"is_post_only"'''
 context = '''insert_bool(&mut order_table, "is_post_only", order.is_post_only);'''
@@ -245,7 +245,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"is_quote_quantity"'''
 context = '''"is_quote_quantity",'''
@@ -253,7 +253,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"is_reduce_only"'''
 context = '''insert_bool(&mut order_table, "is_reduce_only", order.is_reduce_only);'''
@@ -261,7 +261,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"lead_agreement_min_corr"'''
 context = '''"lead_agreement_min_corr",'''
@@ -269,7 +269,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"lead_jitter_max_ms"'''
 context = '''"lead_jitter_max_ms",'''
@@ -277,7 +277,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"log_commands"'''
 context = '''insert_bool(&mut table, "log_commands", strategy.config.log_commands);'''
@@ -285,7 +285,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"log_events"'''
 context = '''insert_bool(&mut table, "log_events", strategy.config.log_events);'''
@@ -293,7 +293,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"log_rejected_due_post_only_as_warning"'''
 context = '''"log_rejected_due_post_only_as_warning",'''
@@ -301,7 +301,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"manage_contingent_orders"'''
 context = '''"manage_contingent_orders",'''
@@ -309,7 +309,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"manage_gtd_expiry"'''
 context = '''"manage_gtd_expiry",'''
@@ -317,7 +317,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"manage_stop"'''
 context = '''insert_bool(&mut table, "manage_stop", strategy.config.manage_stop);'''
@@ -325,7 +325,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"market_exit_interval_ms"'''
 context = '''"market_exit_interval_ms",'''
@@ -333,7 +333,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"market_exit_max_attempts"'''
 context = '''"market_exit_max_attempts",'''
@@ -341,7 +341,7 @@ classification = "strategy_runtime_validation_field"
 reason = "This field-name literal labels the configured market-exit runtime value in validation diagnostics; the value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"forced_exit_order"'''
 context = '''"forced_exit_order",'''
@@ -349,7 +349,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the configured forced-exit NT order-template table projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"market_selection_rule"'''
 context = '''"market_selection_rule",'''
@@ -357,7 +357,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML market selection rule."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"maximum_position_notional"'''
 context = '''"maximum_position_notional",'''
@@ -365,7 +365,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"oms_type"'''
 context = '''insert_string(&mut table, "oms_type", oms_type_value(strategy));'''
@@ -373,7 +373,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML oms_type."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"order_id_tag"'''
 context = '''"order_id_tag",'''
@@ -381,7 +381,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML order_id_tag."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"order_notional_target"'''
 context = '''insert_float(&mut table, "order_notional_target", order_notional_target);'''
@@ -389,7 +389,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"order_type"'''
 context = '''"order_type",'''
@@ -397,7 +397,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the nested order-config field name projected from bolt-v3 TOML entry and exit order parameters into the taker StrategyConfig table."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"parameters.maximum_position_notional"'''
 context = '''"parameters.maximum_position_notional",'''
@@ -405,7 +405,7 @@ classification = "strategy_archetype_source_field_name"
 reason = "This names the bolt-v3 TOML source field converted into the existing taker config shape."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"parameters.order_notional_target"'''
 context = '''"parameters.order_notional_target",'''
@@ -413,7 +413,7 @@ classification = "strategy_archetype_source_field_name"
 reason = "This names the bolt-v3 TOML source field converted into the existing taker config shape."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"position_side"'''
 context = '''"position_side",'''
@@ -421,7 +421,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a nested taker strategy config schema field name; the value is populated from bolt-v3 TOML order parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"price_to_beat_source"'''
 context = '''insert_string(&mut table, "price_to_beat_source", price_to_beat_source);'''
@@ -429,7 +429,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value is derived from target gate TOML during the temporary runtime bridge."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"pricing_kurtosis"'''
 context = '''"pricing_kurtosis",'''
@@ -437,7 +437,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"reentry_cooldown_secs"'''
 context = '''"reentry_cooldown_secs",'''
@@ -445,7 +445,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''"signal_instrument_id",'''
@@ -453,7 +453,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the taker StrategyConfig field name populated from the configured bolt-v3 TOML signal_data role instrument_id."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''"signal_venue",'''
@@ -461,7 +461,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the taker StrategyConfig field name populated from the configured signal_data data_client_id role."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"retry_interval_seconds"'''
 context = '''"retry_interval_seconds",'''
@@ -469,7 +469,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target retry interval."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"risk_lambda"'''
 context = '''insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);'''
@@ -477,7 +477,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"sizing_ev_reference_bps"'''
 context = '''"sizing_ev_reference_bps",'''
@@ -485,7 +485,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name; the EV sizing reference value comes from bolt-v3 TOML (#618)."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"rotating_market_family"'''
 context = '''"rotating_market_family",'''
@@ -493,7 +493,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML rotating market family."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"side"'''
 context = '''insert_string(&mut order_table, "side", enum_variant_lowercase(order.side));'''
@@ -501,7 +501,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the nested order-config field name projected from NT OrderSide values supplied by bolt-v3 TOML entry and exit order parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
 context = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
@@ -509,7 +509,7 @@ classification = "strategy_archetype_diagnostic_template"
 reason = "This diagnostic reports a config-to-existing-strategy numeric conversion failure; it is not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"allows at most one [signal_data.<role>] block; got roles [{}]"'''
 context = '''"allows at most one [signal_data.<role>] block; got roles [{}]",'''
@@ -517,7 +517,7 @@ classification = "strategy_archetype_diagnostic_template"
 reason = "This diagnostic rejects ambiguous signal_data role wiring before deriving runtime config; it is not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"'''
 context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"'''
@@ -525,7 +525,7 @@ classification = "strategy_archetype_diagnostic_template"
 reason = "This validation diagnostic rejects ambiguous signal_data role wiring; it is not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"strategy_id"'''
 context = '''insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);'''
@@ -533,7 +533,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"target_kind"'''
 context = '''insert_string(&mut table, "target_kind", target.target_kind);'''
@@ -541,7 +541,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target kind."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"theta_decay_factor"'''
 context = '''"theta_decay_factor",'''
@@ -549,7 +549,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"time_in_force"'''
 context = '''"time_in_force",'''
@@ -557,7 +557,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trade_flow_max_samples"'''
 context = '''"trade_flow_max_samples",'''
@@ -565,7 +565,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name; the signed-trade-flow per-instrument sample cap comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"trade_flow_window_secs"'''
 context = '''"trade_flow_window_secs",'''
@@ -573,7 +573,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name; the signed-trade-flow retention window comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"spike_guard_return_threshold"'''
 context = '''"spike_guard_return_threshold",'''
@@ -581,7 +581,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name; the entry spike-guard single-step return threshold comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"spike_guard_cooldown_secs"'''
 context = '''"spike_guard_cooldown_secs",'''
@@ -589,7 +589,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name; the entry spike-guard cooldown duration comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"underlying_asset"'''
 context = '''insert_string(&mut table, "underlying_asset", target.underlying_asset);'''
@@ -597,7 +597,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target underlying asset."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"use_hyphens_in_client_order_ids"'''
 context = '''"use_hyphens_in_client_order_ids",'''
@@ -605,7 +605,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"use_uuid_client_order_ids"'''
 context = '''"use_uuid_client_order_ids",'''
@@ -613,7 +613,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"warmup_tick_count"'''
 context = '''"warmup_tick_count",'''
@@ -4293,7 +4293,7 @@ classification = "target_gate_validation_diagnostic_template"
 reason = "This validation diagnostic rejects static-provider wiring for rotating markets; it is not a runtime source value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "number"
 literal = '''0'''
 context = '''.filter(|value| *value != 0)'''
@@ -4301,7 +4301,7 @@ classification = "gate_provider_freshness_positive_guard"
 reason = "This rejects a zero max-age freshness policy while deriving the temporary taker runtime bridge from TOML-owned gate provider config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "number"
 literal = '''0'''
 context = '''.then(|| provider_ids[0].as_str())'''
@@ -4309,7 +4309,7 @@ classification = "target_gate_single_provider_selection"
 reason = "This indexes the only allowed provider id after a len==1 guard when selecting a TOML-owned gate provider for the temporary runtime bridge."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"allowed_provider_ids"'''
 context = '''.get("allowed_provider_ids")'''
@@ -4317,7 +4317,7 @@ classification = "target_gate_schema_field"
 reason = "This reads a provider-neutral target gate schema field; the configured provider ids remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"gate_subscriptions"'''
 context = '''.and_then(|target| target.get("gate_subscriptions"))'''
@@ -4325,7 +4325,7 @@ classification = "target_gate_schema_field"
 reason = "This reads the provider-neutral target gate subscription schema table from strategy TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"market_mappings"'''
 context = '''.get("market_mappings")'''
@@ -4333,7 +4333,7 @@ classification = "target_gate_schema_field"
 reason = "This reads config-owned target gate market mappings; mapping values remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"provider_id"'''
 context = '''.get("provider_id")'''
@@ -4341,7 +4341,7 @@ classification = "target_gate_schema_field"
 reason = "This reads the selected target gate provider id key; provider id values remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"provider_preference"'''
 context = '''.get("provider_preference")'''
@@ -4349,7 +4349,7 @@ classification = "target_gate_schema_field"
 reason = "This reads provider preference ordering from target gate TOML; provider ids remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"resolution_identity"'''
 context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?;'''
@@ -4357,7 +4357,7 @@ classification = "target_gate_schema_field"
 reason = "This reads the target gate resolution identity schema field; the identity value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"resolution_identity"'''
 context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?'''
@@ -4365,7 +4365,7 @@ classification = "target_gate_schema_field"
 reason = "This reads the decision-reference target gate resolution identity schema field; the identity value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"resolution_kind"'''
 context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_kind")?;'''
@@ -7549,7 +7549,7 @@ classification = "chainlink_data_streams_hmac_protocol"
 reason = "This is the standard zero padding byte for HMAC keys shorter than the SHA-256 block size."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"instrument_id"'''
 context = '''.and_then(|binding| binding.get("instrument_id"))'''
@@ -7557,7 +7557,7 @@ classification = "strategy_archetype_resolution_schema_field"
 reason = "Binary-oracle resolution-data binding schema/config field name read from the configured bolt-v3 TOML target, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"resolution_client_id"'''
 context = '''"resolution_client_id",'''
@@ -7565,7 +7565,7 @@ classification = "strategy_archetype_resolution_schema_field"
 reason = "Binary-oracle resolution-data binding schema/config field name read from the configured bolt-v3 TOML target, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"resolution_instrument_id"'''
 context = '''"resolution_instrument_id",'''
@@ -10427,7 +10427,7 @@ reason = "This is the stable serde/provenance label for the typed extrapolation-
 # Realized-volatility surface implementation literals.
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"realized_volatility_surface_id"'''
 context = '''"realized_volatility_surface_id",'''
@@ -11611,7 +11611,7 @@ classification = "iv_config_schema_literal"
 reason = "IV profile validation diagnostic template for impossible derived-input operator-side field configuration; the field context comes from TOML config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"vwap_depth_limit_bps"'''
 context = '''"vwap_depth_limit_bps",'''
@@ -11619,7 +11619,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Executable-edge VWAP depth limit schema field name; the runtime value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"slippage_buffer_bps"'''
 context = '''"slippage_buffer_bps",'''
@@ -12692,14 +12692,6 @@ reason = "Fixed minute-to-millisecond conversion for provider metadata refresh i
 [[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"
 kind = "string"
-literal = '''"complete_set_arbitrage"'''
-context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
-classification = "strategy_archetype_key"
-reason = "Stable strategy-archetype discriminator for validation diagnostics; runtime activation remains separately registered by TOML-driven bindings."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_sources.rs"
-kind = "string"
 literal = '''"polymarket data"'''
 context = '''"polymarket data",'''
 classification = "validation_diagnostic_label"
@@ -13586,7 +13578,7 @@ classification = "hash_domain_variant"
 reason = "Stable kill-switch halt-id hash component for the dedicated basket-execution stuck trigger."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/bolt_v3_complete_set_contract.rs"
 kind = "string"
 literal = '''"ioc"'''
 context = '''"ioc" => Some(Self::Ioc),'''
@@ -13594,7 +13586,7 @@ classification = "source_schema_enum_value"
 reason = "Supported complete-set submit_mode value mapped to a pinned NT order-template contract."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"max_basket_notional"'''
 context = '''"max_basket_notional",'''
@@ -13602,7 +13594,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"max_open_baskets"'''
 context = '''"max_open_baskets",'''
@@ -13610,7 +13602,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"max_repair_attempts"'''
 context = '''"max_repair_attempts",'''
@@ -13618,7 +13610,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"max_unwind_attempts"'''
 context = '''"max_unwind_attempts",'''
@@ -13626,7 +13618,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"min_edge_bps"'''
 context = '''"min_edge_bps",'''
@@ -13634,7 +13626,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/bolt_v3_complete_set_contract.rs"
 kind = "string"
 literal = '''"parameters.runtime.submit_mode.ioc.order_template"'''
 context = '''"parameters.runtime.submit_mode.ioc.order_template",'''
@@ -13642,7 +13634,7 @@ classification = "validation_diagnostic_path"
 reason = "Field path supplied to NT order-template validation for the supported complete-set submit mode."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/bolt_v3_complete_set_contract.rs"
 kind = "string"
 literal = '''"ioc"'''
 context = '''Self::Ioc => "ioc",'''
@@ -13650,7 +13642,7 @@ classification = "source_schema_enum_value"
 reason = "Canonical complete-set submit_mode TOML enum token owned by the archetype parser; consumers call the archetype contract instead of re-declaring it."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"runtime"'''
 context = '''.get("runtime")'''
@@ -13658,7 +13650,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters table key used to locate TOML-owned runtime controls."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"slippage_buffer_bps"'''
 context = '''"slippage_buffer_bps",'''
@@ -13666,7 +13658,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"submit_mode"'''
 context = '''"submit_mode",'''
@@ -13674,7 +13666,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"submit_mode"'''
 context = '''.and_then(|runtime| runtime.get("submit_mode"))'''
@@ -13682,7 +13674,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field lookup used to render unsupported submit-mode diagnostics."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"vwap_depth_limit_bps"'''
 context = '''"vwap_depth_limit_bps",'''
@@ -13690,7 +13682,7 @@ classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"client_id"'''
 context = '''"client_id",'''
@@ -13698,7 +13690,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from TOML-owned execution_client_id."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"external_order_claims"'''
 context = '''"external_order_claims",'''
@@ -13706,7 +13698,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from TOML-owned external_order_claims."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"log_commands"'''
 context = '''insert_bool(&mut table, "log_commands", strategy.config.log_commands);'''
@@ -13714,7 +13706,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"log_events"'''
 context = '''insert_bool(&mut table, "log_events", strategy.config.log_events);'''
@@ -13722,7 +13714,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"log_rejected_due_post_only_as_warning"'''
 context = '''"log_rejected_due_post_only_as_warning",'''
@@ -13730,7 +13722,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"manage_contingent_orders"'''
 context = '''"manage_contingent_orders",'''
@@ -13738,7 +13730,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"manage_gtd_expiry"'''
 context = '''"manage_gtd_expiry",'''
@@ -13746,7 +13738,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"manage_stop"'''
 context = '''insert_bool(&mut table, "manage_stop", strategy.config.manage_stop);'''
@@ -13754,7 +13746,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"market_exit_interval_ms"'''
 context = '''"market_exit_interval_ms",'''
@@ -13762,7 +13754,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"market_exit_max_attempts"'''
 context = '''"market_exit_max_attempts",'''
@@ -13770,7 +13762,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"market_exit_reduce_only"'''
 context = '''"market_exit_reduce_only",'''
@@ -13778,7 +13770,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"max_open_baskets"'''
 context = '''insert_u32(&mut table, "max_open_baskets", runtime.max_open_baskets);'''
@@ -13786,7 +13778,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from TOML-owned complete-set runtime parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"min_edge_bps"'''
 context = '''insert_i64(&mut table, "min_edge_bps", runtime.min_edge_bps);'''
@@ -13794,7 +13786,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from TOML-owned complete-set runtime parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"oms_type"'''
 context = '''"oms_type",'''
@@ -13802,7 +13794,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"order_id_tag"'''
 context = '''"order_id_tag",'''
@@ -13810,7 +13802,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for complete-set config: `{value}`"'''
 context = '''"strategies.{strategy_instance_id} {field} cannot be represented for complete-set config: `{value}`"'''
@@ -13818,7 +13810,7 @@ classification = "validation_diagnostic_template"
 reason = "Fail-closed diagnostic for TOML-owned complete-set numeric fields that cannot be projected into the concrete runtime config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"strategy_id"'''
 context = '''insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);'''
@@ -13826,7 +13818,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field derived from TOML-owned archetype key and order_id_tag."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"submit_mode"'''
 context = '''insert_string(&mut table, "submit_mode", runtime.submit_mode);'''
@@ -13834,7 +13826,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from TOML-owned complete-set runtime parameters."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"use_hyphens_in_client_order_ids"'''
 context = '''"use_hyphens_in_client_order_ids",'''
@@ -13842,7 +13834,7 @@ classification = "runtime_config_projection_field"
 reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+path = "src/strategies/complete_set_arbitrage/archetype.rs"
 kind = "string"
 literal = '''"use_uuid_client_order_ids"'''
 context = '''"use_uuid_client_order_ids",'''
@@ -13856,6 +13848,30 @@ literal = '''1'''
 context = '''self.forwarded_event_count = self.forwarded_event_count.saturating_add(1);'''
 classification = "strategy_loop_constant"
 reason = "Increment-by-one step in a saturating strategy event-forwarding counter; not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/mod.rs"
+kind = "number"
+literal = '''1'''
+context = '''self.failed_event_count = self.failed_event_count.saturating_add(1);'''
+classification = "strategy_loop_constant"
+reason = "Increment-by-one step in a saturating strategy event-forwarding failure counter; not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/mod.rs"
+kind = "string"
+literal = '''"complete-set event has no basket for executor identity `{execution_client_id}` and client order `{client_order_id}`"'''
+context = '''"complete-set event has no basket for executor identity `{execution_client_id}` and client order `{client_order_id}`"'''
+classification = "strategy_event_forwarding_diagnostic_template"
+reason = "Fail-closed diagnostic for an NT event whose configured shared executor and client-order leg identity has no strategy-local basket state; production lookup remains empty in this substrate slice."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/mod.rs"
+kind = "string"
+literal = '''"complete-set client order identity `{client_order_id}` maps to more than one basket"'''
+context = '''"complete-set client order identity `{client_order_id}` maps to more than one basket"'''
+classification = "strategy_event_forwarding_diagnostic_template"
+reason = "Fail-closed diagnostic for a duplicate client-order leg identity in the test-only basket index; insertion rejects the collision before either map is mutated."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -15130,7 +15146,7 @@ classification = "shadow_pnl_duplicate_decision_evidence_diagnostic_template"
 reason = "Fail-loud diagnostic rejecting a second decision-evidence record for an already-seen client_order_id so would-be trades cannot be silently disambiguated; error-message template, not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"asset"'''
 context = '''"asset",'''
@@ -15138,7 +15154,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"block"'''
 context = '''crate::bolt_v3_config::ReferencePriceDriftPolicy::Block => "block",'''
@@ -15146,7 +15162,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"block"'''
 context = '''crate::bolt_v3_config::ReferencePriceStalePolicy::Block => "block",'''
@@ -15154,7 +15170,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"client_id"'''
 context = '''insert_string(&mut source_table, "client_id", source.client_id.to_string());'''
@@ -15162,7 +15178,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"drift_policy"'''
 context = '''"drift_policy",'''
@@ -15170,7 +15186,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"enabled"'''
 context = '''insert_bool(&mut source_table, "enabled", source.enabled);'''
@@ -15178,7 +15194,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"first_valid_per_interval"'''
 context = '''"first_valid_per_interval"'''
@@ -15186,7 +15202,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"instrument_id `{}` has no matching feed_binding in root chainlink_data_streams.feed_bindings for client `{}`"'''
 context = '''"instrument_id `{}` has no matching feed_binding in root chainlink_data_streams.feed_bindings for client `{}`",'''
@@ -15194,7 +15210,7 @@ classification = "binary_oracle_reference_validation_diagnostic"
 reason = "Config-load validation diagnostic for reference/resolution bindings; interpolated values come from TOML."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"instrument_id"'''
 context = '''insert_string(&mut source_table, "instrument_id", instrument_id.clone());'''
@@ -15202,7 +15218,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"max_source_age_ms"'''
 context = '''"max_source_age_ms",'''
@@ -15210,7 +15226,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"max_source_drift_bps"'''
 context = '''"max_source_drift_bps",'''
@@ -15218,7 +15234,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"min_valid_sources"'''
 context = '''"min_valid_sources",'''
@@ -15226,7 +15242,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"observe"'''
 context = '''crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe => "observe",'''
@@ -15234,7 +15250,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"provider"'''
 context = '''"provider",'''
@@ -15242,7 +15258,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"reference_current_price"'''
 context = '''"reference_current_price".to_string(),'''
@@ -15250,7 +15266,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"reference_current_price.min_valid_sources"'''
 context = '''"reference_current_price.min_valid_sources",'''
@@ -15258,7 +15274,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"selection_policy"'''
 context = '''"selection_policy",'''
@@ -15266,7 +15282,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"source"'''
 context = '''reference_table.insert("source".to_string(), Value::Table(source_tables));'''
@@ -15274,7 +15290,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"sources"'''
 context = '''"sources",'''
@@ -15282,7 +15298,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"stale_policy"'''
 context = '''"stale_policy",'''
@@ -15290,7 +15306,7 @@ classification = "binary_oracle_reference_current_price_runtime_schema"
 reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"symbol"'''
 context = '''insert_string(&mut source_table, "symbol", symbol.clone());'''
@@ -17601,7 +17617,7 @@ context = '''SettlementSourceKind::VenueStructuredFields => "venue_structured_fi
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group settlement-source label in canonical evidence; runtime values remain supplied by TOML, NT instruments, or operator attestations."
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"static_condition_id"'''
 context = '''"static_condition_id",'''
@@ -17609,7 +17625,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Static binary-event condition-id strategy config field name; the value is projected from the TOML target and remains operator-configured."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"static_fair_probability_source"'''
 context = '''"static_fair_probability_source",'''
@@ -17617,7 +17633,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Static binary-event fair-probability source strategy config field name; the value is projected from the TOML target and remains operator-configured."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"static_no_outcome"'''
 context = '''insert_optional_string(&mut table, "static_no_outcome", target.static_no_outcome);'''
@@ -17625,7 +17641,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Static binary-event NO outcome strategy config field name; the value is projected from the TOML target and remains operator-configured."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"static_yes_outcome"'''
 context = '''insert_optional_string(&mut table, "static_yes_outcome", target.static_yes_outcome);'''
@@ -20906,7 +20922,7 @@ classification = "startup_subscription_derivation_diagnostic_template"
 reason = "Fail-loud startup diagnostic for a configured realized-volatility surface whose runtime context derives no subscribable feeds; surface selection remains TOML-owned and this template does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"'''
 context = '''"{context}: execution client `{execution_client_id}` has no execution.account_id; cannot derive settlement currency for settlement booking"'''
@@ -20930,7 +20946,7 @@ classification = "order_lifecycle_evidence_source_label"
 reason = "Lifecycle raw_reason_text template for the typed terminal-settlement transition; it reports the already-proven eligibility leg and does not configure strategy behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/bolt_v3_settlement_booking.rs"
 kind = "string"
 literal = '''"terminal settlement is ineligible for live-manageable or nonterminal position {}"'''
 context = '''"terminal settlement is ineligible for live-manageable or nonterminal position {}",'''
@@ -20938,7 +20954,7 @@ classification = "strategy_safety_diagnostic_template"
 reason = "Static fail-closed diagnostic emitted when a caller cannot construct typed terminal eligibility; expiry and recovery facts come from position state."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/bolt_v3_settlement_booking.rs"
 kind = "string"
 literal = '''"recovered terminal settlement is ineligible before market expiry for position {}"'''
 context = '''"recovered terminal settlement is ineligible before market expiry for position {}",'''
@@ -20962,7 +20978,7 @@ classification = "operator_health_counter_increment"
 reason = "One typed health event represents one completed canonical terminal transition; this is a counter identity, not an operator-configurable runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
 literal = '''"realized_volatility_max_source_age_ms"'''
 context = '''"realized_volatility_max_source_age_ms",'''
@@ -21104,3 +21120,11 @@ literal = '''10'''
 context = '''capacity: 10,'''
 classification = "generated_risk_closure_workspace_capacity"
 reason = "Generated closed-form quotient arena_bytes / slot_bytes; no owner-slot or capacity default exists in TOML or Rust."
+
+[[allowed]]
+path = "src/bolt_v3_complete_set_contract.rs"
+kind = "string"
+literal = '''"complete_set_arbitrage"'''
+context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
+classification = "strategy_archetype_key"
+reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."

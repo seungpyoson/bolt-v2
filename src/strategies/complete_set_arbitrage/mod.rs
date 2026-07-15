@@ -4,13 +4,15 @@
 //! Admission, venue mutation, fillability, sizing, rounding, and repair/unwind
 //! remain in shared outcome-group execution modules.
 
-use std::{cell::RefCell, rc::Rc};
+pub mod archetype;
+
+use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
 
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::{OmsType as NtOmsType, TimeInForce},
+    events::{OrderAccepted, OrderCancelRejected, OrderFilled},
     identifiers::{InstrumentId, StrategyId},
 };
 use nautilus_system::trader::Trader;
@@ -20,22 +22,15 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_archetypes::complete_set_arbitrage::{
-        CompleteSetSubmitMode, raw_complete_set_config, submit_mode_contract,
-    },
     bolt_v3_basket_execution::{
         BoltV3BasketExecutionError, BoltV3BasketExecutionEvent, BoltV3BasketExecutionState,
         BoltV3BasketSettlementSignal,
     },
-    bolt_v3_outcome_group_sources::COMPLETE_SET_ARBITRAGE_KEY,
-    bolt_v3_providers::resolve_fee_provider,
-    bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+    bolt_v3_complete_set_contract::{
+        COMPLETE_SET_ARBITRAGE_KEY, CompleteSetSubmitMode, submit_mode_contract,
     },
-    strategies::{
-        production_strategy_registry,
-        registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
-    },
+    bolt_v3_strategy_context::StrategyBuildContext,
+    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
@@ -44,16 +39,58 @@ const CONFIG_FIELD_OMS_TYPE: &str = stringify!(oms_type);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const INVALID_CONFIG_CODE: &str = stringify!(invalid_config);
 
-pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
-    key: KEY,
-    strategy_kind: CompleteSetArbitrageBuilder::kind,
-    register: register_runtime_strategy,
-};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteSetArbitrageShell {
     strategy_id: String,
     forwarded_event_count: u64,
+    failed_event_count: u64,
+    last_failure: Option<CompleteSetForwardingError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompleteSetForwardingError {
+    UnknownExecutorLegIdentity {
+        execution_client_id: String,
+        client_order_id: String,
+    },
+    DuplicateBasketHandle(String),
+    DuplicateExecutorLegIdentity(String),
+    FillCostOverflow,
+    Executor(BoltV3BasketExecutionError),
+}
+
+impl fmt::Display for CompleteSetForwardingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownExecutorLegIdentity {
+                execution_client_id,
+                client_order_id,
+            } => write!(
+                f,
+                "complete-set event has no basket for executor identity `{execution_client_id}` and client order `{client_order_id}`"
+            ),
+            Self::DuplicateExecutorLegIdentity(client_order_id) => write!(
+                f,
+                "complete-set client order identity `{client_order_id}` maps to more than one basket"
+            ),
+            Self::DuplicateBasketHandle(basket_handle) => write!(
+                f,
+                "complete-set basket handle `{basket_handle}` is already indexed"
+            ),
+            Self::FillCostOverflow => write!(f, "complete-set fill cost overflowed decimal range"),
+            Self::Executor(error) => write!(f, "complete-set executor event failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CompleteSetForwardingError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompleteSetNtEventForwarder {
+    execution_client_id: String,
+    shell: CompleteSetArbitrageShell,
+    baskets_by_handle: BTreeMap<String, BoltV3BasketExecutionState>,
+    basket_handle_by_client_order_id: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +145,7 @@ pub struct CompleteSetArbitrage {
     core: StrategyCore,
     config: CompleteSetArbitrageConfig,
     context: StrategyBuildContext,
-    shell: CompleteSetArbitrageShell,
+    event_forwarder: CompleteSetNtEventForwarder,
 }
 
 impl std::fmt::Debug for CompleteSetArbitrage {
@@ -150,7 +187,10 @@ impl CompleteSetArbitrage {
                 log_commands: config.log_commands,
                 log_rejected_due_post_only_as_warning: config.log_rejected_due_post_only_as_warning,
             }),
-            shell: CompleteSetArbitrageShell::new(config.strategy_id.clone()),
+            event_forwarder: CompleteSetNtEventForwarder::new(
+                config.strategy_id.clone(),
+                config.client_id.clone(),
+            ),
             config,
             context,
         })
@@ -165,19 +205,176 @@ impl CompleteSetArbitrage {
     }
 
     pub fn shell(&self) -> &CompleteSetArbitrageShell {
-        &self.shell
+        &self.event_forwarder.shell
     }
 }
 
-impl DataActor for CompleteSetArbitrage {}
+impl DataActor for CompleteSetArbitrage {
+    fn on_order_filled(&mut self, event: &OrderFilled) -> anyhow::Result<()> {
+        self.event_forwarder
+            .forward_order_filled(event)
+            .map_err(anyhow::Error::new)
+    }
+}
 
-nautilus_strategy!(CompleteSetArbitrage);
+nautilus_strategy!(CompleteSetArbitrage, {
+    fn on_order_accepted(&mut self, event: OrderAccepted) {
+        if let Err(error) = self.event_forwarder.forward_order_accepted(&event) {
+            log::error!(
+                "complete-set accepted event forwarding failed: strategy_id={} error={error}",
+                self.config.strategy_id
+            );
+        }
+    }
+
+    fn on_order_cancel_rejected(&mut self, event: OrderCancelRejected) {
+        if let Err(error) = self.event_forwarder.forward_order_cancel_rejected(&event) {
+            log::error!(
+                "complete-set cancel-rejected event forwarding failed: strategy_id={} error={error}",
+                self.config.strategy_id
+            );
+        }
+    }
+});
+
+impl CompleteSetNtEventForwarder {
+    fn new(strategy_id: impl Into<String>, execution_client_id: impl Into<String>) -> Self {
+        Self {
+            execution_client_id: execution_client_id.into(),
+            shell: CompleteSetArbitrageShell::new(strategy_id),
+            // Task 11 only installs the forwarding substrate. Production does not
+            // synthesize or activate basket state in this strategy-local lookup.
+            baskets_by_handle: BTreeMap::new(),
+            basket_handle_by_client_order_id: BTreeMap::new(),
+        }
+    }
+
+    fn forward_order_accepted(
+        &mut self,
+        event: &OrderAccepted,
+    ) -> Result<(), CompleteSetForwardingError> {
+        let client_order_id = event.client_order_id.to_string();
+        self.forward_event(
+            &client_order_id,
+            BoltV3BasketExecutionEvent::VenueOrderId {
+                client_order_id: client_order_id.clone(),
+                venue_order_id: event.venue_order_id.to_string(),
+            },
+        )
+    }
+
+    fn forward_order_filled(
+        &mut self,
+        event: &OrderFilled,
+    ) -> Result<(), CompleteSetForwardingError> {
+        let quantity = event.last_qty.as_decimal();
+        let Some(cost) = quantity.checked_mul(event.last_px.as_decimal()) else {
+            let error = CompleteSetForwardingError::FillCostOverflow;
+            self.shell.record_failure(error.clone());
+            return Err(error);
+        };
+        let client_order_id = event.client_order_id.to_string();
+        self.forward_event(
+            &client_order_id,
+            BoltV3BasketExecutionEvent::LegFill {
+                client_order_id: client_order_id.clone(),
+                venue_order_id: Some(event.venue_order_id.to_string()),
+                quantity,
+                cost,
+                source: crate::bolt_v3_basket_execution::BoltV3BasketFillSource::Strategy,
+            },
+        )
+    }
+
+    fn forward_order_cancel_rejected(
+        &mut self,
+        event: &OrderCancelRejected,
+    ) -> Result<(), CompleteSetForwardingError> {
+        let client_order_id = event.client_order_id.to_string();
+        self.forward_event(
+            &client_order_id,
+            BoltV3BasketExecutionEvent::CancelRejected {
+                reason: event.reason.to_string(),
+            },
+        )
+    }
+
+    fn forward_event(
+        &mut self,
+        client_order_id: &str,
+        event: BoltV3BasketExecutionEvent,
+    ) -> Result<(), CompleteSetForwardingError> {
+        let Some(basket_handle) = self
+            .basket_handle_by_client_order_id
+            .get(client_order_id)
+            .cloned()
+        else {
+            let error = CompleteSetForwardingError::UnknownExecutorLegIdentity {
+                execution_client_id: self.execution_client_id.clone(),
+                client_order_id: client_order_id.to_string(),
+            };
+            self.shell.record_failure(error.clone());
+            return Err(error);
+        };
+        let Some(basket) = self.baskets_by_handle.get_mut(&basket_handle) else {
+            let error = CompleteSetForwardingError::UnknownExecutorLegIdentity {
+                execution_client_id: self.execution_client_id.clone(),
+                client_order_id: client_order_id.to_string(),
+            };
+            self.shell.record_failure(error.clone());
+            return Err(error);
+        };
+        self.shell.forward_executor_event(basket, event)
+    }
+
+    #[cfg(test)]
+    fn insert_test_basket(
+        &mut self,
+        basket_handle: &str,
+        basket: BoltV3BasketExecutionState,
+    ) -> Result<(), CompleteSetForwardingError> {
+        let client_order_ids = basket.client_order_ids();
+        if self.baskets_by_handle.contains_key(basket_handle) {
+            return Err(CompleteSetForwardingError::DuplicateBasketHandle(
+                basket_handle.to_string(),
+            ));
+        }
+        if let Some(client_order_id) = client_order_ids
+            .iter()
+            .find(|client_order_id| {
+                self.basket_handle_by_client_order_id
+                    .contains_key(client_order_id.as_str())
+            })
+            .cloned()
+        {
+            return Err(CompleteSetForwardingError::DuplicateExecutorLegIdentity(
+                client_order_id,
+            ));
+        }
+        for client_order_id in client_order_ids {
+            self.basket_handle_by_client_order_id
+                .insert(client_order_id, basket_handle.to_string());
+        }
+        self.baskets_by_handle
+            .insert(basket_handle.to_string(), basket);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn test_basket(&self, client_order_id: &str) -> Option<&BoltV3BasketExecutionState> {
+        self.basket_handle_by_client_order_id
+            .get(client_order_id)
+            .and_then(|basket_handle| self.baskets_by_handle.get(basket_handle))
+    }
+}
 
 impl CompleteSetArbitrageShell {
     pub fn new(strategy_id: impl Into<String>) -> Self {
         Self {
             strategy_id: strategy_id.into(),
             forwarded_event_count: u64::MIN,
+            failed_event_count: u64::MIN,
+            last_failure: None,
         }
     }
 
@@ -198,14 +395,35 @@ impl CompleteSetArbitrageShell {
         self.forwarded_event_count
     }
 
+    pub fn failed_event_count(&self) -> u64 {
+        self.failed_event_count
+    }
+
+    pub fn last_failure(&self) -> Option<&CompleteSetForwardingError> {
+        self.last_failure.as_ref()
+    }
+
     pub fn forward_executor_event(
         &mut self,
         basket: &mut BoltV3BasketExecutionState,
         event: BoltV3BasketExecutionEvent,
-    ) -> Result<(), BoltV3BasketExecutionError> {
-        basket.apply_event(event)?;
-        self.forwarded_event_count = self.forwarded_event_count.saturating_add(1);
-        Ok(())
+    ) -> Result<(), CompleteSetForwardingError> {
+        match basket.apply_event(event) {
+            Ok(()) => {
+                self.forwarded_event_count = self.forwarded_event_count.saturating_add(1);
+                Ok(())
+            }
+            Err(error) => {
+                let error = CompleteSetForwardingError::Executor(error);
+                self.record_failure(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn record_failure(&mut self, error: CompleteSetForwardingError) {
+        self.failed_event_count = self.failed_event_count.saturating_add(1);
+        self.last_failure = Some(error);
     }
 }
 
@@ -290,53 +508,6 @@ impl StrategyBuilder for CompleteSetArbitrageBuilder {
     }
 }
 
-pub fn register_runtime_strategy(
-    node: &mut LiveNode,
-    context: StrategyRegistrationContext<'_>,
-) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    let raw = raw_complete_set_config(context.strategy, context.loaded)
-        .map_err(|error| binding_message(&context, error.to_string()))?;
-    let fee_provider = resolve_fee_provider(
-        context.loaded,
-        context.strategy.config.execution_client_id.as_str(),
-        context.resolved,
-    )
-    .map_err(|error| binding_message(&context, error.to_string()))?;
-    let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let execution_venue = context
-        .loaded
-        .root
-        .clients
-        .get(execution_client_id)
-        .map(|client| client.venue)
-        .ok_or_else(|| {
-            binding_message(
-                &context,
-                format!(
-                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-                ),
-            )
-        })?;
-    let build_context = StrategyBuildContext::new(
-        fee_provider,
-        context.decision_evidence.clone(),
-        context.submit_admission.clone(),
-        context.order_execution_policy,
-        execution_venue,
-    )
-    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
-    let registry = production_strategy_registry()
-        .map_err(|error| binding_message(&context, error.to_string()))?;
-    registry
-        .register_strategy(
-            context.strategy_kind,
-            &raw,
-            &build_context,
-            node.kernel().trader(),
-        )
-        .map_err(|error| binding_message(&context, error.to_string()))
-}
-
 pub fn nt_submit_contract() -> CompleteSetNtSubmitContract {
     let contract = crate::bolt_v3_order_execution::nt_order_management_contract();
     CompleteSetNtSubmitContract {
@@ -374,22 +545,6 @@ fn submit_mode_time_in_force(value: &str) -> Result<TimeInForce> {
 fn parse_submit_mode(value: &str) -> Result<CompleteSetSubmitMode> {
     CompleteSetSubmitMode::from_config(value)
         .with_context(|| "submit_mode is not supported by the complete-set archetype")
-}
-
-fn binding_message(
-    context: &StrategyRegistrationContext<'_>,
-    message: String,
-) -> BoltV3StrategyRegistrationError {
-    BoltV3StrategyRegistrationError::Binding {
-        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-        strategy_archetype: context
-            .strategy
-            .config
-            .strategy_archetype
-            .as_str()
-            .to_string(),
-        message,
-    }
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ use bolt_v2::{
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
+    bolt_v3_providers::FeeProvider,
     bolt_v3_quote_lifecycle::{
         Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote, MarketState,
     },
@@ -33,17 +34,15 @@ use bolt_v2::{
         RealizedVolSnapshot,
     },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
+    bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
     bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
-    strategies::{
-        binary_oracle_maker::{
-            BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
-            BinaryOracleMakerRiskRouteInput, BinaryOracleMakerRuntimeQuoteRouteInput,
-            BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
-            BinaryOracleMakerRuntimeReferenceQuoteRouteInput, mu::MakerMuState,
-        },
-        registry::{FeeProvider, StrategyBuildContext},
+    strategies::binary_oracle_maker::{
+        BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
+        BinaryOracleMakerRiskRouteInput, BinaryOracleMakerRuntimeQuoteRouteInput,
+        BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
+        BinaryOracleMakerRuntimeReferenceQuoteRouteInput, mu::MakerMuState,
     },
 };
 use futures_util::{FutureExt, future::BoxFuture};

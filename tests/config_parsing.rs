@@ -2,7 +2,7 @@ use crate::support;
 
 use std::fs;
 
-use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
+use bolt_v2::strategies::binary_oracle_edge_taker::archetype::{
     BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE, BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
 };
 
@@ -1356,8 +1356,8 @@ fn bolt_v3_order_execution_mode_accepts_only_lowercase_live_and_shadow() {
 #[test]
 fn binary_oracle_parameters_reject_stale_strategy_local_submit_orders() {
     use bolt_v2::{
-        bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock,
         bolt_v3_config::BoltV3StrategyConfig,
+        strategies::binary_oracle_edge_taker::archetype::ParametersBlock,
     };
 
     let stale = fixture_strategy_with_submit_orders("true");
@@ -1491,8 +1491,8 @@ fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
     // canonical `OrderType` and `TimeInForce` (not bolt shadow enums).
     // NT serde is case-insensitive, so the fixture's `order_type = "market"`
     // and `time_in_force = "fok"` continue to parse unchanged.
-    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use bolt_v2::strategies::binary_oracle_edge_taker::archetype::ParametersBlock;
     use nautilus_model::enums::{OrderType, TimeInForce};
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -1518,8 +1518,8 @@ fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
 #[test]
 fn bolt_v3_archetype_runtime_parameters_reject_unknown_fields() {
     use bolt_v2::{
-        bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock,
         bolt_v3_config::BoltV3StrategyConfig,
+        strategies::binary_oracle_edge_taker::archetype::ParametersBlock,
     };
 
     let strategy_toml = fs::read_to_string(support::repo_path(
@@ -4290,9 +4290,9 @@ fn bolt_v3_archetype_rejects_stop_limit_entry_quote_quantity() {
 
 #[test]
 fn parses_minimal_bolt_v3_root_and_strategy_config() {
-    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
+    use bolt_v2::strategies::binary_oracle_edge_taker::archetype::ParametersBlock;
     use nautilus_common::enums::Environment;
     use nautilus_model::enums::{OrderType, TimeInForce};
 
@@ -4378,7 +4378,7 @@ fn rejects_unknown_bolt_v3_config_fields() {
         );
     let parameters_error = strategy
         .parameters
-        .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>()
+        .try_into::<bolt_v2::strategies::binary_oracle_edge_taker::archetype::ParametersBlock>()
         .expect_err("unknown field inside [parameters] should fail archetype typed deserialization")
         .to_string();
     assert!(
@@ -4843,7 +4843,7 @@ fn rejects_gate_provider_fields_under_strategy_runtime() {
         .expect("strategy envelope parse should keep parameters archetype-neutral");
     let error = strategy
         .parameters
-        .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>()
+        .try_into::<bolt_v2::strategies::binary_oracle_edge_taker::archetype::ParametersBlock>()
         .expect_err("gate provider source fields under [parameters.runtime] must be rejected")
         .to_string();
 
@@ -4859,7 +4859,7 @@ fn bolt_v3_archetype_rejects_all_six_gate_coupled_runtime_fields() {
     // Class regression lock (Codex/internal-review forbidden_fields gap). All SIX provider-coupled
     // fields are DECLARED in the RuntimeParametersBlock `Wire` struct, so `deny_unknown_fields`
     // does NOT reject them — each is rejected only by a dedicated `is_some()` guard in the custom
-    // Deserialize impl (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:165-194). Before this
+    // Deserialize impl (src/strategies/binary_oracle_edge_taker/archetype.rs:165-194). Before this
     // test only three of the six guards had injection coverage; the other three
     // (price_to_beat_report_schema_version, price_to_beat_report_decimal_scale,
     // forced_flat_stale_chainlink_ms) could be deleted while the field stayed a Wire field —
@@ -4908,7 +4908,7 @@ fn bolt_v3_archetype_rejects_all_six_gate_coupled_runtime_fields() {
         // fail-closed behavior and must name the offending `parameters.runtime.<field>` path.
         let error = match strategy
             .parameters
-            .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>(
+            .try_into::<bolt_v2::strategies::binary_oracle_edge_taker::archetype::ParametersBlock>(
         ) {
             Ok(_) => panic!(
                 "provider-coupled runtime field {field} was ACCEPTED at deserialize \
@@ -5645,7 +5645,10 @@ fn shipped_binary_oracle_configs_carry_sizing_ev_reference_for_deploy() {
 fn binary_oracle_archetype_exposes_provider_neutral_gate_requirements() {
     use std::collections::BTreeSet;
 
-    use bolt_v2::bolt_v3_archetypes::{GateRole, GateValueKind, binary_oracle_edge_taker};
+    use bolt_v2::{
+        bolt_v3_archetypes::{GateRole, GateValueKind},
+        strategies::binary_oracle_edge_taker::archetype as binary_oracle_edge_taker,
+    };
 
     let requirements = binary_oracle_edge_taker::gate_requirements();
     assert_eq!(requirements.len(), 1);

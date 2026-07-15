@@ -8,7 +8,7 @@ use crate::bolt_v3_config::{
     DataClientReadinessProbeQuoteTargetSource, DataInstrumentBlock,
     RealizedVolatilityAggregationBlock, RealizedVolatilityPolicyBlock,
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceBlock,
-    RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock,
+    RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock, StrategyArchetypeKey,
 };
 use crate::bolt_v3_iv::config::IvRootConfig;
 use crate::bolt_v3_iv::error::IvRejectReason;
@@ -263,6 +263,11 @@ fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface
 }
 
 fn loaded_config_with_strategy_archetypes(archetypes: &[&str]) -> LoadedBoltV3Config {
+    #[derive(serde::Deserialize)]
+    struct StrategyArchetypeFixture {
+        strategy_archetype: StrategyArchetypeKey,
+    }
+
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
     ))
@@ -276,8 +281,10 @@ fn loaded_config_with_strategy_archetypes(archetypes: &[&str]) -> LoadedBoltV3Co
         .iter()
         .map(|archetype| {
             let mut strategy = template.clone();
-            strategy.config.strategy_archetype = toml::from_str(&format!("\"{archetype}\""))
-                .expect("test archetype key should deserialize");
+            let fixture: StrategyArchetypeFixture =
+                toml::from_str(&format!("strategy_archetype = \"{archetype}\""))
+                    .expect("test archetype key should deserialize");
+            strategy.config.strategy_archetype = fixture.strategy_archetype;
             strategy
         })
         .collect();

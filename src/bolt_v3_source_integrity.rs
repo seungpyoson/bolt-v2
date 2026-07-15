@@ -330,6 +330,7 @@ mod tests {
                 "src/bolt_v3_outcome_groups.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/archetype.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
+                "src/strategies/complete_set_arbitrage/tests/event_forwarding.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/tests/mod.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/tests/shell.rs".to_string(),
                 "src/strategy_bindings.rs".to_string(),

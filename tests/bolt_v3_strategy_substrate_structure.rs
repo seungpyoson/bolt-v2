@@ -250,6 +250,9 @@ fn rust_files_below(root: &Path) -> Vec<PathBuf> {
         {
             let path = entry.expect("source entry should be readable").path();
             if path.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) == Some("target") {
+                    continue;
+                }
                 collect(&path, files);
             } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
                 files.push(path);
@@ -279,6 +282,76 @@ fn production_bolt_v3_files() -> Vec<PathBuf> {
     }
     files.sort();
     files
+}
+
+fn workspace_crate_files() -> Vec<PathBuf> {
+    rust_files_below(&repo_path("crates"))
+}
+
+fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
+    let actual = texts(tokens);
+    for start in 0..actual.len().saturating_sub(4) {
+        if actual[start..start + 4] == ["strategies", "::", "registry", "::"] {
+            if actual.get(start + 4) == Some(&type_name) {
+                return true;
+            }
+            if use_tree_contains_at_depth(&actual, start + 4, type_name) {
+                return true;
+            }
+        }
+        if actual[start..start + 3] == ["strategies", "::", "{"] {
+            let mut depth = 1usize;
+            let mut cursor = start + 3;
+            while cursor < actual.len() && depth > 0 {
+                match actual[cursor] {
+                    "{" => depth += 1,
+                    "}" => depth -= 1,
+                    "registry"
+                        if depth == 1
+                            && actual.get(cursor + 1) == Some(&"::")
+                            && is_use_tree_segment_start(&actual, cursor) =>
+                    {
+                        if actual.get(cursor + 2) == Some(&type_name)
+                            || use_tree_contains_at_depth(&actual, cursor + 2, type_name)
+                        {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+                cursor += 1;
+            }
+        }
+    }
+    false
+}
+
+fn use_tree_contains_at_depth(actual: &[&str], open_brace: usize, type_name: &str) -> bool {
+    if actual.get(open_brace) != Some(&"{") {
+        return false;
+    }
+    let mut depth = 1usize;
+    let mut cursor = open_brace + 1;
+    while cursor < actual.len() && depth > 0 {
+        match actual[cursor] {
+            "{" => depth += 1,
+            "}" => depth -= 1,
+            name
+                if depth == 1
+                    && name == type_name
+                    && is_use_tree_segment_start(actual, cursor) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    false
+}
+
+fn is_use_tree_segment_start(actual: &[&str], index: usize) -> bool {
+    matches!(actual.get(index.wrapping_sub(1)), Some(&"{") | Some(&","))
 }
 
 fn relative(path: &Path) -> String {
@@ -335,6 +408,28 @@ fn tokenizer_ignores_comments_strings_raw_strings_chars_and_lifetimes() {
         count_sequence(&controls, &["assemble_strategy_build_context"]),
         1
     );
+}
+
+#[test]
+fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
+    for source in [
+        "use bolt_v2::strategies::registry::FeeProvider;",
+        "use bolt_v2::strategies::registry::{FeeProvider, StrategyBuilder};",
+        "use bolt_v2::strategies::{registry::FeeProvider, production_strategy_registry};",
+        "use bolt_v2::strategies::{registry::{FeeProvider, StrategyBuildContext}};",
+    ] {
+        assert!(references_retired_registry_type(
+            &tokenize(source),
+            "FeeProvider"
+        ));
+    }
+    let unrelated = tokenize(
+        "use other::registry::{FeeProvider}; use bolt_v2::strategies::production_strategy_registry; use bolt_v2::strategies::registry::{nested::FeeProvider}; use bolt_v2::strategies::{nested::{registry::FeeProvider}};",
+    );
+    assert!(!references_retired_registry_type(
+        &unrelated,
+        "FeeProvider"
+    ));
 }
 
 #[test]
@@ -413,6 +508,27 @@ fn archetype_and_obsolete_full_path_layout_stays_retired() {
         }
     }
     assert!(violations.is_empty(), "obsolete full paths remain: {violations:?}");
+}
+
+#[test]
+fn workspace_crates_do_not_import_types_from_their_retired_registry_home() {
+    let mut violations = Vec::new();
+    for path in workspace_crate_files() {
+        let source = std::fs::read_to_string(&path).expect("workspace source should be readable");
+        let tokens = tokenize(&source);
+        for type_name in ["FeeProvider", "StrategyBuildContext"] {
+            if references_retired_registry_type(&tokens, type_name) {
+                violations.push(format!(
+                    "{}: strategies::registry::{type_name}",
+                    relative(&path)
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "workspace crates import shared types from retired registry homes: {violations:?}"
+    );
 }
 
 #[test]

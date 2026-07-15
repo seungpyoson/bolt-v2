@@ -36,13 +36,12 @@ use bolt_v2::{
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
+    bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
+    bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
-    strategies::{
-        production_strategy_registry,
-        registry::{FeeProvider, StrategyBuildContext},
-    },
+    strategies::production_strategy_registry,
 };
 use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;

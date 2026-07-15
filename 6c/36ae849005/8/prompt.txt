@@ -1,0 +1,13 @@
+I want you to conduct deep evidence-based investigation & research to come up with the best positional sizing and risk management practice for bolt-v2. I have positional sizer, which is a wrong name, which essentially is a kill switch and loss manager. we should have a respective issue or epic around it.
+
+---
+
+this should be read only and planning and spec session
+
+---
+
+you should conduct internal adverserial reviews to have a clear confidence in the architecture
+
+---
+
+we should checkout main and start from there

@@ -192,6 +192,18 @@ impl PreparedRequestPair {
         self.pre_balances
     }
 
+    pub(super) fn action_digest(&self) -> [u8; WORD_BYTES] {
+        self.action_digest
+    }
+
+    pub(super) fn safe_nonce(&self) -> SafeNonce {
+        self.original.identity.nonce()
+    }
+
+    pub(super) fn body_hashes(&self) -> [[u8; WORD_BYTES]; 2] {
+        [self.original.body.hash(), self.fence.body.hash()]
+    }
+
     pub fn authorize_original(
         self,
         fresh: FreshPreSendValidation,

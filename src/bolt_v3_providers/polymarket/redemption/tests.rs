@@ -97,37 +97,41 @@ fn query_values(queries: &ExactQuerySet) -> Vec<Value> {
 }
 
 fn chain_response(
-    authority: &impl ResponseReadAuthority,
+    authority: &impl ExactActionBinding,
     profile: &ValidatedRedemptionProfile,
     credentials: &ResolvedRedemptionCredentials,
     value: Value,
-) -> BoundedWireResponse {
-    BoundedWireResponse::read_chain(
+) -> FinalizedChainSourceResponse {
+    let mut finalized_block_number = [0; 32];
+    finalized_block_number[31] = 0x81;
+    FinalizedChainSourceResponse::from_hermetic_bytes(
         authority,
         profile,
         credentials,
-        Cursor::new(serde_json::to_vec(&value).unwrap()),
+        finalized_block_number,
+        [0xa5; 32],
+        &serde_json::to_vec(&value).unwrap(),
     )
     .unwrap()
 }
 
 fn relayer_response(
-    authority: &impl ResponseReadAuthority,
+    authority: &impl ExactActionBinding,
     profile: &ValidatedRedemptionProfile,
     credentials: &ResolvedRedemptionCredentials,
     value: Value,
-) -> BoundedWireResponse {
-    BoundedWireResponse::read_relayer(
+) -> RelayerSourceResponse {
+    RelayerSourceResponse::from_hermetic_bytes(
         authority,
         profile,
         credentials,
-        Cursor::new(serde_json::to_vec(&value).unwrap()),
+        &serde_json::to_vec(&value).unwrap(),
     )
     .unwrap()
 }
 
 fn raw_responses(
-    authority: &impl ResponseReadAuthority,
+    authority: &impl ExactActionBinding,
     profile: &ValidatedRedemptionProfile,
     credentials: &ResolvedRedemptionCredentials,
     queries: &ExactQuerySet,
@@ -214,7 +218,6 @@ fn raw_responses(
         })
     };
     ExactQueryResponses::new(
-        authority,
         credentials,
         chain_response(
             authority,
@@ -395,11 +398,11 @@ fn exact_relayer_record_binds_every_source_field() {
         1,
         SafeNonce::ZERO,
     ));
-    let submit = BoundedWireResponse::read_relayer(
+    let submit = RelayerSourceResponse::from_hermetic_bytes(
         &original,
         &profile,
         &credentials,
-        Cursor::new(br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#),
+        br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
     )
     .unwrap()
     .parse_submit(&original, &profile, &credentials)
@@ -490,7 +493,8 @@ fn original_wins_only_with_finalized_post_state() {
         responses
             .verify_after_original(&profile, &credentials, &original)
             .unwrap()
-            .resolution(),
+            .consume_after_original(&responses, &profile, &credentials, &original)
+            .unwrap(),
         RedemptionResolution::RedemptionFinalized
     );
 }
@@ -522,7 +526,8 @@ fn fence_wins_only_with_unchanged_post_state() {
         responses
             .verify_after_original(&profile, &credentials, &original)
             .unwrap()
-            .resolution(),
+            .consume_after_original(&responses, &profile, &credentials, &original)
+            .unwrap(),
         RedemptionResolution::IntegrityFailure
     );
     let fence = authorize_fence(original);
@@ -530,7 +535,8 @@ fn fence_wins_only_with_unchanged_post_state() {
         responses
             .verify_after_fence(&profile, &credentials, &fence)
             .unwrap()
-            .resolution(),
+            .consume_after_fence(&responses, &profile, &credentials, &fence)
+            .unwrap(),
         RedemptionResolution::PermanentlyFencedNoEffect
     );
 }
@@ -562,7 +568,8 @@ fn unrelated_nonce_fails_closed() {
         responses
             .verify_after_original(&profile, &credentials, &original)
             .unwrap()
-            .resolution(),
+            .consume_after_original(&responses, &profile, &credentials, &original)
+            .unwrap(),
         RedemptionResolution::IntegrityFailure
     );
 }
@@ -874,7 +881,8 @@ fn raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields() {
         responses
             .verify_after_original(&profile, &credentials, &original)
             .unwrap()
-            .resolution(),
+            .consume_after_original(&responses, &profile, &credentials, &original)
+            .unwrap(),
         RedemptionResolution::IntegrityFailure
     );
     let reorged = raw_responses(
@@ -892,7 +900,8 @@ fn raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields() {
         reorged
             .verify_after_original(&profile, &credentials, &original)
             .unwrap()
-            .resolution(),
+            .consume_after_original(&reorged, &profile, &credentials, &original)
+            .unwrap(),
         RedemptionResolution::IntegrityFailure
     );
     let wrong_id = raw_responses(
@@ -910,7 +919,8 @@ fn raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields() {
         wrong_id
             .verify_after_original(&profile, &credentials, &original)
             .unwrap()
-            .resolution(),
+            .consume_after_original(&wrong_id, &profile, &credentials, &original)
+            .unwrap(),
         RedemptionResolution::IntegrityFailure
     );
 }
@@ -932,6 +942,175 @@ fn sentinel_values_never_appear_in_redacted_projections() {
     assert!(!rendered.contains("5a5a5a5a"));
     assert!(!rendered.contains("18446744073709551616"));
     assert!(!rendered.contains("hermetic-api-key"));
+}
+
+#[test]
+fn fabricated_reader_has_no_production_proof_path() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let original = authorize_original(prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    ));
+    let response = RelayerSourceResponse::from_hermetic_bytes(
+        &original,
+        &profile,
+        &credentials,
+        br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        response.projection(&credentials).class,
+        ProjectionClass::RelayerResponse
+    );
+}
+
+#[test]
+fn cross_action_outcome_reuse_is_rejected() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let original = authorize_original(prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    ));
+    let queries = ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+    let responses = raw_responses(
+        &original,
+        &profile,
+        &credentials,
+        &queries,
+        None,
+        None,
+        None,
+        SafeNonce::ZERO,
+        [[1; 32], [2; 32]],
+    );
+    let outcome = responses
+        .verify_after_original(&profile, &credentials, &original)
+        .unwrap();
+    let other = authorize_original(prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        2,
+        SafeNonce::ZERO,
+    ));
+    assert_eq!(
+        outcome.consume_after_original(&responses, &profile, &credentials, &other),
+        Err(QueryError::BindingMismatch)
+    );
+}
+
+#[test]
+fn profile_key_source_and_finalized_bindings_fail_closed() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let original = authorize_original(prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    ));
+    let queries = ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+
+    let responses = raw_responses(
+        &original,
+        &profile,
+        &credentials,
+        &queries,
+        None,
+        None,
+        None,
+        SafeNonce::ZERO,
+        [[1; 32], [2; 32]],
+    );
+    let outcome = responses
+        .verify_after_original(&profile, &credentials, &original)
+        .unwrap();
+    let changed_config = CONFIG.replace("key_version = 1", "key_version = 2");
+    let changed_profile = validate_profile(&changed_config, MANIFEST).unwrap();
+    let changed_credentials = credentials(&changed_profile);
+    assert_eq!(
+        outcome.consume_after_original(
+            &responses,
+            &changed_profile,
+            &changed_credentials,
+            &original,
+        ),
+        Err(QueryError::BindingMismatch)
+    );
+
+    let wrong_source = RelayerSourceResponse::from_hermetic_bytes(
+        &original,
+        &profile,
+        &credentials,
+        br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
+    )
+    .unwrap()
+    .with_hermetic_source_identity([0x77; 32]);
+    assert!(
+        wrong_source
+            .parse_submit(&original, &profile, &credentials)
+            .is_err()
+    );
+
+    let finalized_responses = raw_responses(
+        &original,
+        &profile,
+        &credentials,
+        &queries,
+        None,
+        None,
+        None,
+        SafeNonce::ZERO,
+        [[1; 32], [2; 32]],
+    );
+    let finalized_outcome = finalized_responses
+        .verify_after_original(&profile, &credentials, &original)
+        .unwrap();
+    let mismatched_finalized =
+        finalized_responses.with_hermetic_finalized_coordinates([0x82; 32], [0xb6; 32]);
+    assert_eq!(
+        finalized_outcome.consume_after_original(
+            &mismatched_finalized,
+            &profile,
+            &credentials,
+            &original,
+        ),
+        Err(QueryError::BindingMismatch)
+    );
+
+    let source_responses = raw_responses(
+        &original,
+        &profile,
+        &credentials,
+        &queries,
+        None,
+        None,
+        None,
+        SafeNonce::ZERO,
+        [[1; 32], [2; 32]],
+    );
+    let source_outcome = source_responses
+        .verify_after_original(&profile, &credentials, &original)
+        .unwrap();
+    let wrong_chain_source = source_responses.with_hermetic_chain_source_identity([0x66; 32]);
+    assert_eq!(
+        source_outcome.consume_after_original(
+            &wrong_chain_source,
+            &profile,
+            &credentials,
+            &original,
+        ),
+        Err(QueryError::BindingMismatch)
+    );
 }
 
 #[test]

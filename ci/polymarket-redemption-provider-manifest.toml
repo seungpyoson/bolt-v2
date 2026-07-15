@@ -52,6 +52,7 @@ refund_receiver = "0x0000000000000000000000000000000000000000"
 signature_bytes = 65
 
 [relayer]
+origin = "https://relayer-v2.polymarket.com"
 reviewed_repository = "https://github.com/Polymarket/builder-relayer-client"
 reviewed_revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"
 safe_builder_blob = "3a05ac53d005d92822582a2a87d6bdbb13827187"
@@ -83,6 +84,7 @@ negative_risk_sha256 = "fcdd887f55d6768b2046c63d6e06c6cb4853380bb24e5d02a58dbac6
 relayer_sha256 = "2eca6f416f90d17aa6719254e3970573b395efea5159ccdc5eed67bd6e84a32c"
 
 [wire]
+chain_origin = "https://polygon-rpc.com"
 max_query_items = 7
 max_query_bytes = 4096
 max_transaction_items = 1

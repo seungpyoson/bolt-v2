@@ -37,8 +37,8 @@ pub use request::{
     build_request_pair, require_exact_retry,
 };
 pub use wire::{
-    BoundedWireResponse, ExactQueryResponses, RelayerObservation, RelayerState,
-    ResponseReadAuthority, WireDiagnostic, WireFailureClass, WireParseError,
+    ExactActionBinding, ExactQueryResponses, FinalizedChainSourceResponse, RelayerObservation,
+    RelayerSourceResponse, RelayerState, WireDiagnostic, WireFailureClass, WireParseError,
 };
 
 pub const POLYMARKET_RELAYER_ADAPTER_ID: &str = stringify!(PolymarketSafeRelayer);

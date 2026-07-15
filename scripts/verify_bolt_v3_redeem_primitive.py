@@ -56,7 +56,8 @@ CAPABILITIES = (
     "FenceMayHaveStartedPermit",
 )
 OPERATIONAL_SYMBOLS = set(CAPABILITIES) | {
-    "AuthorizedRequest", "BoundedWireResponse", "ExactQueryResponses", "ExactQuerySet",
+    "AuthorizedRequest", "FinalizedChainSourceResponse", "RelayerSourceResponse",
+    "ExactQueryResponses", "ExactQuerySet",
     "FenceMayHaveStartedRequest", "OriginalMayHaveStartedRequest", "build_request_pair",
     "resolve_credentials",
 }
@@ -241,6 +242,19 @@ def verify_capabilities(root: pathlib.Path) -> list[str]:
     }
     if outcome_issuer_uses != {"query.rs", "wire.rs"}:
         errors.append("AO-REDEEM verified outcome provenance escapes the raw wire verifier")
+    wire_source = (root / REDEMPTION_ROOT / "wire.rs").read_text(encoding="utf-8")
+    if re.search(r"pub\s+(?:fn|struct)[^{;]*(?:impl\s+)?(?:std::io::)?Read\b", wire_source):
+        errors.append("AO-REDEEM arbitrary reader can mint source proof")
+    if re.search(r"pub\s+struct\s+BoundedWireResponse\b", wire_source):
+        errors.append("AO-REDEEM arbitrary reader can mint source proof")
+    for capability in ("RelayerSourceResponse", "FinalizedChainSourceResponse"):
+        if not re.search(rf"pub struct {capability}\s*{{", wire_source):
+            errors.append(f"AO-REDEEM source-specific response capability missing: {capability}")
+        if re.search(
+            rf"pub\s+fn\s+\w+[^{{;]*->\s*(?:Self|{capability})\b",
+            wire_source,
+        ):
+            errors.append(f"AO-REDEEM production can mint source response: {capability}")
     wire_signatures = _function_signatures(
         rust_tokens((root / REDEMPTION_ROOT / "wire.rs").read_text(encoding="utf-8"))
     )
@@ -254,7 +268,8 @@ def verify_opaque_surfaces(root: pathlib.Path) -> list[str]:
     source = "\n".join((root / REDEMPTION_ROOT / name).read_text(encoding="utf-8") for name in ("request.rs", "query.rs", "wire.rs", "config.rs", "capability.rs"))
     payloads = CAPABILITIES + (
         "PreparedRequestPair", "AuthorizedRequest", "OriginalMayHaveStartedRequest",
-        "FenceMayHaveStartedRequest", "SourceBoundVerifiedOutcome", "BoundedWireResponse",
+        "FenceMayHaveStartedRequest", "SourceBoundVerifiedOutcome",
+        "RelayerSourceResponse", "FinalizedChainSourceResponse",
         "ExactQueryResponses", "RelayerObservation", "ResolvedRedemptionCredentials",
     )
     for name in payloads:
@@ -270,6 +285,25 @@ def verify_opaque_surfaces(root: pathlib.Path) -> list[str]:
     for forbidden in ("redaction_values", "raw_bytes", "body_bytes", "write_request", "write_query"):
         if re.search(rf"pub(?:\([^)]*\))?\s+fn\s+{forbidden}\b", source):
             errors.append(f"AO-REDEEM raw/effect surface exposed: {forbidden}")
+    query_source = (root / REDEMPTION_ROOT / "query.rs").read_text(encoding="utf-8")
+    outcome = re.search(r"pub struct SourceBoundVerifiedOutcome\s*{([^}]*)}", query_source, re.S)
+    required_binding = {
+        "resolution", "profile_digest", "config_digest", "key_version", "chain_id",
+        "relayer_source_identity", "chain_source_identity", "action_digest", "condition_id",
+        "safe_nonce", "original_body_hash", "fence_body_hash", "finalized_block_number",
+        "finalized_block_hash", "fence_authorized",
+    }
+    actual_binding = set(re.findall(r"^\s*(\w+)\s*:", outcome.group(1), re.M)) if outcome else set()
+    if actual_binding != required_binding:
+        errors.append("AO-REDEEM verified outcome binding is incomplete")
+    for method in ("consume_after_original", "consume_after_fence"):
+        if not re.search(rf"pub fn {method}\s*\(", query_source):
+            errors.append("AO-REDEEM exact terminal consumption is missing")
+        signatures = _function_signatures(rust_tokens(query_source)).get(method, [])
+        if not any("ExactQueryResponses" in signature for signature in signatures):
+            errors.append("AO-REDEEM exact terminal consumption lacks source capability binding")
+    if re.search(r"pub fn resolution\s*\(", query_source):
+        errors.append("AO-REDEEM terminal resolution bypasses exact terminal consumption")
     return errors
 
 
@@ -296,6 +330,18 @@ def verify(root: pathlib.Path) -> list[str]:
         errors.append("AO-REDEEM same-nonce fence ABI drifted")
     if relayer.get("explicit_nonce") != "source-proven" or relayer.get("competing_same_nonce") != "unproven":
         errors.append("AO-REDEEM relayer nonce capability is overstated")
+    rpc, wire = config.get("rpc", {}), manifest.get("wire", {})
+    if (
+        relayer.get("origin") != config.get("relayer", {}).get("origin")
+        or wire.get("chain_origin") != rpc.get("origin")
+        or not str(rpc.get("origin", "")).startswith("https://")
+        or set(rpc)
+        != {
+            "origin", "max_origin_bytes", "max_response_bytes", "overflow_probe_bytes",
+            "max_receipt_logs", "finality_confirmations",
+        }
+    ):
+        errors.append("AO-REDEEM configured source identities are not exact and source-fenced")
     if manifest.get("activation") != {"primitive_enabled": False, "requires_competing_same_nonce_conformance": True, "has_active_caller": False, "has_durable_state": False}:
         errors.append("AO-REDEEM manifest is not mechanically disabled and pure")
     if config.get("enabled") is not False or config.get("provider_manifest_id") != manifest.get("manifest_id"):
@@ -334,6 +380,8 @@ def verify(root: pathlib.Path) -> list[str]:
             errors.append(f"AO-REDEEM source snapshot digest drifted: {name}")
 
     wire_source = (root / REDEMPTION_ROOT / "wire.rs").read_text(encoding="utf-8")
+    if "RelayerSourceResponse" not in wire_source or "FinalizedChainSourceResponse" not in wire_source:
+        errors.append("AO-REDEEM source-specific response capabilities are missing")
     for raw_type in ("NonceCallWire", "ExecutionQueryWire", "CanonicalBlockWire", "ReceiptWire", "ExecutionLogWire", "PostStateWire", "SafeBoundaryWire", "FinalizedHeadWire"):
         if not re.search(rf"#\[serde\(deny_unknown_fields\)\]\s*(?:pub\(super\)\s+)?struct {raw_type}\b", wire_source):
             errors.append(f"AO-REDEEM raw source-bound schema is not closed: {raw_type}")
@@ -368,6 +416,9 @@ def verify(root: pathlib.Path) -> list[str]:
         "raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields",
         "sentinel_values_never_appear_in_redacted_projections", "primitive_is_mechanically_disabled",
         "sentinels_do_not_reach_redacted_diagnostics",
+        "fabricated_reader_has_no_production_proof_path",
+        "cross_action_outcome_reuse_is_rejected",
+        "profile_key_source_and_finalized_bindings_fail_closed",
     )
     for name in required_tests:
         if f"fn {name}" not in tests:

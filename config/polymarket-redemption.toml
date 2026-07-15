@@ -39,6 +39,8 @@ max_header_bytes = 1024
 competing_same_nonce_conformance = false
 
 [rpc]
+origin = "https://polygon-rpc.com"
+max_origin_bytes = 256
 max_response_bytes = 2097152
 overflow_probe_bytes = 1
 max_receipt_logs = 1

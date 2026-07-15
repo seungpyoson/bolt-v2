@@ -1,5 +1,6 @@
 use std::fmt;
-use std::io::Read;
+#[cfg(test)]
+use std::io::Cursor;
 
 use alloy_primitives::keccak256;
 use serde::de::{self, SeqAccess, Visitor};
@@ -13,7 +14,7 @@ use super::config::{ResolvedRedemptionCredentials, ValidatedRedemptionProfile};
 use super::nonce::SafeNonce;
 use super::query::{
     NonceRelation, PostStateRelation, RedemptionResolution, SourceBoundVerifiedOutcome,
-    classify_nonce_successor,
+    VerifiedOutcomeBinding, classify_nonce_successor,
 };
 use super::request::{
     FenceMayHaveStartedRequest, OriginalMayHaveStartedRequest, PreparedRequestPair, RequestKind,
@@ -22,76 +23,50 @@ use super::request::{
 const ADDRESS_BYTES: usize = 20;
 const WORD_BYTES: usize = 32;
 
-mod response_authority_private {
+mod action_binding_private {
     pub trait Sealed {}
 }
 
-/// Sealed proof that a quorum-durable exact request may already have started.
-pub trait ResponseReadAuthority: response_authority_private::Sealed {
+/// Sealed identity of the exact quorum-durable action under observation.
+///
+/// This is deliberately not response-source authority. Only an opaque
+/// source-specific response capability can attest where response bytes came from.
+pub trait ExactActionBinding: action_binding_private::Sealed {
     #[doc(hidden)]
     fn prepared_request_pair(&self) -> &PreparedRequestPair;
 }
 
-impl response_authority_private::Sealed for OriginalMayHaveStartedRequest {}
-impl response_authority_private::Sealed for FenceMayHaveStartedRequest {}
+impl action_binding_private::Sealed for OriginalMayHaveStartedRequest {}
+impl action_binding_private::Sealed for FenceMayHaveStartedRequest {}
 
-impl ResponseReadAuthority for OriginalMayHaveStartedRequest {
+impl ExactActionBinding for OriginalMayHaveStartedRequest {
     fn prepared_request_pair(&self) -> &PreparedRequestPair {
         self.prepared()
     }
 }
 
-impl ResponseReadAuthority for FenceMayHaveStartedRequest {
+impl ExactActionBinding for FenceMayHaveStartedRequest {
     fn prepared_request_pair(&self) -> &PreparedRequestPair {
         self.prepared()
     }
 }
 
-pub struct BoundedWireResponse {
+struct BoundedWireResponse {
     bytes: CappedBytes,
     class: ProjectionClass,
 }
 
 impl BoundedWireResponse {
-    pub fn read_relayer(
-        _authority: &impl ResponseReadAuthority,
-        profile: &ValidatedRedemptionProfile,
-        credentials: &ResolvedRedemptionCredentials,
-        reader: impl Read,
-    ) -> Result<Self, WireParseError> {
-        Self::read(
-            reader,
-            profile.max_relayer_response_bytes(),
-            profile,
-            credentials,
-            ProjectionClass::RelayerResponse,
-        )
-    }
-
-    pub fn read_chain(
-        _authority: &impl ResponseReadAuthority,
-        profile: &ValidatedRedemptionProfile,
-        credentials: &ResolvedRedemptionCredentials,
-        reader: impl Read,
-    ) -> Result<Self, WireParseError> {
-        Self::read(
-            reader,
-            profile.max_rpc_response_bytes(),
-            profile,
-            credentials,
-            ProjectionClass::ChainResponse,
-        )
-    }
-
-    fn read(
-        reader: impl Read,
+    #[cfg(test)]
+    fn from_hermetic_bytes(
+        bytes: &[u8],
         limit: usize,
         profile: &ValidatedRedemptionProfile,
         credentials: &ResolvedRedemptionCredentials,
         class: ProjectionClass,
     ) -> Result<Self, WireParseError> {
         let bytes = CappedBytes::read_with_probe(
-            reader,
+            Cursor::new(bytes),
             limit,
             profile.overflow_probe_bytes(),
             credentials.redaction_hmac_key(),
@@ -102,99 +77,13 @@ impl BoundedWireResponse {
         Ok(Self { bytes, class })
     }
 
-    pub fn projection(&self, credentials: &ResolvedRedemptionCredentials) -> RedactedProjection {
+    fn projection(&self, credentials: &ResolvedRedemptionCredentials) -> RedactedProjection {
         self.bytes.projection(
             self.class,
             1,
             credentials.redaction_hmac_key(),
             credentials.key_version(),
         )
-    }
-
-    pub fn parse_submit(
-        &self,
-        _authority: &impl ResponseReadAuthority,
-        profile: &ValidatedRedemptionProfile,
-        credentials: &ResolvedRedemptionCredentials,
-    ) -> Result<RelayerObservation, WireParseError> {
-        if self.class != ProjectionClass::RelayerResponse {
-            return Err(self.failure(WireFailureClass::IdentityMismatch, credentials));
-        }
-        let parsed: SubmitWire<'_> = serde_json::from_slice(self.bytes.as_slice())
-            .map_err(|_| self.failure(WireFailureClass::Malformed, credentials))?;
-        validate_id(parsed.transaction_id, profile)
-            .map_err(|class| self.failure(class, credentials))?;
-        let state = parse_state(parsed.state)
-            .ok_or_else(|| self.failure(WireFailureClass::UnknownState, credentials))?;
-        let transaction_hash = parse_optional_hash(parsed.transaction_hash)
-            .ok_or_else(|| self.failure(WireFailureClass::Malformed, credentials))?;
-        Ok(RelayerObservation {
-            transaction_id: zeroizing_box(parsed.transaction_id.as_bytes()),
-            transaction_id_digest: keyed_digest(
-                credentials.redaction_hmac_key(),
-                parsed.transaction_id.as_bytes(),
-            ),
-            state,
-            transaction_hash,
-            key_version: credentials.key_version(),
-        })
-    }
-
-    pub fn parse_exact_transaction(
-        &self,
-        authority: &impl ResponseReadAuthority,
-        profile: &ValidatedRedemptionProfile,
-        credentials: &ResolvedRedemptionCredentials,
-        expected: &RelayerObservation,
-        kind: RequestKind,
-    ) -> Result<RelayerObservation, WireParseError> {
-        if self.class != ProjectionClass::RelayerResponse {
-            return Err(self.failure(WireFailureClass::IdentityMismatch, credentials));
-        }
-        let exact: ExactOne<'_> = serde_json::from_slice(self.bytes.as_slice())
-            .map_err(|_| self.failure(WireFailureClass::Malformed, credentials))?;
-        let transaction = exact.0;
-        validate_id(transaction.transaction_id, profile)
-            .map_err(|class| self.failure(class, credentials))?;
-        if transaction.transaction_id.as_bytes() != expected.transaction_id.as_ref() {
-            return Err(self.failure(WireFailureClass::IdentityMismatch, credentials));
-        }
-        let request = authority.prepared_request_pair().request(kind);
-        if decode_address(transaction.from) != Some(request.owner())
-            || decode_address(transaction.to) != Some(request.identity().target())
-            || decode_address(transaction.proxy_address) != Some(request.identity().safe_address())
-            || !hex_matches(transaction.data, request.calldata())
-            || SafeNonce::from_decimal(transaction.nonce).ok() != Some(request.identity().nonce())
-            || transaction.value != "0"
-            || transaction.transaction_type != "SAFE"
-            || transaction.metadata.as_bytes() != request.metadata()
-        {
-            return Err(self.failure(WireFailureClass::IdentityMismatch, credentials));
-        }
-        if transaction.created_at.len() > profile.max_timestamp_bytes()
-            || transaction.updated_at.len() > profile.max_timestamp_bytes()
-            || transaction.metadata.len() > profile.max_metadata_bytes()
-        {
-            return Err(self.failure(WireFailureClass::FieldTooLarge, credentials));
-        }
-        let state = parse_state(transaction.state)
-            .ok_or_else(|| self.failure(WireFailureClass::UnknownState, credentials))?;
-        let transaction_hash = parse_optional_hash(transaction.transaction_hash)
-            .ok_or_else(|| self.failure(WireFailureClass::Malformed, credentials))?;
-        if transaction_hash.is_some_and(|hash| hash != request.identity().safe_transaction_hash())
-            || expected
-                .transaction_hash
-                .is_some_and(|expected_hash| Some(expected_hash) != transaction_hash)
-        {
-            return Err(self.failure(WireFailureClass::IdentityMismatch, credentials));
-        }
-        Ok(RelayerObservation {
-            transaction_id: zeroizing_box(transaction.transaction_id.as_bytes()),
-            transaction_id_digest: expected.transaction_id_digest,
-            state,
-            transaction_hash,
-            key_version: expected.key_version,
-        })
     }
 
     fn failure(
@@ -212,26 +101,323 @@ impl BoundedWireResponse {
     }
 }
 
+struct ActionSourceBinding {
+    profile_digest: [u8; WORD_BYTES],
+    config_digest: [u8; WORD_BYTES],
+    key_version: u32,
+    chain_id: u64,
+    source_identity: [u8; WORD_BYTES],
+    action_digest: [u8; WORD_BYTES],
+    condition_id: [u8; WORD_BYTES],
+    safe_nonce: SafeNonce,
+    original_body_hash: [u8; WORD_BYTES],
+    fence_body_hash: [u8; WORD_BYTES],
+}
+
+impl ActionSourceBinding {
+    fn for_source(
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        prepared: &PreparedRequestPair,
+        source_identity: [u8; WORD_BYTES],
+    ) -> Self {
+        let [original_body_hash, fence_body_hash] = prepared.body_hashes();
+        Self {
+            profile_digest: profile.profile_digest(),
+            config_digest: profile.config_digest(),
+            key_version: credentials.key_version(),
+            chain_id: profile.chain_id(),
+            source_identity,
+            action_digest: prepared.action_digest(),
+            condition_id: prepared.condition_id(),
+            safe_nonce: prepared.safe_nonce(),
+            original_body_hash,
+            fence_body_hash,
+        }
+    }
+
+    fn matches(
+        &self,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        prepared: &PreparedRequestPair,
+        source_identity: [u8; WORD_BYTES],
+    ) -> bool {
+        let expected = Self::for_source(profile, credentials, prepared, source_identity);
+        self.profile_digest == expected.profile_digest
+            && self.config_digest == expected.config_digest
+            && self.key_version == expected.key_version
+            && self.chain_id == expected.chain_id
+            && self.source_identity == expected.source_identity
+            && self.action_digest == expected.action_digest
+            && self.condition_id == expected.condition_id
+            && self.safe_nonce == expected.safe_nonce
+            && self.original_body_hash == expected.original_body_hash
+            && self.fence_body_hash == expected.fence_body_hash
+    }
+}
+
+/// Opaque proof that bounded bytes were obtained from the configured relayer.
+/// No production issuer exists in this mechanically disabled slice.
+pub struct RelayerSourceResponse {
+    response: BoundedWireResponse,
+    binding: ActionSourceBinding,
+}
+
+impl RelayerSourceResponse {
+    #[cfg(test)]
+    pub(super) fn from_hermetic_bytes(
+        authority: &impl ExactActionBinding,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        bytes: &[u8],
+    ) -> Result<Self, WireParseError> {
+        Ok(Self {
+            response: BoundedWireResponse::from_hermetic_bytes(
+                bytes,
+                profile.max_relayer_response_bytes(),
+                profile,
+                credentials,
+                ProjectionClass::RelayerResponse,
+            )?,
+            binding: ActionSourceBinding::for_source(
+                profile,
+                credentials,
+                authority.prepared_request_pair(),
+                profile.relayer_source_identity(),
+            ),
+        })
+    }
+
+    pub fn projection(&self, credentials: &ResolvedRedemptionCredentials) -> RedactedProjection {
+        self.response.projection(credentials)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_hermetic_source_identity(
+        mut self,
+        source_identity: [u8; WORD_BYTES],
+    ) -> Self {
+        self.binding.source_identity = source_identity;
+        self
+    }
+
+    pub fn parse_submit(
+        &self,
+        authority: &impl ExactActionBinding,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+    ) -> Result<RelayerObservation, WireParseError> {
+        if !self.binding.matches(
+            profile,
+            credentials,
+            authority.prepared_request_pair(),
+            profile.relayer_source_identity(),
+        ) {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        let parsed: SubmitWire<'_> = serde_json::from_slice(self.response.bytes.as_slice())
+            .map_err(|_| {
+                self.response
+                    .failure(WireFailureClass::Malformed, credentials)
+            })?;
+        validate_id(parsed.transaction_id, profile)
+            .map_err(|class| self.response.failure(class, credentials))?;
+        let state = parse_state(parsed.state).ok_or_else(|| {
+            self.response
+                .failure(WireFailureClass::UnknownState, credentials)
+        })?;
+        let transaction_hash = parse_optional_hash(parsed.transaction_hash).ok_or_else(|| {
+            self.response
+                .failure(WireFailureClass::Malformed, credentials)
+        })?;
+        Ok(RelayerObservation {
+            transaction_id: zeroizing_box(parsed.transaction_id.as_bytes()),
+            transaction_id_digest: keyed_digest(
+                credentials.redaction_hmac_key(),
+                parsed.transaction_id.as_bytes(),
+            ),
+            state,
+            transaction_hash,
+            key_version: credentials.key_version(),
+        })
+    }
+
+    pub fn parse_exact_transaction(
+        &self,
+        authority: &impl ExactActionBinding,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        expected: &RelayerObservation,
+        kind: RequestKind,
+    ) -> Result<RelayerObservation, WireParseError> {
+        if !self.binding.matches(
+            profile,
+            credentials,
+            authority.prepared_request_pair(),
+            profile.relayer_source_identity(),
+        ) {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        let exact: ExactOne<'_> =
+            serde_json::from_slice(self.response.bytes.as_slice()).map_err(|_| {
+                self.response
+                    .failure(WireFailureClass::Malformed, credentials)
+            })?;
+        let transaction = exact.0;
+        validate_id(transaction.transaction_id, profile)
+            .map_err(|class| self.response.failure(class, credentials))?;
+        if transaction.transaction_id.as_bytes() != expected.transaction_id.as_ref() {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        let request = authority.prepared_request_pair().request(kind);
+        if decode_address(transaction.from) != Some(request.owner())
+            || decode_address(transaction.to) != Some(request.identity().target())
+            || decode_address(transaction.proxy_address) != Some(request.identity().safe_address())
+            || !hex_matches(transaction.data, request.calldata())
+            || SafeNonce::from_decimal(transaction.nonce).ok() != Some(request.identity().nonce())
+            || transaction.value != "0"
+            || transaction.transaction_type != "SAFE"
+            || transaction.metadata.as_bytes() != request.metadata()
+        {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        if transaction.created_at.len() > profile.max_timestamp_bytes()
+            || transaction.updated_at.len() > profile.max_timestamp_bytes()
+            || transaction.metadata.len() > profile.max_metadata_bytes()
+        {
+            return Err(self
+                .response
+                .failure(WireFailureClass::FieldTooLarge, credentials));
+        }
+        let state = parse_state(transaction.state).ok_or_else(|| {
+            self.response
+                .failure(WireFailureClass::UnknownState, credentials)
+        })?;
+        let transaction_hash =
+            parse_optional_hash(transaction.transaction_hash).ok_or_else(|| {
+                self.response
+                    .failure(WireFailureClass::Malformed, credentials)
+            })?;
+        if transaction_hash.is_some_and(|hash| hash != request.identity().safe_transaction_hash())
+            || expected
+                .transaction_hash
+                .is_some_and(|expected_hash| Some(expected_hash) != transaction_hash)
+        {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        Ok(RelayerObservation {
+            transaction_id: zeroizing_box(transaction.transaction_id.as_bytes()),
+            transaction_id_digest: expected.transaction_id_digest,
+            state,
+            transaction_hash,
+            key_version: expected.key_version,
+        })
+    }
+}
+
+/// Opaque proof that bounded bytes were obtained at one exact finalized-chain
+/// coordinate from the configured chain source. There is no production issuer.
+pub struct FinalizedChainSourceResponse {
+    response: BoundedWireResponse,
+    binding: ActionSourceBinding,
+    finalized_block_number: [u8; WORD_BYTES],
+    finalized_block_hash: [u8; WORD_BYTES],
+}
+
+impl FinalizedChainSourceResponse {
+    #[cfg(test)]
+    pub(super) fn from_hermetic_bytes(
+        authority: &impl ExactActionBinding,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        finalized_block_number: [u8; WORD_BYTES],
+        finalized_block_hash: [u8; WORD_BYTES],
+        bytes: &[u8],
+    ) -> Result<Self, WireParseError> {
+        Ok(Self {
+            response: BoundedWireResponse::from_hermetic_bytes(
+                bytes,
+                profile.max_rpc_response_bytes(),
+                profile,
+                credentials,
+                ProjectionClass::ChainResponse,
+            )?,
+            binding: ActionSourceBinding::for_source(
+                profile,
+                credentials,
+                authority.prepared_request_pair(),
+                profile.chain_source_identity(),
+            ),
+            finalized_block_number,
+            finalized_block_hash,
+        })
+    }
+
+    pub fn projection(&self, credentials: &ResolvedRedemptionCredentials) -> RedactedProjection {
+        self.response.projection(credentials)
+    }
+
+    fn same_binding(&self, other: &Self) -> bool {
+        self.binding.profile_digest == other.binding.profile_digest
+            && self.binding.config_digest == other.binding.config_digest
+            && self.binding.key_version == other.binding.key_version
+            && self.binding.chain_id == other.binding.chain_id
+            && self.binding.source_identity == other.binding.source_identity
+            && self.binding.action_digest == other.binding.action_digest
+            && self.binding.condition_id == other.binding.condition_id
+            && self.binding.safe_nonce == other.binding.safe_nonce
+            && self.binding.original_body_hash == other.binding.original_body_hash
+            && self.binding.fence_body_hash == other.binding.fence_body_hash
+            && self.finalized_block_number == other.finalized_block_number
+            && self.finalized_block_hash == other.finalized_block_hash
+    }
+
+    fn matches_action(
+        &self,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        prepared: &PreparedRequestPair,
+    ) -> bool {
+        self.binding.matches(
+            profile,
+            credentials,
+            prepared,
+            profile.chain_source_identity(),
+        ) && self.finalized_block_number != [0; WORD_BYTES]
+            && self.finalized_block_hash != [0; WORD_BYTES]
+    }
+}
+
 pub struct ExactQueryResponses {
-    nonce: BoundedWireResponse,
-    original_execution: BoundedWireResponse,
-    fence_execution: BoundedWireResponse,
-    post_state: BoundedWireResponse,
-    safe_boundary: BoundedWireResponse,
-    finalized_head: BoundedWireResponse,
+    nonce: FinalizedChainSourceResponse,
+    original_execution: FinalizedChainSourceResponse,
+    fence_execution: FinalizedChainSourceResponse,
+    post_state: FinalizedChainSourceResponse,
+    safe_boundary: FinalizedChainSourceResponse,
+    finalized_head: FinalizedChainSourceResponse,
 }
 
 impl ExactQueryResponses {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        _authority: &impl ResponseReadAuthority,
         credentials: &ResolvedRedemptionCredentials,
-        nonce: BoundedWireResponse,
-        original_execution: BoundedWireResponse,
-        fence_execution: BoundedWireResponse,
-        post_state: BoundedWireResponse,
-        safe_boundary: BoundedWireResponse,
-        finalized_head: BoundedWireResponse,
+        nonce: FinalizedChainSourceResponse,
+        original_execution: FinalizedChainSourceResponse,
+        fence_execution: FinalizedChainSourceResponse,
+        post_state: FinalizedChainSourceResponse,
+        safe_boundary: FinalizedChainSourceResponse,
+        finalized_head: FinalizedChainSourceResponse,
     ) -> Result<Self, WireParseError> {
         for response in [
             &nonce,
@@ -241,8 +427,10 @@ impl ExactQueryResponses {
             &safe_boundary,
             &finalized_head,
         ] {
-            if response.class != ProjectionClass::ChainResponse {
-                return Err(response.failure(WireFailureClass::IdentityMismatch, credentials));
+            if !nonce.same_binding(response) {
+                return Err(response
+                    .response
+                    .failure(WireFailureClass::IdentityMismatch, credentials));
             }
         }
         Ok(Self {
@@ -264,6 +452,58 @@ impl ExactQueryResponses {
         self.verify(profile, credentials, attempt.prepared(), false)
     }
 
+    pub(super) fn matches_terminal_binding(
+        &self,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        prepared: &PreparedRequestPair,
+        finalized_block_number: [u8; WORD_BYTES],
+        finalized_block_hash: [u8; WORD_BYTES],
+    ) -> bool {
+        self.finalized_head
+            .matches_action(profile, credentials, prepared)
+            && self.finalized_head.finalized_block_number == finalized_block_number
+            && self.finalized_head.finalized_block_hash == finalized_block_hash
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_hermetic_finalized_coordinates(
+        mut self,
+        finalized_block_number: [u8; WORD_BYTES],
+        finalized_block_hash: [u8; WORD_BYTES],
+    ) -> Self {
+        for response in [
+            &mut self.nonce,
+            &mut self.original_execution,
+            &mut self.fence_execution,
+            &mut self.post_state,
+            &mut self.safe_boundary,
+            &mut self.finalized_head,
+        ] {
+            response.finalized_block_number = finalized_block_number;
+            response.finalized_block_hash = finalized_block_hash;
+        }
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_hermetic_chain_source_identity(
+        mut self,
+        source_identity: [u8; WORD_BYTES],
+    ) -> Self {
+        for response in [
+            &mut self.nonce,
+            &mut self.original_execution,
+            &mut self.fence_execution,
+            &mut self.post_state,
+            &mut self.safe_boundary,
+            &mut self.finalized_head,
+        ] {
+            response.binding.source_identity = source_identity;
+        }
+        self
+    }
+
     pub fn verify_after_fence(
         &self,
         profile: &ValidatedRedemptionProfile,
@@ -280,6 +520,20 @@ impl ExactQueryResponses {
         prepared: &PreparedRequestPair,
         fence_durably_authorized: bool,
     ) -> Result<SourceBoundVerifiedOutcome, WireParseError> {
+        for response in [
+            &self.nonce,
+            &self.original_execution,
+            &self.fence_execution,
+            &self.post_state,
+            &self.safe_boundary,
+            &self.finalized_head,
+        ] {
+            if !response.matches_action(profile, credentials, prepared) {
+                return Err(response
+                    .response
+                    .failure(WireFailureClass::IdentityMismatch, credentials));
+            }
+        }
         let nonce: NonceCallWire<'_> = self.parse(&self.nonce, credentials)?;
         let original: ExecutionQueryWire<'_> = self.parse(&self.original_execution, credentials)?;
         let fence: ExecutionQueryWire<'_> = self.parse(&self.fence_execution, credentials)?;
@@ -289,6 +543,14 @@ impl ExactQueryResponses {
 
         let finalized_number = parse_quantity_word(finalized.block_number);
         let finalized_hash = parse_word(finalized.block_hash);
+        if finalized_number != Some(self.finalized_head.finalized_block_number)
+            || finalized_hash != Some(self.finalized_head.finalized_block_hash)
+        {
+            return Err(self
+                .finalized_head
+                .response
+                .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
         let nonce_number = parse_quantity_word(nonce.block_number);
         let nonce_hash = parse_word(nonce.block_hash);
         let post_number = parse_quantity_word(post.block_number);
@@ -302,6 +564,8 @@ impl ExactQueryResponses {
             && finalized.chain_id == profile.chain_id()
             && finalized_number.is_some_and(|value| value != [0; WORD_BYTES])
             && finalized_hash.is_some_and(|value| value != [0; WORD_BYTES])
+            && finalized_number == Some(self.finalized_head.finalized_block_number)
+            && finalized_hash == Some(self.finalized_head.finalized_block_hash)
             && nonce.query_id == "safe_nonce"
             && decode_address(nonce.safe_address) == Some(profile.safe_address())
             && hex_matches(nonce.calldata, &profile.nonce_selector())
@@ -402,16 +666,29 @@ impl ExactQueryResponses {
                 _ => RedemptionResolution::IntegrityFailure,
             }
         };
-        Ok(SourceBoundVerifiedOutcome::from_raw_verifier(resolution))
+        Ok(SourceBoundVerifiedOutcome::from_raw_verifier(
+            resolution,
+            profile,
+            credentials,
+            prepared,
+            VerifiedOutcomeBinding {
+                finalized_block_number: self.finalized_head.finalized_block_number,
+                finalized_block_hash: self.finalized_head.finalized_block_hash,
+                fence_authorized: fence_durably_authorized,
+            },
+        ))
     }
 
     fn parse<'a, T: Deserialize<'a>>(
         &self,
-        response: &'a BoundedWireResponse,
+        response: &'a FinalizedChainSourceResponse,
         credentials: &ResolvedRedemptionCredentials,
     ) -> Result<T, WireParseError> {
-        serde_json::from_slice(response.bytes.as_slice())
-            .map_err(|_| response.failure(WireFailureClass::Malformed, credentials))
+        serde_json::from_slice(response.response.bytes.as_slice()).map_err(|_| {
+            response
+                .response
+                .failure(WireFailureClass::Malformed, credentials)
+        })
     }
 }
 

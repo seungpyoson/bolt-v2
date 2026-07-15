@@ -2,7 +2,7 @@ use std::fmt;
 
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::bounded::{ProjectionClass, RedactedProjection};
@@ -73,6 +73,8 @@ struct RawRelayer {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRpc {
+    origin: String,
+    max_origin_bytes: usize,
     max_response_bytes: usize,
     overflow_probe_bytes: usize,
     max_receipt_logs: usize,
@@ -186,6 +188,7 @@ struct RawManifestSafe {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifestRelayer {
+    origin: String,
     reviewed_repository: String,
     reviewed_revision: String,
     safe_builder_blob: String,
@@ -226,6 +229,7 @@ struct RawManifestSourceSnapshots {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifestWire {
+    chain_origin: String,
     max_query_items: usize,
     max_query_bytes: usize,
     max_transaction_items: usize,
@@ -254,6 +258,10 @@ struct RawManifestActivation {
 }
 
 pub struct ValidatedRedemptionProfile {
+    profile_digest: [u8; WORD_BYTES],
+    config_digest: [u8; WORD_BYTES],
+    relayer_source_identity: [u8; WORD_BYTES],
+    chain_source_identity: [u8; WORD_BYTES],
     chain_id: u64,
     safe_address: [u8; ADDRESS_BYTES],
     safe_factory: [u8; ADDRESS_BYTES],
@@ -270,6 +278,7 @@ pub struct ValidatedRedemptionProfile {
     redemption_selector: [u8; SELECTOR_BYTES],
     nonce_selector: [u8; SELECTOR_BYTES],
     relayer_origin: Box<str>,
+    chain_origin: Box<str>,
     submit_path: Box<str>,
     transaction_path: Box<str>,
     nonce_path: Box<str>,
@@ -292,6 +301,22 @@ pub struct ValidatedRedemptionProfile {
 }
 
 impl ValidatedRedemptionProfile {
+    pub(super) fn profile_digest(&self) -> [u8; WORD_BYTES] {
+        self.profile_digest
+    }
+
+    pub(super) fn config_digest(&self) -> [u8; WORD_BYTES] {
+        self.config_digest
+    }
+
+    pub(super) fn relayer_source_identity(&self) -> [u8; WORD_BYTES] {
+        self.relayer_source_identity
+    }
+
+    pub(super) fn chain_source_identity(&self) -> [u8; WORD_BYTES] {
+        self.chain_source_identity
+    }
+
     pub fn max_request_bytes(&self) -> usize {
         self.max_request_bytes
     }
@@ -395,6 +420,10 @@ impl ValidatedRedemptionProfile {
 
 impl Drop for ValidatedRedemptionProfile {
     fn drop(&mut self) {
+        self.profile_digest.zeroize();
+        self.config_digest.zeroize();
+        self.relayer_source_identity.zeroize();
+        self.chain_source_identity.zeroize();
         self.chain_id.zeroize();
         self.safe_address.zeroize();
         self.safe_factory.zeroize();
@@ -411,6 +440,7 @@ impl Drop for ValidatedRedemptionProfile {
         self.redemption_selector.zeroize();
         self.nonce_selector.zeroize();
         self.relayer_origin.as_mut().zeroize();
+        self.chain_origin.as_mut().zeroize();
         self.submit_path.as_mut().zeroize();
         self.transaction_path.as_mut().zeroize();
         self.nonce_path.as_mut().zeroize();
@@ -517,7 +547,22 @@ pub fn validate_profile(
             return Err(RedemptionConfigError::InvalidSsmPath);
         }
     }
+    let config_digest: [u8; WORD_BYTES] = Sha256::digest(config_toml.as_bytes()).into();
+    let mut profile_hasher = Sha256::new();
+    profile_hasher.update((config_toml.len() as u64).to_be_bytes());
+    profile_hasher.update(config_toml.as_bytes());
+    profile_hasher.update((manifest_toml.len() as u64).to_be_bytes());
+    profile_hasher.update(manifest_toml.as_bytes());
+    let profile_digest: [u8; WORD_BYTES] = profile_hasher.finalize().into();
+    let relayer_source_identity: [u8; WORD_BYTES] =
+        Sha256::digest(config.relayer.origin.as_bytes()).into();
+    let chain_source_identity: [u8; WORD_BYTES] =
+        Sha256::digest(config.rpc.origin.as_bytes()).into();
     let profile = ValidatedRedemptionProfile {
+        profile_digest,
+        config_digest,
+        relayer_source_identity,
+        chain_source_identity,
         chain_id: config.wallet.chain_id,
         safe_address: parse_address(&config.wallet.safe_address, false)?,
         safe_factory: parse_address(&config.wallet.safe_factory, false)?,
@@ -534,6 +579,7 @@ pub fn validate_profile(
         redemption_selector: parse_fixed(&manifest.adapter.external_selector)?,
         nonce_selector: parse_fixed(&manifest.safe.nonce_selector)?,
         relayer_origin: config.relayer.origin.into_boxed_str(),
+        chain_origin: config.rpc.origin.into_boxed_str(),
         submit_path: config.relayer.submit_path.into_boxed_str(),
         transaction_path: config.relayer.transaction_path.into_boxed_str(),
         nonce_path: config.relayer.nonce_path.into_boxed_str(),
@@ -607,6 +653,8 @@ fn validate_manifest(
         || relayer.explicit_nonce != "source-proven"
         || relayer.competing_same_nonce != "unproven"
         || config.relayer.competing_same_nonce_conformance
+        || config.relayer.origin != relayer.origin
+        || config.rpc.origin != wire.chain_origin
         || config.relayer.submit_path != relayer.submit_path
         || config.relayer.transaction_path != relayer.transaction_path
         || config.relayer.nonce_path != relayer.nonce_path
@@ -615,6 +663,8 @@ fn validate_manifest(
         || config.relayer.transaction_path.len() > config.relayer.max_path_bytes
         || config.relayer.nonce_path.len() > config.relayer.max_path_bytes
         || !config.relayer.origin.starts_with("https://")
+        || config.rpc.origin.len() > config.rpc.max_origin_bytes
+        || !config.rpc.origin.starts_with("https://")
         || wire.max_query_items == 0
         || wire.max_transaction_items != 1
         || wire.max_header_items != 4
@@ -640,6 +690,7 @@ fn validate_manifest(
         || config.relayer.max_metadata_bytes == 0
         || config.relayer.max_header_bytes == 0
         || config.rpc.max_response_bytes == 0
+        || config.rpc.max_origin_bytes == 0
         || config.rpc.max_receipt_logs == 0
         || config.rpc.finality_confirmations == 0
         || config.credentials.max_value_bytes == 0

@@ -5,6 +5,70 @@
 # runtime literal to be recorded here with a classification and rationale.
 
 [[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = '''"https://"'''
+context = '''|| !config.rpc.origin.starts_with("https://")'''
+classification = "redemption_source_transport_scheme"
+reason = "This is the required secure URI scheme for the TOML-owned chain source identity, not a configured endpoint or runtime policy value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = '''|| config.rpc.max_origin_bytes == 0'''
+classification = "redemption_nonzero_capacity_sentinel"
+reason = "Zero is the type-domain sentinel used to reject a disabled TOML-owned source-identity capacity; the operational capacity comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = '''const WORD_BYTES: usize = 32;'''
+classification = "evm_word_width"
+reason = "Thirty-two bytes is the protocol-defined EVM word and hash width, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = '''|| self.finalized_block_number == [0; WORD_BYTES]'''
+classification = "redemption_missing_finalized_coordinate_sentinel"
+reason = "The all-zero word is the structural missing-coordinate sentinel; the exact finalized block number is supplied only by a sealed source capability."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "0"
+context = '''|| self.finalized_block_hash == [0; WORD_BYTES]'''
+classification = "redemption_missing_finalized_coordinate_sentinel"
+reason = "The all-zero word is the structural missing-coordinate sentinel; the exact finalized block hash is supplied only by a sealed source capability."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = '''pub(super) fn body_hashes(&self) -> [[u8; WORD_BYTES]; 2] {'''
+classification = "redemption_original_fence_pair_arity"
+reason = "Two is the frozen primitive shape of the exact original and same-nonce fence pair, not an operational capacity."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = ''') && self.finalized_block_number != [0; WORD_BYTES]'''
+classification = "redemption_missing_finalized_coordinate_sentinel"
+reason = "The all-zero word is the structural missing-coordinate sentinel checked on a sealed chain-source capability."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "0"
+context = '''&& self.finalized_block_hash != [0; WORD_BYTES]'''
+classification = "redemption_missing_finalized_coordinate_sentinel"
+reason = "The all-zero word is the structural missing-coordinate sentinel checked on a sealed chain-source capability."
+
+[[allowed]]
 path = "src/bin/stream_to_lake.rs"
 kind = "string"
 literal = '''"Contract validation: {} ({} venue, {} classes)"'''

@@ -4,7 +4,9 @@ use super::nonce::SafeNonce;
 use super::request::{
     FenceMayHaveStartedRequest, OriginalMayHaveStartedRequest, PreparedRequestPair, RequestKind,
 };
-use super::wire::RelayerObservation;
+use super::wire::{ExactQueryResponses, RelayerObservation};
+
+const WORD_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryKind {
@@ -211,6 +213,7 @@ fn append_decimal(
 pub enum QueryError {
     Capacity,
     Index,
+    BindingMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,14 +252,109 @@ pub enum RedemptionResolution {
 
 pub struct SourceBoundVerifiedOutcome {
     resolution: RedemptionResolution,
+    profile_digest: [u8; WORD_BYTES],
+    config_digest: [u8; WORD_BYTES],
+    key_version: u32,
+    chain_id: u64,
+    relayer_source_identity: [u8; WORD_BYTES],
+    chain_source_identity: [u8; WORD_BYTES],
+    action_digest: [u8; WORD_BYTES],
+    condition_id: [u8; WORD_BYTES],
+    safe_nonce: SafeNonce,
+    original_body_hash: [u8; WORD_BYTES],
+    fence_body_hash: [u8; WORD_BYTES],
+    finalized_block_number: [u8; WORD_BYTES],
+    finalized_block_hash: [u8; WORD_BYTES],
+    fence_authorized: bool,
+}
+
+pub(super) struct VerifiedOutcomeBinding {
+    pub(super) finalized_block_number: [u8; WORD_BYTES],
+    pub(super) finalized_block_hash: [u8; WORD_BYTES],
+    pub(super) fence_authorized: bool,
 }
 
 impl SourceBoundVerifiedOutcome {
-    pub(super) fn from_raw_verifier(resolution: RedemptionResolution) -> Self {
-        Self { resolution }
+    pub(super) fn from_raw_verifier(
+        resolution: RedemptionResolution,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        prepared: &PreparedRequestPair,
+        binding: VerifiedOutcomeBinding,
+    ) -> Self {
+        let [original_body_hash, fence_body_hash] = prepared.body_hashes();
+        Self {
+            resolution,
+            profile_digest: profile.profile_digest(),
+            config_digest: profile.config_digest(),
+            key_version: credentials.key_version(),
+            chain_id: profile.chain_id(),
+            relayer_source_identity: profile.relayer_source_identity(),
+            chain_source_identity: profile.chain_source_identity(),
+            action_digest: prepared.action_digest(),
+            condition_id: prepared.condition_id(),
+            safe_nonce: prepared.safe_nonce(),
+            original_body_hash,
+            fence_body_hash,
+            finalized_block_number: binding.finalized_block_number,
+            finalized_block_hash: binding.finalized_block_hash,
+            fence_authorized: binding.fence_authorized,
+        }
     }
 
-    pub fn resolution(&self) -> RedemptionResolution {
-        self.resolution
+    pub fn consume_after_original(
+        self,
+        responses: &ExactQueryResponses,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        attempt: &OriginalMayHaveStartedRequest,
+    ) -> Result<RedemptionResolution, QueryError> {
+        self.consume(responses, profile, credentials, attempt.prepared(), false)
+    }
+
+    pub fn consume_after_fence(
+        self,
+        responses: &ExactQueryResponses,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        attempt: &FenceMayHaveStartedRequest,
+    ) -> Result<RedemptionResolution, QueryError> {
+        self.consume(responses, profile, credentials, attempt.prepared(), true)
+    }
+
+    fn consume(
+        self,
+        responses: &ExactQueryResponses,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        prepared: &PreparedRequestPair,
+        fence_authorized: bool,
+    ) -> Result<RedemptionResolution, QueryError> {
+        let [original_body_hash, fence_body_hash] = prepared.body_hashes();
+        if self.profile_digest != profile.profile_digest()
+            || self.config_digest != profile.config_digest()
+            || self.key_version != credentials.key_version()
+            || self.chain_id != profile.chain_id()
+            || self.relayer_source_identity != profile.relayer_source_identity()
+            || self.chain_source_identity != profile.chain_source_identity()
+            || self.action_digest != prepared.action_digest()
+            || self.condition_id != prepared.condition_id()
+            || self.safe_nonce != prepared.safe_nonce()
+            || self.original_body_hash != original_body_hash
+            || self.fence_body_hash != fence_body_hash
+            || self.finalized_block_number == [0; WORD_BYTES]
+            || self.finalized_block_hash == [0; WORD_BYTES]
+            || self.fence_authorized != fence_authorized
+            || !responses.matches_terminal_binding(
+                profile,
+                credentials,
+                prepared,
+                self.finalized_block_number,
+                self.finalized_block_hash,
+            )
+        {
+            return Err(QueryError::BindingMismatch);
+        }
+        Ok(self.resolution)
     }
 }

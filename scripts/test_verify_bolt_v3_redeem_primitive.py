@@ -162,7 +162,7 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         self.mutate(
             root,
             "src/bolt_v3_providers/polymarket/redemption/wire.rs",
-            "    finalized_head: BoundedWireResponse,\n",
+            "    finalized_head: FinalizedChainSourceResponse,\n",
             "",
         )
         self.assert_rejected(root, "response set is partial")
@@ -175,6 +175,62 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         root = self.fixture()
         self.mutate(root, "src/bolt_v3_providers/polymarket/redemption/request.rs", "pub struct PreparedRequestPair {\n    original:", "pub struct PreparedRequestPair {\n    pub original:")
         self.assert_rejected(root, "public field")
+
+    def test_arbitrary_reader_cannot_mint_source_proof(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "wire.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nimpl RelayerSourceResponse { pub fn fabricate(_reader: impl std::io::Read) -> Self { panic!() } }\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "arbitrary reader can mint source proof")
+
+    def test_source_capabilities_and_outcome_binding_cannot_be_weakened(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "wire.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace(
+                "pub struct FinalizedChainSourceResponse {",
+                "pub struct FinalizedChainSourceResponse { pub bytes: Vec<u8>,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "public field")
+
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "wire.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nimpl RelayerSourceResponse { pub fn forge() -> Self { panic!() } }\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "production can mint source response")
+
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "query.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace("    action_digest: [u8; WORD_BYTES],\n", "", 1),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "verified outcome binding is incomplete")
+
+    def test_terminal_resolution_requires_exact_binding_consumption(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "query.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace(
+                "pub fn consume_after_original(",
+                "pub fn resolution_unchecked(",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "exact terminal consumption")
 
 
 if __name__ == "__main__":

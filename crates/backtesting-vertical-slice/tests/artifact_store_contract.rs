@@ -34,7 +34,10 @@ use backtesting_vertical_slice::{
         NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
         SYNTHETIC_SOURCE_PROOF_ID,
     },
-    operator::{CATALOG_DIR, RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
+    operator::{
+        CATALOG_DIR, RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store,
+        run_from_run_spec_with_artifact_store_guarded,
+    },
     operator_work_budget::{OperatorWorkBudget, OperatorWorkBudgetClock, OperatorWorkBudgetGuard},
     result_contract::BacktestResultContract,
     run_manifest::{ManifestArtifactStoreSsmParameters, MarketStructureFixture},
@@ -1578,12 +1581,17 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         )
         .expect("source binding dispatches");
 
-    let artifacts = run_from_run_spec_with_artifact_store(
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    let artifacts = run_from_run_spec_with_artifact_store_guarded(
         &spec,
         &gz,
         output_dir.path(),
         &store,
-        |artifact_root, plan, create_only_probe| {
+        |artifact_root, plan, create_only_probe, callback_work_budget| {
+            assert!(
+                std::ptr::eq(callback_work_budget, &work_budget),
+                "guarded durable operator must pass its exact shared guard to runtime evidence"
+            );
             let mut evidence =
                 successful_capability_evidence(artifact_root, nt_catalog_capability_proof);
             evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
@@ -1591,6 +1599,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             evidence.create_only_probe = create_only_probe;
             Ok(evidence)
         },
+        &work_budget,
     )
     .await
     .expect("operator artifact-store run");

@@ -332,7 +332,21 @@ impl NtCatalogS3ConformanceProbe {
 pub fn run_nt_catalog_s3_conformance_probe(
     probe: NtCatalogS3ConformanceProbe,
 ) -> Result<NtCatalogReadBackEvidence> {
-    probe.validate()?;
+    run_nt_catalog_s3_conformance_probe_guarded(probe, &OperatorWorkBudgetGuard::unbounded())
+}
+
+/// Run the single NT catalog S3 conformance core under the caller's shared
+/// cooperative work budget.
+///
+/// # Errors
+///
+/// Returns an error when the work budget expires before or after any NT catalog
+/// operation, or when the conformance probe itself fails.
+pub fn run_nt_catalog_s3_conformance_probe_guarded(
+    probe: NtCatalogS3ConformanceProbe,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<NtCatalogReadBackEvidence> {
+    run_guarded_nt_catalog_step(work_budget, || probe.validate())?;
     let NtCatalogS3ConformanceProbe {
         catalog_uri,
         storage_options,
@@ -341,56 +355,92 @@ pub fn run_nt_catalog_s3_conformance_probe(
         binary_option_instrument_id,
         perps_spot_instrument_id,
     } = probe;
-    let instrument_ids = instruments
-        .iter()
-        .map(|instrument| instrument.id().to_string())
-        .collect::<Vec<_>>();
+    let instrument_ids = run_guarded_nt_catalog_step(work_budget, || {
+        Ok(instruments
+            .iter()
+            .map(|instrument| instrument.id().to_string())
+            .collect::<Vec<_>>())
+    })?;
     let expected_trade_tick_count = trade_ticks.len();
-    let mut catalog =
-        ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)?;
-    catalog.write_instruments(instruments)?;
-    catalog.write_to_parquet(&trade_ticks, None, None, None)?;
-    let files = catalog.query_files(
-        TradeTick::path_prefix(),
-        Some(instrument_ids.clone()),
-        None,
-        None,
-    )?;
-    let queried_instruments = catalog.query_instruments(Some(&instrument_ids))?;
-    let queried_instrument_ids = queried_instruments
-        .iter()
-        .map(|instrument| instrument.id().to_string())
-        .collect::<BTreeSet<_>>();
-    let queried_trade_ticks = catalog.query_typed_data::<TradeTick>(
-        Some(instrument_ids),
-        None,
-        None,
-        None,
-        None,
-        true,
-    )?;
-    let evidence = NtCatalogReadBackEvidence {
-        catalog_uri,
-        query_files_succeeded: true,
-        query_files_result_count: files.len(),
-        write_instruments_succeeded: true,
-        write_trade_ticks_succeeded: true,
-        query_trade_ticks_succeeded: true,
-        query_trade_ticks_result_count: queried_trade_ticks.len(),
-        query_instruments_succeeded: true,
-        query_instruments_result_count: queried_instruments.len(),
-        binary_option_instrument_read_back: queried_instrument_ids
-            .contains(&binary_option_instrument_id),
-        binary_option_instrument_id,
-        perps_spot_instrument_read_back: queried_instrument_ids.contains(&perps_spot_instrument_id),
-        perps_spot_instrument_id,
-    };
-    ensure!(
-        evidence.query_trade_ticks_result_count == expected_trade_tick_count,
-        "NT catalog S3 conformance probe trade tick query count does not match write count"
-    );
-    evidence.validate()?;
-    Ok(evidence)
+    let mut catalog = run_guarded_nt_catalog_step(work_budget, || {
+        ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)
+    })?;
+    run_guarded_nt_catalog_step(work_budget, || catalog.write_instruments(instruments))?;
+    run_guarded_nt_catalog_step(work_budget, || {
+        catalog.write_to_parquet(&trade_ticks, None, None, None)
+    })?;
+    let files = run_guarded_nt_catalog_step(work_budget, || {
+        catalog.query_files(
+            TradeTick::path_prefix(),
+            Some(instrument_ids.clone()),
+            None,
+            None,
+        )
+    })?;
+    let queried_instruments = run_guarded_nt_catalog_step(work_budget, || {
+        catalog.query_instruments(Some(&instrument_ids))
+    })?;
+    let queried_instrument_ids = run_guarded_nt_catalog_step(work_budget, || {
+        Ok(queried_instruments
+            .iter()
+            .map(|instrument| instrument.id().to_string())
+            .collect::<BTreeSet<_>>())
+    })?;
+    let queried_trade_ticks = run_guarded_nt_catalog_step(work_budget, || {
+        catalog.query_typed_data::<TradeTick>(Some(instrument_ids), None, None, None, None, true)
+    })?;
+    run_guarded_nt_catalog_step(work_budget, || {
+        let evidence = NtCatalogReadBackEvidence {
+            catalog_uri,
+            query_files_succeeded: true,
+            query_files_result_count: files.len(),
+            write_instruments_succeeded: true,
+            write_trade_ticks_succeeded: true,
+            query_trade_ticks_succeeded: true,
+            query_trade_ticks_result_count: queried_trade_ticks.len(),
+            query_instruments_succeeded: true,
+            query_instruments_result_count: queried_instruments.len(),
+            binary_option_instrument_read_back: queried_instrument_ids
+                .contains(&binary_option_instrument_id),
+            binary_option_instrument_id,
+            perps_spot_instrument_read_back: queried_instrument_ids
+                .contains(&perps_spot_instrument_id),
+            perps_spot_instrument_id,
+        };
+        ensure!(
+            evidence.query_trade_ticks_result_count == expected_trade_tick_count,
+            "NT catalog S3 conformance probe trade tick query count does not match write count"
+        );
+        evidence.validate()?;
+        Ok(evidence)
+    })
+}
+
+fn guarded_nt_catalog_operation_outcome<T>(
+    work_budget: &OperatorWorkBudgetGuard,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<std::result::Result<T, anyhow::Error>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let outcome = operation();
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    Ok(outcome)
+}
+
+fn run_guarded_nt_catalog_step<T>(
+    work_budget: &OperatorWorkBudgetGuard,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    guarded_nt_catalog_operation_outcome(work_budget, operation)?
+}
+
+fn guarded_expected_failure(
+    work_budget: &OperatorWorkBudgetGuard,
+    operation: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    match guarded_nt_catalog_operation_outcome(work_budget, operation)? {
+        Ok(()) => Ok(false),
+        Err(_) => Ok(true),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -956,49 +1006,98 @@ impl NtCatalogCapabilityRunSpec {
         credentials: &S3ArtifactStoreCredentials,
         create_only_probe: CreateOnlyProbeTranscript,
     ) -> Result<NtCatalogCapabilityEvidence> {
-        let plan = self.proof_plan(artifact_store)?;
-        let no_cloud_feature_gate_failed = self
-            .s3_conformance_probe_with_storage_options(
+        self.runtime_evidence_guarded(
+            artifact_store,
+            credentials,
+            create_only_probe,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+    }
+
+    /// Produce runtime capability evidence under the durable operator's shared
+    /// cooperative work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any control, NT operation, or evidence-finalization
+    /// step fails or crosses the configured wall deadline.
+    pub fn runtime_evidence_guarded(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        credentials: &S3ArtifactStoreCredentials,
+        create_only_probe: CreateOnlyProbeTranscript,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<NtCatalogCapabilityEvidence> {
+        let plan = run_guarded_nt_catalog_step(work_budget, || self.proof_plan(artifact_store))?;
+        let no_cloud_feature_gate_failed = guarded_expected_failure(work_budget, || {
+            self.s3_conformance_probe_with_storage_options(
                 plan.synthetic_catalog_root_uri.clone(),
                 AHashMap::new(),
             )
-            .is_err();
-        let ambient_credentials_scrubbed = self.ambient_credential_scrub.runtime_is_scrubbed();
+            .map(|_| ())
+        })?;
+        let ambient_credentials_scrubbed = run_guarded_nt_catalog_step(work_budget, || {
+            Ok(self.ambient_credential_scrub.runtime_is_scrubbed())
+        })?;
         let invalid_credentials_write_failed =
-            self.invalid_credentials_write_fails(artifact_store, credentials)?;
-        let read_back = run_nt_catalog_s3_conformance_probe(
-            self.s3_conformance_probe(artifact_store, credentials)?,
+            self.invalid_credentials_write_fails_guarded(artifact_store, credentials, work_budget)?;
+        let read_back = run_nt_catalog_s3_conformance_probe_guarded(
+            run_guarded_nt_catalog_step(work_budget, || {
+                self.s3_conformance_probe(artifact_store, credentials)
+            })?,
+            work_budget,
         )?;
         let ssm_credentials_write_reopen_query_succeeded = read_back.write_instruments_succeeded
             && read_back.write_trade_ticks_succeeded
             && read_back.query_files_succeeded
             && read_back.query_instruments_succeeded
             && read_back.query_trade_ticks_succeeded;
-        Ok(NtCatalogCapabilityEvidence {
-            no_cloud_feature_gate_failed,
-            ambient_credentials_scrubbed,
-            invalid_credentials_write_failed,
-            ssm_credentials_write_reopen_query_succeeded,
-            nt_catalog_storage_option_keys: plan.storage_options_keys,
-            read_back,
-            create_only_probe,
+        run_guarded_nt_catalog_step(work_budget, || {
+            Ok(NtCatalogCapabilityEvidence {
+                no_cloud_feature_gate_failed,
+                ambient_credentials_scrubbed,
+                invalid_credentials_write_failed,
+                ssm_credentials_write_reopen_query_succeeded,
+                nt_catalog_storage_option_keys: plan.storage_options_keys,
+                read_back,
+                create_only_probe,
+            })
         })
     }
 
-    fn invalid_credentials_write_fails(
+    fn invalid_credentials_write_fails_guarded(
         &self,
         artifact_store: &ArtifactStoreConfig,
         credentials: &S3ArtifactStoreCredentials,
+        work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<bool> {
-        let invalid_credentials = S3ArtifactStoreCredentials::new(
-            format!("{}-{}", credentials.access_key_id(), self.proof_run_id),
-            format!("{}-{}", credentials.secret_access_key(), self.proof_run_id),
-            credentials
-                .session_token()
-                .map(|token| format!("{token}-{}", self.proof_run_id)),
-        )?;
-        let invalid_probe = self.s3_conformance_probe(artifact_store, &invalid_credentials)?;
-        Ok(run_nt_catalog_s3_conformance_probe(invalid_probe).is_err())
+        let invalid_credentials = run_guarded_nt_catalog_step(work_budget, || {
+            S3ArtifactStoreCredentials::new(
+                format!("{}-{}", credentials.access_key_id(), self.proof_run_id),
+                format!("{}-{}", credentials.secret_access_key(), self.proof_run_id),
+                credentials
+                    .session_token()
+                    .map(|token| format!("{token}-{}", self.proof_run_id)),
+            )
+        })?;
+        let invalid_probe = run_guarded_nt_catalog_step(work_budget, || {
+            self.s3_conformance_probe(artifact_store, &invalid_credentials)
+        })?;
+        let NtCatalogS3ConformanceProbe {
+            catalog_uri,
+            storage_options,
+            instruments,
+            ..
+        } = invalid_probe;
+        let catalog = run_guarded_nt_catalog_step(work_budget, || {
+            ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)
+        })?;
+        match guarded_nt_catalog_operation_outcome(work_budget, || {
+            catalog.write_instruments(instruments)
+        })? {
+            Ok(_) => Ok(false),
+            Err(_) => Ok(true),
+        }
     }
 
     fn s3_conformance_probe_with_storage_options(
@@ -1463,4 +1562,98 @@ fn is_allowed_storage_option_key(key: &str) -> bool {
             | "token"
             | "allow_http"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use super::*;
+    use crate::{
+        backfill_execution_plan::BackfillExecutionWorkBudget,
+        operator_work_budget::{OperatorWorkBudget, OperatorWorkBudgetClock},
+    };
+
+    struct ObservationExpiryClock {
+        observations: AtomicUsize,
+        expires_after_observation: usize,
+    }
+
+    impl OperatorWorkBudgetClock for ObservationExpiryClock {
+        fn now(&self) -> Duration {
+            if self.observations.fetch_add(1, Ordering::SeqCst) >= self.expires_after_observation {
+                Duration::from_secs(1)
+            } else {
+                Duration::ZERO
+            }
+        }
+    }
+
+    fn expiring_guard(expires_after_observation: usize) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::with_clock(
+            OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+                max_source_rows: 1,
+                max_projected_row_groups: 1,
+                max_wall_seconds: 1,
+                require_object_selection_metadata: false,
+            }),
+            Arc::new(ObservationExpiryClock {
+                observations: AtomicUsize::new(0),
+                expires_after_observation,
+            }),
+        )
+        .expect("expiring guard")
+    }
+
+    #[test]
+    fn nt_catalog_step_observes_expiry_after_the_opaque_operation() {
+        let invoked = AtomicBool::new(false);
+        let guard = expiring_guard(2);
+
+        let error = run_guarded_nt_catalog_step(&guard, || {
+            invoked.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect_err("post-operation deadline must fail the NT step");
+
+        assert!(invoked.load(Ordering::SeqCst));
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("publish"), "{error:#}");
+    }
+
+    #[test]
+    fn negative_control_cannot_swallow_a_deadline_error() {
+        let guard = expiring_guard(2);
+
+        let error = guarded_expected_failure(&guard, || anyhow::bail!("expected probe failure"))
+            .expect_err("deadline must win over an expected negative-control failure");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("publish"), "{error:#}");
+    }
+
+    #[test]
+    fn invalid_credential_control_observes_only_the_dedicated_write() {
+        let source = include_str!("nt_catalog_capability.rs");
+        let body = source
+            .split("fn invalid_credentials_write_fails_guarded(")
+            .nth(1)
+            .expect("dedicated invalid-credential function exists")
+            .split("fn s3_conformance_probe_with_storage_options(")
+            .next()
+            .expect("function has a following boundary");
+
+        assert!(body.contains("catalog.write_instruments(instruments)"));
+        assert!(!body.contains("run_nt_catalog_s3_conformance_probe"));
+        assert!(!body.contains("write_to_parquet"));
+        assert!(!body.contains("query_files"));
+        assert!(!body.contains("query_instruments"));
+        assert!(!body.contains("query_typed_data"));
+    }
 }

@@ -433,6 +433,7 @@ pub(crate) fn normalize_jsonl_snapshot_deltas_with_meter(
         capture_time_nanos,
         ingest_run_id,
         SnapshotContainer::SingleObject,
+        work_budget,
     )
 }
 
@@ -497,6 +498,7 @@ pub(crate) fn normalize_tar_jsonl_snapshot_deltas_with_meter(
     let fields = validate_snapshot_mapping(mapping, ingest_run_id)?;
     let mut accumulator = PhotoGroups::default();
     for member in members {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let member = member.context("read next tar member")?;
         parse_jsonl_into_groups(
             &fields,
@@ -506,6 +508,7 @@ pub(crate) fn normalize_tar_jsonl_snapshot_deltas_with_meter(
             work_budget,
         )
         .with_context(|| format!("normalize tar member {:?}", member.name))?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     expand_groups_into_tables(
         accepted,
@@ -515,6 +518,7 @@ pub(crate) fn normalize_tar_jsonl_snapshot_deltas_with_meter(
         capture_time_nanos,
         ingest_run_id,
         SnapshotContainer::TarArchive,
+        work_budget,
     )
 }
 
@@ -605,6 +609,7 @@ pub(crate) fn normalize_parquet_event_stream_deltas_with_meter(
         raw_rows,
         capture_time_nanos,
         ingest_run_id,
+        work_budget,
     )
 }
 
@@ -885,14 +890,22 @@ fn decode_event_stream_rows(
     parquet_bytes: &[u8],
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<RawEventRow>> {
-    let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(parquet_bytes.to_vec()))
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(parquet_bytes.to_vec()))
         .context("construct event-stream parquet reader")?
         .build()
         .context("build event-stream record batch reader")?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
 
     let mut rows = Vec::new();
     let mut source_row_index: u64 = 0;
-    for batch in reader {
+    loop {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+        let next_batch = reader.next();
+        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+        let Some(batch) = next_batch else {
+            break;
+        };
         let batch = batch.context("read event-stream parquet batch")?;
         decode_event_stream_batch(
             fields,
@@ -901,6 +914,7 @@ fn decode_event_stream_rows(
             &mut source_row_index,
             work_budget,
         )?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     }
     Ok(rows)
 }
@@ -967,6 +981,7 @@ fn decode_event_stream_batch(
         *source_row_index = source_row_index
             .checked_add(1)
             .context("event-stream row index overflow")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     }
     Ok(())
 }
@@ -1016,6 +1031,7 @@ fn expand_event_stream_into_tables(
     raw_rows: Vec<RawEventRow>,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<(
     Vec<CanonicalOrderBookDeltasTable>,
     Vec<CanonicalTradesTable>,
@@ -1026,6 +1042,7 @@ fn expand_event_stream_into_tables(
     // pattern parse_jsonl_into_groups uses).
     let EventGroups { order, groups } = &mut accumulator;
     for mut raw in raw_rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         if let Some(filter) = fields.exclusion_filter
             && let Some(key) = raw.instrument_key.as_deref()
             && filter.excludes(key)
@@ -1052,6 +1069,7 @@ fn expand_event_stream_into_tables(
             Vec::new()
         });
         group.push(raw);
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     ensure!(
         !accumulator.order.is_empty(),
@@ -1070,6 +1088,7 @@ fn expand_event_stream_into_tables(
     let mut delta_tables = Vec::with_capacity(accumulator.order.len());
     let mut trade_tables = Vec::new();
     for instrument_key in &accumulator.order {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let identity = identities.resolve(instrument_key.as_deref())?;
         let canonical_instrument_key = format!(
             "{canonical_instrument_key_prefix}/{}",
@@ -1080,7 +1099,9 @@ fn expand_event_stream_into_tables(
             .remove(instrument_key)
             .context("internal: group order entry missing from groups map")?;
         // Capture-time replay order with the physical row-index tiebreak.
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         group.sort_by_key(|raw| (raw.capture_time, raw.source_row_index));
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
 
         let mut events: Vec<DeltaEvent> = Vec::new();
         let mut trade_rows: Vec<CanonicalTradeRow> = Vec::new();
@@ -1097,9 +1118,12 @@ fn expand_event_stream_into_tables(
             provenance: &delta_provenance,
             trade_transform_hash: &trade_transform_hash,
             price_sign_policy: mapping.price_sign_policy,
+            work_budget,
         };
         for raw in &group {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
             decode_event_into(&decode_ctx, raw, &mut events, &mut trade_rows)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         }
 
         // A keyed instrument can appear in the window with ONLY trade prints (no
@@ -1115,6 +1139,7 @@ fn expand_event_stream_into_tables(
                 mapping.ordering,
                 mapping.empty_book_policy,
                 &events,
+                work_budget,
             )?;
             let delta_table = CanonicalOrderBookDeltasTable {
                 schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
@@ -1135,7 +1160,9 @@ fn expand_event_stream_into_tables(
                 payload_hash: accepted.object.sha256.clone(),
                 rows,
             };
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
             delta_table.validate()?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
             delta_tables.push(delta_table);
         }
 
@@ -1160,9 +1187,12 @@ fn expand_event_stream_into_tables(
                 payload_hash: accepted.object.sha256.clone(),
                 rows: trade_rows,
             };
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
             trade_table.validate()?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
             trade_tables.push(trade_table);
         }
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
 
     Ok((delta_tables, trade_tables))
@@ -1212,6 +1242,7 @@ struct EventDecodeContext<'a, 'f> {
     provenance: &'a RowProvenance<'a>,
     trade_transform_hash: &'a str,
     price_sign_policy: DeltaPriceSignPolicy,
+    work_budget: &'a OperatorWorkBudgetGuard,
 }
 
 /// Decode one raw typed-event row, appending to the unified delta timeline
@@ -1226,8 +1257,18 @@ fn decode_event_into(
     let fields = ctx.fields;
     let event_type = raw.event_type.trim();
     if event_type == fields.snapshot_event_value {
-        let bids = parse_event_stream_levels(&raw.bids, fields.bids_field, ctx.price_sign_policy)?;
-        let asks = parse_event_stream_levels(&raw.asks, fields.asks_field, ctx.price_sign_policy)?;
+        let bids = parse_event_stream_levels(
+            &raw.bids,
+            fields.bids_field,
+            ctx.price_sign_policy,
+            ctx.work_budget,
+        )?;
+        let asks = parse_event_stream_levels(
+            &raw.asks,
+            fields.asks_field,
+            ctx.price_sign_policy,
+            ctx.work_budget,
+        )?;
         events.push(DeltaEvent::Snapshot(ParsedPhoto {
             event_time: raw.capture_time,
             availability_time: raw.availability_time,
@@ -1328,6 +1369,7 @@ fn expand_delta_events(
     ordering: OrderingAuthority,
     empty_book_policy: EmptyBookPolicy,
     events: &[DeltaEvent],
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<CanonicalOrderBookDeltaRow>> {
     // The ordering authority is enforced upstream (mapping validation rejects a
     // family/ordering mismatch) and APPLIED upstream (each family pre-sorts its
@@ -1350,6 +1392,7 @@ fn expand_delta_events(
     let mut previous_was_lone_clear = false;
 
     for event in events {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let event_time = event.event_time();
         ensure!(
             event_time >= previous_event_time,
@@ -1403,6 +1446,7 @@ fn expand_delta_events(
                     (DeltaSide::Sell, &photo.asks),
                 ] {
                     for level in levels {
+                        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
                         rows.push(make_row(
                             provenance,
                             &RowPayload {
@@ -1415,6 +1459,7 @@ fn expand_delta_events(
                                 flags: snapshot_flags,
                             },
                         ));
+                        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
                     }
                 }
                 // A non-empty photo always pushes at least one row above, so an
@@ -1445,6 +1490,7 @@ fn expand_delta_events(
                 ));
             }
         }
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
 
     ensure!(
@@ -1453,9 +1499,11 @@ fn expand_delta_events(
         provenance.identity.instrument_id
     );
     for (sequence, row) in rows.iter_mut().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let sequence = sequence as u64;
         row.sequence = sequence;
         row.source_sequence = Some(sequence.to_string());
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(rows)
 }
@@ -1468,16 +1516,20 @@ fn parse_event_stream_levels(
     raw: &str,
     field: &str,
     policy: DeltaPriceSignPolicy,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<ParsedLevel>> {
     let trimmed = raw.trim();
     ensure!(!trimmed.is_empty(), "{field}: empty levels cell");
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let parsed: Value = serde_json::from_str(trimmed)
         .with_context(|| format!("{field}: invalid levels JSON {trimmed:?}"))?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let array = parsed
         .as_array()
         .with_context(|| format!("{field}: expected a JSON array, got {trimmed:?}"))?;
     let mut levels = Vec::with_capacity(array.len());
     for (index, pair) in array.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let pair = pair
             .as_array()
             .with_context(|| format!("{field}[{index}]: expected a [price, size] pair"))?;
@@ -1497,6 +1549,7 @@ fn parse_event_stream_levels(
             price: price.to_string(),
             size: size.to_string(),
         });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(levels)
 }
@@ -1766,6 +1819,7 @@ fn parse_jsonl_into_groups(
         work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         let value: Value = serde_json::from_str(line)
             .with_context(|| format!("line {index}: malformed snapshot JSON"))?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
 
         let instrument_key = match &mapping.instrument_key.key_field {
             Some(key_field) => {
@@ -1803,6 +1857,7 @@ fn parse_jsonl_into_groups(
             fields.level_price_field,
             fields.level_size_field,
             mapping.price_sign_policy,
+            work_budget,
         )?;
         let asks = parse_levels(
             index,
@@ -1811,6 +1866,7 @@ fn parse_jsonl_into_groups(
             fields.level_price_field,
             fields.level_size_field,
             mapping.price_sign_policy,
+            work_budget,
         )?;
 
         let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
@@ -1823,6 +1879,7 @@ fn parse_jsonl_into_groups(
             bids,
             asks,
         });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(())
 }
@@ -1842,6 +1899,7 @@ fn expand_groups_into_tables(
     capture_time_nanos: i64,
     ingest_run_id: &str,
     container: SnapshotContainer,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
     ensure!(
         !accumulator.order.is_empty(),
@@ -1854,6 +1912,7 @@ fn expand_groups_into_tables(
 
     let mut tables = Vec::with_capacity(accumulator.order.len());
     for instrument_key in &accumulator.order {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let identity = identities.resolve(instrument_key.as_deref())?;
         let canonical_instrument_key = format!(
             "{canonical_instrument_key_prefix}/{}",
@@ -1870,7 +1929,9 @@ fn expand_groups_into_tables(
             // timeline must be monotonic for expansion. A stable sort preserves
             // the in-member order of exact ties so the lone-CLEAR/adds-only
             // collapse is deterministic.
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
             photos.sort_by_key(|photo| photo.event_time);
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         }
 
         let provenance = RowProvenance {
@@ -1885,12 +1946,18 @@ fn expand_groups_into_tables(
         // snapshot event and expand through the one shared core that the
         // event-stream path also uses, so the lone-CLEAR/adds-only collapse has a
         // single owner.
-        let events: Vec<DeltaEvent> = photos.into_iter().map(DeltaEvent::Snapshot).collect();
+        let mut events = Vec::with_capacity(photos.len());
+        for photo in photos {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+            events.push(DeltaEvent::Snapshot(photo));
+            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        }
         let rows = expand_delta_events(
             &provenance,
             mapping.ordering,
             mapping.empty_book_policy,
             &events,
+            work_budget,
         )?;
 
         let table = CanonicalOrderBookDeltasTable {
@@ -1910,8 +1977,11 @@ fn expand_groups_into_tables(
             payload_hash: accepted.object.sha256.clone(),
             rows,
         };
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         table.validate()?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         tables.push(table);
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
 
     Ok(tables)
@@ -1939,6 +2009,7 @@ fn parse_levels(
     price_field: &str,
     size_field: &str,
     policy: DeltaPriceSignPolicy,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<ParsedLevel>> {
     let array = photo
         .get(side_field)
@@ -1947,6 +2018,7 @@ fn parse_levels(
         .with_context(|| format!("line {line_index}: side field {side_field:?} is not an array"))?;
     let mut levels = Vec::with_capacity(array.len());
     for (level_index, level) in array.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let price = level
             .get(price_field)
             .and_then(Value::as_str)
@@ -1968,6 +2040,7 @@ fn parse_levels(
             price: price.to_string(),
             size: size.to_string(),
         });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(levels)
 }
@@ -2072,6 +2145,14 @@ fn make_row(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        },
+        time::Duration,
+    };
+
     use super::*;
     // BAR_TRANSFORM_IDENTITY is not used by production code in this module; the
     // four-identity distinctness test below references it, so import it here.
@@ -2086,6 +2167,41 @@ mod tests {
 
     const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
     const SOURCE_URL: &str = "https://synthetic.invalid/data";
+
+    struct NormalizationExpiryClock {
+        observations: AtomicUsize,
+        expires_after_observation: usize,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for NormalizationExpiryClock {
+        fn now(&self) -> Duration {
+            if self.observations.fetch_add(1, AtomicOrdering::SeqCst)
+                >= self.expires_after_observation
+            {
+                Duration::from_secs(1)
+            } else {
+                Duration::ZERO
+            }
+        }
+    }
+
+    fn expiring_normalization_guard(expires_after_observation: usize) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(NormalizationExpiryClock {
+                observations: AtomicUsize::new(0),
+                expires_after_observation,
+            }),
+        )
+        .expect("expiring normalization guard")
+    }
 
     fn source_binding_registry() -> SourceBindingRegistry {
         SourceBindingRegistry::from_toml_str(
@@ -2370,6 +2486,40 @@ table_families = ["order_book_snapshot_deltas"]
                 .contains("max_source_rows actual 2 exceeds limit 1"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn one_snapshot_with_many_levels_stops_during_nested_normalization() {
+        let bids = (0..128)
+            .map(|index| {
+                serde_json::json!({
+                    "px": format!("0.{:03}", index + 1),
+                    "sz": "1",
+                })
+            })
+            .collect::<Vec<_>>();
+        let jsonl = serde_json::json!({
+            "time": 1_700_000_000_000_i64,
+            "bids": bids,
+            "asks": [{"px": "0.999", "sz": "1"}],
+        })
+        .to_string();
+        let guard = expiring_normalization_guard(8);
+
+        let error = normalize_jsonl_snapshot_deltas_with_meter(
+            &accepted_dataset(),
+            &single_identity(),
+            &single_mapping(),
+            &jsonl,
+            42,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect_err("one source row must not bypass the deadline through level fan-out");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("normalize"), "{error:#}");
+        assert_eq!(guard.source_rows_consumed(), 1);
     }
 
     #[test]

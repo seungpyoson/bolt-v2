@@ -137,11 +137,12 @@ where
         &object_bytes,
         &cli.output_dir,
         &store,
-        |_, _, create_only_probe| {
-            nt_catalog_capability_proof.runtime_evidence(
+        |_, _, create_only_probe, callback_work_budget| {
+            nt_catalog_capability_proof.runtime_evidence_guarded(
                 artifact_store,
                 &credentials,
                 create_only_probe,
+                callback_work_budget,
             )
         },
         &work_budget,
@@ -627,6 +628,23 @@ mod tests {
         )
         .expect("publish cli parses");
         assert!(publish_cli.publish_output);
+    }
+
+    #[test]
+    fn production_durable_callback_passes_the_shared_guard_to_runtime_evidence() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("|_, _, create_only_probe, callback_work_budget|"),
+            "durable production callback must receive the operator work-budget guard"
+        );
+        assert!(
+            source.contains("nt_catalog_capability_proof.runtime_evidence_guarded("),
+            "production must call the guarded runtime-evidence core"
+        );
+        assert!(
+            source.contains("create_only_probe,\n                callback_work_budget,"),
+            "production must pass the callback guard into runtime evidence"
+        );
     }
 
     #[test]

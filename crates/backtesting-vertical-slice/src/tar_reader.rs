@@ -179,13 +179,7 @@ impl<R: Read> TarMembers<R> {
     /// member's declared size.
     fn skip_member_data(&mut self, name: &str, size: u64) -> Result<()> {
         let total = padded_len(size, name)?;
-        let consumed = std::io::copy(&mut (&mut self.reader).take(total), &mut std::io::sink())
-            .with_context(|| format!("skip tar member {name:?}"))?;
-        ensure!(
-            consumed == total,
-            "tar member {name:?} truncated: skipped {consumed} of {total} bytes"
-        );
-        Ok(())
+        discard_exact_bytes(&mut self.reader, total, name, "skip")
     }
 }
 
@@ -247,8 +241,9 @@ fn read_full_block<R: Read>(reader: &mut R, block: &mut [u8; TAR_BLOCK]) -> Resu
 fn read_exact_member<R: Read>(reader: &mut R, buffer: &mut [u8], name: &str) -> Result<()> {
     let mut filled = 0usize;
     while filled < buffer.len() {
+        let end = filled.saturating_add(TAR_BLOCK).min(buffer.len());
         let read = reader
-            .read(&mut buffer[filled..])
+            .read(&mut buffer[filled..end])
             .with_context(|| format!("read tar member {name:?} data"))?;
         ensure!(
             read != 0,
@@ -269,12 +264,35 @@ fn consume_padding<R: Read>(reader: &mut R, size: u64, name: &str) -> Result<()>
     if padding == 0 {
         return Ok(());
     }
-    let consumed = std::io::copy(&mut reader.take(padding), &mut std::io::sink())
-        .with_context(|| format!("consume tar member {name:?} padding"))?;
-    ensure!(
-        consumed == padding,
-        "tar member {name:?} truncated padding: consumed {consumed} of {padding} bytes"
-    );
+    discard_exact_bytes(reader, padding, name, "consume padding for")
+}
+
+/// Discard exactly `total` member bytes through fixed TAR-block reads.
+///
+/// The bounded caller buffer is part of the cooperative-deadline contract:
+/// wrappers around the decoded stream regain control at least once per block,
+/// even when a skipped member declares a very large body.
+fn discard_exact_bytes<R: Read>(
+    reader: &mut R,
+    total: u64,
+    name: &str,
+    operation: &str,
+) -> Result<()> {
+    let mut remaining = total;
+    let mut buffer = [0_u8; TAR_BLOCK];
+    while remaining > 0 {
+        let chunk = usize::try_from(remaining.min(TAR_BLOCK as u64))
+            .context("tar discard chunk does not fit usize")?;
+        let read = reader
+            .read(&mut buffer[..chunk])
+            .with_context(|| format!("{operation} tar member {name:?}"))?;
+        ensure!(
+            read != 0,
+            "tar member {name:?} truncated: {operation} consumed {} of {total} bytes",
+            total - remaining
+        );
+        remaining -= u64::try_from(read).context("tar read length does not fit u64")?;
+    }
     Ok(())
 }
 

@@ -173,7 +173,11 @@ pub(crate) fn normalize_seeded_l2_jsonl_quotes_with_meter(
         capture_time_nanos,
         ingest_run_id,
     );
-    Ok(vec![normalize_seeded_l2_events(&provenance, &events)?])
+    Ok(vec![normalize_seeded_l2_events_with_meter(
+        &provenance,
+        &events,
+        work_budget,
+    )?])
 }
 
 /// Normalize tar JSONL members into one canonical quote table.
@@ -215,10 +219,12 @@ pub(crate) fn normalize_seeded_l2_tar_jsonl_quotes_with_meter(
 ) -> Result<Vec<CanonicalQuotesTable>> {
     let mut events = Vec::new();
     for member in members {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let mut member_events =
             parse_seeded_l2_jsonl_with_meter(mapping, &member.text, work_budget)
                 .with_context(|| format!("parse seeded L2 quote member {:?}", member.name))?;
         events.append(&mut member_events);
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     ensure!(
         !events.is_empty(),
@@ -230,7 +236,11 @@ pub(crate) fn normalize_seeded_l2_tar_jsonl_quotes_with_meter(
         capture_time_nanos,
         ingest_run_id,
     );
-    Ok(vec![normalize_seeded_l2_events(&provenance, &events)?])
+    Ok(vec![normalize_seeded_l2_events_with_meter(
+        &provenance,
+        &events,
+        work_budget,
+    )?])
 }
 
 /// Parse decoded JSONL snapshot+delta rows into replay events.
@@ -261,7 +271,14 @@ fn parse_seeded_l2_jsonl_with_meter(
         work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         let value: Value = serde_json::from_str(trimmed)
             .with_context(|| format!("line {}: invalid JSON", line_index + 1))?;
-        events.push(parse_seeded_l2_json_value(mapping, &value, line_index + 1)?);
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        events.push(parse_seeded_l2_json_value(
+            mapping,
+            &value,
+            line_index + 1,
+            work_budget,
+        )?);
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     ensure!(!events.is_empty(), "seeded L2 quote JSONL is empty");
     Ok(events)
@@ -277,6 +294,15 @@ pub fn normalize_seeded_l2_events(
     provenance: &SeededL2QuoteProvenance,
     events: &[SeededL2QuoteEvent],
 ) -> Result<CanonicalQuotesTable> {
+    normalize_seeded_l2_events_with_meter(provenance, events, &OperatorWorkBudgetGuard::unbounded())
+}
+
+fn normalize_seeded_l2_events_with_meter(
+    provenance: &SeededL2QuoteProvenance,
+    events: &[SeededL2QuoteEvent],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CanonicalQuotesTable> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     ensure!(
         !provenance.ingest_run_id.trim().is_empty(),
         "ingest_run_id must not be empty"
@@ -290,6 +316,7 @@ pub fn normalize_seeded_l2_events(
     let mut book = SeededBook::default();
     let mut rows = Vec::new();
     for (index, event) in events.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             event.event_time > 0,
             "event {index}: non-positive event_time"
@@ -298,12 +325,13 @@ pub fn normalize_seeded_l2_events(
             ensure!(capture_time > 0, "event {index}: non-positive capture_time");
         }
         match event.action {
-            SeededL2QuoteAction::Snapshot => book.seed(event, index)?,
-            SeededL2QuoteAction::Update => book.update(event, index)?,
+            SeededL2QuoteAction::Snapshot => book.seed(event, index, work_budget)?,
+            SeededL2QuoteAction::Update => book.update(event, index, work_budget)?,
         }
         if let Some((bid, ask)) = book.best_bid_ask() {
             rows.push(make_quote_row(provenance, event, bid, ask));
         }
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     ensure!(!rows.is_empty(), "seeded L2 replay emitted no BBO quotes");
     let table = CanonicalQuotesTable {
@@ -323,7 +351,9 @@ pub fn normalize_seeded_l2_events(
         payload_hash: provenance.payload_hash.clone(),
         rows,
     };
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     table.validate()?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     Ok(table)
 }
 
@@ -341,22 +371,35 @@ struct SeededBook {
 }
 
 impl SeededBook {
-    fn seed(&mut self, event: &SeededL2QuoteEvent, event_index: usize) -> Result<()> {
+    fn seed(
+        &mut self,
+        event: &SeededL2QuoteEvent,
+        event_index: usize,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         self.bids.clear();
         self.asks.clear();
-        apply_levels(&mut self.bids, &event.bids, event_index, "bid")?;
-        apply_levels(&mut self.asks, &event.asks, event_index, "ask")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        apply_levels(&mut self.bids, &event.bids, event_index, "bid", work_budget)?;
+        apply_levels(&mut self.asks, &event.asks, event_index, "ask", work_budget)?;
         self.seeded = true;
         Ok(())
     }
 
-    fn update(&mut self, event: &SeededL2QuoteEvent, event_index: usize) -> Result<()> {
+    fn update(
+        &mut self,
+        event: &SeededL2QuoteEvent,
+        event_index: usize,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             self.seeded,
             "event {event_index}: L2 update arrived before a seeding snapshot"
         );
-        apply_levels(&mut self.bids, &event.bids, event_index, "bid")?;
-        apply_levels(&mut self.asks, &event.asks, event_index, "ask")?;
+        apply_levels(&mut self.bids, &event.bids, event_index, "bid", work_budget)?;
+        apply_levels(&mut self.asks, &event.asks, event_index, "ask", work_budget)?;
         Ok(())
     }
 
@@ -372,8 +415,10 @@ fn apply_levels(
     levels: &[SeededL2QuoteLevel],
     event_index: usize,
     side_label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     for (level_index, level) in levels.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let price = parse_decimal(&level.price, event_index, level_index, "price")?;
         let size = parse_decimal(&level.size, event_index, level_index, "size")?;
         ensure!(
@@ -397,6 +442,7 @@ fn apply_levels(
                 },
             );
         }
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(())
 }
@@ -511,7 +557,9 @@ fn parse_seeded_l2_json_value(
     mapping: &SeededL2QuoteMappingConfig,
     value: &Value,
     line_number: usize,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<SeededL2QuoteEvent> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let action_raw = required_scalar_at_path(value, &mapping.action_path)
         .with_context(|| format!("line {line_number}: read action"))?;
     let action = parse_action(mapping, &action_raw)
@@ -531,18 +579,34 @@ fn parse_seeded_l2_json_value(
             .with_context(|| format!("line {line_number}: read source sequence"))?,
         None => None,
     };
-    let bids = levels_at_path(value, &mapping.bids_path, mapping, line_number, "bids")
-        .with_context(|| format!("line {line_number}: read bids"))?;
-    let asks = levels_at_path(value, &mapping.asks_path, mapping, line_number, "asks")
-        .with_context(|| format!("line {line_number}: read asks"))?;
-    Ok(SeededL2QuoteEvent {
+    let bids = levels_at_path(
+        value,
+        &mapping.bids_path,
+        mapping,
+        line_number,
+        "bids",
+        work_budget,
+    )
+    .with_context(|| format!("line {line_number}: read bids"))?;
+    let asks = levels_at_path(
+        value,
+        &mapping.asks_path,
+        mapping,
+        line_number,
+        "asks",
+        work_budget,
+    )
+    .with_context(|| format!("line {line_number}: read asks"))?;
+    let event = SeededL2QuoteEvent {
         action,
         event_time,
         capture_time: None,
         source_sequence,
         bids,
         asks,
-    })
+    };
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+    Ok(event)
 }
 
 fn parse_action(mapping: &SeededL2QuoteMappingConfig, raw: &str) -> Result<SeededL2QuoteAction> {
@@ -570,6 +634,7 @@ fn levels_at_path(
     mapping: &SeededL2QuoteMappingConfig,
     line_number: usize,
     side_label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<SeededL2QuoteLevel>> {
     let levels = value_at_path(value, path)
         .with_context(|| format!("missing {side_label} path {}", path.join(".")))?;
@@ -578,6 +643,7 @@ fn levels_at_path(
         .with_context(|| format!("{side_label} path {} is not an array", path.join(".")))?;
     let mut parsed = Vec::with_capacity(levels.len());
     for (level_index, level) in levels.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let fields = level.as_array().with_context(|| {
             format!("line {line_number} {side_label} level {level_index} is not an array")
         })?;
@@ -588,6 +654,7 @@ fn levels_at_path(
             format!("line {line_number} {side_label} level {level_index}: missing size")
         })?;
         parsed.push(SeededL2QuoteLevel { price, size });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(parsed)
 }
@@ -630,7 +697,63 @@ fn scalar_to_string(value: &Value) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
     use super::*;
+
+    struct NormalizationExpiryClock {
+        observations: AtomicUsize,
+        expires_after_observation: usize,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for NormalizationExpiryClock {
+        fn now(&self) -> Duration {
+            if self.observations.fetch_add(1, Ordering::SeqCst) >= self.expires_after_observation {
+                Duration::from_secs(1)
+            } else {
+                Duration::ZERO
+            }
+        }
+    }
+
+    fn expiring_normalization_guard(expires_after_observation: usize) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(NormalizationExpiryClock {
+                observations: AtomicUsize::new(0),
+                expires_after_observation,
+            }),
+        )
+        .expect("expiring normalization guard")
+    }
+
+    fn test_mapping() -> SeededL2QuoteMappingConfig {
+        SeededL2QuoteMappingConfig {
+            action_path: vec!["action".to_string()],
+            event_time_path: vec!["ts".to_string()],
+            event_time_unit: CsvTimestampUnit::Milliseconds,
+            bids_path: vec!["bids".to_string()],
+            asks_path: vec!["asks".to_string()],
+            level_price_index: 0,
+            level_size_index: 1,
+            snapshot_action_values: vec!["snapshot".to_string()],
+            update_action_values: vec!["update".to_string()],
+            source_sequence_path: None,
+        }
+    }
 
     fn provenance() -> SeededL2QuoteProvenance {
         SeededL2QuoteProvenance {
@@ -723,6 +846,50 @@ mod tests {
         assert_eq!(table.rows[2].bid, "100.5");
         assert_eq!(table.rows[2].ask, "101");
         assert_eq!(table.fidelity_class, SourceProofFidelityClass::QuoteReplay);
+    }
+
+    #[test]
+    fn one_seeded_l2_row_with_many_levels_stops_during_nested_parse() {
+        let bids = (0..128)
+            .map(|index| serde_json::json!([format!("{index}.1"), "1"]))
+            .collect::<Vec<_>>();
+        let jsonl = serde_json::json!({
+            "action": "snapshot",
+            "ts": 1_776_816_000_000_i64,
+            "bids": bids,
+            "asks": [["999.1", "1"]],
+        })
+        .to_string();
+        let guard = expiring_normalization_guard(8);
+
+        let error = parse_seeded_l2_jsonl_with_meter(&test_mapping(), &jsonl, &guard)
+            .expect_err("one source row must not bypass the deadline through level parsing");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("normalize"), "{error:#}");
+        assert_eq!(guard.source_rows_consumed(), 1);
+    }
+
+    #[test]
+    fn seeded_book_application_stops_inside_one_high_level_snapshot() {
+        let bids = (1..=128)
+            .map(|index| level(&index.to_string(), "1"))
+            .collect();
+        let events = vec![SeededL2QuoteEvent {
+            action: SeededL2QuoteAction::Snapshot,
+            event_time: 1_776_816_000_000_000_000,
+            capture_time: None,
+            source_sequence: Some("1".to_string()),
+            bids,
+            asks: vec![level("999", "1")],
+        }];
+        let guard = expiring_normalization_guard(6);
+
+        let error = normalize_seeded_l2_events_with_meter(&provenance(), &events, &guard)
+            .expect_err("seeded-book level application must observe the deadline");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("normalize"), "{error:#}");
     }
 
     #[test]

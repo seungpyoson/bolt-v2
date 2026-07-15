@@ -1774,7 +1774,9 @@ where
         gz_bytes,
         output_dir,
         store,
-        build_capability_evidence,
+        |artifact_root, plan, create_only_probe, _work_budget| {
+            build_capability_evidence(artifact_root, plan, create_only_probe)
+        },
         &work_budget,
     )
     .await
@@ -1794,6 +1796,7 @@ where
         &ResolvedArtifactRoot,
         &NtCatalogCapabilityPlan,
         CreateOnlyProbeTranscript,
+        &OperatorWorkBudgetGuard,
     ) -> Result<NtCatalogCapabilityEvidence>,
 {
     let artifact_store = spec.required_artifact_store()?;
@@ -1853,6 +1856,7 @@ where
         &artifact_root,
         &nt_catalog_capability_plan,
         create_only_probe_transcript.clone(),
+        work_budget,
     )?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let nt_catalog_capability_proof_artifact = nt_catalog_capability_proof
@@ -4746,6 +4750,24 @@ mod tests {
             }
         }
     }
+
+    fn expiring_test_work_budget(expires_after_observation: usize) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(ExpiringReadClock {
+                observations: AtomicUsize::new(0),
+                expires_after_observation,
+            }),
+        )
+        .expect("expiring guard")
+    }
     /// The committed run-spec, with the accepted-object hash rebound to a locally
     /// reproducible synthetic object (the real staged object is not committed).
     fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
@@ -4901,6 +4923,58 @@ mod tests {
         let error = decode_object_payload(&config, &bytes, &guard)
             .err()
             .expect("decode must stop at the cooperative deadline");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("decode"), "{error:#}");
+    }
+
+    #[test]
+    fn gzip_decode_stops_when_deadline_expires_between_decompressed_reads() {
+        let mut config = payload_config(RawPayloadContainer::JsonlGzip);
+        config.max_object_bytes = 262_144;
+        config.max_decoded_bytes = 262_144;
+        let compressed = gzip(&"x".repeat(131_072));
+        let guard = expiring_test_work_budget(5);
+
+        let error = decode_object_payload(&config, &compressed, &guard)
+            .err()
+            .expect("gzip decode must stop at the cooperative deadline");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("decode"), "{error:#}");
+    }
+
+    #[test]
+    fn zip_decode_stops_when_deadline_expires_between_member_reads() {
+        let mut config = payload_config(RawPayloadContainer::SingleJsonlZip);
+        config.max_object_bytes = 262_144;
+        config.max_decoded_bytes = 262_144;
+        let compressed = zip_single_csv("book.data", &"x".repeat(131_072));
+        let guard = expiring_test_work_budget(5);
+
+        let error = decode_object_payload(&config, &compressed, &guard)
+            .err()
+            .expect("ZIP decode must stop at the cooperative deadline");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert!(error.to_string().contains("decode"), "{error:#}");
+    }
+
+    #[test]
+    fn tar_decode_stops_when_deadline_expires_mid_matching_member() {
+        let mut config = payload_config(RawPayloadContainer::TarGzipJsonl);
+        config.max_object_bytes = 262_144;
+        config.member_suffix = Some(".jsonl".to_string());
+        config.max_member_bytes = Some(2_048);
+        let member = vec![b'x'; TEST_TAR_BLOCK * 3];
+        let archive = gzip_tar(&[("large.jsonl", member.as_slice())]);
+        // Guard construction + decode entry + one header block + the first
+        // member block remain in budget; the next 512-byte member read expires.
+        let guard = expiring_test_work_budget(7);
+
+        let error = decode_object_payload(&config, &archive, &guard)
+            .err()
+            .expect("tar decode must stop inside a multi-block member");
 
         assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
         assert!(error.to_string().contains("decode"), "{error:#}");
@@ -5528,6 +5602,36 @@ mod tests {
     }
 
     #[test]
+    fn fresh_row_group_budget_failure_precedes_canonical_and_catalog_writes() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let guard = test_work_budget(100, 0);
+
+        let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
+            .expect_err("one projected row group must exceed a zero-row-group budget");
+
+        assert!(
+            error.to_string().contains("max_projected_row_groups"),
+            "{error:#}"
+        );
+        assert!(
+            !dir.path().join(CANONICAL_ARTIFACT_FILE).exists(),
+            "canonical bytes must not exist after projection-budget rejection"
+        );
+        assert!(
+            !dir.path().join(CATALOG_DIR).exists(),
+            "catalog bytes must not exist after projection-budget rejection"
+        );
+        let checkpoint_path = dir.path().join(CONVERSION_CHECKPOINT_FILE);
+        if checkpoint_path.exists() {
+            let checkpoint: ConversionCheckpoint =
+                read_json_artifact(&checkpoint_path).expect("inspect nonterminal checkpoint");
+            assert_ne!(checkpoint.stage, ConversionCheckpointStage::Completed);
+        }
+    }
+
+    #[test]
     fn completed_output_is_revalidated_against_a_stricter_source_budget() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
@@ -5540,6 +5644,52 @@ mod tests {
 
         assert!(error.to_string().contains("max_source_rows"), "{error:#}");
         assert_eq!(guard.source_rows_consumed(), 3);
+    }
+
+    #[test]
+    fn completed_output_row_group_rejection_preserves_existing_bytes() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let first = run_from_run_spec(&spec, &gz, dir.path()).expect("first run completes");
+        let canonical_before =
+            fs::read(&first.canonical_artifact_path).expect("read canonical bytes");
+        let checkpoint_before =
+            fs::read(&first.conversion_checkpoint_path).expect("read checkpoint bytes");
+        let manifest_before =
+            fs::read(&first.conversion_manifest_path).expect("read manifest bytes");
+        let metadata_before = fs::read(&first.catalog_metadata_path).expect("read metadata bytes");
+        let catalog_hash_before =
+            logical_catalog_hash(&first.catalog_root).expect("hash completed catalog");
+        let guard = test_work_budget(100, 0);
+
+        let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
+            .expect_err("completed output must be rejected by a zero-row-group budget");
+
+        assert!(
+            error.to_string().contains("max_projected_row_groups"),
+            "{error:#}"
+        );
+        assert_eq!(
+            fs::read(&first.canonical_artifact_path).expect("canonical remains"),
+            canonical_before
+        );
+        assert_eq!(
+            fs::read(&first.conversion_checkpoint_path).expect("checkpoint remains"),
+            checkpoint_before
+        );
+        assert_eq!(
+            fs::read(&first.conversion_manifest_path).expect("manifest remains"),
+            manifest_before
+        );
+        assert_eq!(
+            fs::read(&first.catalog_metadata_path).expect("metadata remains"),
+            metadata_before
+        );
+        assert_eq!(
+            logical_catalog_hash(&first.catalog_root).expect("catalog remains"),
+            catalog_hash_before
+        );
     }
 
     #[test]

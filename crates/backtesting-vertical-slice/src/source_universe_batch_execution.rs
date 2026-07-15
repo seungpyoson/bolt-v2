@@ -453,28 +453,44 @@ impl HttpSourceUniverseObjectFetcher {
     }
 }
 
+fn effective_http_request_timeout(
+    configured: Option<Duration>,
+    remaining: Option<Duration>,
+) -> Option<Duration> {
+    match (configured, remaining) {
+        (Some(configured), Some(remaining)) => Some(configured.min(remaining)),
+        (Some(configured), None) => Some(configured),
+        (None, Some(remaining)) => Some(remaining),
+        (None, None) => None,
+    }
+}
+
+fn apply_http_request_timeout(
+    request: reqwest::RequestBuilder,
+    timeout: Option<Duration>,
+) -> reqwest::RequestBuilder {
+    match timeout {
+        Some(timeout) => request.timeout(timeout),
+        None => request,
+    }
+}
+
 impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Vec<u8>> {
-        let remaining = work_budget.remaining_wall_time(OperatorWorkBudgetStage::Fetch)?;
-        let request_timeout = match (self.fetch_timeout, remaining) {
-            (Some(configured), Some(remaining)) => Some(configured.min(remaining)),
-            (Some(configured), None) => Some(configured),
-            (None, Some(remaining)) => Some(remaining),
-            (None, None) => None,
-        };
         let source_url = validated_http_source_url(&record.source_url)?;
         let client = self.client.clone();
+        let remaining = work_budget.remaining_wall_time(OperatorWorkBudgetStage::Fetch)?;
+        let request_timeout = effective_http_request_timeout(self.fetch_timeout, remaining);
+        let request = apply_http_request_timeout(client.get(source_url), request_timeout)
+            .build()
+            .with_context(|| format!("build GET request for {}", record.source_url))?;
         let bytes = self.runtime.block_on(async {
-            let mut request = client.get(source_url);
-            if let Some(request_timeout) = request_timeout {
-                request = request.timeout(request_timeout);
-            }
-            let response = request
-                .send()
+            let response = client
+                .execute(request)
                 .await
                 .with_context(|| format!("GET {}", record.source_url))?;
             response
@@ -2334,6 +2350,46 @@ fn failure_record(
 mod tests {
     use super::*;
     use crate::source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION;
+
+    #[test]
+    fn effective_http_timeout_selects_the_tighter_available_bound() {
+        let short = Duration::from_secs(3);
+        let long = Duration::from_secs(9);
+        for (configured, remaining, expected) in [
+            (Some(short), Some(long), Some(short)),
+            (Some(long), Some(short), Some(short)),
+            (Some(short), Some(short), Some(short)),
+            (Some(short), None, Some(short)),
+            (None, Some(short), Some(short)),
+            (None, None, None),
+        ] {
+            assert_eq!(
+                effective_http_request_timeout(configured, remaining),
+                expected,
+                "configured={configured:?}, remaining={remaining:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_builder_carries_the_selected_effective_timeout() {
+        let selected = Duration::from_secs(7);
+        let request = apply_http_request_timeout(
+            reqwest::Client::new().get("https://example.test/archive/object"),
+            Some(selected),
+        )
+        .build()
+        .expect("build request without sending");
+        assert_eq!(request.timeout().copied(), Some(selected));
+
+        let unbounded = apply_http_request_timeout(
+            reqwest::Client::new().get("https://example.test/archive/object"),
+            None,
+        )
+        .build()
+        .expect("build request without sending");
+        assert_eq!(unbounded.timeout(), None);
+    }
 
     /// Inner fetcher double for cache-repair unit tests; must never be called.
     struct PanicFetcher;

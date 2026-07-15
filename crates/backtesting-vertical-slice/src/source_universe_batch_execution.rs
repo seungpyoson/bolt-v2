@@ -47,7 +47,7 @@ use crate::{
 };
 
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION: &str =
-    "source-universe-batch-execution-report.v2";
+    "source-universe-batch-execution-report.v3";
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE: &str =
     "source-universe-batch-execution-report.json";
 
@@ -145,6 +145,8 @@ pub struct SourceUniverseBatchExecutionRecord {
     pub run_spec_sha256: String,
     pub accepted_tranche_sha256: String,
     pub execution_plan_sha256: String,
+    pub execution_record_sha256: String,
+    pub source_bindings_sha256: String,
     pub selected_object_bytes: u64,
     pub canonical_rows: u64,
     pub nt_catalog_rows: u64,
@@ -162,6 +164,7 @@ pub struct SourceUniverseBatchExecutionFailureRecord {
     pub symbol: String,
     pub archive_date: String,
     pub selected_object_sha256: String,
+    pub execution_record_sha256: String,
     pub selected_object_bytes: u64,
     pub failure_stage: String,
     pub error: String,
@@ -191,6 +194,203 @@ pub struct SourceUniverseBatchExecutionReportArtifact {
     pub content_hash: String,
     pub bytes: u64,
     pub completed_record_count: u64,
+}
+
+/// Validate a batch report as evidence rather than trusting its aggregate
+/// counters. This is the single consume boundary used by report publication,
+/// resume loading, and conversion-completion reconciliation.
+pub fn validate_source_universe_batch_execution_report(
+    report: &SourceUniverseBatchExecutionReport,
+) -> Result<()> {
+    ensure!(
+        report.schema_version == SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
+        "batch execution report schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
+        report.schema_version
+    );
+    for (name, value) in [
+        ("batch_id", report.batch_id.as_str()),
+        ("pack_id", report.pack_id.as_str()),
+        ("universe_id", report.universe_id.as_str()),
+        ("venue", report.venue.as_str()),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "batch execution report {name} must not be empty"
+        );
+    }
+
+    let completed_record_count = u64::try_from(report.records.len())
+        .context("batch execution report completed record count exceeds u64")?;
+    let failed_record_count = u64::try_from(report.failures.len())
+        .context("batch execution report failed record count exceeds u64")?;
+    let selected_record_count = completed_record_count
+        .checked_add(failed_record_count)
+        .context("batch execution report selected record count overflow")?;
+    ensure!(
+        report.selected_record_count == selected_record_count,
+        "batch execution report selected_record_count mismatch: expected {}, got {}",
+        selected_record_count,
+        report.selected_record_count
+    );
+    ensure!(
+        report.completed_record_count == completed_record_count,
+        "batch execution report completed_record_count mismatch: expected {}, got {}",
+        completed_record_count,
+        report.completed_record_count
+    );
+    ensure!(
+        report.failed_record_count == failed_record_count,
+        "batch execution report failed_record_count mismatch: expected {}, got {}",
+        failed_record_count,
+        report.failed_record_count
+    );
+
+    let expected_status = if report.failures.is_empty() {
+        SourceUniverseBatchExecutionReportStatus::Completed
+    } else if report.records.is_empty() {
+        SourceUniverseBatchExecutionReportStatus::Failed
+    } else {
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    };
+    ensure!(
+        report.status == expected_status,
+        "batch execution report status does not match its record and failure sets"
+    );
+
+    let total_canonical_rows = report.records.iter().try_fold(0_u64, |total, record| {
+        total
+            .checked_add(record.canonical_rows)
+            .context("batch execution report total_canonical_rows overflow")
+    })?;
+    let total_nt_catalog_rows = report.records.iter().try_fold(0_u64, |total, record| {
+        total
+            .checked_add(record.nt_catalog_rows)
+            .context("batch execution report total_nt_catalog_rows overflow")
+    })?;
+    ensure!(
+        report.total_canonical_rows == total_canonical_rows,
+        "batch execution report total_canonical_rows mismatch: expected {}, got {}",
+        total_canonical_rows,
+        report.total_canonical_rows
+    );
+    ensure!(
+        report.total_nt_catalog_rows == total_nt_catalog_rows,
+        "batch execution report total_nt_catalog_rows mismatch: expected {}, got {}",
+        total_nt_catalog_rows,
+        report.total_nt_catalog_rows
+    );
+
+    let mut sequences = BTreeSet::new();
+    let mut operator_run_ids = BTreeSet::new();
+    for record in &report.records {
+        validate_report_record_identity(
+            record.sequence,
+            &record.operator_run_id,
+            &record.source_binding,
+            &record.category,
+            &record.symbol,
+            &record.archive_date,
+        )?;
+        ensure!(
+            sequences.insert(record.sequence),
+            "batch execution report has duplicate sequence {}",
+            record.sequence
+        );
+        ensure!(
+            operator_run_ids.insert(record.operator_run_id.as_str()),
+            "batch execution report has duplicate operator_run_id {:?}",
+            record.operator_run_id
+        );
+        for (name, digest) in [
+            (
+                "selected_object_sha256",
+                record.selected_object_sha256.as_str(),
+            ),
+            ("run_spec_sha256", record.run_spec_sha256.as_str()),
+            (
+                "accepted_tranche_sha256",
+                record.accepted_tranche_sha256.as_str(),
+            ),
+            (
+                "execution_plan_sha256",
+                record.execution_plan_sha256.as_str(),
+            ),
+            (
+                "execution_record_sha256",
+                record.execution_record_sha256.as_str(),
+            ),
+            (
+                "source_bindings_sha256",
+                record.source_bindings_sha256.as_str(),
+            ),
+            ("catalog_hash", record.catalog_hash.as_str()),
+        ] {
+            validate_sha256_hex(digest)
+                .with_context(|| format!("validate completed record {name}"))?;
+        }
+        ensure!(
+            !record.output_dir.as_os_str().is_empty(),
+            "batch execution report completed record output_dir must not be empty"
+        );
+    }
+    for failure in &report.failures {
+        validate_report_record_identity(
+            failure.sequence,
+            &failure.operator_run_id,
+            &failure.source_binding,
+            &failure.category,
+            &failure.symbol,
+            &failure.archive_date,
+        )?;
+        ensure!(
+            sequences.insert(failure.sequence),
+            "batch execution report sequence {} appears in both records and failures or is duplicated",
+            failure.sequence
+        );
+        ensure!(
+            operator_run_ids.insert(failure.operator_run_id.as_str()),
+            "batch execution report operator_run_id {:?} appears in both records and failures or is duplicated",
+            failure.operator_run_id
+        );
+        validate_sha256_hex(&failure.selected_object_sha256)
+            .context("validate failure selected_object_sha256")?;
+        validate_sha256_hex(&failure.execution_record_sha256)
+            .context("validate failure execution_record_sha256")?;
+        ensure!(
+            !failure.failure_stage.trim().is_empty(),
+            "batch execution report failure_stage must not be empty"
+        );
+        ensure!(
+            !failure.error.trim().is_empty(),
+            "batch execution report failure error must not be empty"
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_report_record_identity(
+    sequence: u64,
+    operator_run_id: &str,
+    source_binding: &str,
+    category: &str,
+    symbol: &str,
+    archive_date: &str,
+) -> Result<()> {
+    for (name, value) in [
+        ("operator_run_id", operator_run_id),
+        ("source_binding", source_binding),
+        ("category", category),
+        ("symbol", symbol),
+        ("archive_date", archive_date),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "batch execution report sequence {sequence} {name} must not be empty"
+        );
+    }
+    Ok(())
 }
 
 pub struct HttpSourceUniverseObjectFetcher {
@@ -463,12 +663,15 @@ where
     let owned_plan = prepare_batch(batch_id, execution_pack_path, output_dir, &config)?;
     let plan = owned_plan.plan();
     let work_item_count = plan.work_items.len();
+    if work_item_count == 0 {
+        return assemble_report(batch_id, &owned_plan, Vec::new(), &config);
+    }
     let worker_count = config
         .max_concurrent_records
         .and_then(|workers| usize::try_from(workers).ok())
         .unwrap_or(1)
         .max(1)
-        .min(work_item_count.max(1));
+        .min(work_item_count);
 
     let slots: Vec<Mutex<Option<RecordSlot>>> =
         (0..work_item_count).map(|_| Mutex::new(None)).collect();
@@ -487,8 +690,7 @@ where
             let runner_factory = &runner_factory;
             let output_root_lease = &owned_plan.output_root_lease;
             handles.push(scope.spawn(move || -> Result<()> {
-                let mut fetcher = fetcher_factory().context("construct batch worker fetcher")?;
-                let mut runner = runner_factory().context("construct batch worker runner")?;
+                let mut dependencies: Option<(F, R)> = None;
                 loop {
                     if !config.continue_on_error && stop_flag.load(Ordering::SeqCst) {
                         break;
@@ -498,13 +700,50 @@ where
                         break;
                     }
                     let work_item = &work_items[index];
-                    let slot = process_work_item(
-                        work_item,
-                        output_root_lease,
-                        config,
-                        &mut fetcher,
-                        &mut runner,
-                    );
+                    let slot = match resolve_work_item(work_item, output_root_lease, config) {
+                        ResolvedBatchWorkItem::Terminal(slot) => slot,
+                        ResolvedBatchWorkItem::Fresh(fresh) => {
+                            if dependencies.is_none() {
+                                let constructed = (|| -> Result<(F, R)> {
+                                    let fetcher = fetcher_factory()
+                                        .context("construct batch worker fetcher")?;
+                                    let runner = runner_factory()
+                                        .context("construct batch worker runner")?;
+                                    Ok((fetcher, runner))
+                                })();
+                                match constructed {
+                                    Ok(values) => dependencies = Some(values),
+                                    Err(error) => {
+                                        let slot = record_error_slot(
+                                            fresh.record,
+                                            fresh.execution_record_sha256,
+                                            "construct_worker_dependencies",
+                                            error,
+                                            config,
+                                        );
+                                        if !config.continue_on_error
+                                            && matches!(slot, RecordSlot::Stopped(_))
+                                        {
+                                            stop_flag.store(true, Ordering::SeqCst);
+                                        }
+                                        *slots[index].lock().expect("batch slot mutex") =
+                                            Some(slot);
+                                        continue;
+                                    }
+                                }
+                            }
+                            let (fetcher, runner) = dependencies
+                                .as_mut()
+                                .expect("worker dependencies initialized");
+                            process_fresh_work_item(
+                                fresh,
+                                output_root_lease,
+                                config,
+                                fetcher,
+                                runner,
+                            )
+                        }
+                    };
                     if !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_)) {
                         stop_flag.store(true, Ordering::SeqCst);
                     }
@@ -534,29 +773,48 @@ where
 }
 
 /// A single unit of batch work after selection and resume filtering: a control
-/// artifact preflight failure collected under `continue_on_error`, a record
-/// carried forward from a prior report (only after every pinned input hash
-/// matches AND its prior output catalog re-verifies — see
-/// [`carried_output_still_verifies`]), or a pack record that still needs to be
-/// fetched, verified, and executed. The carried record is boxed to keep the
-/// variants similarly sized.
+/// artifact preflight failure collected under `continue_on_error`, a resume
+/// candidate that is revalidated at consumption time, or a pack record that
+/// still needs to be fetched, verified, and executed.
 enum BatchWorkItem<'pack> {
     PreflightFailed {
         record: &'pack SourceUniverseExecutionPackRecord,
         error: &'pack str,
+        execution_record_sha256: &'pack str,
     },
-    Carried(Box<SourceUniverseBatchExecutionRecord>),
+    ResumeCandidate {
+        record: &'pack SourceUniverseExecutionPackRecord,
+        control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
+        execution_record_sha256: &'pack str,
+        prior: &'pack SourceUniverseBatchExecutionRecord,
+    },
     NeedsWork {
         record: &'pack SourceUniverseExecutionPackRecord,
         control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
-        output_claim: &'pack BatchOutputChildClaim,
+        execution_record_sha256: &'pack str,
     },
+}
+
+struct FreshBatchWorkItem<'pack> {
+    record: &'pack SourceUniverseExecutionPackRecord,
+    control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
+    execution_record_sha256: &'pack str,
+    output_claim: BatchOutputChildClaim,
+}
+
+enum ResolvedBatchWorkItem<'pack> {
+    Terminal(RecordSlot),
+    Fresh(FreshBatchWorkItem<'pack>),
 }
 
 /// Outcome for one work item, kept in original-sequence slot order so the
 /// assembled report is independent of completion order.
 enum RecordSlot {
     Completed(SourceUniverseBatchExecutionRecord),
+    Carried {
+        report_record: SourceUniverseBatchExecutionRecord,
+        pack_record: SourceUniverseExecutionPackRecord,
+    },
     Failed(SourceUniverseBatchExecutionFailureRecord),
     Stopped(StoppedRecord),
 }
@@ -757,6 +1015,16 @@ fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Resul
         "execution pack table_family must not be empty"
     );
 
+    for records in pack.records.windows(2) {
+        ensure!(
+            records[0].sequence < records[1].sequence,
+            "execution pack {} sequences must be strictly increasing; {} is followed by {}",
+            pack.pack_id,
+            records[0].sequence,
+            records[1].sequence
+        );
+    }
+
     let mut operator_run_ids = BTreeSet::new();
     for record in &pack.records {
         validate_portable_path_component("operator_run_id", &record.operator_run_id).with_context(
@@ -775,6 +1043,44 @@ fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Resul
         );
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ExecutionRecordFingerprint<'a> {
+    pack_context: &'a serde_json::Value,
+    record: &'a SourceUniverseExecutionPackRecord,
+}
+
+/// Compute every record fingerprint from one copy of the pack's non-record
+/// context. Removing `records` before the per-record loop prevents each digest
+/// from recursively serializing or cloning the complete record vector.
+fn execution_record_digests(pack: &SourceUniverseExecutionPack) -> Result<BTreeMap<u64, String>> {
+    let mut pack_context =
+        serde_json::to_value(pack).context("serialize execution pack context")?;
+    let pack_object = pack_context
+        .as_object_mut()
+        .context("serialized execution pack must be a JSON object")?;
+    ensure!(
+        pack_object.remove("records").is_some(),
+        "serialized execution pack context is missing records"
+    );
+
+    let mut digests = BTreeMap::new();
+    for record in &pack.records {
+        let digest =
+            crate::reference_artifact::canonical_json_sha256(&ExecutionRecordFingerprint {
+                pack_context: &pack_context,
+                record,
+            })
+            .context("hash execution-pack record and pack context")?;
+        ensure!(
+            digests.insert(record.sequence, digest).is_none(),
+            "execution pack {} has duplicate sequence {}",
+            pack.pack_id,
+            record.sequence
+        );
+    }
+    Ok(digests)
 }
 
 fn validate_pack_record_control_alignment(
@@ -916,6 +1222,7 @@ fn prepare_batch(
     let pack: SourceUniverseExecutionPack = serde_json::from_slice(&pack_bytes)
         .with_context(|| format!("parse execution pack {}", execution_pack_path.display()))?;
     validate_execution_pack_identity(&pack)?;
+    let execution_record_sha256s = execution_record_digests(&pack)?;
     ensure!(
         matches!(
             pack.status,
@@ -987,7 +1294,6 @@ fn prepare_batch(
     let mut verified_artifact_cache = BTreeMap::new();
     let mut verified_registry_cache = BTreeMap::new();
     let mut verified_control_artifacts = BTreeMap::new();
-    let mut verified_output_claims = BTreeMap::new();
     let mut control_artifact_failures = BTreeMap::new();
     for record in pack
         .records
@@ -1007,28 +1313,21 @@ fn prepare_batch(
             record.sequence,
         );
         let preflight = (|| {
-            let output_claim =
-                BatchOutputChildClaim::acquire(&output_root_lease, &record.operator_run_id)
-                    .with_context(|| {
-                        format!(
-                            "claim selected output for pack record {} ({})",
-                            record.sequence, record.operator_run_id
-                        )
-                    })?;
-            let verified = verify_pack_control_artifacts(
+            let prospective_output_dir = output_root_lease
+                .canonical_path
+                .join(&record.operator_run_id);
+            verify_pack_control_artifacts(
                 &pack,
                 &pack_base_dir,
                 record,
-                &output_claim.canonical_path,
+                &prospective_output_dir,
                 &mut verified_artifact_cache,
                 &mut verified_registry_cache,
-            )?;
-            Ok::<_, anyhow::Error>((verified, output_claim))
+            )
         })();
         match preflight {
-            Ok((verified, output_claim)) => {
+            Ok(verified) => {
                 verified_control_artifacts.insert(record.sequence, verified);
-                verified_output_claims.insert(record.sequence, output_claim);
             }
             Err(error) if config.continue_on_error => {
                 control_artifact_failures.insert(record.sequence, format!("{error:#}"));
@@ -1041,8 +1340,8 @@ fn prepare_batch(
 
     Ok(OwnedBatchPlan {
         pack,
+        execution_record_sha256s,
         verified_control_artifacts,
-        verified_output_claims,
         control_artifact_failures,
         resume_records,
         start_sequence: config.start_sequence,
@@ -1273,8 +1572,8 @@ fn verify_pack_control_artifact(
 /// work items can borrow from it without an extra clone of every pack record.
 struct OwnedBatchPlan {
     pack: SourceUniverseExecutionPack,
+    execution_record_sha256s: BTreeMap<u64, String>,
     verified_control_artifacts: BTreeMap<u64, SourceUniverseVerifiedControlArtifacts>,
-    verified_output_claims: BTreeMap<u64, BatchOutputChildClaim>,
     control_artifact_failures: BTreeMap<u64, String>,
     resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
     start_sequence: Option<u64>,
@@ -1294,34 +1593,33 @@ impl OwnedBatchPlan {
             })
             .take(self.record_limit)
             .map(|record| {
+                let execution_record_sha256 = self
+                    .execution_record_sha256s
+                    .get(&record.sequence)
+                    .expect("execution record digest was precomputed");
                 if let Some(error) = self.control_artifact_failures.get(&record.sequence) {
-                    return BatchWorkItem::PreflightFailed { record, error };
+                    return BatchWorkItem::PreflightFailed {
+                        record,
+                        error,
+                        execution_record_sha256,
+                    };
                 }
 
+                let control_artifacts = self
+                    .verified_control_artifacts
+                    .get(&record.sequence)
+                    .expect("selected record control artifacts were verified");
                 match self.resume_records.get(&record.sequence) {
-                    // Pack-regeneration guard: carry forward only when every
-                    // pinned input hash still matches the current pack record
-                    // AND the prior output catalog still exists and re-hashes
-                    // to the carried `catalog_hash`. Re-verifying through the
-                    // same `logical_catalog_hash` the operator's completed-output
-                    // reuse path uses means a deleted or corrupted prior catalog
-                    // re-executes the record instead of carrying stale output.
-                    Some(prior)
-                        if carried_record_inputs_match_pack(prior, record)
-                            && carried_output_still_verifies(prior) =>
-                    {
-                        BatchWorkItem::Carried(Box::new(prior.clone()))
-                    }
-                    _ => BatchWorkItem::NeedsWork {
+                    Some(prior) => BatchWorkItem::ResumeCandidate {
                         record,
-                        control_artifacts: self
-                            .verified_control_artifacts
-                            .get(&record.sequence)
-                            .expect("selected record control artifacts were verified"),
-                        output_claim: self
-                            .verified_output_claims
-                            .get(&record.sequence)
-                            .expect("selected record output was claimed"),
+                        control_artifacts,
+                        execution_record_sha256,
+                        prior,
+                    },
+                    None => BatchWorkItem::NeedsWork {
+                        record,
+                        control_artifacts,
+                        execution_record_sha256,
                     },
                 }
             })
@@ -1333,11 +1631,42 @@ impl OwnedBatchPlan {
 fn carried_record_inputs_match_pack(
     prior: &SourceUniverseBatchExecutionRecord,
     record: &SourceUniverseExecutionPackRecord,
+    control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+    execution_record_sha256: &str,
 ) -> bool {
-    prior.selected_object_sha256 == record.selected_object_sha256
+    prior.execution_record_sha256 == execution_record_sha256
+        && prior.source_bindings_sha256 == control_artifacts.source_bindings_sha256
+        && prior.selected_object_sha256 == record.selected_object_sha256
         && prior.run_spec_sha256 == record.run_spec_sha256
         && prior.accepted_tranche_sha256 == record.accepted_tranche_sha256
         && prior.execution_plan_sha256 == record.execution_plan_sha256
+}
+
+fn reconstructed_carried_record(
+    prior: &SourceUniverseBatchExecutionRecord,
+    record: &SourceUniverseExecutionPackRecord,
+    control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+    execution_record_sha256: &str,
+) -> SourceUniverseBatchExecutionRecord {
+    SourceUniverseBatchExecutionRecord {
+        sequence: record.sequence,
+        operator_run_id: record.operator_run_id.clone(),
+        source_binding: record.source_binding.clone(),
+        category: record.category.clone(),
+        symbol: record.symbol.clone(),
+        archive_date: record.archive_date.clone(),
+        selected_object_sha256: record.selected_object_sha256.clone(),
+        run_spec_sha256: record.run_spec_sha256.clone(),
+        accepted_tranche_sha256: record.accepted_tranche_sha256.clone(),
+        execution_plan_sha256: record.execution_plan_sha256.clone(),
+        execution_record_sha256: execution_record_sha256.to_string(),
+        source_bindings_sha256: control_artifacts.source_bindings_sha256.clone(),
+        selected_object_bytes: record.selected_object_bytes,
+        canonical_rows: prior.canonical_rows,
+        nt_catalog_rows: prior.nt_catalog_rows,
+        catalog_hash: prior.catalog_hash.clone(),
+        output_dir: prior.output_dir.clone(),
+    }
 }
 
 /// Re-prove a carried record's prior OUTPUT before it is reused on resume.
@@ -1376,20 +1705,25 @@ fn load_resume_records(
         .with_context(|| format!("read resume report {}", resume_report.display()))?;
     let prior: SourceUniverseBatchExecutionReport = serde_json::from_slice(&prior_bytes)
         .with_context(|| format!("parse resume report {}", resume_report.display()))?;
-    ensure!(
-        prior.schema_version == SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
-        "resume report {} schema_version mismatch: expected {}, got {}",
-        resume_report.display(),
-        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
-        prior.schema_version
-    );
-    ensure!(
-        prior.pack_id == pack.pack_id,
-        "resume report {} pack_id mismatch: expected {}, got {}",
-        resume_report.display(),
-        pack.pack_id,
-        prior.pack_id
-    );
+    validate_source_universe_batch_execution_report(&prior)
+        .with_context(|| format!("validate resume report {}", resume_report.display()))?;
+    for (name, expected, actual) in [
+        ("pack_id", pack.pack_id.as_str(), prior.pack_id.as_str()),
+        (
+            "universe_id",
+            pack.universe_id.as_str(),
+            prior.universe_id.as_str(),
+        ),
+        ("venue", pack.venue.as_str(), prior.venue.as_str()),
+    ] {
+        ensure!(
+            expected == actual,
+            "resume report {} {name} mismatch: expected {:?}, got {:?}",
+            resume_report.display(),
+            expected,
+            actual
+        );
+    }
     // Only prior successful records (entries of `records`) carry forward; prior
     // failures are reprocessed.
     let mut resume_records = BTreeMap::new();
@@ -1410,28 +1744,106 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
-    let (record, control_artifacts, output_claim) = match work_item {
-        BatchWorkItem::PreflightFailed { record, error } => {
-            return record_error_slot(
+    match resolve_work_item(work_item, output_root_lease, config) {
+        ResolvedBatchWorkItem::Terminal(slot) => slot,
+        ResolvedBatchWorkItem::Fresh(fresh) => {
+            process_fresh_work_item(fresh, output_root_lease, config, fetcher, runner)
+        }
+    }
+}
+
+fn resolve_work_item<'pack>(
+    work_item: &'pack BatchWorkItem<'pack>,
+    output_root_lease: &BatchOutputRootLease,
+    config: &SourceUniverseBatchExecutionConfig,
+) -> ResolvedBatchWorkItem<'pack> {
+    let (record, control_artifacts, execution_record_sha256) = match work_item {
+        BatchWorkItem::PreflightFailed {
+            record,
+            error,
+            execution_record_sha256,
+        } => {
+            return ResolvedBatchWorkItem::Terminal(record_error_slot(
                 record,
+                execution_record_sha256,
                 "verify_control_artifacts",
                 anyhow::anyhow!(error.to_string()),
                 config,
-            );
+            ));
         }
-        // Carried records are pushed verbatim, skipping fetch + verify + run.
-        // Verbatim includes the prior run's output_dir (provenance is kept,
-        // not rewritten), so a resumed report can reference artifacts outside
-        // this run's output root — consumers must follow records[].output_dir.
-        BatchWorkItem::Carried(record) => {
-            return RecordSlot::Completed((**record).clone());
+        BatchWorkItem::ResumeCandidate {
+            record,
+            control_artifacts,
+            execution_record_sha256,
+            prior,
+        } => {
+            if carried_record_inputs_match_pack(
+                prior,
+                record,
+                control_artifacts,
+                execution_record_sha256,
+            ) && carried_output_still_verifies(prior)
+            {
+                return ResolvedBatchWorkItem::Terminal(RecordSlot::Carried {
+                    report_record: reconstructed_carried_record(
+                        prior,
+                        record,
+                        control_artifacts,
+                        execution_record_sha256,
+                    ),
+                    pack_record: (*record).clone(),
+                });
+            }
+            (*record, *control_artifacts, *execution_record_sha256)
         }
         BatchWorkItem::NeedsWork {
             record,
             control_artifacts,
-            output_claim,
-        } => (*record, *control_artifacts, *output_claim),
+            execution_record_sha256,
+        } => (*record, *control_artifacts, *execution_record_sha256),
     };
+
+    match BatchOutputChildClaim::acquire(output_root_lease, &record.operator_run_id).with_context(
+        || {
+            format!(
+                "claim fresh output for pack record {} ({})",
+                record.sequence, record.operator_run_id
+            )
+        },
+    ) {
+        Ok(output_claim) => ResolvedBatchWorkItem::Fresh(FreshBatchWorkItem {
+            record,
+            control_artifacts,
+            execution_record_sha256,
+            output_claim,
+        }),
+        Err(error) => ResolvedBatchWorkItem::Terminal(record_error_slot(
+            record,
+            execution_record_sha256,
+            "validate_output",
+            error,
+            config,
+        )),
+    }
+}
+
+fn process_fresh_work_item<F, R>(
+    fresh: FreshBatchWorkItem<'_>,
+    output_root_lease: &BatchOutputRootLease,
+    config: &SourceUniverseBatchExecutionConfig,
+    fetcher: &mut F,
+    runner: &mut R,
+) -> RecordSlot
+where
+    F: SourceUniverseObjectFetcher,
+    R: SourceUniverseOperatorRunner,
+{
+    let FreshBatchWorkItem {
+        record,
+        control_artifacts,
+        execution_record_sha256,
+        output_claim,
+    } = fresh;
 
     if let Err(error) = output_claim
         .revalidate(output_root_lease, &record.operator_run_id)
@@ -1442,7 +1854,13 @@ where
             )
         })
     {
-        return record_error_slot(record, "validate_output", error, config);
+        return record_error_slot(
+            record,
+            execution_record_sha256,
+            "validate_output",
+            error,
+            config,
+        );
     }
 
     let object_bytes = match fetcher
@@ -1450,12 +1868,20 @@ where
         .with_context(|| format!("fetch source object for {}", record.operator_run_id))
     {
         Ok(object_bytes) => object_bytes,
-        Err(error) => return record_error_slot(record, "fetch", error, config),
+        Err(error) => {
+            return record_error_slot(record, execution_record_sha256, "fetch", error, config);
+        }
     };
     if let Err(error) = verify_object(record, &object_bytes)
         .with_context(|| format!("verify source object for {}", record.operator_run_id))
     {
-        return record_error_slot(record, "verify_object", error, config);
+        return record_error_slot(
+            record,
+            execution_record_sha256,
+            "verify_object",
+            error,
+            config,
+        );
     }
 
     // Threat boundary: this detects replacement during the potentially long
@@ -1475,7 +1901,15 @@ where
             )
         }) {
         Ok(record_output_dir) => record_output_dir,
-        Err(error) => return record_error_slot(record, "validate_output", error, config),
+        Err(error) => {
+            return record_error_slot(
+                record,
+                execution_record_sha256,
+                "validate_output",
+                error,
+                config,
+            );
+        }
     };
 
     let run_result = runner
@@ -1490,11 +1924,27 @@ where
             )
         }) {
         Ok(record_output_dir) => record_output_dir,
-        Err(error) => return record_error_slot(record, "validate_output", error, config),
+        Err(error) => {
+            return record_error_slot(
+                record,
+                execution_record_sha256,
+                "validate_output",
+                error,
+                config,
+            );
+        }
     };
     let run_output = match run_result {
         Ok(run_output) => run_output,
-        Err(error) => return record_error_slot(record, "run_operator", error, config),
+        Err(error) => {
+            return record_error_slot(
+                record,
+                execution_record_sha256,
+                "run_operator",
+                error,
+                config,
+            );
+        }
     };
 
     RecordSlot::Completed(SourceUniverseBatchExecutionRecord {
@@ -1508,6 +1958,8 @@ where
         run_spec_sha256: record.run_spec_sha256.clone(),
         accepted_tranche_sha256: record.accepted_tranche_sha256.clone(),
         execution_plan_sha256: record.execution_plan_sha256.clone(),
+        execution_record_sha256: execution_record_sha256.to_string(),
+        source_bindings_sha256: control_artifacts.source_bindings_sha256.clone(),
         selected_object_bytes: record.selected_object_bytes,
         canonical_rows: run_output.canonical_rows,
         nt_catalog_rows: run_output.nt_catalog_rows,
@@ -1518,12 +1970,18 @@ where
 
 fn record_error_slot(
     record: &SourceUniverseExecutionPackRecord,
+    execution_record_sha256: &str,
     failure_stage: &str,
     error: anyhow::Error,
     config: &SourceUniverseBatchExecutionConfig,
 ) -> RecordSlot {
     if config.continue_on_error {
-        RecordSlot::Failed(failure_record(record, failure_stage, &error))
+        RecordSlot::Failed(failure_record(
+            record,
+            execution_record_sha256,
+            failure_stage,
+            &error,
+        ))
     } else {
         RecordSlot::Stopped(StoppedRecord {
             sequence: record.sequence,
@@ -1561,10 +2019,42 @@ fn assemble_report(
     for slot in slots {
         match slot {
             Some(RecordSlot::Completed(record)) => {
-                total_canonical_rows = total_canonical_rows.saturating_add(record.canonical_rows);
-                total_nt_catalog_rows =
-                    total_nt_catalog_rows.saturating_add(record.nt_catalog_rows);
+                total_canonical_rows = total_canonical_rows
+                    .checked_add(record.canonical_rows)
+                    .context("batch total_canonical_rows overflow")?;
+                total_nt_catalog_rows = total_nt_catalog_rows
+                    .checked_add(record.nt_catalog_rows)
+                    .context("batch total_nt_catalog_rows overflow")?;
                 records.push(record);
+            }
+            Some(RecordSlot::Carried {
+                report_record,
+                pack_record,
+            }) => {
+                if carried_output_still_verifies(&report_record) {
+                    total_canonical_rows = total_canonical_rows
+                        .checked_add(report_record.canonical_rows)
+                        .context("batch total_canonical_rows overflow")?;
+                    total_nt_catalog_rows = total_nt_catalog_rows
+                        .checked_add(report_record.nt_catalog_rows)
+                        .context("batch total_nt_catalog_rows overflow")?;
+                    records.push(report_record);
+                } else {
+                    let error = anyhow::anyhow!(
+                        "carried catalog for {} drifted before final report assembly",
+                        pack_record.operator_run_id
+                    );
+                    if config.continue_on_error {
+                        failures.push(failure_record(
+                            &pack_record,
+                            &report_record.execution_record_sha256,
+                            "verify_carried_catalog",
+                            &error,
+                        ));
+                    } else {
+                        return Err(error);
+                    }
+                }
             }
             Some(RecordSlot::Failed(failure)) => failures.push(failure),
             Some(RecordSlot::Stopped(stopped)) => return Err(stopped.error),
@@ -1588,29 +2078,41 @@ fn assemble_report(
     } else {
         SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
     };
+    let completed_record_count =
+        u64::try_from(records.len()).context("completed record count exceeds u64")?;
+    let failed_record_count =
+        u64::try_from(failures.len()).context("failed record count exceeds u64")?;
+    let selected_record_count = completed_record_count
+        .checked_add(failed_record_count)
+        .context("selected record count overflow")?;
 
     let pack = &owned_plan.pack;
-    Ok(SourceUniverseBatchExecutionReport {
+    let report = SourceUniverseBatchExecutionReport {
         schema_version: SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION.to_string(),
         batch_id: batch_id.to_string(),
         status,
         pack_id: pack.pack_id.clone(),
         universe_id: pack.universe_id.clone(),
         venue: pack.venue.clone(),
-        selected_record_count: records.len().saturating_add(failures.len()) as u64,
-        completed_record_count: records.len() as u64,
-        failed_record_count: failures.len() as u64,
+        selected_record_count,
+        completed_record_count,
+        failed_record_count,
         total_canonical_rows,
         total_nt_catalog_rows,
         records,
         failures,
-    })
+    };
+    validate_source_universe_batch_execution_report(&report)
+        .context("validate assembled batch execution report")?;
+    Ok(report)
 }
 
 pub fn write_source_universe_batch_execution_report(
     output_dir: &Path,
     report: &SourceUniverseBatchExecutionReport,
 ) -> Result<SourceUniverseBatchExecutionReportArtifact> {
+    validate_source_universe_batch_execution_report(report)
+        .context("validate batch execution report before write")?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch execution report dir {}", output_dir.display()))?;
     let path = output_dir.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
@@ -1667,6 +2169,7 @@ fn verify_object(record: &SourceUniverseExecutionPackRecord, object_bytes: &[u8]
 
 fn failure_record(
     record: &SourceUniverseExecutionPackRecord,
+    execution_record_sha256: &str,
     failure_stage: &str,
     error: &anyhow::Error,
 ) -> SourceUniverseBatchExecutionFailureRecord {
@@ -1678,6 +2181,7 @@ fn failure_record(
         symbol: record.symbol.clone(),
         archive_date: record.archive_date.clone(),
         selected_object_sha256: record.selected_object_sha256.clone(),
+        execution_record_sha256: execution_record_sha256.to_string(),
         selected_object_bytes: record.selected_object_bytes,
         failure_stage: failure_stage.to_string(),
         error: format!("{error:#}"),
@@ -1789,6 +2293,8 @@ mod tests {
             run_spec_sha256: "b".repeat(64),
             accepted_tranche_sha256: "c".repeat(64),
             execution_plan_sha256: "d".repeat(64),
+            execution_record_sha256: "e".repeat(64),
+            source_bindings_sha256: "f".repeat(64),
             selected_object_bytes: 0,
             canonical_rows: 7,
             nt_catalog_rows: 7,
@@ -1849,8 +2355,6 @@ mod tests {
             records: vec![pack_record],
             blocking_reasons: Vec::new(),
         };
-        let mut resume_records = BTreeMap::new();
-        resume_records.insert(prior.sequence, prior.clone());
         let run_spec_bytes: Arc<[u8]> = Arc::from(
             include_bytes!(
                 "../../../specs/023-nt-research-analytics-platform/reference/\
@@ -1903,6 +2407,7 @@ mod tests {
             )
             .expect("registry parses"),
         );
+        let source_bindings_sha256 = hex::encode(Sha256::digest(source_bindings_bytes.as_ref()));
         let mut verified_control_artifacts = BTreeMap::new();
         verified_control_artifacts.insert(
             0,
@@ -1917,25 +2422,36 @@ mod tests {
                 execution_plan_bytes,
                 execution_plan: Arc::new(controls.execution_plan),
                 source_bindings_path: PathBuf::from("source-bindings.toml"),
-                source_bindings_sha256: hex::encode(Sha256::digest(source_bindings_bytes.as_ref())),
+                source_bindings_sha256: source_bindings_sha256.clone(),
                 source_bindings_bytes,
                 source_bindings,
             },
         );
-        let output_root_lease = BatchOutputRootLease::acquire(
-            prior.output_dir.parent().expect("prior output has parent"),
-        )
-        .expect("acquire test output-root lease");
-        let mut verified_output_claims = BTreeMap::new();
-        verified_output_claims.insert(
-            0,
-            BatchOutputChildClaim::acquire(&output_root_lease, &prior.operator_run_id)
-                .expect("claim test operator output"),
-        );
+        let execution_record_sha256s = execution_record_digests(&pack).expect("fingerprint pack");
+        let mut carried = prior.clone();
+        carried.execution_record_sha256 = execution_record_sha256s
+            .get(&prior.sequence)
+            .expect("record digest")
+            .clone();
+        carried.source_bindings_sha256 = source_bindings_sha256;
+        let mut resume_records = BTreeMap::new();
+        resume_records.insert(prior.sequence, carried);
+        static NEXT_OUTPUT_ROOT: AtomicUsize = AtomicUsize::new(0);
+        let fresh_output_root = prior
+            .output_dir
+            .parent()
+            .expect("prior output has parent")
+            .join(format!(
+                "fresh-output-{}",
+                NEXT_OUTPUT_ROOT.fetch_add(1, Ordering::SeqCst)
+            ));
+        fs::create_dir_all(&fresh_output_root).expect("create fresh output root");
+        let output_root_lease = BatchOutputRootLease::acquire(&fresh_output_root)
+            .expect("acquire test output-root lease");
         OwnedBatchPlan {
             pack,
+            execution_record_sha256s,
             verified_control_artifacts,
-            verified_output_claims,
             control_artifact_failures: BTreeMap::new(),
             resume_records,
             start_sequence: None,
@@ -2010,8 +2526,12 @@ mod tests {
         let plan = owned_plan.plan();
         assert!(
             matches!(
-                plan.work_items.as_slice(),
-                [BatchWorkItem::NeedsWork { .. }]
+                resolve_work_item(
+                    &plan.work_items[0],
+                    &owned_plan.output_root_lease,
+                    &SourceUniverseBatchExecutionConfig::default(),
+                ),
+                ResolvedBatchWorkItem::Fresh(_)
             ),
             "a carried record with a missing prior catalog must re-execute, not carry forward"
         );
@@ -2031,9 +2551,61 @@ mod tests {
         let owned_plan = owned_plan_with_carry(&record);
         let plan = owned_plan.plan();
         assert!(
-            matches!(plan.work_items.as_slice(), [BatchWorkItem::Carried(_)]),
+            matches!(
+                resolve_work_item(
+                    &plan.work_items[0],
+                    &owned_plan.output_root_lease,
+                    &SourceUniverseBatchExecutionConfig::default(),
+                ),
+                ResolvedBatchWorkItem::Terminal(RecordSlot::Carried { .. })
+            ),
             "an intact, hash-matching prior catalog must still carry forward"
         );
+    }
+
+    #[test]
+    fn final_assembly_rejects_a_carried_catalog_that_drifted_after_resolution() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        let record =
+            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let owned_plan = owned_plan_with_carry(&record);
+        let plan = owned_plan.plan();
+        let slot = match resolve_work_item(
+            &plan.work_items[0],
+            &owned_plan.output_root_lease,
+            &SourceUniverseBatchExecutionConfig {
+                continue_on_error: true,
+                ..SourceUniverseBatchExecutionConfig::default()
+            },
+        ) {
+            ResolvedBatchWorkItem::Terminal(slot @ RecordSlot::Carried { .. }) => slot,
+            _ => panic!("intact catalog must initially resolve as carried"),
+        };
+        fs::remove_dir_all(output_dir.join(CATALOG_DIR)).expect("remove carried catalog");
+
+        let report = assemble_report(
+            "batch",
+            &owned_plan,
+            vec![Some(slot)],
+            &SourceUniverseBatchExecutionConfig {
+                continue_on_error: true,
+                ..SourceUniverseBatchExecutionConfig::default()
+            },
+        )
+        .expect("continue-on-error records final carry drift");
+
+        assert_eq!(
+            report.status,
+            SourceUniverseBatchExecutionReportStatus::Failed
+        );
+        assert_eq!(report.records.len(), 0);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].failure_stage, "verify_carried_catalog");
     }
 
     #[test]
@@ -2062,8 +2634,12 @@ mod tests {
 
             assert!(
                 matches!(
-                    plan.work_items.as_slice(),
-                    [BatchWorkItem::NeedsWork { .. }]
+                    resolve_work_item(
+                        &plan.work_items[0],
+                        &owned_plan.output_root_lease,
+                        &SourceUniverseBatchExecutionConfig::default(),
+                    ),
+                    ResolvedBatchWorkItem::Fresh(_)
                 ),
                 "a changed {field} hash must re-execute even when source and output still match"
             );

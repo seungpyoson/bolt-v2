@@ -558,7 +558,7 @@ fn resume_sha_mismatch_reprocesses_the_record() {
         failed_record_count: 0,
         total_canonical_rows: 7,
         total_nt_catalog_rows: 7,
-        records: vec![carried_record_fixture(0, "stale-sha-does-not-match")],
+        records: vec![carried_record_fixture(0, &"f".repeat(64))],
         failures: vec![],
     };
     let resume_report_path = temp_dir.path().join("prior-report.json");
@@ -924,9 +924,8 @@ fn parallel_overlaps_and_matches_serial_report() {
             );
             assert_eq!(
                 rec.catalog_hash,
-                format!("catalog-hash-{}", rec.sequence),
-                "catalog_hash for sequence {} must be catalog-hash-{}",
-                rec.sequence,
+                sha256_hex(format!("catalog-hash-{}", rec.sequence).as_bytes()),
+                "catalog_hash for sequence {} must bind its deterministic catalog bytes",
                 rec.sequence
             );
         }
@@ -2450,7 +2449,7 @@ fn factory_entry_does_not_construct_dependencies_for_only_preflight_failures() {
 
     assert_eq!(
         report.status,
-        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+        SourceUniverseBatchExecutionReportStatus::Failed
     );
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
@@ -2576,7 +2575,7 @@ fn factory_construction_error_is_a_record_failure_under_continue_on_error() {
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         report.status,
-        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+        SourceUniverseBatchExecutionReportStatus::Failed
     );
     assert_eq!(report.failed_record_count, 1);
     assert_eq!(report.failures[0].sequence, 0);
@@ -2587,6 +2586,46 @@ fn factory_construction_error_is_a_record_failure_under_continue_on_error() {
         "factory error is retained in the record failure: {:?}",
         report.failures[0]
     );
+}
+
+#[test]
+fn factory_construction_retries_on_the_next_record_after_a_recorded_failure() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"factory failure object zero".to_vec()),
+        (1, b"factory retry object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let fetcher_factory_calls = AtomicUsize::new(0);
+
+    let report = execute_source_universe_batch_with_factories(
+        "source-universe-batch-factory-retry",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: true,
+            max_concurrent_records: Some(1),
+            resume_report: None,
+        },
+        || -> anyhow::Result<SequencedFetcher> {
+            if fetcher_factory_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("synthetic first factory failure");
+            }
+            Ok(SequencedFetcher::from_objects(&objects))
+        },
+        || Ok(RecordingRunner::default()),
+    )
+    .expect("later record retries dependency construction");
+
+    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    );
+    assert_eq!(report.failures[0].sequence, 0);
+    assert_eq!(report.records[0].sequence, 1);
 }
 
 struct StaticFetcher {
@@ -2721,7 +2760,7 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: 7,
             nt_catalog_rows: 7,
-            catalog_hash: "catalog-hash".to_string(),
+            catalog_hash: sha256_hex(b"catalog-hash"),
         })
     }
 }
@@ -2750,7 +2789,7 @@ impl SourceUniverseOperatorRunner for CatalogMutatingRunner {
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: 7,
             nt_catalog_rows: 7,
-            catalog_hash: format!("catalog-hash-{}", record.sequence),
+            catalog_hash: sha256_hex(format!("catalog-hash-{}", record.sequence).as_bytes()),
         })
     }
 }
@@ -3400,10 +3439,12 @@ fn carried_record_fixture(
         run_spec_sha256: sha256_hex(b"run_id = \"synthetic-run\"\n"),
         accepted_tranche_sha256: sha256_hex(b"{}\n"),
         execution_plan_sha256: sha256_hex(b"{}\n"),
+        execution_record_sha256: sha256_hex(b"synthetic execution record"),
+        source_bindings_sha256: sha256_hex(b"synthetic source bindings"),
         selected_object_bytes: 0,
         canonical_rows: 7,
         nt_catalog_rows: 7,
-        catalog_hash: "carried-catalog-hash".to_string(),
+        catalog_hash: sha256_hex(b"carried catalog"),
         output_dir: std::path::PathBuf::from("prior-output-dir"),
     }
 }
@@ -3421,6 +3462,7 @@ fn failure_record_fixture(
         symbol: synthetic_symbol(sequence),
         archive_date: "2026-03-01".to_string(),
         selected_object_sha256: selected_object_sha256.to_string(),
+        execution_record_sha256: sha256_hex(b"failed synthetic execution record"),
         selected_object_bytes: 0,
         failure_stage: "run_operator".to_string(),
         error: "synthetic prior failure".to_string(),
@@ -3495,7 +3537,7 @@ impl SourceUniverseOperatorRunner for ConcurrencyRunner {
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: 100 + record.sequence,
             nt_catalog_rows: 200 + record.sequence,
-            catalog_hash: format!("catalog-hash-{}", record.sequence),
+            catalog_hash: sha256_hex(format!("catalog-hash-{}", record.sequence).as_bytes()),
         })
     }
 }
@@ -3525,7 +3567,7 @@ impl SourceUniverseOperatorRunner for FailingRunner {
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: 7,
             nt_catalog_rows: 7,
-            catalog_hash: "catalog-hash".to_string(),
+            catalog_hash: sha256_hex(b"catalog-hash"),
         })
     }
 }

@@ -24,6 +24,7 @@ use crate::{
     source_proof::SourceProofUsageScope,
     source_universe_batch_execution::{
         SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+        validate_source_universe_batch_execution_report,
     },
 };
 
@@ -103,6 +104,8 @@ pub enum BackfillConversionCompletionBlockingIssue {
     BatchExecutionReportNotCompleted,
     BatchExecutionReportFailedRecords,
     BatchExecutionReportCompletedCountMismatch,
+    BatchExecutionReportInvalid,
+    BatchExecutionReportOperatorRunSetMismatch,
     ExecutionPlanRecordMismatch,
     ExecutionPlanObjectCountMismatch,
     PublicationScopeStatusMismatch,
@@ -356,6 +359,10 @@ pub fn evaluate_backfill_conversion_completion_ledger(
     // Without this, a CompletedWithFailures/Failed run (or a partial-scope run)
     // could still yield a Ready completion ledger.
     if let Some(report) = batch_execution_report {
+        if validate_source_universe_batch_execution_report(report).is_err() {
+            blocking_issues
+                .push(BackfillConversionCompletionBlockingIssue::BatchExecutionReportInvalid);
+        }
         if report.status != SourceUniverseBatchExecutionReportStatus::Completed {
             blocking_issues
                 .push(BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted);
@@ -367,6 +374,29 @@ pub fn evaluate_backfill_conversion_completion_ledger(
         if report.completed_record_count != batch_records.len() as u64 {
             blocking_issues.push(
                 BackfillConversionCompletionBlockingIssue::BatchExecutionReportCompletedCountMismatch,
+            );
+        }
+        let expected_operator_run_ids = batch
+            .records
+            .iter()
+            .map(|record| record.operator_run_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let reported_operator_run_ids = report
+            .records
+            .iter()
+            .map(|record| record.operator_run_id.as_str())
+            .chain(
+                report
+                    .failures
+                    .iter()
+                    .map(|failure| failure.operator_run_id.as_str()),
+            )
+            .collect::<BTreeSet<_>>();
+        if expected_operator_run_ids.len() != batch.records.len()
+            || reported_operator_run_ids != expected_operator_run_ids
+        {
+            blocking_issues.push(
+                BackfillConversionCompletionBlockingIssue::BatchExecutionReportOperatorRunSetMismatch,
             );
         }
     }
@@ -924,8 +954,9 @@ mod tests {
         BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION, BackfillConversionBatchSelection,
     };
     use crate::source_universe_batch_execution::{
-        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION, SourceUniverseBatchExecutionReport,
-        SourceUniverseBatchExecutionReportStatus,
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
+        SourceUniverseBatchExecutionFailureRecord, SourceUniverseBatchExecutionRecord,
+        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
     };
 
     fn batch_record(record_id: &str) -> BackfillConversionBatchRecord {
@@ -989,6 +1020,50 @@ mod tests {
         completed_record_count: u64,
         failed_record_count: u64,
     ) -> SourceUniverseBatchExecutionReport {
+        let digest = "a".repeat(64);
+        let records = (0..completed_record_count)
+            .map(|sequence| SourceUniverseBatchExecutionRecord {
+                sequence,
+                operator_run_id: if sequence == 0 {
+                    "test-operator-run".to_string()
+                } else {
+                    format!("test-operator-run-{sequence}")
+                },
+                source_binding: "test-source-binding".to_string(),
+                category: "test-category".to_string(),
+                symbol: format!("TEST-{sequence}"),
+                archive_date: "2026-07-15".to_string(),
+                selected_object_sha256: digest.clone(),
+                run_spec_sha256: digest.clone(),
+                accepted_tranche_sha256: digest.clone(),
+                execution_plan_sha256: digest.clone(),
+                execution_record_sha256: digest.clone(),
+                source_bindings_sha256: digest.clone(),
+                selected_object_bytes: 1,
+                canonical_rows: 0,
+                nt_catalog_rows: 0,
+                catalog_hash: digest.clone(),
+                output_dir: PathBuf::from(format!("test-output-{sequence}")),
+            })
+            .collect();
+        let failures = (0..failed_record_count)
+            .map(|failure_index| {
+                let sequence = completed_record_count + failure_index;
+                SourceUniverseBatchExecutionFailureRecord {
+                    sequence,
+                    operator_run_id: format!("test-operator-run-failure-{sequence}"),
+                    source_binding: "test-source-binding".to_string(),
+                    category: "test-category".to_string(),
+                    symbol: format!("FAILED-{sequence}"),
+                    archive_date: "2026-07-15".to_string(),
+                    selected_object_sha256: digest.clone(),
+                    execution_record_sha256: digest.clone(),
+                    selected_object_bytes: 1,
+                    failure_stage: "test".to_string(),
+                    error: "test failure".to_string(),
+                }
+            })
+            .collect();
         SourceUniverseBatchExecutionReport {
             schema_version: SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION.to_string(),
             batch_id: "test-batch".to_string(),
@@ -1001,8 +1076,8 @@ mod tests {
             failed_record_count,
             total_canonical_rows: 0,
             total_nt_catalog_rows: 0,
-            records: Vec::new(),
-            failures: Vec::new(),
+            records,
+            failures,
         }
     }
 
@@ -1086,6 +1161,50 @@ mod tests {
                     | BackfillConversionCompletionBlockingIssue::BatchExecutionReportCompletedCountMismatch
             )),
             "clean report must add no reconciliation blockers, got: {:?}",
+            ledger.blocking_issues
+        );
+    }
+
+    #[test]
+    fn fabricated_batch_report_counters_are_rejected_by_shared_validator() {
+        let batch = ready_batch_plan(&["record-a"]);
+        let mut report =
+            batch_execution_report(SourceUniverseBatchExecutionReportStatus::Completed, 1, 0);
+        report.completed_record_count = 2;
+        let ledger = evaluate_backfill_conversion_completion_ledger(
+            "test-ledger",
+            &batch,
+            &requirements(),
+            Vec::new(),
+            Some(&report),
+        );
+        assert!(
+            ledger
+                .blocking_issues
+                .contains(&BackfillConversionCompletionBlockingIssue::BatchExecutionReportInvalid),
+            "fabricated aggregate counters must not substitute for report records: {:?}",
+            ledger.blocking_issues
+        );
+    }
+
+    #[test]
+    fn batch_report_operator_run_set_must_exactly_match_conversion_batch() {
+        let batch = ready_batch_plan(&["record-a"]);
+        let mut report =
+            batch_execution_report(SourceUniverseBatchExecutionReportStatus::Completed, 1, 0);
+        report.records[0].operator_run_id = "different-operator-run".to_string();
+        let ledger = evaluate_backfill_conversion_completion_ledger(
+            "test-ledger",
+            &batch,
+            &requirements(),
+            Vec::new(),
+            Some(&report),
+        );
+        assert!(
+            ledger.blocking_issues.contains(
+                &BackfillConversionCompletionBlockingIssue::BatchExecutionReportOperatorRunSetMismatch
+            ),
+            "conversion completion must reconcile the exact operator-run set: {:?}",
             ledger.blocking_issues
         );
     }

@@ -19,7 +19,7 @@ use crate::{
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
-        StrategyRuntimeCapabilities, assemble_strategy_build_context,
+        StrategyRuntimeCapabilities, assemble_strategy_build_context, venue_for_client,
     },
     strategies::{
         complete_set_arbitrage::CompleteSetArbitrageBuilder, production_strategy_registry,
@@ -274,17 +274,15 @@ pub fn raw_complete_set_config(
         });
     }
 
-    loaded
-        .root
-        .clients
-        .get(strategy.config.execution_client_id.as_str())
-        .ok_or_else(|| CompleteSetArbitrageRuntimeConfigError::Client {
+    venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str()).ok_or_else(
+        || CompleteSetArbitrageRuntimeConfigError::Client {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
                 "execution_client_id `{}` is not present in loaded clients",
                 strategy.config.execution_client_id
             ),
-        })?;
+        },
+    )?;
 
     let parameters = parse_parameters(&strategy.config.parameters).map_err(|message| {
         CompleteSetArbitrageRuntimeConfigError::Parameters {

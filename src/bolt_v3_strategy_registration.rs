@@ -80,7 +80,7 @@ pub fn assemble_strategy_build_context(
     context: &StrategyRegistrationContext<'_>,
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
     let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let execution_venue = execution_venue_for_client(&context.loaded.root, execution_client_id)
+    let execution_venue = venue_for_client(&context.loaded.root, execution_client_id)
         .ok_or_else(|| {
             binding_message(
                 context,
@@ -124,13 +124,10 @@ pub fn assemble_strategy_build_context(
     Ok(build_context)
 }
 
-pub(crate) fn execution_venue_for_client(
-    root: &BoltV3RootConfig,
-    execution_client_id: &str,
-) -> Option<Venue> {
-    root.clients
-        .get(execution_client_id)
-        .map(|client| client.venue)
+/// Neutral client-table venue lookup for execution and data client ids alike, so
+/// archetypes never touch `root.clients` directly.
+pub(crate) fn venue_for_client(root: &BoltV3RootConfig, client_id: &str) -> Option<Venue> {
+    root.clients.get(client_id).map(|client| client.venue)
 }
 
 pub(crate) fn execution_account_id<'a>(

@@ -177,9 +177,7 @@ fn scan_char_or_lifetime(bytes: &[u8], index: usize) -> Option<usize> {
     if bytes.get(cursor) != Some(&b'\'') {
         return None;
     }
-    if bytes
-        .get(cursor + 1)
-        .is_some_and(|byte| ident_start(*byte))
+    if bytes.get(cursor + 1).is_some_and(|byte| ident_start(*byte))
         && bytes.get(cursor + 2) != Some(&b'\'')
     {
         cursor += 2;
@@ -270,7 +268,10 @@ fn production_bolt_v3_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(&src).expect("src should be readable") {
         let path = entry.expect("src entry should be readable").path();
-        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
         if !name.starts_with("bolt_v3_") {
             continue;
         }
@@ -336,10 +337,9 @@ fn use_tree_contains_at_depth(actual: &[&str], open_brace: usize, type_name: &st
         match actual[cursor] {
             "{" => depth += 1,
             "}" => depth -= 1,
-            name
-                if depth == 1
-                    && name == type_name
-                    && is_use_tree_segment_start(actual, cursor) =>
+            name if depth == 1
+                && name == type_name
+                && is_use_tree_segment_start(actual, cursor) =>
             {
                 return true;
             }
@@ -426,10 +426,7 @@ fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
     let unrelated = tokenize(
         "use other::registry::{FeeProvider}; use bolt_v2::strategies::production_strategy_registry; use bolt_v2::strategies::registry::{nested::FeeProvider}; use bolt_v2::strategies::{nested::{registry::FeeProvider}};",
     );
-    assert!(!references_retired_registry_type(
-        &unrelated,
-        "FeeProvider"
-    ));
+    assert!(!references_retired_registry_type(&unrelated, "FeeProvider"));
 }
 
 #[test]
@@ -486,14 +483,58 @@ fn archetype_and_obsolete_full_path_layout_stays_retired() {
     assert_eq!(entries, vec!["mod.rs"]);
 
     let obsolete_paths: &[&[&str]] = &[
-        &["crate", "::", "bolt_v3_archetypes", "::", "binary_oracle_edge_taker"],
-        &["crate", "::", "bolt_v3_archetypes", "::", "binary_oracle_maker"],
+        &[
+            "crate",
+            "::",
+            "bolt_v3_archetypes",
+            "::",
+            "binary_oracle_edge_taker",
+        ],
+        &[
+            "crate",
+            "::",
+            "bolt_v3_archetypes",
+            "::",
+            "binary_oracle_maker",
+        ],
         &["crate", "::", "bolt_v3_maker_settlement"],
         &["crate", "::", "bolt_v3_maker_runtime_settlement"],
-        &["crate", "::", "strategies", "::", "binary_oracle_edge_taker", "::", "settlement"],
-        &["crate", "::", "strategies", "::", "binary_oracle_edge_taker", "::", "settlement_booking"],
-        &["crate", "::", "strategies", "::", "complete_set_arbitrage", "::", "settlement"],
-        &["crate", "::", "strategies", "::", "complete_set_arbitrage", "::", "settlement_booking"],
+        &[
+            "crate",
+            "::",
+            "strategies",
+            "::",
+            "binary_oracle_edge_taker",
+            "::",
+            "settlement",
+        ],
+        &[
+            "crate",
+            "::",
+            "strategies",
+            "::",
+            "binary_oracle_edge_taker",
+            "::",
+            "settlement_booking",
+        ],
+        &[
+            "crate",
+            "::",
+            "strategies",
+            "::",
+            "complete_set_arbitrage",
+            "::",
+            "settlement",
+        ],
+        &[
+            "crate",
+            "::",
+            "strategies",
+            "::",
+            "complete_set_arbitrage",
+            "::",
+            "settlement_booking",
+        ],
         &["mod", "bolt_v3_maker_settlement", ";"],
         &["mod", "bolt_v3_maker_runtime_settlement", ";"],
     ];
@@ -507,7 +548,10 @@ fn archetype_and_obsolete_full_path_layout_stays_retired() {
             }
         }
     }
-    assert!(violations.is_empty(), "obsolete full paths remain: {violations:?}");
+    assert!(
+        violations.is_empty(),
+        "obsolete full paths remain: {violations:?}"
+    );
 }
 
 #[test]
@@ -610,13 +654,14 @@ fn every_archetype_has_one_capability_declaration_and_registration_path() {
 
 #[test]
 fn dependency_allowance_is_empty_and_shrink_only_gate_remains_wired() {
-    let dependency_fence = std::fs::read_to_string(repo_path(
-        "scripts/verify_bolt_v3_dependency_direction.py",
-    ))
-    .expect("dependency fence should be readable");
-    assert!(dependency_fence.lines().any(|line| {
-        line.trim() == "FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = ()"
-    }));
+    let dependency_fence =
+        std::fs::read_to_string(repo_path("scripts/verify_bolt_v3_dependency_direction.py"))
+            .expect("dependency fence should be readable");
+    assert!(
+        dependency_fence
+            .lines()
+            .any(|line| { line.trim() == "FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = ()" })
+    );
     let runner = std::fs::read_to_string(repo_path("scripts/run_fences.py"))
         .expect("source-fence runner should be readable");
     assert!(runner.contains("scripts_dir.glob(\"verify_*.py\")"));

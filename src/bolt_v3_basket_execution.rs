@@ -343,7 +343,7 @@ impl BoltV3BasketExecutionState {
                     self.reservation_held = true;
                     return Ok(());
                 }
-                if quantity <= Decimal::ZERO || cost < Decimal::ZERO {
+                if quantity <= Decimal::ZERO || cost <= Decimal::ZERO {
                     self.mark_stuck_exposure();
                     return Ok(());
                 }

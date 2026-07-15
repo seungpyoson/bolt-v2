@@ -100,10 +100,17 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
         "polymarket_main".to_string(),
+        // Shared strategy assembly eagerly builds the Polymarket fee provider,
+        // which resolves these secrets through NT: `private_key` must be a valid
+        // 32-byte (64 hex char) secp256k1 scalar, and NT's `Credential::new`
+        // decodes `api_secret` with the padded URL-safe base64 engine, so the
+        // value must be valid padded URL-safe base64.
         Arc::new(ResolvedBoltV3PolymarketSecrets {
-            private_key: zeroize::Zeroizing::new("binding-poly-private-key".to_string()),
+            private_key: zeroize::Zeroizing::new(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
             api_key: zeroize::Zeroizing::new("binding-poly-api-key".to_string()),
-            api_secret: zeroize::Zeroizing::new("binding-poly-api-secret".to_string()),
+            api_secret: zeroize::Zeroizing::new("YmluZGluZy1wb2x5LWFwaS1zZWNyZXQ=".to_string()),
             passphrase: zeroize::Zeroizing::new("binding-poly-passphrase".to_string()),
         }),
     );

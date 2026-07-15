@@ -63,7 +63,7 @@ use crate::{
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
         StrategyRuntimeCapabilities, assemble_strategy_build_context, execution_account_id,
-        execution_venue_for_client, settlement_currency_for_execution_account,
+        settlement_currency_for_execution_account, venue_for_client,
     },
     strategies::{
         binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
@@ -325,7 +325,7 @@ fn validate_settlement_currency_derivable(
     strategy: &BoltV3StrategyConfig,
 ) -> Vec<String> {
     let execution_client_id = strategy.execution_client_id.as_str();
-    let Some(execution_venue) = execution_venue_for_client(root, execution_client_id) else {
+    let Some(execution_venue) = venue_for_client(root, execution_client_id) else {
         return vec![format!(
             "{context}: execution_client_id `{execution_client_id}` is not present in loaded clients; cannot derive settlement currency"
         )];
@@ -484,12 +484,8 @@ mod tests {
             .find(|strategy| strategy.config.strategy_archetype.as_str() == KEY)
             .expect("fixture should include a binary oracle strategy");
         let execution_client_id = strategy.config.execution_client_id.as_str();
-        let execution_venue = loaded
-            .root
-            .clients
-            .get(execution_client_id)
-            .expect("fixture strategy execution client should exist")
-            .venue;
+        let execution_venue = venue_for_client(&loaded.root, execution_client_id)
+            .expect("fixture strategy execution client should exist");
         let account_id = execution_account_id(&loaded.root, execution_client_id)
             .expect("fixture execution client should bind an account id");
         let pool = loaded
@@ -563,12 +559,8 @@ mod tests {
         let loaded =
             crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
                 .expect("production root.toml should load");
-        let execution_venue = loaded
-            .root
-            .clients
-            .get("polymarket_main")
-            .expect("production root must declare polymarket_main")
-            .venue;
+        let execution_venue = venue_for_client(&loaded.root, "polymarket_main")
+            .expect("production root must declare polymarket_main");
         let account_id = execution_account_id(&loaded.root, "polymarket_main")
             .expect("production polymarket_main must bind execution.account_id");
         let currency =
@@ -599,17 +591,15 @@ pub fn raw_taker_config(
                 strategy_instance_id: strategy.config.strategy_instance_id.clone(),
                 message: error.to_string(),
             })?;
-    loaded
-        .root
-        .clients
-        .get(strategy.config.execution_client_id.as_str())
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Client {
+    venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str()).ok_or_else(
+        || BinaryOracleEdgeTakerRuntimeConfigError::Client {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
                 "execution_client_id `{}` is not present in loaded clients",
                 strategy.config.execution_client_id
             ),
-        })?;
+        },
+    )?;
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let realized_volatility_surface_id = strategy
         .config
@@ -657,30 +647,26 @@ pub fn raw_taker_config(
         })?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    loaded
-        .root
-        .clients
-        .get(signal_data.data_client_id.as_str())
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+    venue_for_client(&loaded.root, signal_data.data_client_id.as_str()).ok_or_else(|| {
+        BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
                 "signal_data data_client_id `{}` is not present in loaded clients",
                 signal_data.data_client_id
             ),
-        })?;
+        }
+    })?;
     let resolution_data = configured_resolution_data(strategy);
     if let Some(resolution_data) = resolution_data {
-        loaded
-            .root
-            .clients
-            .get(resolution_data.data_client_id.as_str())
-            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
+        venue_for_client(&loaded.root, resolution_data.data_client_id.as_str()).ok_or_else(
+            || BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
                 strategy_instance_id: strategy.config.strategy_instance_id.clone(),
                 message: format!(
                     "resolution_data data_client_id `{}` is not present in loaded clients",
                     resolution_data.data_client_id
                 ),
-            })?;
+            },
+        )?;
         validate_resolution_data_binding(
             strategy,
             resolution_data,
@@ -1585,20 +1571,18 @@ fn validate_resolution_data_binding(
     };
 
     // (a) venue must be the resolution-oracle (Chainlink Data Streams) strike provider.
-    let resolution_client = root
-        .clients
-        .get(resolution_data.data_client_id.as_str())
+    let resolution_venue = venue_for_client(root, resolution_data.data_client_id.as_str())
         .ok_or_else(|| {
             reject(format!(
                 "resolution_data data_client_id `{}` is not present in loaded clients",
                 resolution_data.data_client_id
             ))
         })?;
-    if resolution_client.venue.as_str() != crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY {
+    if resolution_venue.as_str() != crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY {
         return Err(reject(format!(
             "data_client_id `{}` has venue `{}`, but the strike feed must be served by a `{}` client",
             resolution_data.data_client_id,
-            resolution_client.venue,
+            resolution_venue,
             crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY
         )));
     }
@@ -1966,7 +1950,7 @@ fn strategy_execution_client_market_exit_order_constraints(
     root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
 ) -> Option<ProviderMarketExitOrderConstraints> {
-    let execution_venue = execution_venue_for_client(root, strategy.execution_client_id.as_str())?;
+    let execution_venue = venue_for_client(root, strategy.execution_client_id.as_str())?;
     let binding = binding_for_provider_key(execution_venue.as_str())?;
     Some(binding.market_exit_order_constraints)
 }

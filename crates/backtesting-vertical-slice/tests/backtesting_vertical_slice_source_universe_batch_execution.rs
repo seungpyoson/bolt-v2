@@ -16,6 +16,7 @@ use backtesting_vertical_slice::{
         BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
     },
     operator::RunSpec,
+    source_proof::SourceBindingRegistry,
     source_universe_batch_execution::{
         CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
         LocalSourceUniverseOperatorRunner, SourceUniverseBatchExecutionConfig,
@@ -170,7 +171,11 @@ fn source_universe_batch_execution_respects_start_sequence() {
     assert_eq!(report.completed_record_count, 1);
     assert_eq!(report.failed_record_count, 0);
     assert_eq!(report.records[0].sequence, 1);
-    assert_eq!(report.records[0].symbol, "SYNTHETIC-BBB");
+    assert_eq!(
+        report.records[0].symbol.as_str(),
+        committed_record_zero_controls().record.symbol.as_str(),
+        "windowing preserves the committed control identity"
+    );
     assert_eq!(runner.calls.len(), 1);
     assert_eq!(
         runner.calls[0].operator_run_id,
@@ -1273,22 +1278,43 @@ fn operator_uses_verified_source_registry_when_registry_path_changes_during_fetc
     let object_bytes = valid_bybit_trade_object();
     let fixture = write_valid_pack(temp_dir.path(), &[(0, object_bytes.clone())]);
     let registry_path = temp_dir.path().join("source-bindings.toml");
-    fs::copy(
-        root.join(
-            "specs/023-nt-research-analytics-platform/reference/\
-             backfill-source-bindings.v1.toml",
-        ),
-        &registry_path,
-    )
-    .expect("copy source-binding registry");
+    let committed_registry_bytes = fs::read(root.join(
+        "specs/023-nt-research-analytics-platform/reference/\
+         backfill-source-bindings.v1.toml",
+    ))
+    .expect("read committed source-binding registry");
+    let distinct_source_binding = "test-retained-bybit-inverse-tick-trades";
+    let retained_registry_bytes = source_binding_registry_with_distinct_key(
+        &committed_registry_bytes,
+        &committed_record_zero_controls()
+            .run_spec
+            .source_proof
+            .source_binding,
+        distinct_source_binding,
+    );
+    fs::write(&registry_path, &retained_registry_bytes)
+        .expect("write distinct retained source-binding registry");
     let registry_identity = registry_path
         .strip_prefix(&root)
         .expect("registry temp path is repo-relative")
         .to_path_buf();
-    rewrite_run_spec_and_regenerate_execution_plan(&fixture, 0, |run_spec| {
-        run_spec.source_bindings_path = registry_identity;
-    });
-    let replacement_registry = b"[[source_binding]".to_vec();
+    rewrite_control_triple_and_regenerate_execution_plan(
+        &fixture,
+        0,
+        |run_spec, accepted_tranche| {
+            run_spec.source_bindings_path = registry_identity;
+            run_spec.source_proof.source_binding = distinct_source_binding.to_string();
+            run_spec.manifest.venue_binding_key = distinct_source_binding.to_string();
+            accepted_tranche.source_binding = distinct_source_binding.to_string();
+        },
+    );
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        0,
+        "source_binding",
+        serde_json::Value::String(distinct_source_binding.to_string()),
+    );
+    let replacement_registry = committed_registry_bytes;
     let mut fetcher = MutatingControlArtifactFetcher {
         object_bytes,
         artifact_path: registry_path.clone(),
@@ -1310,7 +1336,7 @@ fn operator_uses_verified_source_registry_when_registry_path_changes_during_fetc
     assert_eq!(
         fs::read(&registry_path).expect("read mutated registry"),
         replacement_registry,
-        "test proves the registry path changed after verification"
+        "test proves the registry changed to valid bytes that do not authorize the distinct binding"
     );
 }
 
@@ -1593,7 +1619,7 @@ fn prepare_batch_rejects_escaping_operator_run_ids_before_fetch() {
     ] {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let fixture = write_valid_single_record_pack(temp_dir.path());
-        rewrite_run_spec_and_regenerate_execution_plan(&fixture, 0, |run_spec| {
+        rewrite_control_triple_and_regenerate_execution_plan(&fixture, 0, |run_spec, _| {
             run_spec.manifest.run_id.clone_from(&operator_run_id);
         });
         rewrite_pack_record_field(
@@ -1636,7 +1662,7 @@ fn prepare_batch_rejects_duplicate_operator_run_ids_before_fetch() {
         serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read duplicate-id fixture"))
             .expect("parse duplicate-id fixture");
     let duplicate_operator_run_id = pack.records[0].operator_run_id.clone();
-    rewrite_run_spec_and_regenerate_execution_plan(&fixture, 1, |run_spec| {
+    rewrite_control_triple_and_regenerate_execution_plan(&fixture, 1, |run_spec, _| {
         run_spec
             .manifest
             .run_id
@@ -1985,6 +2011,90 @@ fn prepare_batch_rejects_non_strict_full_pack_sequence_outside_selected_window()
 }
 
 #[test]
+fn prepare_batch_rejects_duplicate_sequence_outside_selected_window() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"selected object zero".to_vec()),
+        (2, b"outside object two".to_vec()),
+        (3, b"outside object three".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        2,
+        "sequence",
+        serde_json::Value::Number(2_u64.into()),
+    );
+    let mut fetcher = SequencedFetcher::from_objects(&[(0, objects[0].1.clone())]);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let error = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("duplicate sequence outside the selected window must fail full-pack validation");
+
+    assert!(
+        format!("{error:#}").contains("sequence"),
+        "error identifies the duplicate sequence: {error:#}"
+    );
+    assert!(
+        fetch_calls.lock().expect("fetch calls").is_empty(),
+        "duplicate full-pack sequence is rejected before selected work is fetched"
+    );
+}
+
+#[test]
+fn prepare_batch_allows_strict_sequence_gaps() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"object zero".to_vec()),
+        (2, b"object two after a valid gap".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("strictly increasing sequence gaps are valid");
+
+    assert_eq!(
+        report
+            .records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+    assert_eq!(fetch_calls.lock().expect("fetch calls").as_slice(), &[0, 2]);
+}
+
+#[test]
 fn resume_reprocesses_when_an_unreported_pack_record_field_drifts() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let objects = vec![(0, b"object zero".to_vec())];
@@ -2145,6 +2255,98 @@ fn factory_entry_does_not_construct_dependencies_for_only_preflight_failures() {
         report.status,
         SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
     );
+    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn factory_entry_does_not_construct_dependencies_for_empty_selection() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let fetcher_factory_calls = AtomicUsize::new(0);
+    let runner_factory_calls = AtomicUsize::new(0);
+
+    let report = execute_source_universe_batch_with_factories(
+        "source-universe-batch-empty-selection",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: Some(1),
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: Some(4),
+            resume_report: None,
+        },
+        || -> anyhow::Result<NeverFetcher> {
+            fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("empty selection must not construct a fetcher")
+        },
+        || -> anyhow::Result<RecordingRunner> {
+            runner_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("empty selection must not construct a runner")
+        },
+    )
+    .expect("empty selection assembles without dependencies");
+
+    assert_eq!(report.selected_record_count, 0);
+    assert_eq!(report.completed_record_count, 0);
+    assert_eq!(report.failed_record_count, 0);
+    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn factory_entry_does_not_construct_dependencies_for_valid_carry() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![(0, b"carried object zero".to_vec())];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let mut initial_fetcher = SequencedFetcher::from_objects(&objects);
+    let mut initial_runner = RecordingRunner::default();
+    let mut prior_report = execute_source_universe_batch(
+        "source-universe-batch-prior",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut initial_fetcher,
+        &mut initial_runner,
+    )
+    .expect("initial record completes");
+    let prior_record_output = prior_report.records[0].output_dir.clone();
+    copy_dir_all(
+        &committed_reference_run_dir().join("nt-catalog"),
+        &prior_record_output.join("nt-catalog"),
+    );
+    prior_report.records[0].catalog_hash = committed_reference_catalog_hash();
+    let prior_artifact =
+        write_source_universe_batch_execution_report(&fixture.output_dir, &prior_report)
+            .expect("write prior report");
+    let fetcher_factory_calls = AtomicUsize::new(0);
+    let runner_factory_calls = AtomicUsize::new(0);
+
+    let report = execute_source_universe_batch_with_factories(
+        "source-universe-batch-valid-carry",
+        &fixture.pack_path,
+        &temp_dir.path().join("resume-output"),
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: Some(4),
+            resume_report: Some(prior_artifact.path),
+        },
+        || -> anyhow::Result<NeverFetcher> {
+            fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("valid carry must not construct a fetcher")
+        },
+        || -> anyhow::Result<RecordingRunner> {
+            runner_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("valid carry must not construct a runner")
+        },
+    )
+    .expect("valid carry assembles without dependencies");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert_eq!(report.records[0].output_dir, prior_record_output);
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
 }
@@ -2340,6 +2542,62 @@ fn valid_bybit_trade_object() -> Vec<u8> {
         .expect("finish deterministic Bybit CSV gzip")
 }
 
+fn source_binding_registry_with_distinct_key(
+    committed_registry_bytes: &[u8],
+    committed_key: &str,
+    distinct_key: &str,
+) -> Vec<u8> {
+    let committed_registry_text = std::str::from_utf8(committed_registry_bytes)
+        .expect("committed source-binding registry is UTF-8");
+    let committed_registry: toml::Table =
+        toml::from_str(committed_registry_text).expect("parse committed source-binding registry");
+    let committed_bindings = committed_registry
+        .get("source_binding")
+        .and_then(toml::Value::as_array)
+        .expect("committed registry has source bindings");
+    let mut distinct_binding = committed_bindings
+        .iter()
+        .find(|binding| binding.get("key").and_then(toml::Value::as_str) == Some(committed_key))
+        .expect("committed record-zero source binding exists")
+        .clone();
+    distinct_binding
+        .as_table_mut()
+        .expect("source binding is a TOML table")
+        .insert(
+            "key".to_string(),
+            toml::Value::String(distinct_key.to_string()),
+        );
+    let mut retained_registry = toml::Table::new();
+    retained_registry.insert(
+        "source_binding".to_string(),
+        toml::Value::Array(vec![distinct_binding]),
+    );
+    let retained_registry_text =
+        toml::to_string(&retained_registry).expect("serialize distinct source-binding registry");
+    let retained = SourceBindingRegistry::from_toml_str(&retained_registry_text)
+        .expect("distinct source-binding registry parses");
+    let committed = SourceBindingRegistry::from_toml_str(committed_registry_text)
+        .expect("committed source-binding registry parses");
+    let venue = committed_record_zero_controls()
+        .run_spec
+        .source_proof
+        .venue
+        .as_str();
+    assert!(
+        retained
+            .source_binding_metadata(distinct_key, venue)
+            .is_some(),
+        "retained registry authorizes the distinct binding"
+    );
+    assert!(
+        committed
+            .source_binding_metadata(distinct_key, venue)
+            .is_none(),
+        "committed fallback registry must not authorize the distinct binding"
+    );
+    retained_registry_text.into_bytes()
+}
+
 struct ValidSingleRecordPack {
     pack_path: PathBuf,
     run_spec_path: PathBuf,
@@ -2480,10 +2738,10 @@ fn repin_pack_record_artifact(
     );
 }
 
-fn rewrite_run_spec_and_regenerate_execution_plan(
+fn rewrite_control_triple_and_regenerate_execution_plan(
     fixture: &ValidSingleRecordPack,
     record_index: usize,
-    mutate: impl FnOnce(&mut RunSpec),
+    mutate: impl FnOnce(&mut RunSpec, &mut BackfillAcceptedTrancheManifest),
 ) {
     let mut pack: SourceUniverseExecutionPack = serde_json::from_slice(
         &fs::read(&fixture.pack_path).expect("read execution pack for control rewrite"),
@@ -2501,20 +2759,22 @@ fn rewrite_run_spec_and_regenerate_execution_plan(
         &fs::read_to_string(&run_spec_path).expect("read run spec for control rewrite"),
     )
     .expect("parse run spec for control rewrite");
-    let accepted_tranche_bytes =
+    let original_accepted_tranche_bytes =
         fs::read(&accepted_tranche_path).expect("read accepted tranche for control rewrite");
-    let accepted_tranche: BackfillAcceptedTrancheManifest =
-        serde_json::from_slice(&accepted_tranche_bytes)
+    let mut accepted_tranche: BackfillAcceptedTrancheManifest =
+        serde_json::from_slice(&original_accepted_tranche_bytes)
             .expect("parse accepted tranche for control rewrite");
     let previous_plan: BackfillExecutionPlan = serde_json::from_slice(
         &fs::read(&execution_plan_path).expect("read execution plan for control rewrite"),
     )
     .expect("parse execution plan for control rewrite");
 
-    mutate(&mut run_spec);
+    mutate(&mut run_spec, &mut accepted_tranche);
     let run_spec_bytes = toml::to_string_pretty(&run_spec)
         .expect("serialize rewritten run spec")
         .into_bytes();
+    let accepted_tranche_bytes =
+        serde_json::to_vec_pretty(&accepted_tranche).expect("serialize rewritten accepted tranche");
     let execution_plan = evaluate_backfill_execution_plan(
         previous_plan.plan_id.clone(),
         sha256_hex(&accepted_tranche_bytes),
@@ -2536,9 +2796,12 @@ fn rewrite_run_spec_and_regenerate_execution_plan(
     let execution_plan_bytes =
         serde_json::to_vec_pretty(&execution_plan).expect("serialize regenerated execution plan");
     fs::write(&run_spec_path, &run_spec_bytes).expect("write rewritten run spec");
+    fs::write(&accepted_tranche_path, &accepted_tranche_bytes)
+        .expect("write rewritten accepted tranche");
     fs::write(&execution_plan_path, &execution_plan_bytes)
         .expect("write regenerated execution plan");
     record.run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    record.accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
     record.execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
     fs::write(
         &fixture.pack_path,
@@ -2685,8 +2948,8 @@ fn write_two_record_pack(
     );
 }
 
-/// Synthetic per-sequence symbol so the two-record assertions keep working
-/// (sequence 0 = `SYNTHETIC-AAA`, sequence 1 = `SYNTHETIC-BBB`, ...).
+/// Synthetic per-sequence symbol for standalone record/report fixtures that do
+/// not consume the committed typed control triple.
 fn synthetic_symbol(sequence: u64) -> String {
     let letter = char::from(b'A' + (sequence % 26) as u8);
     format!("SYNTHETIC-{letter}{letter}{letter}")

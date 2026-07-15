@@ -364,10 +364,10 @@ mod tests {
     fn stable_venue_semantic_change_changes_episode_identity() {
         let baseline = episode();
         let outcomes = baseline.market().ordered_outcomes();
-        let changed = [outcomes[1].clone(), outcomes[0].clone()];
+        let changed = [outcomes[0].clone(), outcomes[1].clone()];
         let changed_market = EvidenceMarketIdentity::new(
             "gamma-market".to_string(),
-            "condition".to_string(),
+            "condition-changed".to_string(),
             "question".to_string(),
             EvidenceNegRiskMode::Disabled,
             changed,
@@ -435,6 +435,22 @@ mod tests {
             )
             .expect_err("duplicate outcome indexes must fail"),
             EvidenceIdentityError::InvalidOrderedOutcomeIndexes([0, 0])
+        );
+
+        let reversed = [
+            EvidenceOutcomeIdentity::new(1, "down".to_string(), "token-down".to_string()).unwrap(),
+            EvidenceOutcomeIdentity::new(0, "up".to_string(), "token-up".to_string()).unwrap(),
+        ];
+        assert_eq!(
+            EvidenceMarketIdentity::new(
+                "market".to_string(),
+                "condition".to_string(),
+                "question".to_string(),
+                EvidenceNegRiskMode::Enabled,
+                reversed,
+            )
+            .expect_err("reversed outcome indexes must fail"),
+            EvidenceIdentityError::InvalidOrderedOutcomeIndexes([1, 0])
         );
 
         let duplicate_token = [

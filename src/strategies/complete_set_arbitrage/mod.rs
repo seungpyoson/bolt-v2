@@ -156,7 +156,7 @@ impl CompleteSetArbitrage {
         })
     }
 
-    pub fn config(&self) -> &CompleteSetArbitrageConfig {
+    pub fn complete_set_config(&self) -> &CompleteSetArbitrageConfig {
         &self.config
     }
 

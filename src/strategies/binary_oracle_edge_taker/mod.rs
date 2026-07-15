@@ -19,7 +19,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use nautilus_system::trader::Trader;
-use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
+use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative, nautilus_strategy};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
@@ -1719,7 +1719,7 @@ impl BinaryOracleEdgeTaker {
             cache
                 .instrument_ids(None)
                 .into_iter()
-                .filter_map(|instrument_id| cache.instrument(instrument_id).cloned())
+                .filter_map(|instrument_id| cache.instrument(&instrument_id))
                 .filter(|instrument| instrument.id().venue == execution_venue)
                 .collect::<Vec<_>>()
         };
@@ -2519,7 +2519,7 @@ impl BinaryOracleEdgeTaker {
         if !self.is_registered() {
             return false;
         }
-        let Some(order) = self.cache().order_owned(&query.client_order_id) else {
+        let Some(order) = self.cache().order(&query.client_order_id) else {
             return false;
         };
         let Some(transition) = reconcile_transition_for_order_status(order.status()) else {
@@ -2647,7 +2647,7 @@ impl BinaryOracleEdgeTaker {
             );
             return;
         }
-        let Some(order) = self.cache().order_owned(&query.client_order_id) else {
+        let Some(order) = self.cache().order(&query.client_order_id) else {
             self.record_reconcile_query_failure(
                 query,
                 "NT cache is missing order for reconcile query".to_string(),
@@ -2809,7 +2809,7 @@ impl BinaryOracleEdgeTaker {
                 .into_iter()
                 .map(|position| {
                     let lifecycle = BoltV3PositionMarketLifecycle::recover_from_instrument(
-                        cache.instrument(&position.instrument_id),
+                        cache.instrument(&position.instrument_id).as_ref(),
                     );
                     OpenPositionState {
                         lifecycle,
@@ -2832,7 +2832,7 @@ impl BinaryOracleEdgeTaker {
                     .into_iter()
                     .map(|position| {
                         let lifecycle = BoltV3PositionMarketLifecycle::recover_from_instrument(
-                            cache.instrument(&position.instrument_id),
+                            cache.instrument(&position.instrument_id).as_ref(),
                         );
                         OpenPositionState {
                             lifecycle,
@@ -3082,7 +3082,7 @@ impl BinaryOracleEdgeTaker {
                     .map(|order| {
                         let client_order_id = order.client_order_id();
                         let attributed_to_position =
-                            cache.position_id(&client_order_id) == Some(&position.position_id);
+                            cache.position_id(&client_order_id) == Some(position.position_id);
                         (client_order_id, attributed_to_position)
                     })
                     .collect::<Vec<_>>()
@@ -4683,9 +4683,9 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn current_instrument(&self, instrument_id: InstrumentId) -> Option<InstrumentAny> {
-        self.core.trader_id()?;
+        DataActor::trader_id(self)?;
         let cache = self.cache();
-        cache.instrument(&instrument_id).cloned()
+        cache.instrument(&instrument_id)
     }
 
     fn normalize_base_order_quantity_for_execution_venue(
@@ -7131,7 +7131,7 @@ impl BinaryOracleEdgeTaker {
             blocked_reason: None,
         };
 
-        if self.core.trader_id().is_none() {
+        if DataActor::trader_id(self).is_none() {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED);
             return decision;
         }

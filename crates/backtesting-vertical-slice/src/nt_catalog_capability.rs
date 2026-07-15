@@ -346,7 +346,7 @@ pub fn run_nt_catalog_s3_conformance_probe(
     let mut catalog =
         ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)?;
     catalog.write_instruments(instruments)?;
-    catalog.write_to_parquet(trade_ticks, None, None, None)?;
+    catalog.write_to_parquet(&trade_ticks, None, None, None)?;
     let files = catalog.query_files(
         TradeTick::path_prefix(),
         Some(instrument_ids.clone()),

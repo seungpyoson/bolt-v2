@@ -86,7 +86,7 @@ fn write_catalog() -> (TempDir, InstrumentId) {
         .write_instruments(vec![InstrumentAny::CurrencyPair(instrument)])
         .expect("write instrument");
     catalog
-        .write_to_parquet(trades, None, None, None)
+        .write_to_parquet(&trades, None, None, None)
         .expect("write trades");
     (temp_dir, instrument_id)
 }

@@ -2698,12 +2698,19 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
 
 #[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
-    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_7c2aafb.txt");
+    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_d636f176.txt");
     let nt_field = ["post", "only"].join("_");
+    let fixture_revision = query_source
+        .lines()
+        .find_map(|line| line.strip_prefix("Revision: "))
+        .expect("pinned NT query fixture must declare its revision");
 
-    assert!(query_source.contains("Revision: 7c2aafb30fb143069c915a3f2057bb12174405f6"));
+    assert_eq!(
+        fixture_revision,
+        bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision()
+    );
     assert!(query_source.contains(
-        "Full source SHA-256: c81bc63f9bfabff4c1dc7a3fcff33ee7c9f8c119e80e629a94afc59590238ed0"
+        "Full source SHA-256: 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d"
     ));
     assert!(query_source.contains("pub struct PostOrderParams"));
     assert!(query_source.contains(r#"#[serde(rename_all = "camelCase")]"#));

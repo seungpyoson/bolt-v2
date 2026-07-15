@@ -264,7 +264,8 @@ impl BinaryOracleMaker {
                     .strategy_id(StrategyId::from(config.strategy_id.as_str()))
                     .order_id_tag(config.order_id_tag.clone())
                     .oms_type(oms_type)
-                    .build(),
+                    .build()
+                    .expect("validated binary_oracle_maker strategy config"),
             ),
             config,
             context,
@@ -275,7 +276,7 @@ impl BinaryOracleMaker {
     }
 
     /// The parsed maker config (read by later slices once they add behaviour).
-    pub fn config(&self) -> &BinaryOracleMakerConfig {
+    pub fn maker_config(&self) -> &BinaryOracleMakerConfig {
         &self.config
     }
 
@@ -797,7 +798,7 @@ impl BinaryOracleMaker {
         cache
             .instrument_ids(Some(&execution_venue))
             .into_iter()
-            .filter_map(|instrument_id| cache.instrument(instrument_id).cloned())
+            .filter_map(|instrument_id| cache.instrument(&instrument_id))
             .filter(|instrument| instrument.id().venue == execution_venue)
             .collect()
     }

@@ -45,7 +45,19 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
+mod runtime_strategy_sealed {
+    use super::*;
+
+    pub trait Sealed {}
+
+    impl<T> Sealed for T where T: Strategy + DataActor + Component + std::fmt::Debug {}
+}
+
+/// Object-safe runtime strategy boundary.
+///
+/// The private marker supertrait prevents components that are not NautilusTrader
+/// strategies and data actors from manually opting into this erased boundary.
+pub trait RuntimeStrategy: Component + std::fmt::Debug + runtime_strategy_sealed::Sealed {}
 
 impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + std::fmt::Debug {}
 
@@ -684,6 +696,15 @@ mod tests {
         let error = registry.register::<AlphaBuilder>().unwrap_err();
 
         assert!(error.to_string().contains("alpha_runtime"));
+    }
+
+    #[test]
+    fn runtime_strategy_blanket_impl_remains_object_safe_for_nt_strategy() {
+        fn assert_runtime_strategy_contract<T: RuntimeStrategy>() {}
+        assert_runtime_strategy_contract::<TestStrategy>();
+
+        let strategy: BoxedStrategy = Box::new(TestStrategy::new("OBJECT-SAFE-001"));
+        assert_eq!(strategy.component_id().inner().as_str(), "OBJECT-SAFE-001");
     }
 
     #[test]

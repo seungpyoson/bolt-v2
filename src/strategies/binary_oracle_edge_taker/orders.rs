@@ -8,6 +8,7 @@ use nautilus_model::{
     orders::OrderAny,
     types::{Price, Quantity},
 };
+use nautilus_trading::StrategyNative;
 
 use crate::bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order};
 

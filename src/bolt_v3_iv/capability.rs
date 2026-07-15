@@ -712,7 +712,7 @@ fn public_symbols(text: &str) -> Vec<PublicSymbol> {
                 evidence.push_str(&symbol);
                 symbols.push(PublicSymbol { symbol, evidence });
                 context.clear();
-                continue;
+                break;
             }
         }
 

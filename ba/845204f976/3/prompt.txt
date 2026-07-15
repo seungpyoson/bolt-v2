@@ -1,0 +1,189 @@
+I need to know how we are currently dealing with data feed into data lake for backtesting jobs - I want you to conduct evidence-based investigation to first assess where we stand, and then come up with lean development plan after you have end to end understanding and confidence
+
+---
+
+we also need to think deeply about AWS cost management, and S3, and EC2 management - so that we keep cost manageable while having as broad dataset as possible. As always, we should use as much of NT as we can, and can consider third party solutions if needed
+
+---
+
+especially for backfilling
+
+---
+
+too long - so what are you suggesting? explain in plain english and make this concise
+
+---
+
+no Binance, Bybit only - I need comprehensive data, including other data such as funding rate, OI. what's s3 inventory?
+
+no Tardis, Databento yet. I want to stay away from paid solutions if they can be done with free alternatives
+
+---
+
+no I said no Binance and no Bybit only
+
+---
+
+so I thoguth we already have a source agnostic ingestion pipeline
+
+---
+
+are you sure about your suggestions? are you very clear with the plan and spec?
+
+---
+
+okay - I want you to conduct an evidence based investigation for 100% confident sugggestion - and you need to be aware of the cost, efficiency, speed. and then conduct an internal adverserial review - once both are done with approvals, we should have Claude review it for us. I'll handle this after you present a ready to relay review request prompt
+
+---
+
+Adversarial Architecture Review — Historical Data Acquisition Decision
+
+Reviewer source: Claude Code CLI (interactive session), model claude-fable-5.
+Reviewed at: repo HEAD 37e619b3fbd65fc041a05399ecf1750b8999567a (verified clean), pinned NT d636f17604cdbddc28ad40e0e15720e2d19bf860 (verified as the workspace pin at Cargo.toml:86-95, checkout read at ~/.cargo/git/checkouts/nautilus_trader-fcf14968e0727ad0/d636f17).
+
+The overall direction is sound: no second ingestion platform, NT-first, one TOML-selected source with no automatic fallback, evidence-gated free sources, pilots before fan-out. My findings are about places where the decision text, as written, cannot deliver the guarantees it claims.
+
+---
+Findings
+
+High
+
+H1 — The immutable-read guarantee (decision 9) cannot be delegated to NT or to publish-time verification. BLOCKING.
+Verified at the current pin: NT's catalog reader lists every .parquet under a prefix with zero manifest awareness (list_parquet_files, pinned NT crates/persistence/src/backend/catalog.rs:1271-1285), and query_intersects_filename returns true for any filename it cannot parse (catalog.rs:4734-4742) — a stray or late-added file is silently read, not rejected. Separately, S3 versioning (verified Enabled on bolt-parquet) does not prevent overwrites; it makes the overwrite the visible current version. So "readers reject late additions or mismatches" is only true if a Bolt-side, fail-closed, read-time exact-set + hash validator is the only path that binds a catalog root to BacktestNode — publish-time checks guarantee nothing at read time.
+Smallest correction: amend decision 9 to name the mandatory read-time validator as the sole BacktestNode binding path, and add one required test: plant a stray parquet in a committed final root → the backtest refuses to run.
+
+H2 — "Create-only final root" needs Bolt-built S3 stores and an explicit object-size bound. BLOCKING.
+Verified at the current pin: NT's create_s3_store accepts only endpoint/region/credentials/allow_http and warns-and-ignores everything else (crates/persistence/src/parquet.rs:731-773) — there is no way to request conditional-put (create-guard) through NT. And S3's create-guard does not apply to multipart uploads, so create-only enforcement implicitly caps every final object at the singlerun in both directions. BLOCKING.
+Verified: config/root.toml configures BitMEX (:365), Coinbase (:403), and Kraken spot + futures (:434, :451) data clients that the evidence matrix omits entirely (matrix covers only binance/okx/bybit/deribit/hyperliquid/polymarket — backfill-evidence-matrix.v1.toml:52-190), while the source-bindings registry contains Kalshi (backfill-source-bindings.v1.toml:400-413), a venue with no configured client and no matrix row. Venue names are derivable from config; product families are not — the contract's "Product Families To Enumerate" list is hand-curated and already omits these venues (backfill-table-contract.md:173-196).
+Smallest correction: decision 4 adds (a) a fail-closed validator that the union of configured clients, historical-only sources, and existing bindings each has a coverage row — checked in both directions; and (b) a named authority for per-venue family enumeration (venue instrument metadata, not a hand list).
+
+M2 — OI semantics are not enforceable under the current contract. BLOCKING.
+The open_interest family (backfill-table-contract.md:138) has no required unit/denomination column, and availability_time is nullable in the common contract (backfill-table-contract.md:60). OI is denominated differently across venues (contracts vs base asset vs quote notional) and is typically sampled/published with delay — without a required unit column and a required (non-null) availability time for OI rows, decision 8's "no false cross-venue equivalence, no lookahead" is an aspiration, not a check.
+Smallest correction: make oi_unit (or equivalent denomination field) and non-null availability_time contract-required for the OI family, and gate pilot A on a two-venue differential test of both.
+
+M3 — Existing published catalogs have no manifests; readers that reject uncommitted roots reject all current data. BLOCKING.
+Everything under s3://bolt-parquet/nt-catalog/2026-06-01/ (including ~520M Bybit trade records per issue #561) predates the decision-9 protocol. The decision is silent on disposition, so day one of enforcement strands the entire existing store.
+Smallest correction: add a migration clause — either re-publish under the protocol (with the cost counted in decision 12's envelope) or a one-time retroactive manifest generation with full exact-set hashing.
+
+M4 — Plan v3's disposition is left ambiguous, violating single-source-of-truth. BLOCKING (one-line fix).
+Plan v3 self-describes as "the only living plan surface" (normalization-catalog-plan.v3.md:7) and pins NT 6be5a509… (:6, also :23, :28) versus the repo's actual d636f176… (Cargo.toml:86). Decision 1 says "do not adopt wholesale" but leaves the document standing as plan authority — and decision 9 directly contradicts v3's design (v3 R-2 uses a CAS-advanced mutable pointers/set/latest.json; decision 9 forbids any mutable latest pointer).
+Smallest correction: the decision-3 authority change must also mark the superseded v3 sections as superseded (or archive the document), so exactly one plan surface remains.
+
+M5 — Window-scoped single-source selection (decision 5) permits silent overlap or gaps. BLOCKING.
+"Exactly one implementation per venue/product/family/window" is only a single path if the windows themselves are validated non-overlapping and jointly exhaustive over the family's declared coverage window; otherwise overlap = dual path and gap = silent hole.
+Smallest correction: add window disjointness + exhaustiveness to decision 3's fail-closed validation list.
+
+M6 — One free-source claim is already overstated in the repo's own matrix. Non-blocking.
+OKX spot/swap/future order_book_deltas is marked directly_backfillable (backfill-evidence-matrix.v1.toml:79) while that group's own note hedges "Official 400-level L2 archive may support one-year replay" (:84). Per the contract's definition (backfill-table-contract.md:18-19), directly_backfillable asserts the archive can backfill the window — the hedge and the state contradict each other.
+Smallest correction: downgrade to pending_source_proof until the retention proof exists.
+
+Low
+
+L1 — Sequence step "wire existing non-trade operator capabilities" understates half of it. Non-blocking.
+Verified: the batch runner ignores its execution plan (_execution_plan_path, source_universe_batch_execution.rs:319) and calls run_from_run_spec (:328), which hard-fails any non-trade adapter kind (operator.rs:1218-1223); the generic dispatcher run_operator_from_run_spec exists (operator.rs:1947) and covers trades/bars/deltas/quotes. Wiring those is genuinely small. But mark/index/funding raw normalizers are deliberate fail-loud seams (canonical_trades.rs:2233, :2268, :2304) — pilot A requires building those acquisition normalizers, which is implementation work, not wiring. The plan should split the two so pilot-A scope is honest.
+
+L2 — Requester-pays egress is unpriced. Non-blocking.
+Hyperliquid's archive is requester-pays; decision 7's materialize-on-demand policy multiplies repeated pulls, and cross-region transfer bills to us. Decision 12 compares our worker networking but not provider-side requester-pays transfer. Add it to pilot B's cost-per-canonical-GB metric and to the TOML cost-envelope inputs.
+
+L3 — "Permitted-use/license status" cannot be a machine validation as worded. Non-blocking.
+License adjudication is human; the machine can only fail closed on a missing/absent/expired recorded status field. Reword decision 3 accordingly so it doesn't imply an impossible check.
+
+---
+Answers to the review questions
+
+- NO DUAL PATHS: two real risks — H3 (lake vs research-Parquet) and M5 (window overlap); plus M4's undisposed v3 leaves two contradictory plan authorities. Otherwise no duplication: the decision correctly extends the existing operator/batch lane rather than building beside it.
+- NT-vs-Bolt boundary: correctly drawn. Funding/mark/index use NT-native types (funding-native confirmed by v3 R-16 and the operator's NormalizedTable::Funding projection path, operator.rs:2339, :2699); OI stays non-NT until proofs. One tightening: decision 8's "complete no-lookahead delivery proof" should explicitly enumerate #836's accepted scope gaps (catalog encode/write/query/decode round trip, BacktestNode config loading, mixed interleaving) so "complete" is checkable rather than judged.
+- Can the manifest protocol guarantee immutable NT reads? Not as written — only with H1's mandatory read-time validator plus H2's store/size constraints.
+- Source-proof removal vs remaining validation: correctly separated. Ceremony removal matches #788 R1 (default path ceremony-free), and decision 3's retained "schema columns" validation satisfies #788 R2 (the headerless column-mapping requirement) — verified against the issue text.
+- OI represented safely? Not yet — M2.
+- Coverage rule prevents omissions? Not as drafted — M1.
+- Free-source claims overstated? One confirmed in-repo (M6); external retention claims (OKX/Hyperliquid/Kalshi/Coinbase docs) remain empirical unknowns, which the decision correctly routes through evidence-before-use.
+- Costs fully represented? Mostly; gaps are M3 (re-publication cost) and L2 (requester-pays).
+- Smallest safe tracer order? Yes, with L1's honest split. Inventory-first is right.
+- Missing tests/proofs: stray-file read-rejection test (H1); conditional-put probe + large-object create-guard test (H2); bidirectional coverage-completeness check in CI (M1); OI unit/availability differential test (M2); Spot-interruption kill/restart proof (decision 12 says "after bounded-memory/restartability proof" — keep it); NT-reader listing behavior re-verification on every future NT pin bump, since H1's evidence is rev-specific.
+
+Verified facts vs inference vs unknowns
+
+Personally verified this session: HEAD SHA and clean tree; NT pin at Cargo.toml:86; batch runner ignores execution plan and is trade-only (source_universe_batch_execution.rs:319,328 + operator.rs:1218-1223); mark/index/funding normalizers deliberately bail (canonical_trades.rs:2233,2268,2304); generic operator covers seven families (operator.rs:1947-1963, :2679-2699); bindings registry is instruments/trades-heavy with matrix omitting BitMEX/Coinbase/Kraken; plan v3 pins stale NT rev; NT reader naive-listing and unparseable-filename over-inclusion at the current pin; NT create_s3_store cannot set conditional-put at the current pin; live bolt-parquet versioning=Enabled, no lifecycle, no Inventory configs; eu-west-2 stopped c7g.large (i-0d544aeb04c3824e4) with 64+40=104 GiB unencrypted gp3 and an associated (therefore billed) EIP.
+Taken as reported, not independently re-derived: bucket totals (746.3 GB / 1,026,286 objects), PMXT 557.8 GB/59 days, monthly cost math.
+Empirical unknowns: external archive retention/licensing, Hyperliquid archive region and requester-pays totals, Spot memory/restart behavior — all correctly gated behind pilots.
+
+Verdict
+
+REQUEST CHANGES — direction endorsed; the three High and five blocking Medium findings are text-level amendments to the decision (validator ownership, store construction and size bound, table-family ownership vs #24, bidirectional coverage validation, OI contract columns, migration clause, v3 disposition, window validation) that must land in the decision before any implementation slice is cut.
+
+No files, issues, or AWS resources were modified. All AWS access was read-only.
+
+---
+
+Re-Review — Amended Historical Data Acquisition Decision
+
+Reviewer source: Claude Code CLI (interactive session), model claude-fable-5. Repo re-confirmed clean at 37e619b3f…, NT pin d636f176…. All checks this round were read-only; nothing was modified.
+
+Contested points — independently re-verified
+
+Your multipart correction is right, and my R1 statement was wrong at the service level. I fetched the AWS conditional-writes page: If-None-Match is listed for PutObject, CompleteMultipartUpload, and CopyObject. The real limitation is exactly where you placed it — the pinned object_store/NT client path cannot express conditional completion. Your v1 stance (TOML object cap below the 5 GB single-PUT ceiling, multipart prohibited until conditional completion is implemented and proven) is sound. One nuance from the same page that belongs in the crash-recovery spec: on a versioned bucket, If-None-Match succeeds when the current version is a delete marker — so create-only is advisory against delete-then-recreate, and the manifest's per-object hash/version pin (which your recovery machine already requires) is the actual integrity authority, not the create guard. State that explicitly; no design change needed.
+
+Your M3 rejection is confirmed — my migration-budget finding was wrong. I re-ran the check myself: nt-catalog/2026-06-01/ has zero current objects, and every other nt-catalog/ subprefix (_convert-run/, _convert-run2/, _convert-run3/, the polymarket conversion roots) holds only KB-scale residue. There is no active legacy NT-catalog root to migrate. However, the same check surfaced the quantified follow-through: list-object-versions under the deleted prefix returns noncurrent versions and delete markers (truncated — many more exist), and my measured current bucket contents total ~569.9 GB / ~192k objects (backfill-staging alone is 568.0 GB / 163,649 objects). Against the reported all-bucket 746.3 GB / 1,026,286 objects, roughly 176 GB and ~834k billed objects (~24% of bytes, ~81% of object count) are noncurrent-version/delete-marker overhead with no lifecycle rule that will ever remove them. Your amendment already lists noncurrent versions in lifecycle scope — this just makes it a first-order Phase 0 deliverable (NoncurrentVersionExpiration + ExpiredObjectDeleteMarker + AbortIncompleteMultipartUpload), sized by the all-version Inventory. Non-blocking; already covered by your text.
+
+Both NT-fork prerequisites are genuinely missing at the pin — verified. NautilusDataType is a closed 11-variant enum with no custom-data variant (pinned NT crates/backtest/src/config.rs:55-67), so OI cannot pass through BacktestNode config today; and load_and_merge_data extends every family into one Vec<Data> then sorts it whole (crates/backtest/src/node.rs:485-498) — the combined-dataset materialization claim is exact. The sort key is ts_init (node.rs:497), which confirms available_at → ts_init is the correct no-lookahead lever for funding. The "no manual BacktestEngine alternate path" rule is the right dual-path prevention.
+
+Remaining substantive blockers
+
+B1 — "Hash only on cache miss" is weaker than the repo's own cache discipline. Blocks: the publication/read tracer (lean-sequence step 2).
+The existing in-repo content-addressed cache re-verifies every entry on read and deletes corrupt entries (CachingSourceUniverseObjectFetcher::read_verified_cache_entry, source_universe_batch_execution.rs:240-258) — a deliberate precedent. The hydration design as amended seals on write but trusts sealed bytes forever after, so on-disk corruption after sealing feeds NT bad parquet with no fail-closed detection, contradicting the sealed-run-view guarantee the whole H1 fix exists to provide.
+Smallest correction: re-hash each cached object once per run at first use (amortized across all records in the run), or record an explicit owner-accepted risk waiver for post-seal corruption. One sentence in the design either way.
+
+B2 — The Binance exclusion must satisfy your own coverage rule and be acknowledged as a requirements deviation. Blocks: the coverage grid (lean-sequence step 4).
+Your M1 disposition requires every registry cell to appear exactly once, with excluded_by_policy carrying reason and evidence. "Binance is excluded" arrives with no recorded reason, and it removes the single richest free source in the current matrix — Binance derivatives carry nine directly_backfillable families including funding, mark, index, premium and OI metrics (backfill-evidence-matrix.v1.toml:64). The original requirement was "broad multi-venue, not Binance/Bybit-only"; excluding Binance doesn't violate that literally, and pilot A still has structurally different funding/OI sources (Bybit REST, Hyperliquid archive, OKX), but the breadth cost is real and the decision record must own it rather than imply it.
+Smallest correction: one excluded_by_policy registry row for every Binance venue/family cell with the stated reason, plus one line in the decision acknowledging the deviation as an owner choice.
+
+Nothing else survived verification as a blocker. The exclusive family-ownership map resolves H3 cleanly (no Tier-C publisher, #24/#20 owns the one non-NT lake including OI); the half-open sorted/exhaustive window rule resolves M5; the OI column set resolves M2; the hydration design resolves H1 including the raw-S3-path rejection; the NT prerequisites are correctly scoped as fork changes with equivalence/peak-RSS proofs — I'd only add that the existing R-11-style CI pin guard should be extended to assert the two new capabilities so a future NT pin bump can't silently regress them.
+
+Verified vs inference vs unknown
+
+Personally verified this round: empty current state of nt-catalog/2026-06-01/ and all sibling roots; existence of noncurrent versions/delete markers under the deleted prefix; per-prefix current totals (backfill-staging 568.0 GB / 163,649 obj; nt-research-analytics 26,398 obj; polymarket_parquet 1,878 obj; remainder KB–MB scale); AWS conditional-write support matrix and the delete-marker semantics (vendor doc, fetched); pinned-NT closed NautilusDataType enum and whole-dataset materialize-and-sort; ts_init as the replay sort key.
+Inference: the ~176 GB / ~834k noncurrent overhead assumes your 746.3 GB / 1,026,286 figure is all-versions (CloudWatch-style); the all-version Inventory will settle it exactly.
+Empirical unknowns (correctly gated behind pilots): external archive retention, requester-pays totals, peak RSS, k-way merge equivalence, cost per canonical GB.
+
+Verdict
+
+REQUEST CHANGES — narrowly. The architecture is now sound and every High finding from round 1 is resolved or correctly rejected with evidence. Two small text-level items remain: B1 (cache verify-on-first-use or explicit waiver — blocks the read tracer) and B2 (recorded Binance excluded_by_policy reason + acknowledged breadth deviation — blocks the coverage grid). Both are one-line-to-one-row corrections; with them landed in the decision record, this is an APPROVE.
+
+I think we can proceed with implementation wihtout a further review after you amend the findings - you should then explain in plain english and make it concise to me.
+
+---
+
+I do not approve of merging docs only PR - in fact, we should be removing docs when we are close to merge. I meant we do include Binance, Bybit, but we do not only focus on those 2 venues.
+
+---
+
+approve - you don't have to keep getting approvals from me - use gpt sol high fast for implementation
+
+---
+
+we should resolve them
+
+---
+
+conduct an internal adverserial review
+
+---
+
+fix them with systematic solutions
+
+---
+
+what's your progress overall? on a scale of 1 to 100?
+
+---
+
+continue
+
+---
+
+what's the overall progress? on a scale of 1 to 100?
+
+---
+
+ok continue

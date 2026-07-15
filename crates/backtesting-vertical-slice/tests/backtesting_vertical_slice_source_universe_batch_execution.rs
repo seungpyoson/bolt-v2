@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
@@ -17,104 +18,40 @@ use backtesting_vertical_slice::{
     operator::RunSpec,
     source_universe_batch_execution::{
         CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
-        SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReport,
-        SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
-        SourceUniverseObjectFetcher, SourceUniverseOperatorRunner,
-        SourceUniverseVerifiedControlArtifacts, execute_source_universe_batch,
-        execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
-        write_source_universe_batch_execution_report,
+        LocalSourceUniverseOperatorRunner, SourceUniverseBatchExecutionConfig,
+        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+        SourceUniverseBatchExecutionRunOutput, SourceUniverseObjectFetcher,
+        SourceUniverseOperatorRunner, SourceUniverseVerifiedControlArtifacts,
+        execute_source_universe_batch, execute_source_universe_batch_with_config,
+        execute_source_universe_batch_with_factories, write_source_universe_batch_execution_report,
     },
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
         SourceUniverseExecutionPackStatus,
     },
 };
+use flate2::{Compression, write::GzEncoder};
 
 #[test]
 fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let accepted_tranche_path = temp_dir.path().join("accepted-tranche.json");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    let output_dir = temp_dir.path().join("batch-output");
-    let object_bytes = b"accepted object bytes";
-    let object_sha256 = sha256_hex(object_bytes);
-
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&accepted_tranche_path, "{}\n").expect("write accepted tranche");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-    let run_spec_sha256 = sha256_hex(&fs::read(&run_spec_path).expect("read run spec"));
-    let accepted_tranche_sha256 =
-        sha256_hex(&fs::read(&accepted_tranche_path).expect("read accepted tranche"));
-    let execution_plan_sha256 =
-        sha256_hex(&fs::read(&execution_plan_path).expect("read execution plan"));
-    fs::write(
-        &pack_path,
-        format!(
-            r#"{{
-  "schema_version": "source-universe-execution-pack.v1",
-  "pack_id": "source-universe-execution-pack-synthetic",
-  "status": "ready",
-  "work_order_id": "source-universe-conversion-work-order-synthetic",
-  "input_id": "source-universe-operator-inputs-synthetic",
-  "gate_id": "source-universe-object-gates-synthetic",
-  "conversion_run_plan_id": "source-universe-conversion-run-plan-synthetic",
-  "universe_id": "backfill-source-universe-synthetic",
-  "venue": "bybit",
-  "source": "public_archive",
-  "family": "tick_trades",
-  "table_family": "trades",
-  "planned_object_count": 1,
-  "executable_record_count": 1,
-  "withheld_record_count": 0,
-  "selected_record_count": 1,
-  "materialized_record_count": 1,
-  "skipped_executable_record_count": 0,
-  "executable_source_bytes": {object_bytes_len},
-  "materialized_source_bytes": {object_bytes_len},
-  "artifact_refs": [],
-  "records": [
-    {{
-      "sequence": 0,
-      "work_item_id": "synthetic-work-item",
-      "operator_run_id": "source-universe-operator-run-synthetic-00000",
-      "source_binding": "bybit-spot-tick-trades",
-      "category": "spot",
-      "symbol": "BTCUSDT",
-      "archive_date": "2026-03-01",
-      "source_uri": "s3://bolt-parquet/raw/synthetic.csv.gz",
-      "source_url": "https://public.bybit.example/BTCUSDT2026-03-01.csv.gz",
-      "selected_object_sha256": "{object_sha256}",
-      "selected_object_bytes": {object_bytes_len},
-      "source_proof_id": "source-proof-synthetic",
-      "source_proof_version": 1,
-      "accepted_tranche_id": "accepted-tranche-synthetic",
-      "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/synthetic",
-      "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "{run_spec_sha256}",
-      "accepted_tranche_path": "{accepted_tranche_path}",
-      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
-      "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "{execution_plan_sha256}"
-    }}
-  ],
-  "blocking_reasons": []
-}}"#,
-            object_bytes_len = object_bytes.len(),
-            object_sha256 = object_sha256,
-            run_spec_path = run_spec_path.display(),
-            run_spec_sha256 = run_spec_sha256,
-            accepted_tranche_path = accepted_tranche_path.display(),
-            accepted_tranche_sha256 = accepted_tranche_sha256,
-            execution_plan_path = execution_plan_path.display(),
-            execution_plan_sha256 = execution_plan_sha256,
-        ),
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let pack: SourceUniverseExecutionPack = serde_json::from_slice(
+        &fs::read(&fixture.pack_path).expect("read typed execution pack fixture"),
     )
-    .expect("write pack");
+    .expect("parse typed execution pack fixture");
+    let record = pack.records.first().expect("fixture has record zero");
+    let run_spec_path = fixture.run_spec_path.clone();
+    let accepted_tranche_path = fixture.accepted_tranche_path.clone();
+    let execution_plan_path = fixture.execution_plan_path.clone();
+    let output_dir = fixture.output_dir.clone();
+    let object_bytes = b"accepted object bytes";
+    let run_spec_sha256 = record.run_spec_sha256.clone();
+    let accepted_tranche_sha256 = record.accepted_tranche_sha256.clone();
+    let execution_plan_sha256 = record.execution_plan_sha256.clone();
 
     let mut fetcher = StaticFetcher {
-        expected_source_url: "https://public.bybit.example/BTCUSDT2026-03-01.csv.gz".to_string(),
+        expected_source_url: record.source_url.clone(),
         object_bytes: object_bytes.to_vec(),
         calls: 0,
     };
@@ -122,7 +59,7 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
 
     let report = execute_source_universe_batch(
         "source-universe-batch-synthetic",
-        &pack_path,
+        &fixture.pack_path,
         &output_dir,
         Some(1),
         &mut fetcher,
@@ -784,6 +721,74 @@ fn resume_does_not_carry_forward_prior_failure_entries() {
 }
 
 #[test]
+fn resume_rechecks_carried_catalog_after_an_earlier_record_mutates_it() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"fresh object zero".to_vec()),
+        (1, b"initially carried object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let prior_output = temp_dir.path().join("prior-output");
+    let mut prior_fetcher = SequencedFetcher::from_objects(&[(1, objects[1].1.clone())]);
+    let mut prior_runner = RecordingRunner::default();
+    let mut prior_report = execute_source_universe_batch_with_config(
+        "source-universe-batch-prior",
+        &fixture.pack_path,
+        &prior_output,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: Some(1),
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut prior_fetcher,
+        &mut prior_runner,
+    )
+    .expect("create prior sequence-one report");
+    let carried_output_dir = prior_report.records[0].output_dir.clone();
+    let carried_catalog_dir = carried_output_dir.join("nt-catalog");
+    copy_dir_all(
+        &committed_reference_run_dir().join("nt-catalog"),
+        &carried_catalog_dir,
+    );
+    prior_report.records[0].catalog_hash = committed_reference_catalog_hash();
+    let prior_artifact = write_source_universe_batch_execution_report(&prior_output, &prior_report)
+        .expect("write prior sequence-one report");
+    let catalog_file_to_mutate = first_regular_file(&carried_catalog_dir.join("data"));
+
+    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
+    let resume_calls = resume_fetcher.calls();
+    let mut resume_runner = CatalogMutatingRunner {
+        catalog_file_to_mutate,
+        calls: Vec::new(),
+    };
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-batch-resume",
+        &fixture.pack_path,
+        &temp_dir.path().join("resume-output"),
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(prior_artifact.path),
+        },
+        &mut resume_fetcher,
+        &mut resume_runner,
+    )
+    .expect("drifted carried catalog falls through to fresh work");
+
+    assert_eq!(report.completed_record_count, 2);
+    assert_eq!(
+        resume_calls.lock().expect("resume fetch calls").as_slice(),
+        &[0, 1],
+        "sequence one must be re-resolved after sequence zero mutates its carried catalog"
+    );
+    assert_eq!(resume_runner.calls, vec![0, 1]);
+}
+
+#[test]
 fn parallel_overlaps_and_matches_serial_report() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
@@ -1257,6 +1262,59 @@ fn operator_receives_verified_control_bytes_when_source_path_changes_during_fetc
 }
 
 #[test]
+fn operator_uses_verified_source_registry_when_registry_path_changes_during_fetch() {
+    let root = repo_root();
+    let target_dir = root.join("target");
+    fs::create_dir_all(&target_dir).expect("create repo target dir");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("source-registry-mutation-")
+        .tempdir_in(&target_dir)
+        .expect("repo-relative temp dir");
+    let object_bytes = valid_bybit_trade_object();
+    let fixture = write_valid_pack(temp_dir.path(), &[(0, object_bytes.clone())]);
+    let registry_path = temp_dir.path().join("source-bindings.toml");
+    fs::copy(
+        root.join(
+            "specs/023-nt-research-analytics-platform/reference/\
+             backfill-source-bindings.v1.toml",
+        ),
+        &registry_path,
+    )
+    .expect("copy source-binding registry");
+    let registry_identity = registry_path
+        .strip_prefix(&root)
+        .expect("registry temp path is repo-relative")
+        .to_path_buf();
+    rewrite_run_spec_and_regenerate_execution_plan(&fixture, 0, |run_spec| {
+        run_spec.source_bindings_path = registry_identity;
+    });
+    let replacement_registry = b"[[source_binding]".to_vec();
+    let mut fetcher = MutatingControlArtifactFetcher {
+        object_bytes,
+        artifact_path: registry_path.clone(),
+        replacement_bytes: replacement_registry.clone(),
+    };
+    let mut runner = LocalSourceUniverseOperatorRunner;
+
+    let report = execute_source_universe_batch(
+        "source-universe-batch-registry-mutation",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("operator consumes the registry verified before source fetch");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert_eq!(
+        fs::read(&registry_path).expect("read mutated registry"),
+        replacement_registry,
+        "test proves the registry path changed after verification"
+    );
+}
+
+#[test]
 fn prepare_batch_rejects_missing_control_artifact_before_external_work() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
@@ -1357,6 +1415,257 @@ fn prepare_batch_rejects_malformed_control_artifact_sha256_before_external_work(
         error.contains(&malformed_sha256),
         "error names malformed digest: {error}"
     );
+}
+
+#[test]
+fn prepare_batch_rejects_malformed_typed_controls_before_fetch() {
+    for (role, sha256_field, malformed_bytes) in [
+        ("run_spec", "run_spec_sha256", b"[[[".as_slice()),
+        (
+            "accepted_tranche",
+            "accepted_tranche_sha256",
+            b"{}".as_slice(),
+        ),
+        ("execution_plan", "execution_plan_sha256", b"{}".as_slice()),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fixture = write_valid_single_record_pack(temp_dir.path());
+        let artifact_path = match role {
+            "run_spec" => &fixture.run_spec_path,
+            "accepted_tranche" => &fixture.accepted_tranche_path,
+            "execution_plan" => &fixture.execution_plan_path,
+            _ => unreachable!("all malformed control roles are enumerated"),
+        };
+        fs::write(artifact_path, malformed_bytes).expect("write malformed typed control");
+        repin_pack_record_artifact(&fixture.pack_path, 0, sha256_field, artifact_path);
+        let objects = vec![(0, b"accepted object bytes".to_vec())];
+        let mut fetcher = SequencedFetcher::from_objects(&objects);
+        let fetch_calls = fetcher.calls();
+        let mut runner = RecordingRunner::default();
+
+        let result = execute_source_universe_batch(
+            "source-universe-batch-synthetic",
+            &fixture.pack_path,
+            &fixture.output_dir,
+            Some(1),
+            &mut fetcher,
+            &mut runner,
+        );
+
+        assert!(
+            fetch_calls.lock().expect("fetch calls").is_empty(),
+            "malformed {role} must be rejected before fetch; result: {result:?}"
+        );
+        let error = result.expect_err("malformed typed control must fail preflight");
+        assert!(
+            format!("{error:#}").contains(role),
+            "error names malformed {role}: {error:#}"
+        );
+    }
+}
+
+#[test]
+fn prepare_batch_rejects_cross_artifact_control_drift_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut run_spec: RunSpec =
+        toml::from_str(&fs::read_to_string(&fixture.run_spec_path).expect("read valid run spec"))
+            .expect("parse valid run spec");
+    run_spec.manifest.run_id = "semantically-drifted-operator-run".to_string();
+    fs::write(
+        &fixture.run_spec_path,
+        toml::to_string_pretty(&run_spec).expect("serialize drifted run spec"),
+    )
+    .expect("write drifted run spec");
+    repin_pack_record_artifact(
+        &fixture.pack_path,
+        0,
+        "run_spec_sha256",
+        &fixture.run_spec_path,
+    );
+    let objects = vec![(0, b"accepted object bytes".to_vec())];
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    );
+
+    assert!(
+        fetch_calls.lock().expect("fetch calls").is_empty(),
+        "cross-artifact run-id/hash drift must be rejected before fetch; result: {result:?}"
+    );
+    result.expect_err("semantically inconsistent typed controls must fail preflight");
+}
+
+#[test]
+fn prepare_batch_rejects_absolute_and_parent_control_path_escape_before_fetch() {
+    for escape_kind in ["absolute", "parent"] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let pack_dir = temp_dir.path().join("pack");
+        fs::create_dir_all(&pack_dir).expect("create pack dir");
+        let fixture = write_valid_single_record_pack(&pack_dir);
+        let outside_run_spec = temp_dir.path().join("outside-run-spec.toml");
+        fs::copy(&fixture.run_spec_path, &outside_run_spec).expect("copy outside run spec");
+        let declared_path = if escape_kind == "absolute" {
+            outside_run_spec.display().to_string()
+        } else {
+            "../outside-run-spec.toml".to_string()
+        };
+        rewrite_pack_record_field(
+            &fixture.pack_path,
+            0,
+            "run_spec_path",
+            serde_json::Value::String(declared_path),
+        );
+        let objects = vec![(0, b"accepted object bytes".to_vec())];
+        let mut fetcher = SequencedFetcher::from_objects(&objects);
+        let fetch_calls = fetcher.calls();
+        let mut runner = RecordingRunner::default();
+
+        let result = execute_source_universe_batch(
+            "source-universe-batch-synthetic",
+            &fixture.pack_path,
+            &fixture.output_dir,
+            Some(1),
+            &mut fetcher,
+            &mut runner,
+        );
+
+        assert!(
+            fetch_calls.lock().expect("fetch calls").is_empty(),
+            "{escape_kind} control path escape must be rejected before fetch; result: {result:?}"
+        );
+        result.expect_err("escaped control path must fail preflight");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn prepare_batch_rejects_symlink_control_path_escape_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let pack_dir = temp_dir.path().join("pack");
+    fs::create_dir_all(&pack_dir).expect("create pack dir");
+    let fixture = write_valid_single_record_pack(&pack_dir);
+    let outside_run_spec = temp_dir.path().join("outside-run-spec.toml");
+    fs::copy(&fixture.run_spec_path, &outside_run_spec).expect("copy outside run spec");
+    let symlink_path = pack_dir.join("linked-run-spec.toml");
+    std::os::unix::fs::symlink(&outside_run_spec, &symlink_path)
+        .expect("create escaping control symlink");
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        0,
+        "run_spec_path",
+        serde_json::Value::String("linked-run-spec.toml".to_string()),
+    );
+    let objects = vec![(0, b"accepted object bytes".to_vec())];
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    );
+
+    assert!(
+        fetch_calls.lock().expect("fetch calls").is_empty(),
+        "symlink control path escape must be rejected before fetch; result: {result:?}"
+    );
+    result.expect_err("symlink-escaped control path must fail preflight");
+}
+
+#[test]
+fn prepare_batch_rejects_escaping_operator_run_ids_before_fetch() {
+    for operator_run_id in [
+        "/tmp/absolute-operator-run".to_string(),
+        "../parent-operator-run".to_string(),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fixture = write_valid_single_record_pack(temp_dir.path());
+        rewrite_run_spec_and_regenerate_execution_plan(&fixture, 0, |run_spec| {
+            run_spec.manifest.run_id.clone_from(&operator_run_id);
+        });
+        rewrite_pack_record_field(
+            &fixture.pack_path,
+            0,
+            "operator_run_id",
+            serde_json::Value::String(operator_run_id.clone()),
+        );
+        let objects = vec![(0, b"accepted object bytes".to_vec())];
+        let mut fetcher = SequencedFetcher::from_objects(&objects);
+        let fetch_calls = fetcher.calls();
+        let mut runner = RecordingRunner::default();
+
+        let result = execute_source_universe_batch(
+            "source-universe-batch-synthetic",
+            &fixture.pack_path,
+            &fixture.output_dir,
+            Some(1),
+            &mut fetcher,
+            &mut runner,
+        );
+
+        assert!(
+            fetch_calls.lock().expect("fetch calls").is_empty(),
+            "escaping operator_run_id {operator_run_id:?} must be rejected before fetch; result: {result:?}"
+        );
+        result.expect_err("escaping operator_run_id must fail preflight");
+    }
+}
+
+#[test]
+fn prepare_batch_rejects_duplicate_operator_run_ids_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"accepted object zero".to_vec()),
+        (1, b"accepted object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read duplicate-id fixture"))
+            .expect("parse duplicate-id fixture");
+    let duplicate_operator_run_id = pack.records[0].operator_run_id.clone();
+    rewrite_run_spec_and_regenerate_execution_plan(&fixture, 1, |run_spec| {
+        run_spec
+            .manifest
+            .run_id
+            .clone_from(&duplicate_operator_run_id);
+    });
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        1,
+        "operator_run_id",
+        serde_json::Value::String(duplicate_operator_run_id),
+    );
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(2),
+        &mut fetcher,
+        &mut runner,
+    );
+
+    assert!(
+        fetch_calls.lock().expect("fetch calls").is_empty(),
+        "duplicate operator_run_id values must be rejected before fetch; result: {result:?}"
+    );
+    result.expect_err("duplicate operator_run_id values must fail preflight");
 }
 
 // ── Fix 1: path-traversal class — sha256 validation at the consume boundary ──
@@ -1736,6 +2045,68 @@ fn resume_reprocesses_when_an_unreported_pack_record_field_drifts() {
 }
 
 #[test]
+fn resume_does_not_carry_when_pack_level_universe_metadata_drifts() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![(0, b"object zero".to_vec())];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let mut initial_fetcher = SequencedFetcher::from_objects(&objects);
+    let mut initial_runner = RecordingRunner::default();
+    let mut prior_report = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut initial_fetcher,
+        &mut initial_runner,
+    )
+    .expect("initial record completes");
+    let prior_output_dir = prior_report.records[0].output_dir.clone();
+    copy_dir_all(
+        &committed_reference_run_dir().join("nt-catalog"),
+        &prior_output_dir.join("nt-catalog"),
+    );
+    prior_report.records[0].catalog_hash = committed_reference_catalog_hash();
+    let prior_report_artifact =
+        write_source_universe_batch_execution_report(&fixture.output_dir, &prior_report)
+            .expect("write prior report");
+    rewrite_pack_field(
+        &fixture.pack_path,
+        "universe_id",
+        serde_json::Value::String("drifted-source-universe".to_string()),
+    );
+
+    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
+    let resume_calls = resume_fetcher.calls();
+    let mut resume_runner = RecordingRunner::default();
+    let result = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic-resume",
+        &fixture.pack_path,
+        &temp_dir.path().join("resume-output"),
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(prior_report_artifact.path),
+        },
+        &mut resume_fetcher,
+        &mut resume_runner,
+    );
+
+    match result {
+        Ok(_) => assert_eq!(
+            resume_calls.lock().expect("resume fetch calls").as_slice(),
+            &[0],
+            "pack-level metadata drift may reprocess but must never carry"
+        ),
+        Err(error) => assert!(
+            format!("{error:#}").contains("universe"),
+            "fail-closed resume error identifies universe drift: {error:#}"
+        ),
+    }
+}
+
+#[test]
 fn factory_entry_does_not_construct_dependencies_for_only_preflight_failures() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
@@ -1776,6 +2147,47 @@ fn factory_entry_does_not_construct_dependencies_for_only_preflight_failures() {
     );
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn factory_construction_error_is_a_record_failure_under_continue_on_error() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let fetcher_factory_calls = AtomicUsize::new(0);
+
+    let report = execute_source_universe_batch_with_factories(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: true,
+            max_concurrent_records: Some(1),
+            resume_report: None,
+        },
+        || -> anyhow::Result<NeverFetcher> {
+            fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("synthetic fetcher factory failure")
+        },
+        || Ok(RecordingRunner::default()),
+    )
+    .expect("continue_on_error records dependency construction failure");
+
+    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    );
+    assert_eq!(report.failed_record_count, 1);
+    assert_eq!(report.failures[0].sequence, 0);
+    assert!(
+        report.failures[0]
+            .error
+            .contains("synthetic fetcher factory failure"),
+        "factory error is retained in the record failure: {:?}",
+        report.failures[0]
+    );
 }
 
 struct StaticFetcher {
@@ -1881,10 +2293,51 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
     }
 }
 
+struct CatalogMutatingRunner {
+    catalog_file_to_mutate: PathBuf,
+    calls: Vec<u64>,
+}
+
+impl SourceUniverseOperatorRunner for CatalogMutatingRunner {
+    fn run(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        _object_bytes: &[u8],
+        _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+        _output_dir: &Path,
+    ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
+        self.calls.push(record.sequence);
+        if record.sequence == 0 {
+            fs::write(
+                &self.catalog_file_to_mutate,
+                b"mutated carried catalog bytes",
+            )
+            .expect("mutate later carried catalog");
+        }
+        Ok(SourceUniverseBatchExecutionRunOutput {
+            canonical_rows: 7,
+            nt_catalog_rows: 7,
+            catalog_hash: format!("catalog-hash-{}", record.sequence),
+        })
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     hex::encode(Sha256::digest(bytes))
+}
+
+fn valid_bybit_trade_object() -> Vec<u8> {
+    let csv = "timestamp,symbol,side,size,price,tickDirection,trdMatchID,grossValue,homeNotional,foreignNotional,RPI\n\
+               1748736000.125,AAVEUSD,Buy,1,100.00,PlusTick,synthetic-trade-1,100,1,100,false\n";
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(csv.as_bytes())
+        .expect("write deterministic Bybit CSV gzip");
+    encoder
+        .finish()
+        .expect("finish deterministic Bybit CSV gzip")
 }
 
 struct ValidSingleRecordPack {
@@ -2000,6 +2453,100 @@ fn rewrite_pack_record_field(
     .expect("rewrite pack");
 }
 
+fn rewrite_pack_field(pack_path: &Path, field: &str, value: serde_json::Value) {
+    let mut pack: serde_json::Value =
+        serde_json::from_slice(&fs::read(pack_path).expect("read pack")).expect("parse pack");
+    pack[field] = value;
+    fs::write(
+        pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize rewritten pack"),
+    )
+    .expect("rewrite pack");
+}
+
+fn repin_pack_record_artifact(
+    pack_path: &Path,
+    record_index: usize,
+    sha256_field: &str,
+    artifact_path: &Path,
+) {
+    rewrite_pack_record_field(
+        pack_path,
+        record_index,
+        sha256_field,
+        serde_json::Value::String(sha256_hex(
+            &fs::read(artifact_path).expect("read rewritten control artifact"),
+        )),
+    );
+}
+
+fn rewrite_run_spec_and_regenerate_execution_plan(
+    fixture: &ValidSingleRecordPack,
+    record_index: usize,
+    mutate: impl FnOnce(&mut RunSpec),
+) {
+    let mut pack: SourceUniverseExecutionPack = serde_json::from_slice(
+        &fs::read(&fixture.pack_path).expect("read execution pack for control rewrite"),
+    )
+    .expect("parse execution pack for control rewrite");
+    let pack_dir = fixture.pack_path.parent().expect("pack path has parent");
+    let record = pack
+        .records
+        .get_mut(record_index)
+        .expect("fixture has requested record");
+    let run_spec_path = pack_dir.join(&record.run_spec_path);
+    let accepted_tranche_path = pack_dir.join(&record.accepted_tranche_path);
+    let execution_plan_path = pack_dir.join(&record.execution_plan_path);
+    let mut run_spec: RunSpec = toml::from_str(
+        &fs::read_to_string(&run_spec_path).expect("read run spec for control rewrite"),
+    )
+    .expect("parse run spec for control rewrite");
+    let accepted_tranche_bytes =
+        fs::read(&accepted_tranche_path).expect("read accepted tranche for control rewrite");
+    let accepted_tranche: BackfillAcceptedTrancheManifest =
+        serde_json::from_slice(&accepted_tranche_bytes)
+            .expect("parse accepted tranche for control rewrite");
+    let previous_plan: BackfillExecutionPlan = serde_json::from_slice(
+        &fs::read(&execution_plan_path).expect("read execution plan for control rewrite"),
+    )
+    .expect("parse execution plan for control rewrite");
+
+    mutate(&mut run_spec);
+    let run_spec_bytes = toml::to_string_pretty(&run_spec)
+        .expect("serialize rewritten run spec")
+        .into_bytes();
+    let execution_plan = evaluate_backfill_execution_plan(
+        previous_plan.plan_id.clone(),
+        sha256_hex(&accepted_tranche_bytes),
+        &accepted_tranche,
+        sha256_hex(&run_spec_bytes),
+        &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+        BackfillExecutionWorkBudget {
+            max_source_rows: previous_plan.max_source_rows,
+            max_projected_row_groups: previous_plan.max_projected_row_groups,
+            max_wall_seconds: previous_plan.max_wall_seconds,
+            require_object_selection_metadata: previous_plan.require_object_selection_metadata,
+        },
+    );
+    assert_eq!(
+        execution_plan.status,
+        BackfillExecutionPlanStatus::Ready,
+        "rewritten run spec must retain a ready execution plan"
+    );
+    let execution_plan_bytes =
+        serde_json::to_vec_pretty(&execution_plan).expect("serialize regenerated execution plan");
+    fs::write(&run_spec_path, &run_spec_bytes).expect("write rewritten run spec");
+    fs::write(&execution_plan_path, &execution_plan_bytes)
+        .expect("write regenerated execution plan");
+    record.run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    record.execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
+    fs::write(
+        &fixture.pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize repinned execution pack"),
+    )
+    .expect("write repinned execution pack");
+}
+
 fn pack_preflight_error_before_external_work(fixture: &ValidSingleRecordPack) -> String {
     let mut fetcher = NeverFetcher;
     let mut runner = RecordingRunner::default();
@@ -2096,6 +2643,30 @@ fn copy_dir_all(src: &Path, dst: &Path) {
     }
 }
 
+fn first_regular_file(root: &Path) -> PathBuf {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let mut entries = fs::read_dir(&dir)
+            .expect("read catalog data dir")
+            .map(|entry| entry.expect("catalog data entry"))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            if entry.file_type().expect("catalog data file type").is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    files.sort();
+    files
+        .into_iter()
+        .next()
+        .expect("committed catalog contains a regular data file")
+}
+
 fn write_two_record_pack(
     pack_path: &Path,
     run_spec_path: &Path,
@@ -2162,7 +2733,10 @@ fn write_n_record_pack(
         );
         run_spec.accepted_object.sha256.clone_from(&object_sha256);
         run_spec.accepted_object.bytes = object_bytes.len() as u64;
-        run_spec.source_proof.raw_sample_hash.clone_from(&object_sha256);
+        run_spec
+            .source_proof
+            .raw_sample_hash
+            .clone_from(&object_sha256);
         run_spec
             .source_proof
             .schema_sample_hash
@@ -2170,8 +2744,11 @@ fn write_n_record_pack(
         if let Some(scope) = run_spec.source_proof.acceptance_scope.as_mut() {
             scope.accepted_bytes = object_bytes.len() as u64;
         }
-        run_spec.converter.raw_payload.max_object_bytes =
-            run_spec.converter.raw_payload.max_object_bytes.max(object_bytes.len() as u64);
+        run_spec.converter.raw_payload.max_object_bytes = run_spec
+            .converter
+            .raw_payload
+            .max_object_bytes
+            .max(object_bytes.len() as u64);
 
         let mut accepted_tranche = committed.accepted_tranche.clone();
         accepted_tranche.tranche_id.clone_from(&accepted_tranche_id);

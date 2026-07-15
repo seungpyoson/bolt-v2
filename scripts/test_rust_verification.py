@@ -1355,7 +1355,12 @@ def remote_compile_policy_text() -> str:
     )
 
 
-def install_owner_process_spies(owner: object, calls: list[tuple[list[str], str | None]], results: list[int]) -> tuple[object, object, object]:
+def install_owner_process_spies(
+    owner: object,
+    calls: list[tuple[list[str], str | None]],
+    results: list[int],
+    managed_env_calls: list[dict[str, str]],
+) -> tuple[object, object, object, object]:
     def fake_disk_preflight(_repo: pathlib.Path, _policy: dict[str, object]) -> None:
         calls.append((["__disk_preflight__"], None))
         return None
@@ -1374,60 +1379,50 @@ def install_owner_process_spies(owner: object, calls: list[tuple[list[str], str 
     original_preflight = owner.disk_preflight_refusal_payload
     original_cache_lock = owner.cache_lock
     original_run_process = owner.run_process
+    original_managed_env = owner.managed_env
+
+    def fake_managed_env(repo: pathlib.Path, policy: dict[str, object] | None = None) -> dict[str, str]:
+        env = original_managed_env(repo, policy)
+        managed_env_calls.append(dict(env))
+        return env
+
     owner.disk_preflight_refusal_payload = fake_disk_preflight
     owner.cache_lock = fake_cache_lock
     owner.run_process = fake_run_process
-    return original_preflight, original_cache_lock, original_run_process
+    owner.managed_env = fake_managed_env
+    return original_preflight, original_cache_lock, original_run_process, original_managed_env
 
 
-def restore_owner_process_spies(owner: object, originals: tuple[object, object, object]) -> None:
+def restore_owner_process_spies(owner: object, originals: tuple[object, object, object, object]) -> None:
     owner.disk_preflight_refusal_payload = originals[0]
     owner.cache_lock = originals[1]
     owner.run_process = originals[2]
+    owner.managed_env = originals[3]
 
 
-def assert_managed_test_splits_nextest_run_inside_owner() -> None:
+def assert_commands_test_schema_is_exact() -> None:
     owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_run(
-                    argparse.Namespace(
-                        repo=str(repo),
-                        command="test",
-                        args=["--config-file", "nextest.toml", "--", "--skip", "slow_case"],
-                        args_separator=False,
-                    )
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    process_calls = [call for call in calls if call[0][0] != "__cache_lock__"]
-    if [call[0] for call in process_calls].count(["__disk_preflight__"]) != 1:
-        raise AssertionError(process_calls)
-    run_calls = [call for call in process_calls if call[0][0] == "cargo"]
-    expected_compile = [
-        "cargo",
-        "nextest",
-        "run",
-        "--locked",
-        "--no-run",
-        "--config-file",
-        "nextest.toml",
-    ]
-    expected_test = [
+    policy = tomllib.loads(rust_verification_policy_text())
+    owner.validate_policy_data(policy)
+
+    policy["commands"]["test"]["unexpected_key"] = True
+    try:
+        owner.validate_policy_data(policy)
+    except owner.PolicyError:
+        return
+    raise AssertionError("expected PolicyError for an unexpected commands.test key")
+
+
+def assert_managed_test_runs_one_configured_command_for_root_and_backtester() -> None:
+    owner = load_owner_module()
+    backtester_policy = (
+        REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+    ).read_text(encoding="utf-8")
+    policies = (
+        ("root", remote_compile_policy_text()),
+        ("backtester", backtester_policy),
+    )
+    expected = [
         "cargo",
         "nextest",
         "run",
@@ -1438,588 +1433,101 @@ def assert_managed_test_splits_nextest_run_inside_owner() -> None:
         "--skip",
         "slow_case",
     ]
-    if run_calls != [(expected_compile, "/opt/sccache/sccache"), (expected_test, None)]:
-        raise AssertionError(run_calls)
 
-
-def assert_managed_test_uses_configured_compile_args() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    policy_text = remote_compile_policy_text().replace(
-        '"--locked", "--no-run"', '"--locked", "--workspace", "--no-run"', 1
-    )
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=policy_text)
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_run(
-                    argparse.Namespace(
-                        repo=str(repo),
-                        command="test",
-                        args=["--config-file", "nextest.toml", "--ff"],
-                        args_separator=False,
-                    )
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    expected_compile = [
-        "cargo",
-        "nextest",
-        "run",
-        "--locked",
-        "--workspace",
-        "--no-run",
-        "--config-file",
-        "nextest.toml",
-    ]
-    expected_test = [
-        "cargo",
-        "nextest",
-        "run",
-        "--locked",
-        "--config-file",
-        "nextest.toml",
-        "--ff",
-    ]
-    if run_calls != [(expected_compile, "/opt/sccache/sccache"), (expected_test, None)]:
-        raise AssertionError(run_calls)
-
-
-def assert_nextest_compile_preflight_omits_run_only_flags() -> None:
-    owner = load_owner_module()
-    run_args = [
-        "nextest",
-        "run",
-        "--locked",
-        "--config-file",
-        "nextest.toml",
-        "--no-fail-fast",
-        "--fail-fast",
-        "--ff",
-        "--nff",
-        "--max-fail",
-        "1",
-        "--max-fail=all",
-        "--retries",
-        "2",
-        "-j",
-        "4",
-        "--test-threads",
-        "4",
-        "--jobs=4",
-        "--no-capture",
-        "--run-ignored",
-        "ignored-only",
-        "--status-level",
-        "fail",
-        "--final-status-level=fail",
-        "--failure-output",
-        "immediate",
-        "--success-output=never",
-        "--no-tests",
-        "pass",
-        "--hide-progress-bar",
-        "--color",
-        "never",
-        "--message-format=json",
-        "--message-format-version",
-        "1",
-        "--verbose",
-        "--timings",
-        "--no-pager",
-        "--show-progress",
-        "immediate",
-        "--rerun",
-        "all",
-        "--flaky-result",
-        "fail",
-        "--stress-count",
-        "2",
-        "--stress-duration=10s",
-        "--platform-filter",
-        "host",
-        "--ignore-default-filter",
-        "--max-progress-running",
-        "4",
-        "--no-input-handler",
-        "--no-output-indent",
-        "--cargo-quiet",
-        "--cargo-verbose",
-        "--cargo-message-format=json",
-        "--cargo-metadata",
-        "metadata.json",
-        "--unit-graph",
-        "--future-incompat-report",
-        "--override-version-check",
-        "--tool-config-file",
-        "tools.toml",
-        "--user-config-file=user.toml",
-        "--target-dir-remap",
-        "/tmp/target=/workspace/target",
-        "--build-dir-remap=/tmp/build=/workspace/build",
-    ]
-    compile_args = owner.nextest_run_compile_preflight_args(run_args)
-    if compile_args != ["nextest", "run", "--locked", "--config-file", "nextest.toml", "--no-run"]:
-        raise AssertionError(compile_args)
-
-
-def assert_nextest_compile_preflight_preserves_compile_selectors() -> None:
-    owner = load_owner_module()
-    cases = [
-        (["--release"], ["--release"]),
-        (["-r"], ["-r"]),
-        (["-F", "serde"], ["-F", "serde"]),
-        (["--bin", "bolt-v2"], ["--bin", "bolt-v2"]),
-        (["--example", "smoke"], ["--example", "smoke"]),
-        (["--bench", "latency"], ["--bench", "latency"]),
-        (["--cargo-profile", "ci"], ["--cargo-profile", "ci"]),
-        (["--build-jobs", "2"], ["--build-jobs", "2"]),
-        (["--ignore-rust-version"], ["--ignore-rust-version"]),
-        (["--filterset", "test(foo)"], ["--filterset", "test(foo)"]),
-    ]
-    for tail, expected_tail in cases:
-        compile_args = owner.nextest_run_compile_preflight_args(["nextest", "run", "--locked", *tail])
-        expected = ["nextest", "run", "--locked", *expected_tail, "--no-run"]
-        if compile_args != expected:
-            raise AssertionError((tail, compile_args, expected))
-
-
-def assert_nextest_compile_preflight_refuses_unknown_flags() -> None:
-    owner = load_owner_module()
-    compile_args = owner.nextest_run_compile_preflight_args(["nextest", "run", "--locked", "--future-nextest-flag"])
-    if compile_args is not None:
-        raise AssertionError(compile_args)
-
-
-def assert_known_nextest_option_surface_is_classified() -> None:
-    owner = load_owner_module()
-    known_tails = [
-        ["--verbose"],
-        ["--timings"],
-        ["--no-pager"],
-        ["--show-progress", "immediate"],
-        ["--rerun", "all"],
-        ["--flaky-result", "fail"],
-        ["--stress-count", "2"],
-        ["--stress-duration=10s"],
-        ["--platform-filter", "host"],
-        ["--ignore-default-filter"],
-        ["--max-progress-running", "4"],
-        ["--no-input-handler"],
-        ["--no-output-indent"],
-        ["--message-format-version", "1"],
-        ["--cargo-quiet"],
-        ["--cargo-verbose"],
-        ["--cargo-message-format=json"],
-        ["--cargo-metadata", "metadata.json"],
-        ["--config", "profile.default.retries=2"],
-        ["--unit-graph"],
-        ["--future-incompat-report"],
-        ["--override-version-check"],
-        ["--tool-config-file", "tools.toml"],
-        ["--user-config-file=user.toml"],
-        ["--target-dir-remap", "/tmp/target=/workspace/target"],
-        ["--build-dir-remap=/tmp/build=/workspace/build"],
-    ]
-    for tail in known_tails:
-        if owner.nextest_compile_option_tail(tail) is None:
-            raise AssertionError(tail)
-
-
-def assert_nextest_option_arity_does_not_drop_compile_selectors() -> None:
-    owner = load_owner_module()
-    cases = [
-        (["--config", 'build.rustflags=["-C","opt-level=1"]'], ["--config", 'build.rustflags=["-C","opt-level=1"]']),
-        (["--unit-graph", "--release"], ["--release"]),
-        (["--future-incompat-report", "--test", "target_name"], ["--test", "target_name"]),
-        (["--retries", "--release"], ["--release"]),
-    ]
-    for tail, expected in cases:
-        compile_tail = owner.nextest_compile_option_tail(tail)
-        if compile_tail != expected:
-            raise AssertionError((tail, compile_tail, expected))
-    if owner.nextest_compile_option_tail(["--test", "--release"]) is not None:
-        raise AssertionError("compile value option consumed another option as its value")
-
-
-def assert_managed_test_refuses_unknown_compile_tail() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                with contextlib.redirect_stderr(io.StringIO()):
+    for label, policy_text in policies:
+        calls: list[tuple[list[str], str | None]] = []
+        managed_env_calls: list[dict[str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / label
+            repo.mkdir()
+            write_policy(repo, policy_text=policy_text)
+            originals = install_owner_process_spies(owner, calls, [], managed_env_calls)
+            try:
+                with _patched_environ(
+                    {
+                        "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+                        "GITHUB_ACTIONS": "true",
+                        "SCCACHE_PATH": "/opt/sccache/sccache",
+                    }
+                ):
                     result = owner.cmd_run(
                         argparse.Namespace(
                             repo=str(repo),
                             command="test",
-                            args=["--future-nextest-flag"],
+                            args=["--config-file", "nextest.toml", "--", "--skip", "slow_case"],
                             args_separator=False,
                         )
                     )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 2:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls:
-        raise AssertionError(run_calls)
+            finally:
+                restore_owner_process_spies(owner, originals)
+
+        if result != 0:
+            raise AssertionError((label, result))
+        run_calls = [call for call in calls if call[0][0] == "cargo"]
+        if run_calls != [(expected, "/opt/sccache/sccache")]:
+            raise AssertionError((label, run_calls))
+        if len(managed_env_calls) != 1 or managed_env_calls[0].get("RUSTC_WRAPPER") != "/opt/sccache/sccache":
+            raise AssertionError((label, managed_env_calls))
 
 
-def assert_managed_test_allows_unknown_compile_tail_without_cache() -> None:
+def assert_direct_managed_nextest_runs_once_and_returns_first_status() -> None:
     owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "0",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_run(
-                    argparse.Namespace(
-                        repo=str(repo),
-                        command="test",
-                        args=["--future-nextest-flag"],
-                        args_separator=False,
-                    )
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls != [(["cargo", "nextest", "run", "--locked", "--future-nextest-flag"], None)]:
-        raise AssertionError(run_calls)
-
-
-def assert_managed_test_refuses_unknown_no_run_tail() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                with contextlib.redirect_stderr(io.StringIO()):
-                    result = owner.cmd_run(
-                        argparse.Namespace(
-                            repo=str(repo),
-                            command="test",
-                            args=["--no-run", "--future-nextest-flag"],
-                            args_separator=False,
-                        )
-                    )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 2:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls:
-        raise AssertionError(run_calls)
-
-
-def assert_direct_nextest_run_refuses_unknown_compile_tail() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                with contextlib.redirect_stderr(io.StringIO()):
-                    result = owner.cmd_cargo(
-                        argparse.Namespace(
-                            repo=str(repo),
-                            args=["--", "nextest", "run", "--locked", "--future-nextest-flag"],
-                        )
-                    )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 2:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls:
-        raise AssertionError(run_calls)
-
-
-def assert_direct_nextest_no_run_refuses_unknown_tail() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                with contextlib.redirect_stderr(io.StringIO()):
-                    result = owner.cmd_cargo(
-                        argparse.Namespace(
-                            repo=str(repo),
-                            args=["--", "nextest", "run", "--locked", "--no-run", "--future-nextest-flag"],
-                        )
-                    )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 2:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls:
-        raise AssertionError(run_calls)
-
-
-def assert_direct_nextest_no_run_with_run_only_tail_retries() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [42, 0])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_cargo(
-                    argparse.Namespace(
-                        repo=str(repo),
-                        args=["--", "nextest", "run", "--locked", "--no-run", "--retries", "2"],
-                    )
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    expected = ["cargo", "nextest", "run", "--locked", "--no-run", "--retries", "2"]
-    if run_calls != [(expected, "/opt/sccache/sccache"), (expected, None)]:
-        raise AssertionError(run_calls)
-
-
-def assert_direct_nextest_archive_file_remains_no_split() -> None:
-    owner = load_owner_module()
-    if owner.cargo_args_are_compile_only(
-        ["nextest", "run", "--locked", "--archive-file", "/tmp/a", "--extract-to", "/tmp/e"]
-    ):
-        raise AssertionError("nextest run --archive-file must not be classified as compile-only")
-    if not owner.cargo_args_are_compile_only(["nextest", "archive", "--locked", "--archive-file", "/tmp/a"]):
-        raise AssertionError("nextest archive must remain compile-only")
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_cargo(
-                    argparse.Namespace(
-                        repo=str(repo),
-                        args=["--", "nextest", "run", "--locked", "--archive-file", "archive.tar.zst"],
-                    )
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls != [
-        (["cargo", "nextest", "run", "--locked", "--archive-file", "archive.tar.zst"], "/opt/sccache/sccache")
-    ]:
-        raise AssertionError(run_calls)
-
-
-def assert_compile_args_reject_run_only_and_unknown_flags() -> None:
-    owner = load_owner_module()
-    cases = [
-        '"--ff"',
-        '"--no-fail-fast"',
-        '"--max-fail=all"',
-        '"--archive-file", "archive.tar.zst"',
-        '"--future-nextest-flag"',
-        '"--expr", "test(foo)"',
-    ]
-    for extra_tail in cases:
-        policy_text = remote_compile_policy_text().replace(
-            '"--locked", "--no-run"', f'"--locked", "--no-run", {extra_tail}', 1
-        )
-        try:
-            owner.validate_policy_data(tomllib.loads(policy_text))
-        except owner.PolicyError:
-            continue
-        raise AssertionError(f"expected PolicyError for compile_args tail {extra_tail}")
-
-
-def assert_compile_args_reject_target_routing_override() -> None:
-    owner = load_owner_module()
-    policy_text = remote_compile_policy_text().replace(
-        '"--locked", "--no-run"',
-        '"--locked", "--target-dir", "/tmp/raw-target", "--no-run"',
-        1,
+    cases = (
+        (
+            ["nextest", "run", "--locked", "--no-run", "--", "--skip", "slow_case"],
+            [42, 0],
+            42,
+            [0],
+        ),
+        (
+            ["nextest", "run", "--locked", "--future-nextest-flag"],
+            [],
+            0,
+            [],
+        ),
+        (
+            ["nextest", "run", "--locked", "--", "--skip", "slow_case"],
+            [],
+            0,
+            [],
+        ),
     )
-    try:
-        owner.validate_policy_data(tomllib.loads(policy_text))
-    except owner.PolicyError:
-        return
-    raise AssertionError("expected PolicyError for compile_args --target-dir")
 
+    for cargo_args, outcomes, expected_result, expected_remaining in cases:
+        calls: list[tuple[list[str], str | None]] = []
+        managed_env_calls: list[dict[str, str]] = []
+        remaining = list(outcomes)
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            write_policy(repo, policy_text=remote_compile_policy_text())
+            originals = install_owner_process_spies(owner, calls, remaining, managed_env_calls)
+            try:
+                with _patched_environ(
+                    {
+                        "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+                        "GITHUB_ACTIONS": "true",
+                        "SCCACHE_PATH": "/opt/sccache/sccache",
+                    }
+                ):
+                    with contextlib.redirect_stderr(stderr):
+                        result = owner.cmd_cargo(argparse.Namespace(repo=str(repo), args=["--", *cargo_args]))
+            finally:
+                restore_owner_process_spies(owner, originals)
 
-def assert_direct_nextest_compile_only_with_separator_retries() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [42, 0])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_cargo(
-                    argparse.Namespace(
-                        repo=str(repo),
-                        args=["--", "nextest", "run", "--locked", "--no-run", "--", "--skip", "slow_case"],
-                    )
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    expected = ["cargo", "nextest", "run", "--locked", "--no-run", "--", "--skip", "slow_case"]
-    if run_calls != [(expected, "/opt/sccache/sccache"), (expected, None)]:
-        raise AssertionError(run_calls)
-
-
-def assert_nextest_compile_failure_retries_without_retrying_tests() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [86, 0, 42])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_run(
-                    argparse.Namespace(repo=str(repo), command="test", args=["--no-fail-fast"], args_separator=False)
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 42:
-        raise AssertionError((result, calls))
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if len(run_calls) != 3:
-        raise AssertionError(run_calls)
-    if run_calls[0][1] != "/opt/sccache/sccache" or run_calls[1][1] is not None or run_calls[2][1] is not None:
-        raise AssertionError(run_calls)
-    if run_calls[2][0] != ["cargo", "nextest", "run", "--locked", "--no-fail-fast"]:
-        raise AssertionError(run_calls)
-    if "--no-fail-fast" in run_calls[0][0]:
-        raise AssertionError(run_calls)
-
-
-def assert_direct_nextest_run_splits_inside_owner() -> None:
-    owner = load_owner_module()
-    calls: list[tuple[list[str], str | None]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, policy_text=remote_compile_policy_text())
-        originals = install_owner_process_spies(owner, calls, [])
-        try:
-            with _patched_environ(
-                {
-                    "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-                    "GITHUB_ACTIONS": "true",
-                    "SCCACHE_PATH": "/opt/sccache/sccache",
-                }
-            ):
-                result = owner.cmd_cargo(
-                    argparse.Namespace(repo=str(repo), args=["--", "nextest", "run", "--locked", "-p", "bolt-v2"])
-                )
-        finally:
-            restore_owner_process_spies(owner, originals)
-    if result != 0:
-        raise AssertionError(result)
-    run_calls = [call for call in calls if call[0][0] == "cargo"]
-    if run_calls != [
-        (["cargo", "nextest", "run", "--locked", "-p", "bolt-v2", "--no-run"], "/opt/sccache/sccache"),
-        (["cargo", "nextest", "run", "--locked", "-p", "bolt-v2"], None),
-    ]:
-        raise AssertionError(run_calls)
+        if result != expected_result:
+            raise AssertionError((cargo_args, result, calls))
+        run_calls = [call for call in calls if call[0][0] == "cargo"]
+        expected_call = (["cargo", *cargo_args], "/opt/sccache/sccache")
+        if run_calls != [expected_call]:
+            raise AssertionError((cargo_args, run_calls))
+        if remaining != expected_remaining:
+            raise AssertionError((cargo_args, remaining))
+        if len(managed_env_calls) != 1 or managed_env_calls[0].get("RUSTC_WRAPPER") != "/opt/sccache/sccache":
+            raise AssertionError((cargo_args, managed_env_calls))
+        if stderr.getvalue():
+            raise AssertionError((cargo_args, stderr.getvalue()))
 
 
 def assert_managed_env_scrubs_then_injects_fast_linker_wrapper() -> None:
@@ -2449,25 +1957,9 @@ def main() -> int:
     assert_validate_remote_compile_cache_policy_contract()
     assert_managed_remote_compile_cache_env_fails_open()
     assert_managed_env_scrubs_then_reinjects_wrapper()
-    assert_managed_test_splits_nextest_run_inside_owner()
-    assert_managed_test_uses_configured_compile_args()
-    assert_nextest_compile_preflight_omits_run_only_flags()
-    assert_nextest_compile_preflight_preserves_compile_selectors()
-    assert_nextest_compile_preflight_refuses_unknown_flags()
-    assert_known_nextest_option_surface_is_classified()
-    assert_nextest_option_arity_does_not_drop_compile_selectors()
-    assert_managed_test_refuses_unknown_compile_tail()
-    assert_managed_test_allows_unknown_compile_tail_without_cache()
-    assert_managed_test_refuses_unknown_no_run_tail()
-    assert_direct_nextest_run_refuses_unknown_compile_tail()
-    assert_direct_nextest_no_run_refuses_unknown_tail()
-    assert_direct_nextest_no_run_with_run_only_tail_retries()
-    assert_direct_nextest_archive_file_remains_no_split()
-    assert_compile_args_reject_run_only_and_unknown_flags()
-    assert_compile_args_reject_target_routing_override()
-    assert_direct_nextest_compile_only_with_separator_retries()
-    assert_nextest_compile_failure_retries_without_retrying_tests()
-    assert_direct_nextest_run_splits_inside_owner()
+    assert_commands_test_schema_is_exact()
+    assert_managed_test_runs_one_configured_command_for_root_and_backtester()
+    assert_direct_managed_nextest_runs_once_and_returns_first_status()
     assert_validate_remote_fast_linker_policy_contract()
     assert_managed_remote_fast_linker_env_selects_available_program()
     assert_managed_env_scrubs_then_injects_fast_linker_wrapper()

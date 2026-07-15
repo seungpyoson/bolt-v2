@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "ba845204f976",
+  "strategy": "manual-commit",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/ba/845204f976/0/metadata.json",
+      "transcript": "/ba/845204f976/0/full.jsonl",
+      "compact_transcript": "/ba/845204f976/0/transcript.jsonl",
+      "content_hash": "/ba/845204f976/0/content_hash.txt",
+      "prompt": "/ba/845204f976/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3017122,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 241630464,
+    "output_tokens": 305825,
+    "api_call_count": 1802
+  }
+}

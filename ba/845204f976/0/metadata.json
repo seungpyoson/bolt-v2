@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "ba845204f976",
+  "session_id": "019f50f4-b8c5-7582-a3c1-3968239be3d0",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T13:27:00.77499Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "34be49dd75c7",
+  "checkpoint_transcript_start": 30286,
+  "transcript_lines_at_start": 30286,
+  "compact_transcript_start": 5768,
+  "token_usage": {
+    "input_tokens": 3017122,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 241630464,
+    "output_tokens": 305825,
+    "api_call_count": 1802
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 256,
+      "user_lines_removed": 6,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "src/bolt_v3_basket_execution.rs": 1,
+        "src/bolt_v3_strategy_registration.rs": 122,
+        "tests/bolt_v3_provider_binding.rs": 131,
+        "tests/wiring_registration.rs": 2
+      },
+      "user_removed_per_file": {
+        "src/bolt_v3_basket_execution.rs": 1,
+        "src/bolt_v3_strategy_registration.rs": 1,
+        "tests/bolt_v3_provider_binding.rs": 3,
+        "tests/wiring_registration.rs": 1
+      }
+    }
+  ]
+}

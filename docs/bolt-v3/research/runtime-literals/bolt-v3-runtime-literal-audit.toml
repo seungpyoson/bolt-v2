@@ -21092,6 +21092,14 @@ reason = "Array index for validating the first member of the venue-defined binar
 [[allowed]]
 path = "src/bolt_v3_evidence_identity.rs"
 kind = "number"
+literal = "1"
+context = '''ordered_outcomes[1].outcome_index,'''
+classification = "evidence_identity_binary_shape"
+reason = "Array index for validating the second member of the venue-defined ordered binary outcome identity; it is type shape, not runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
 literal = "2"
 context = '''ordered_outcomes: [EvidenceOutcomeIdentity; 2],'''
 classification = "evidence_identity_binary_shape"
@@ -21104,6 +21112,14 @@ literal = "2"
 context = '''pub fn ordered_outcomes(&self) -> &[EvidenceOutcomeIdentity; 2] {'''
 classification = "evidence_identity_binary_shape"
 reason = "Return type preserves the venue-defined ordered binary outcome pair at the type boundary; it is type shape, not runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "2"
+context = '''InvalidOrderedOutcomeIndexes([u16; 2]),'''
+classification = "evidence_identity_binary_shape"
+reason = "Validation error retains the exact two observed outcome indexes for the venue-defined binary identity; it is type shape, not runtime policy."
 
 [[allowed]]
 path = "src/bolt_v3_evidence_identity.rs"
@@ -21178,9 +21194,281 @@ classification = "evidence_identity_validation_diagnostic"
 reason = "Stable fail-closed validation diagnostic; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "string"
+literal = '''b"bolt-v3-evidence-episode-v1"'''
+context = '''const EVIDENCE_EPISODE_ENCODING_TAG: &[u8] = b"bolt-v3-evidence-episode-v1";'''
+classification = "evidence_identity_encoding_schema"
+reason = "Versioned domain tag for the sealed canonical evidence-episode encoder; it frames durable identity bytes and is not trading policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
 kind = "number"
 literal = "0"
-context = '''self.last_recorded_blocked_strategy_input[index].rv_seen_mask & rv_bit != 0'''
-classification = "evidence_novelty_mask_empty_check"
-reason = "Zero tests whether the closed RV evidence novelty bit has already been observed; it is not a runtime policy threshold."
+context = '''EvidenceNegRiskMode::Disabled => 0,'''
+classification = "evidence_identity_encoding_discriminant"
+reason = "Canonical byte discriminant for the closed disabled neg-risk identity variant; it is encoding schema, not runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_identity.rs"
+kind = "number"
+literal = "1"
+context = '''EvidenceNegRiskMode::Enabled => 1,'''
+classification = "evidence_identity_encoding_discriminant"
+reason = "Canonical byte discriminant for the closed enabled neg-risk identity variant; it is encoding schema, not runtime policy."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "12"
+context = '''pub(super) const DOMAIN_CARDINALITY: u32 = 12;'''
+classification = "legacy_blocked_rv_novelty_domain"
+reason = "Closed six-gate-by-two-watermark diagnostic novelty domain required by #1354; it sizes a fixed u16 mask and does not configure trading."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "16"
+context = '''pub(super) const DOMAIN_CARDINALITY: u32 = 16;'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Closed cardinality of the sixteen entry-skip reason variants required by #1354; it describes a fixed u16 mask, not trading policy."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "1_u16"
+context = '''let bit = 1_u16 << index;'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Single-bit seed for the closed entry-skip monotone novelty mask; it is structural bitset arithmetic, not a runtime threshold."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "0"
+context = '''BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => 0,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "1"
+context = '''BoltV3EntrySkipReasonCategory::EntryGateBlocked => 1,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "2"
+context = '''BoltV3EntrySkipReasonCategory::EntryPricingBlocked => 2,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "3"
+context = '''BoltV3EntrySkipReasonCategory::NoSideSelected => 3,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "4"
+context = '''BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => 4,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "5"
+context = '''BoltV3EntrySkipReasonCategory::InstrumentIdMissing => 5,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "6"
+context = '''BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => 6,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "7"
+context = '''BoltV3EntrySkipReasonCategory::EntryPriceMissing => 7,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "8"
+context = '''BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => 8,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "9"
+context = '''BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => 9,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "10"
+context = '''BoltV3EntrySkipReasonCategory::QuantityNotPositive => 10,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "11"
+context = '''BoltV3EntrySkipReasonCategory::PositionContractInvalid => 11,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "12"
+context = '''BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => 12,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "13"
+context = '''BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => 13,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "14"
+context = '''BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => 14,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "15"
+context = '''BoltV3EntrySkipReasonCategory::Unclassified => 15,'''
+classification = "legacy_entry_skip_novelty_domain"
+reason = "Fixed bit index for a closed entry-skip diagnostic category; it cannot alter admission or trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "12"
+context = '''const DOMAIN_CARDINALITY: u32 = 12;'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Closed two-leg-by-six-bound diagnostic novelty domain required by #1354; it sizes a fixed u16 mask and does not configure trading."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "0"
+context = '''Leg::Yes => 0,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-row index for the closed YES leg diagnostic domain; it does not control quoting behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "1"
+context = '''Leg::No => 1,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-row index for the closed NO leg diagnostic domain; it does not control quoting behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "0"
+context = '''BoltV3RequoteThrottleBound::SubmitCommandWindow => 0,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "1"
+context = '''BoltV3RequoteThrottleBound::RestCallWindow => 1,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "2"
+context = '''BoltV3RequoteThrottleBound::MinInterval => 2,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "3"
+context = '''BoltV3RequoteThrottleBound::WindowCap => 3,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "4"
+context = '''BoltV3RequoteThrottleBound::OutOfOrderTs => 4,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "5"
+context = '''BoltV3RequoteThrottleBound::Overflow => 5,'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed bit-column index for a closed requote-throttle bound diagnostic; it does not configure the bound."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "1_u16"
+context = '''let bit = 1_u16 << bit_index;'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Single-bit seed for the closed requote-throttle monotone novelty mask; it is structural bitset arithmetic, not a runtime threshold."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "6"
+context = '''let bit_index = leg_index * 6 + bound_index;'''
+classification = "legacy_requote_throttle_novelty_domain"
+reason = "Fixed row width for six closed requote-throttle bound variants; it is bitset shape, not a runtime threshold."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+kind = "number"
+literal = "0"
+context = '''Self(AtomicU16::new(0))'''
+classification = "legacy_evidence_novelty_empty_seed"
+reason = "Zero initializes each process-lifetime monotone diagnostic mask with no observed states; it is fixed storage state, not runtime policy."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "number"
+literal = "0"
+context = '''Self(AtomicU16::new(0))'''
+classification = "legacy_evidence_novelty_empty_seed"
+reason = "Zero initializes the process-lifetime maker diagnostic mask with no observed states; it is fixed storage state, not runtime policy."

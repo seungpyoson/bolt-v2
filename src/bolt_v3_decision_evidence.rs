@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
@@ -3073,6 +3073,19 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
                 | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
         )
+}
+
+/// Sole runtime raw-file reader for semantic decision-evidence consumers.
+///
+/// Callers receive decoded lines but never a file handle, keeping open/read
+/// authority and the no-follow regular-file checks inside this module.
+pub(crate) fn read_decision_evidence_jsonl_lines(path: &Path) -> Result<Vec<String>> {
+    let file = open_regular_decision_evidence_file(path)
+        .context("failed to open regular file bolt-v3 decision evidence")?;
+    BufReader::new(file)
+        .lines()
+        .collect::<std::io::Result<Vec<_>>>()
+        .context("failed to read bolt-v3 decision evidence file")
 }
 
 fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {

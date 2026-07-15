@@ -2831,7 +2831,7 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         "an exit-decision evidence write failure must not propagate and block the exit: {result:?}"
     );
     assert!(
-        !strategy.last_recorded_exit_decision.is_empty(),
+        strategy.last_recorded_exit_decision.is_some(),
         "the dedupe key must still be set so the lost write is not retried in a tight loop"
     );
 }
@@ -3112,8 +3112,8 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
     );
     assert!(
-        !strategy.last_recorded_entry_skip.is_empty(),
-        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+        strategy.entry_skip_novelty.retained_cardinality() == 1,
+        "the reason bit must remain set so the lost write is not retried in a tight loop"
     );
 }
 
@@ -3456,7 +3456,7 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
 }
 
 #[test]
-fn autonomous_amendment_exit_evaluation_suppresses_large_a_b_a_oscillation() {
+fn autonomous_amendment_exit_evaluation_retains_one_current_state_under_large_oscillation() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     strategy
         .pricing
@@ -3468,7 +3468,7 @@ fn autonomous_amendment_exit_evaluation_suppresses_large_a_b_a_oscillation() {
         .realized_volatility_receipt
         .gate_result = BoltV3RvGateResult::RejectedStale;
 
-    for index in 0..100_000_u64 {
+    for index in 0..10_000_u64 {
         let decision = if index % 2 == 0 {
             &decision_a
         } else {
@@ -3486,11 +3486,45 @@ fn autonomous_amendment_exit_evaluation_suppresses_large_a_b_a_oscillation() {
         );
     }
 
-    let records = recorded_exit_evaluations(&evidence);
     assert_eq!(
-        records.len(),
-        2,
-        "large A-to-B-to-A oscillation must emit each finite exit outcome once"
+        usize::from(strategy.last_exit_evidence_outcome.is_some()),
+        1,
+        "large A-to-B-to-A oscillation must retain one state for the one open position"
+    );
+    assert_eq!(recorded_exit_evaluations(&evidence).len(), 10_000);
+}
+
+#[test]
+fn autonomous_amendment_exit_decision_retains_one_state_under_large_oscillation() {
+    let mut strategy = exit_evidence_strategy_with_open_position_using_writer(Arc::new(
+        RecordingDecisionEvidenceWriter,
+    ));
+    let decision_a = minimal_exit_submission_decision();
+    let mut decision_b = decision_a.clone();
+    decision_b.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING);
+
+    for index in 0..10_000_u64 {
+        let decision = if index % 2 == 0 {
+            &decision_a
+        } else {
+            &decision_b
+        };
+        strategy
+            .record_exit_decision_once(
+                1_300 + index,
+                ExitEvaluationTriggerContext::new(
+                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                    1_200,
+                    Some(1_210 + index),
+                ),
+                decision,
+            )
+            .unwrap();
+        assert!(strategy.last_recorded_exit_decision.is_some());
+    }
+    assert_eq!(
+        usize::from(strategy.last_recorded_exit_decision.is_some()),
+        1
     );
 }
 
@@ -3912,7 +3946,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     );
 
     for (index, decision) in decisions.iter().enumerate() {
-        strategy.last_recorded_exit_decision.clear();
+        strategy.last_recorded_exit_decision = None;
         strategy
             .record_exit_decision_once(
                 RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64,
@@ -4001,8 +4035,8 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         false,
     );
 
-    strategy.last_recorded_exit_decision.clear();
-    strategy.last_exit_evidence_outcome.clear();
+    strategy.last_recorded_exit_decision = None;
+    strategy.last_exit_evidence_outcome = None;
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy
         .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS + 1, trigger, &decision)
@@ -4335,7 +4369,7 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
         assert_eq!(strategy.exposure, exposure_before);
         assert!(recorded_exit_evaluations(&evidence).is_empty());
         assert_eq!(
-            strategy.last_exit_evidence_outcome.len(),
+            usize::from(strategy.last_exit_evidence_outcome.is_some()),
             1,
             "builder failure must preserve mark-before-failure flood protection"
         );
@@ -4565,7 +4599,7 @@ fn rv_clock_domain_amendment_apply_state(
 }
 
 #[test]
-fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
+fn legacy_entry_skip_mask_uses_reason_category_only() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = minimal_entry_submission_decision();
@@ -4582,27 +4616,65 @@ fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
                 None,
             )
-            .expect("each unseen RV category/presence bit should record");
+            .expect("entry-skip recording should remain non-aborting");
     }
 
     let events = evidence.events();
     let mask = rv_clock_domain_amendment_entry_mask(&events);
     assert_eq!(
         mask.count_ones(),
-        12,
-        "all twelve entry-skip RV bits must emit once"
+        1,
+        "volatile RV state must not expand the entry-skip novelty domain"
     );
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        12
+        1
+    );
+    assert_eq!(strategy.entry_skip_novelty.retained_cardinality(), 1);
+}
+
+#[test]
+fn legacy_edge_masks_have_exact_closed_domains_and_four_bytes_total() {
+    let entry = LegacyEntrySkipNoveltyMask::default();
+    let reasons = [
+        BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered,
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked,
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        BoltV3EntrySkipReasonCategory::NoSideSelected,
+        BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive,
+        BoltV3EntrySkipReasonCategory::InstrumentIdMissing,
+        BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache,
+        BoltV3EntrySkipReasonCategory::EntryPriceMissing,
+        BoltV3EntrySkipReasonCategory::QuantityRoundingFailed,
+        BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional,
+        BoltV3EntrySkipReasonCategory::QuantityNotPositive,
+        BoltV3EntrySkipReasonCategory::PositionContractInvalid,
+        BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported,
+        BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable,
+        BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
+        BoltV3EntrySkipReasonCategory::Unclassified,
+    ];
+    for reason in reasons {
+        assert!(entry.mark_once(reason));
+        assert!(!entry.mark_once(reason));
+    }
+    assert_eq!(entry.retained_cardinality(), 16);
+    assert_eq!(LegacyEntrySkipNoveltyMask::DOMAIN_CARDINALITY, 16);
+    assert_eq!(LegacyBlockedRvNoveltyMask::DOMAIN_CARDINALITY, 12);
+    assert_eq!(std::mem::size_of::<LegacyEntrySkipNoveltyMask>(), 2);
+    assert_eq!(std::mem::size_of::<LegacyBlockedRvNoveltyMask>(), 2);
+    assert_eq!(
+        std::mem::size_of::<LegacyEntrySkipNoveltyMask>()
+            + std::mem::size_of::<LegacyBlockedRvNoveltyMask>(),
+        4
     );
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits() {
+fn legacy_blocked_snapshot_mask_tracks_twelve_rv_bits() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = rv_clock_domain_amendment_blocked_decision();
@@ -4631,16 +4703,11 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
             .count(),
         12
     );
+    assert_eq!(strategy.blocked_rv_novelty.retained_cardinality(), 12);
 }
 
 #[test]
-fn autonomous_amendment_key_change_preserves_seen_rv_bits_across_a_b_a() {
-    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 4] = [
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
-    ];
+fn legacy_masks_suppress_large_a_b_a_cycles_without_outer_keys() {
     let rv_states = [
         (
             BoltV3RvGateResult::Accepted,
@@ -4655,54 +4722,42 @@ fn autonomous_amendment_key_change_preserves_seen_rv_bits_across_a_b_a() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
-    let mut now_ms = 1_200_u64;
-    // A -> B -> A records both semantic states once and keeps A suppressed when
-    // it returns within the same process episode.
-    for category in [
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-        BoltV3EntrySkipReasonCategory::NoSideSelected,
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-    ] {
-        for (gate, watermark) in rv_states {
-            rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
-            entry_strategy
-                .record_entry_skip_once(now_ms, &entry, category, None)
-                .expect("finite entry novelty should record only unseen states");
-            now_ms += 1;
-        }
+    for index in 0..100_000_u64 {
+        let category = if index % 2 == 0 {
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked
+        } else {
+            BoltV3EntrySkipReasonCategory::NoSideSelected
+        };
+        let (gate, watermark) = rv_states[index as usize % rv_states.len()];
+        rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
+        entry_strategy.active.market_id = Some(format!("volatile-market-{index}"));
+        entry_strategy
+            .record_entry_skip_once(
+                1_200 + index,
+                &entry,
+                category,
+                Some(format!("diag-{index}")),
+            )
+            .expect("entry-skip recording should remain non-aborting");
     }
     let entry_states = entry_evidence
         .events()
         .into_iter()
-        .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some((
-                skip.realized_vol_gate_result
-                    .expect("RV gate result must be present"),
-                skip.realized_vol_receive_watermark_ms.is_some(),
-            )),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(entry_states.as_slice(), &EXPECTED_STATES[..]);
+        .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
+        .count();
+    assert_eq!(entry_states, 2);
+    assert_eq!(entry_strategy.entry_skip_novelty.retained_cardinality(), 2);
 
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
     let mut blocked = rv_clock_domain_amendment_blocked_decision();
-    let original_market_id = blocked_strategy.active.market_id.clone();
-    let mut now_ms = 1_300_u64;
-    for market_id in [
-        original_market_id.clone(),
-        Some("<KEY_B>".to_string()),
-        original_market_id,
-    ] {
-        blocked_strategy.active.market_id = market_id;
-        for (gate, watermark) in rv_states {
-            rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
-            blocked_strategy
-                .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
-                .expect("finite blocked novelty should record only unseen states");
-            now_ms += 1;
-        }
+    for index in 0..100_000_u64 {
+        blocked_strategy.active.market_id = Some(format!("volatile-market-{index}"));
+        let (gate, watermark) = rv_states[index as usize % rv_states.len()];
+        rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
+        blocked_strategy
+            .record_blocked_entry_strategy_input_snapshot_once(101_200 + index, &blocked)
+            .expect("blocked-snapshot recording should remain available");
     }
     let blocked_states = blocked_evidence
         .events()
@@ -4717,11 +4772,21 @@ fn autonomous_amendment_key_change_preserves_seen_rv_bits_across_a_b_a() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(blocked_states.as_slice(), &EXPECTED_STATES[..]);
+    assert_eq!(
+        blocked_states.as_slice(),
+        &[
+            (BoltV3RvGateResult::Accepted, true),
+            (BoltV3RvGateResult::RejectedStale, true),
+        ]
+    );
+    assert_eq!(
+        blocked_strategy.blocked_rv_novelty.retained_cardinality(),
+        2
+    );
 }
 
 #[test]
-fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
+fn legacy_rv_mask_suppresses_repeats() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
@@ -4776,7 +4841,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     let blocked_events = blocked_evidence.events();
     assert_eq!(
         rv_clock_domain_amendment_entry_mask(&entry_events).count_ones(),
-        12
+        1
     );
     assert_eq!(
         rv_clock_domain_amendment_blocked_mask(&blocked_events).count_ones(),
@@ -4787,8 +4852,8 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        12,
-        "100,000 A-B-A oscillations must remain bounded to twelve entry records"
+        1,
+        "100,000 RV oscillations must remain bounded to one entry reason record"
     );
     assert_eq!(
         blocked_events
@@ -5072,7 +5137,7 @@ impl RvClockDomainBlockedKeyField {
     }
 }
 
-fn autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(
+fn autonomous_amendment_assert_blocked_payload_churn_does_not_reset_mask(
     field: RvClockDomainBlockedKeyField,
 ) {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -5102,8 +5167,8 @@ fn autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(
 
     assert_eq!(
         evidence.strategy_input_attempts(),
-        2,
-        "{field:?} must reach the writer for A and B but suppress restored A"
+        1,
+        "{field:?} must not reset the process-lifetime RV novelty mask"
     );
     let records = evidence
         .events()
@@ -5115,9 +5180,10 @@ fn autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(
         .collect::<Vec<_>>();
     assert_eq!(
         records.len(),
-        2,
-        "{field:?} must emit A and B exactly once across A-to-B-to-A"
+        1,
+        "{field:?} is payload only and must not create novelty"
     );
+    assert_eq!(strategy.blocked_rv_novelty.retained_cardinality(), 1);
     assert!(records.iter().all(|record| {
         record.realized_volatility_gate_result == Some(BoltV3RvGateResult::RejectedNotReady)
             && record
@@ -5126,7 +5192,7 @@ fn autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(
     }));
 }
 
-fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent() {
+fn rv_clock_domain_amendment_assert_aliased_blocked_payload_fields_are_preserved() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
     rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
@@ -5136,12 +5202,9 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
     let baseline = strategy
         .blocked_entry_strategy_input_evidence_snapshot_at(1_200, &decision)
         .expect("blocked snapshot should build");
-    let baseline_key = BlockedStrategyInputDedupeKey::from_snapshot(&baseline);
-
-    // Runtime construction aliases both serialized fields to configured_target_id,
-    // so the writer path cannot vary them independently. These are the only
-    // structural assertions: each changes exactly one serialized field to prove
-    // that dropping either field from the key would still be detected.
+    // Runtime construction aliases both serialized fields to configured_target_id.
+    // They remain independent serialized evidence fields even though neither is
+    // part of the conservative legacy novelty mask.
     let mut configured_target_changed = baseline.clone();
     configured_target_changed
         .configured_target_id
@@ -5151,9 +5214,8 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
         baseline.market_selection_ruleset_id
     );
     assert_ne!(
-        BlockedStrategyInputDedupeKey::from_snapshot(&configured_target_changed),
-        baseline_key,
-        "configured_target_id must independently remain part of the blocked key"
+        configured_target_changed.configured_target_id,
+        baseline.configured_target_id
     );
 
     let mut ruleset_changed = baseline.clone();
@@ -5165,14 +5227,13 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
         baseline.configured_target_id
     );
     assert_ne!(
-        BlockedStrategyInputDedupeKey::from_snapshot(&ruleset_changed),
-        baseline_key,
-        "market_selection_ruleset_id must independently remain part of the blocked key"
+        ruleset_changed.market_selection_ruleset_id,
+        baseline.market_selection_ruleset_id
     );
 }
 
 #[test]
-fn autonomous_amendment_existing_key_changes_preserve_rv_novelty() {
+fn autonomous_amendment_existing_key_changes_keep_guard_cardinality_constant() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
@@ -5186,7 +5247,38 @@ fn autonomous_amendment_existing_key_changes_preserve_rv_novelty() {
         .record_entry_skip_once(1_200, &entry, baseline_category, None)
         .unwrap();
 
-    let mut next_ms = 1_201_u64;
+    let baseline_payload = entry_evidence
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .expect("baseline entry-skip payload must remain serialized");
+    assert!(baseline_payload.spot_price.is_some());
+    assert!(baseline_payload.reference_current_price.is_some());
+    assert_eq!(
+        baseline_payload.realized_vol_gate_result,
+        Some(BoltV3RvGateResult::Accepted)
+    );
+
+    let original_interval_open = entry_strategy.active.interval_open;
+    entry_strategy.active.interval_open = Some(3_101.0);
+    assert!(
+        !entry_strategy
+            .record_entry_skip_once(1_201, &entry, baseline_category, None)
+            .unwrap(),
+        "tick-varying interval_open must not enter the entry-skip key"
+    );
+    entry_strategy.active.interval_open = original_interval_open;
+    assert!(
+        !entry_strategy
+            .record_entry_skip_once(1_202, &entry, baseline_category, None)
+            .unwrap(),
+        "restoring interval_open must not create a second serialized payload"
+    );
+
+    let mut next_ms = 1_203_u64;
     let mut record_entry = |strategy: &mut BinaryOracleEdgeTaker,
                             decision: &EntrySubmissionDecision,
                             category: BoltV3EntrySkipReasonCategory| {
@@ -5261,18 +5353,58 @@ fn autonomous_amendment_existing_key_changes_preserve_rv_novelty() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        8,
-        "the baseline plus seven semantic changes emit once; restored A states stay suppressed"
+        2,
+        "only the two observed reason categories may emit under volatile payload churn"
+    );
+    assert_eq!(
+        entry_strategy.entry_skip_novelty.retained_cardinality(),
+        2,
+        "arbitrary payload churn must not expand the closed reason domain"
     );
 
     for field in RvClockDomainBlockedKeyField::ALL {
-        autonomous_amendment_assert_blocked_key_field_preserves_rv_mask(field);
+        autonomous_amendment_assert_blocked_payload_churn_does_not_reset_mask(field);
     }
-    rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent();
+    rv_clock_domain_amendment_assert_aliased_blocked_payload_fields_are_preserved();
 }
 
 #[test]
-fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
+fn autonomous_amendment_distinct_raw_key_churn_retains_constant_edge_guard_state() {
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(RecordingDecisionEvidenceWriter),
+    );
+    let mut entry = minimal_entry_submission_decision();
+    rv_clock_domain_amendment_apply_state(
+        &mut entry,
+        BoltV3RvGateResult::RejectedNotReady,
+        Some(LocalReceiveMs::new(1_200)),
+    );
+    let blocked = rv_clock_domain_amendment_blocked_decision();
+
+    for index in 0..100_000_u64 {
+        strategy.active.market_id = Some(format!("raw-market-{index}"));
+        strategy
+            .record_entry_skip_once(
+                1_200 + index,
+                &entry,
+                BoltV3EntrySkipReasonCategory::Unclassified,
+                Some(format!("raw-blocker-{index}")),
+            )
+            .unwrap();
+        strategy
+            .record_blocked_entry_strategy_input_snapshot_once(11_200 + index, &blocked)
+            .unwrap();
+        assert_eq!(strategy.entry_skip_novelty.retained_cardinality(), 1);
+        assert_eq!(strategy.blocked_rv_novelty.retained_cardinality(), 1);
+    }
+
+    assert_eq!(strategy.entry_skip_novelty.retained_cardinality(), 1);
+    assert_eq!(strategy.blocked_rv_novelty.retained_cardinality(), 1);
+}
+
+#[test]
+fn legacy_masks_are_not_cleared_by_admission_or_unblocked_transitions() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut skip = minimal_entry_submission_decision();
@@ -5312,8 +5444,8 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        2,
-        "the admitted-entry reset site must clear both current key and RV novelty"
+        1,
+        "admission must not clear process-lifetime entry novelty"
     );
 
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -5324,7 +5456,7 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
         .unwrap();
     blocked_strategy
         .submit_admitted_entry_decision(1_200, minimal_entry_submission_decision())
-        .expect("non-RV-blocked early return should exercise the existing reset site");
+        .expect("non-RV-blocked early return should preserve the monotone mask");
     blocked_strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_201, &blocked)
         .unwrap();
@@ -5334,8 +5466,13 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
             .count(),
-        2,
-        "the left-RV-not-ready reset site must clear both current key and RV novelty"
+        1,
+        "leaving RV-not-ready must not clear process-lifetime blocked novelty"
+    );
+    assert_eq!(entry_strategy.entry_skip_novelty.retained_cardinality(), 1);
+    assert_eq!(
+        blocked_strategy.blocked_rv_novelty.retained_cardinality(),
+        1
     );
 }
 
@@ -5370,7 +5507,7 @@ fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
+fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_marks_seen() {
     let evidence =
         Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
@@ -5405,8 +5542,8 @@ fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
     strategy.active.market_id = Some("<KEY_B>".to_string());
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &b)
-        .expect("B must retry and emit after its failed atomic write");
-    assert_eq!(evidence.strategy_input_attempts(), 3);
+        .expect("B must remain suppressed after its failed atomic write");
+    assert_eq!(evidence.strategy_input_attempts(), 2);
     let records = evidence
         .events()
         .into_iter()
@@ -5415,27 +5552,16 @@ fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].realized_volatility_gate_result,
         Some(BoltV3RvGateResult::Accepted)
     );
     assert_eq!(records[0].realized_volatility_receive_watermark_ms, None);
-    assert_eq!(
-        records[1].realized_volatility_gate_result,
-        Some(BoltV3RvGateResult::RejectedStale)
-    );
-    assert_eq!(
-        records[1]
-            .realized_volatility_receive_watermark_ms
-            .map(LocalReceiveMs::value),
-        Some(1_234),
-        "emitted record must retain the exact raw watermark even though novelty uses presence"
-    );
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries() {
+fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_marks_seen() {
     let evidence =
         Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
@@ -5480,8 +5606,8 @@ fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries()
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &decision)
-        .expect("the failed new bit must remain unseen and retry on the same key");
-    assert_eq!(evidence.strategy_input_attempts(), 3);
+        .expect("the failed new bit must remain seen and suppressed");
+    assert_eq!(evidence.strategy_input_attempts(), 2);
 
     let recorded_states = evidence
         .events()
@@ -5498,10 +5624,7 @@ fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries()
         .collect::<Vec<_>>();
     assert_eq!(
         recorded_states,
-        vec![
-            (Some(BoltV3RvGateResult::Accepted), Some(1_200)),
-            (Some(BoltV3RvGateResult::RejectedStale), Some(1_234)),
-        ],
-        "only the committed bit and the successful retry may persist"
+        vec![(Some(BoltV3RvGateResult::Accepted), Some(1_200))],
+        "a failed non-recovery diagnostic write remains suppressed after its bit is claimed"
     );
 }

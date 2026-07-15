@@ -392,8 +392,8 @@ fn exit_block_reason_to_evidence(reason: &str) -> BoltV3ExitBlockedReason {
 /// with the same key produce the same RCA story, so only the first is recorded
 /// durably (subsequent identical ticks are suppressed). Deliberately excludes the
 /// client_order_id (re-minted per attempt) and timestamps so a per-tick flood
-/// collapses to one record. `Ord` lets it key a `BTreeMap` without a new import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// collapses to one record in the bounded current-state guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ExitOutcomeKey {
     pub(super) exit_decision: BoltV3ExitDecisionOutcome,
     pub(super) submission_blocked_reason: Option<&'static str>,

@@ -228,7 +228,7 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
 }
 
 #[test]
-fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
+fn maker_runtime_quote_suppresses_large_requote_payload_oscillation() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
     let mut maker = BinaryOracleMaker::new(
@@ -276,8 +276,8 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let throttles = writer.requote_throttles();
     assert_eq!(
         throttles.len(),
-        2,
-        "A-to-B-to-A oscillation must emit each finite requote-throttle state once"
+        1,
+        "family/action payload churn must not reset the conservative leg/bound novelty bit"
     );
     let throttle = &throttles[0];
     assert_eq!(throttle.strategy_id, "maker-strategy");
@@ -320,8 +320,8 @@ fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proc
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
-        .expect("one-submit budget fixture builds");
+    let mut budget = build_requote_budget_pair("40/00:01:00", 1, 500)
+        .expect("one-rest-call budget fixture builds");
     let submit_template = maker_limit_post_only_template();
 
     let outcome = maker.route_maker_runtime_quote(
@@ -355,6 +355,10 @@ fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proc
     assert_eq!(
         throttles[0].block_reason,
         BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted
+    );
+    assert_eq!(
+        throttles[0].bound_by,
+        BoltV3RequoteThrottleBound::RestCallWindow
     );
 
     let matching: Vec<(log::Level, String)> = logger

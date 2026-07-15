@@ -1,14 +1,18 @@
-//! Stable, non-temporal identity for pre-Capsule evidence episodes.
+//! Stable, non-temporal evidence-episode schema and canonical encoder.
 //!
-//! This type deliberately owns identity only. Novelty persistence, risk ordinals,
-//! fixed episode slots, retirement, and restart exact-once authority remain #1385.
+//! #1354 deliberately provides no production constructor or consumer. The future
+//! Capsule-owned bind-once Gamma authority supplies construction; risk ordinals,
+//! retirement, and restart exact-once authority remain outside this slice.
 
 use std::{error::Error, fmt};
+
+const EVIDENCE_EPISODE_ENCODING_TAG: &[u8] = b"bolt-v3-evidence-episode-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct NonEmptyEvidenceIdentity(String);
 
 impl NonEmptyEvidenceIdentity {
+    #[cfg(test)]
     fn new(field: &'static str, value: String) -> Result<Self, EvidenceIdentityError> {
         if value.trim().is_empty() {
             return Err(EvidenceIdentityError::Empty(field));
@@ -37,7 +41,8 @@ pub struct EvidenceOutcomeIdentity {
 }
 
 impl EvidenceOutcomeIdentity {
-    pub fn new(
+    #[cfg(test)]
+    fn new(
         outcome_index: u16,
         normalized_outcome: String,
         clob_token_id: String,
@@ -79,17 +84,19 @@ pub struct EvidenceMarketIdentity {
 }
 
 impl EvidenceMarketIdentity {
-    pub fn new(
+    #[cfg(test)]
+    fn new(
         gamma_market_id: String,
         condition_id: String,
         question_id: String,
         neg_risk_mode: EvidenceNegRiskMode,
         ordered_outcomes: [EvidenceOutcomeIdentity; 2],
     ) -> Result<Self, EvidenceIdentityError> {
-        if ordered_outcomes[0].outcome_index == ordered_outcomes[1].outcome_index {
-            return Err(EvidenceIdentityError::DuplicateOutcomeIndex(
+        if ordered_outcomes[0].outcome_index != 0 || ordered_outcomes[1].outcome_index != 1 {
+            return Err(EvidenceIdentityError::InvalidOrderedOutcomeIndexes([
                 ordered_outcomes[0].outcome_index,
-            ));
+                ordered_outcomes[1].outcome_index,
+            ]));
         }
         if ordered_outcomes[0].clob_token_id == ordered_outcomes[1].clob_token_id {
             return Err(EvidenceIdentityError::DuplicateClobTokenId);
@@ -140,7 +147,8 @@ pub struct EvidenceEpisodeId {
 }
 
 impl EvidenceEpisodeId {
-    pub fn new(
+    #[cfg(test)]
+    fn new(
         logical_strategy_id: String,
         logical_target_id: String,
         logical_venue_id: String,
@@ -179,12 +187,42 @@ impl EvidenceEpisodeId {
     pub const fn market(&self) -> &EvidenceMarketIdentity {
         &self.market
     }
+
+    /// Canonical, collision-resistant field framing for the future Capsule-owned
+    /// durable identity boundary. #1354 defines the encoder but has no production
+    /// constructor or consumer.
+    #[must_use]
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        encode_component(&mut encoded, EVIDENCE_EPISODE_ENCODING_TAG);
+        encode_component(&mut encoded, self.logical_strategy_id().as_bytes());
+        encode_component(&mut encoded, self.logical_target_id().as_bytes());
+        encode_component(&mut encoded, self.logical_venue_id().as_bytes());
+        encode_component(&mut encoded, self.market().gamma_market_id().as_bytes());
+        encode_component(&mut encoded, self.market().condition_id().as_bytes());
+        encode_component(&mut encoded, self.market().question_id().as_bytes());
+        encoded.push(match self.market().neg_risk_mode() {
+            EvidenceNegRiskMode::Disabled => 0,
+            EvidenceNegRiskMode::Enabled => 1,
+        });
+        for outcome in self.market().ordered_outcomes() {
+            encoded.extend_from_slice(&outcome.outcome_index().to_be_bytes());
+            encode_component(&mut encoded, outcome.normalized_outcome().as_bytes());
+            encode_component(&mut encoded, outcome.clob_token_id().as_bytes());
+        }
+        encoded
+    }
+}
+
+fn encode_component(encoded: &mut Vec<u8>, component: &[u8]) {
+    encoded.extend_from_slice(&(component.len() as u64).to_be_bytes());
+    encoded.extend_from_slice(component);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvidenceIdentityError {
     Empty(&'static str),
-    DuplicateOutcomeIndex(u16),
+    InvalidOrderedOutcomeIndexes([u16; 2]),
     DuplicateClobTokenId,
 }
 
@@ -192,8 +230,11 @@ impl fmt::Display for EvidenceIdentityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty(field) => write!(formatter, "evidence identity field `{field}` is empty"),
-            Self::DuplicateOutcomeIndex(index) => {
-                write!(formatter, "evidence outcome index `{index}` is duplicated")
+            Self::InvalidOrderedOutcomeIndexes(indexes) => {
+                write!(
+                    formatter,
+                    "evidence outcome indexes must be [0, 1], got {indexes:?}"
+                )
             }
             Self::DuplicateClobTokenId => {
                 formatter.write_str("evidence CLOB token identity is duplicated")
@@ -278,6 +319,35 @@ mod tests {
         )
         .unwrap();
         assert_ne!(changed_episode, baseline);
+        assert_ne!(
+            changed_episode.encode_canonical(),
+            baseline.encode_canonical()
+        );
+    }
+
+    #[test]
+    fn canonical_encoder_is_deterministic_and_length_delimited() {
+        let baseline = episode();
+        assert_eq!(baseline.encode_canonical(), episode().encode_canonical());
+
+        let ambiguous_left = EvidenceEpisodeId::new(
+            "ab".to_string(),
+            "c".to_string(),
+            "venue".to_string(),
+            baseline.market().clone(),
+        )
+        .unwrap();
+        let ambiguous_right = EvidenceEpisodeId::new(
+            "a".to_string(),
+            "bc".to_string(),
+            "venue".to_string(),
+            baseline.market().clone(),
+        )
+        .unwrap();
+        assert_ne!(
+            ambiguous_left.encode_canonical(),
+            ambiguous_right.encode_canonical()
+        );
     }
 
     #[test]
@@ -299,7 +369,23 @@ mod tests {
                 duplicate,
             )
             .expect_err("duplicate outcome indexes must fail"),
-            EvidenceIdentityError::DuplicateOutcomeIndex(0)
+            EvidenceIdentityError::InvalidOrderedOutcomeIndexes([0, 0])
+        );
+
+        let duplicate_token = [
+            EvidenceOutcomeIdentity::new(0, "up".to_string(), "token".to_string()).unwrap(),
+            EvidenceOutcomeIdentity::new(1, "down".to_string(), "token".to_string()).unwrap(),
+        ];
+        assert_eq!(
+            EvidenceMarketIdentity::new(
+                "market".to_string(),
+                "condition".to_string(),
+                "question".to_string(),
+                EvidenceNegRiskMode::Enabled,
+                duplicate_token,
+            )
+            .expect_err("duplicate token ids must fail"),
+            EvidenceIdentityError::DuplicateClobTokenId
         );
     }
 }

@@ -3,9 +3,15 @@ source_module = "src/bolt_v3_decision_evidence.rs"
 identity_module = "src/bolt_v3_evidence_identity.rs"
 closed_families = ["risk", "market", "system"]
 allowed_classifications = ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]
-allowed_suppression = ["unsuppressed", "finite-episode"]
+allowed_suppression = ["unsuppressed", "current-state-bounded", "legacy-monotone-mask", "finite-episode"]
 handler_sweep_roots = ["src/strategies", "src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"]
 non_evidence_per_tick_appenders = []
+producer_census_roots = ["src"]
+producer_census_exclusions = [
+  "src/bolt_v3_capital_admission_runtime_feed.rs::record_venue_truth_settlement::record_settlement::1",
+  "src/bolt_v3_venue_truth.rs::record_settlement::record_settlement::1",
+]
+reader_census_roots = ["src", "scripts"]
 
 [[family]]
 name = "risk"
@@ -45,63 +51,143 @@ allocations = [
 
 [[reader]]
 name = "read_latest_entry_decision_evidence_chain"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_latest_entry_decision_evidence_chain"
 record_kinds = ["strategy_input_snapshot", "order_intent", "admission_decision"]
 recovery_role = true
 
 [[reader]]
 name = "read_submit_reservation_recovery_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_submit_reservation_recovery_evidence"
 record_kinds = ["submit_reservation_metadata", "submit_reservation_fill"]
 recovery_role = true
 
 [[reader]]
 name = "read_exit_evaluation_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_exit_evaluation_evidence"
 record_kinds = ["exit_evaluation"]
 recovery_role = false
 
 [[reader]]
 name = "read_loss_governor_halt_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_loss_governor_halt_evidence"
 record_kinds = ["loss_governor_halt"]
 recovery_role = false
 
 [[reader]]
 name = "read_order_reject_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_order_reject_evidence"
 record_kinds = ["order_reject"]
 recovery_role = false
 
 [[reader]]
 name = "read_settlement_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_settlement_evidence"
 record_kinds = ["settlement"]
 recovery_role = false
 
 [[reader]]
+name = "read_settlement_evidence_records"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_settlement_evidence_records"
+record_kinds = ["settlement"]
+recovery_role = true
+
+[[reader]]
+name = "read_kind_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_kind_evidence"
+record_kinds = ["all"]
+recovery_role = true
+
+[[reader]]
+name = "runtime_read_decision_evidence_jsonl_lines"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_decision_evidence_jsonl_lines"
+record_kinds = ["all"]
+recovery_role = false
+
+[[reader]]
 name = "read_settlement_booking_error_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_settlement_booking_error_evidence"
 record_kinds = ["settlement_booking_error"]
 recovery_role = false
 
 [[reader]]
 name = "read_terminal_settlement_evidence"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_terminal_settlement_evidence"
 record_kinds = ["terminal_settlement"]
 recovery_role = false
 
 [[reader]]
 name = "read_terminal_settlement_keys_for_recovery_scope"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_terminal_settlement_keys_for_recovery_scope"
 record_kinds = ["terminal_settlement"]
 recovery_role = true
 
 [[reader]]
 name = "read_settlement_keys_for_recovery_scope"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_settlement_keys_for_recovery_scope"
 record_kinds = ["settlement"]
 recovery_role = true
 
 [[reader]]
 name = "read_settlement_booking_error_keys_for_recovery_scope"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_settlement_booking_error_keys_for_recovery_scope"
 record_kinds = ["settlement_booking_error", "terminal_settlement"]
 recovery_role = true
 
 [[reader]]
 name = "read_settlement_evidence_for_recovery_scope"
+path = "src/bolt_v3_decision_evidence.rs"
+symbol = "read_settlement_evidence_for_recovery_scope"
 record_kinds = ["settlement"]
 recovery_role = true
+
+[[reader]]
+name = "shadow_pnl_read_admitted_entry_chains"
+path = "src/shadow_pnl.rs"
+symbol = "read_admitted_entry_chains"
+record_kinds = ["strategy_input_snapshot", "order_intent", "admission_decision"]
+recovery_role = false
+
+[[reader]]
+name = "shadow_pnl_read_settlements"
+path = "src/shadow_pnl.rs"
+symbol = "read_settlements"
+record_kinds = ["settlement"]
+recovery_role = false
+
+[[reader]]
+name = "shadow_pnl_read_jsonl_lines"
+path = "src/shadow_pnl.rs"
+symbol = "read_jsonl_lines"
+record_kinds = ["strategy_input_snapshot", "order_intent", "admission_decision", "settlement"]
+recovery_role = false
+
+[[reader]]
+name = "v15_migrator_migrate_file_bytes"
+path = "scripts/migrate_bolt_v3_decision_evidence_to_v15.py"
+symbol = "migrate_file_bytes"
+record_kinds = ["all"]
+recovery_role = false
+
+[[reader]]
+name = "v15_migrator_plan_migrations"
+path = "scripts/migrate_bolt_v3_decision_evidence_to_v15.py"
+symbol = "plan_migrations"
+record_kinds = ["all"]
+recovery_role = false
 
 [[producer]]
 name = "strategy_input_snapshot_submit"
@@ -113,8 +199,8 @@ state_id = 144
 allocation = "strategy_input_pricing_blocker"
 classification = "event-keyed"
 handler_reachability = ["quote", "book", "timer", "index-price"]
-source_paths = ["entry_strategy_input_evidence_snapshot_at"]
-named_readers = ["read_latest_entry_decision_evidence_chain"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::submit_admitted_entry_decision::record_strategy_input_snapshot::1"]
+named_readers = ["read_latest_entry_decision_evidence_chain", "shadow_pnl_read_admitted_entry_chains", "shadow_pnl_read_jsonl_lines", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every submit-linked snapshot remains append-complete"
 dedupe_key_evidence = "non-empty client_order_id; no suppression"
 recovery_bearing = true
@@ -131,12 +217,12 @@ state_id = 145
 allocation = "strategy_input_pricing_blocker"
 classification = "state-observation"
 handler_reachability = ["quote", "book", "timer", "index-price"]
-source_paths = ["blocked_entry_strategy_input_evidence_snapshot_at"]
-named_readers = []
-repeat_semantics = "one record per semantic blocked state per process episode; A-to-B-to-A is suppressed"
-dedupe_key_evidence = "market/selection identity, blocker categories, availability, RV surface/blockers, normalized source status; no volatile observations"
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once::record_strategy_input_snapshot::1"]
+named_readers = ["read_latest_entry_decision_evidence_chain", "shadow_pnl_read_admitted_entry_chains", "shadow_pnl_read_jsonl_lines", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
+repeat_semantics = "process-lifetime monotone suppression over the six RV gate results and watermark-presence dimension; payload churn cannot reset a bit"
+dedupe_key_evidence = "one process-global private AtomicU16 mask with a closed 12-bit domain, compile-time u16 size proof, and no outer key or reset path"
 recovery_bearing = false
-suppression = "finite-episode"
+suppression = "legacy-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -149,8 +235,11 @@ state_id = 8
 allocation = "order_prepare_submit_fill_terminal"
 classification = "event-keyed"
 handler_reachability = ["quote", "timer"]
-source_paths = ["submit admission order construction"]
-named_readers = ["read_latest_entry_decision_evidence_chain"]
+call_sites = [
+  "src/bolt_v3_order_execution.rs::route_submit_with_sink::record_order_intent::1",
+  "src/bolt_v3_order_execution.rs::route_submit_with_sink::record_order_intent::2",
+]
+named_readers = ["read_latest_entry_decision_evidence_chain", "shadow_pnl_read_admitted_entry_chains", "shadow_pnl_read_jsonl_lines", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every distinct order intent remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"
 recovery_bearing = true
@@ -167,8 +256,15 @@ state_id = 0
 allocation = "admission_entry"
 classification = "event-keyed"
 handler_reachability = ["quote", "timer"]
-source_paths = ["submit admission"]
-named_readers = ["read_latest_entry_decision_evidence_chain"]
+call_sites = [
+  "src/bolt_v3_submit_admission.rs::admit_at::record_admission_decision::1",
+  "src/bolt_v3_submit_admission.rs::admit_at::record_admission_decision::2",
+  "src/bolt_v3_submit_admission.rs::admit_at::record_admission_decision::3",
+  "src/bolt_v3_submit_admission.rs::admit_at::record_admission_decision::4",
+  "src/bolt_v3_submit_admission.rs::evaluate_and_record_without_consuming_capacity::record_admission_decision::1",
+  "src/bolt_v3_submit_admission.rs::record_admission_decision::record_admission_decision::1",
+]
+named_readers = ["read_latest_entry_decision_evidence_chain", "shadow_pnl_read_admitted_entry_chains", "shadow_pnl_read_jsonl_lines", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every submit admission result remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"
 recovery_bearing = true
@@ -185,8 +281,15 @@ state_id = 1
 allocation = "admission_entry"
 classification = "no-named-reader"
 handler_reachability = ["timer"]
-source_paths = ["basket admission"]
-named_readers = []
+call_sites = [
+  "src/bolt_v3_basket_admission.rs::record_basket_decision::record_basket_admission_decision::1",
+  "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::1",
+  "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::2",
+  "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::3",
+  "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::4",
+  "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::5",
+]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "append-complete pending owner decision"
 dedupe_key_evidence = "none"
 recovery_bearing = false
@@ -203,8 +306,8 @@ state_id = 56
 allocation = "reconciliation_dependency"
 classification = "no-named-reader"
 handler_reachability = ["startup"]
-source_paths = ["capital admission rebuild"]
-named_readers = []
+call_sites = ["src/bolt_v3_submit_admission.rs::finish_capital_admission_rebuild::record_capital_admission_rebuild_audit::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every rebuild observation remains append-complete"
 dedupe_key_evidence = "none"
 recovery_bearing = true
@@ -221,8 +324,11 @@ state_id = 9
 allocation = "order_prepare_submit_fill_terminal"
 classification = "event-keyed"
 handler_reachability = ["quote", "timer"]
-source_paths = ["submit reservation creation"]
-named_readers = ["read_submit_reservation_recovery_evidence"]
+call_sites = [
+  "src/bolt_v3_submit_admission.rs::admit_at::record_submit_reservation_metadata::1",
+  "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_submit_reservation_metadata::1",
+]
+named_readers = ["read_submit_reservation_recovery_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every changing reservation record remains append-complete"
 dedupe_key_evidence = "submit_reservation_id event identity; no suppression"
 recovery_bearing = true
@@ -239,8 +345,8 @@ state_id = 10
 allocation = "order_prepare_submit_fill_terminal"
 classification = "event-keyed"
 handler_reachability = ["timer"]
-source_paths = ["submit reservation fill reconciliation"]
-named_readers = ["read_submit_reservation_recovery_evidence"]
+call_sites = ["src/bolt_v3_submit_admission.rs::apply_capital_admission_fill_update::record_submit_reservation_fill::1"]
+named_readers = ["read_submit_reservation_recovery_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every fill remains append-complete"
 dedupe_key_evidence = "trade_id event identity; no suppression"
 recovery_bearing = true
@@ -257,12 +363,12 @@ state_id = 146
 allocation = "strategy_input_pricing_blocker"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
-source_paths = ["record_entry_skip_once"]
-named_readers = []
-repeat_semantics = "one record per semantic state per market episode; A-to-B-to-A is suppressed"
-dedupe_key_evidence = "reason/blocker/market/availability/RV class; timestamps, prices, ages, counters excluded"
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once::record_entry_skip::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
+repeat_semantics = "process-lifetime monotone suppression over the closed 16-value reason-category domain; payload churn cannot reset a bit"
+dedupe_key_evidence = "one process-global private AtomicU16 mask with one bit per BoltV3EntrySkipReasonCategory, compile-time u16 size proof, and no outer key or reset path"
 recovery_bearing = false
-suppression = "finite-episode"
+suppression = "legacy-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -275,12 +381,12 @@ state_id = 32
 allocation = "exit_cancel_replacement"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
-source_paths = ["record_exit_decision_once"]
-named_readers = []
-repeat_semantics = "one record per semantic state per open-position episode; A-to-B-to-A is suppressed"
-dedupe_key_evidence = "market/position/forced-flat/outcome/block reason; timestamps, prices, ages, counters excluded"
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once::record_exit_decision::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
+repeat_semantics = "bounded current-state suppression only; restored A records again until AO-CAPSULE supplies stable episode identity"
+dedupe_key_evidence = "single Option guard over market/position/forced-flat/outcome/block reason"
 recovery_bearing = false
-suppression = "finite-episode"
+suppression = "current-state-bounded"
 owner_decision_required = false
 
 [[producer]]
@@ -293,12 +399,12 @@ state_id = 33
 allocation = "exit_cancel_replacement"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
-source_paths = ["record_exit_evaluation_evidence"]
-named_readers = ["read_exit_evaluation_evidence"]
-repeat_semantics = "one record per semantic outcome per open-position episode; submitted events stay append-complete"
-dedupe_key_evidence = "decision/block reason/RV gate; timestamps, prices, ages, counters excluded"
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_evaluation_evidence::record_exit_evaluation::1"]
+named_readers = ["read_exit_evaluation_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
+repeat_semantics = "one current outcome per live position; restored outcomes record again and submitted events stay append-complete"
+dedupe_key_evidence = "single Option guard for the one-position invariant; terminal close clears it"
 recovery_bearing = false
-suppression = "finite-episode"
+suppression = "current-state-bounded"
 owner_decision_required = false
 
 [[producer]]
@@ -311,8 +417,8 @@ state_id = 48
 allocation = "capacity_host"
 classification = "already-deduped"
 handler_reachability = ["quote", "timer"]
-source_paths = ["record_stale_loss_governor_halt"]
-named_readers = ["read_loss_governor_halt_evidence"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_stale_loss_governor_halt::record_loss_governor_halt::1"]
+named_readers = ["read_loss_governor_halt_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "existing bounded exponential sampling remains unchanged"
 dedupe_key_evidence = "stable halt reason/source; retry and elapsed fields excluded"
 recovery_bearing = false
@@ -329,8 +435,11 @@ state_id = 57
 allocation = "reconciliation_dependency"
 classification = "already-deduped"
 handler_reachability = ["timer"]
-source_paths = ["submit admission reject observer", "NT order reject observer"]
-named_readers = ["read_order_reject_evidence"]
+call_sites = [
+  "src/bolt_v3_order_reject_observer_feed.rs::on_order_event::record_order_reject::1",
+  "src/bolt_v3_submit_admission.rs::record_submit_admission_order_reject::record_order_reject::1",
+]
+named_readers = ["read_order_reject_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "existing bounded exponential sampling remains unchanged"
 dedupe_key_evidence = "stable reject source/reason/instrument/side; attempt id, retry, elapsed excluded"
 recovery_bearing = false
@@ -347,8 +456,8 @@ state_id = 11
 allocation = "order_prepare_submit_fill_terminal"
 classification = "no-named-reader"
 handler_reachability = ["timer"]
-source_paths = ["order and position lifecycle handlers"]
-named_readers = []
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::persist_order_lifecycle_record::record_order_lifecycle::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every evolving lifecycle update remains append-complete"
 dedupe_key_evidence = "none"
 recovery_bearing = true
@@ -365,12 +474,12 @@ state_id = 208
 allocation = "dependency_health"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
-source_paths = ["update_requote_throttle_edge"]
-named_readers = []
-repeat_semantics = "one record per semantic throttle state while blocked; A-to-B-to-A is suppressed"
-dedupe_key_evidence = "family/leg/action/block/bound; timestamps, budgets, counters excluded"
+call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge::record_requote_throttle::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
+repeat_semantics = "process-lifetime monotone suppression over two legs and six bound reasons; family/action payload churn cannot reset a bit"
+dedupe_key_evidence = "one process-global private AtomicU16 mask with a closed 12-bit leg/bound domain, compile-time u16 size proof, and no outer key or reset path"
 recovery_bearing = false
-suppression = "finite-episode"
+suppression = "legacy-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -383,8 +492,8 @@ state_id = 48
 allocation = "settlement_redemption"
 classification = "event-keyed"
 handler_reachability = ["timer"]
-source_paths = ["settlement booking"]
-named_readers = ["read_settlement_evidence", "read_settlement_keys_for_recovery_scope", "read_settlement_evidence_for_recovery_scope"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement::1"]
+named_readers = ["read_settlement_evidence", "read_settlement_evidence_records", "read_settlement_keys_for_recovery_scope", "read_settlement_evidence_for_recovery_scope", "shadow_pnl_read_settlements", "shadow_pnl_read_jsonl_lines", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every settlement update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
 recovery_bearing = true
@@ -401,8 +510,20 @@ state_id = 49
 allocation = "settlement_redemption"
 classification = "event-keyed"
 handler_reachability = ["timer"]
-source_paths = ["settlement booking failure"]
-named_readers = ["read_settlement_booking_error_evidence", "read_settlement_booking_error_keys_for_recovery_scope"]
+call_sites = [
+  "src/strategies/binary_oracle_edge_taker/mod.rs::retry_settlement_close_fetch_or_record_terminal_failure::record_settlement_booking_error::1",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::retry_settlement_close_fetch_or_record_terminal_failure::record_settlement_booking_error::2",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::retry_settlement_close_fetch_or_record_terminal_failure::record_settlement_booking_error::3",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::1",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::2",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::3",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::4",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::5",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::6",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement::record_settlement_booking_error::7",
+  "src/strategies/binary_oracle_edge_taker/mod.rs::record_missing_interval_end_settlement_booking_error::record_settlement_booking_error::1",
+]
+named_readers = ["read_settlement_booking_error_evidence", "read_settlement_booking_error_keys_for_recovery_scope", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every booking-error update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
 recovery_bearing = true
@@ -419,8 +540,8 @@ state_id = 50
 allocation = "settlement_redemption"
 classification = "event-keyed"
 handler_reachability = ["timer"]
-source_paths = ["terminal settlement lifecycle"]
-named_readers = ["read_terminal_settlement_evidence", "read_terminal_settlement_keys_for_recovery_scope", "read_settlement_booking_error_keys_for_recovery_scope"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::apply_terminal_settlement_transition::record_terminal_settlement::1"]
+named_readers = ["read_terminal_settlement_evidence", "read_terminal_settlement_keys_for_recovery_scope", "read_settlement_booking_error_keys_for_recovery_scope", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "every terminal settlement update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
 recovery_bearing = true
@@ -437,8 +558,8 @@ state_id = 32
 allocation = "authentication_network_provider"
 classification = "no-named-reader"
 handler_reachability = ["timer"]
-source_paths = ["venue truth capture"]
-named_readers = []
+call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_venue_truth_capture_failure::record_venue_truth_capture_failure::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "append-complete pending owner decision"
 dedupe_key_evidence = "none"
 recovery_bearing = false
@@ -455,8 +576,8 @@ state_id = 33
 allocation = "authentication_network_provider"
 classification = "no-named-reader"
 handler_reachability = ["timer"]
-source_paths = ["venue truth divergence"]
-named_readers = []
+call_sites = ["src/bolt_v3_submit_admission.rs::record_venue_truth_divergence_evidence::record_venue_truth_divergence::1"]
+named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
 repeat_semantics = "append-complete pending owner decision"
 dedupe_key_evidence = "none"
 recovery_bearing = false

@@ -18,6 +18,12 @@ from pathlib import Path
 
 import ci_provenance
 from ci_test_manifest import _mask_rust_non_code
+from rust_source_scanner import (
+    RUST_CLOSE_TO_OPEN,
+    RUST_OPEN_TO_CLOSE,
+    RustToken,
+    rust_tokens_and_delimiter_pairs,
+)
 from verify_bolt_v3_provider_leaks import production_text
 from verifier_io import require_nonempty
 
@@ -1478,51 +1484,8 @@ def binance_parser_identity_is_shadowed(masked: str) -> bool:
     return False
 
 
-@dataclasses.dataclass(frozen=True)
-class RustToken:
-    value: str
-    start: int
-    end: int
-
-
-RUST_TOKEN_PATTERN = re.compile(
-    r"""
-    r\#[A-Za-z_][A-Za-z0-9_]*
-    |[A-Za-z_][A-Za-z0-9_]*
-    |::|=>|->|<<=|>>=|\.\.=|\.\.\.|==|!=|<=|>=|&&|\|\|
-    |\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|\.\.
-    |\d(?:[A-Za-z0-9_]|\.(?!\.))*
-    |\S
-    """,
-    re.VERBOSE,
-)
-RUST_OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}"}
-RUST_CLOSE_TO_OPEN = {value: key for key, value in RUST_OPEN_TO_CLOSE.items()}
 GOVERNED_ASSERTION_MACROS = frozenset({"assert", "assert_eq", "assert_ne"})
 INERT_BUILTIN_LINT_ATTRIBUTES = frozenset({"allow", "warn", "deny", "forbid"})
-
-
-def rust_tokens_and_delimiter_pairs(
-    masked: str,
-) -> tuple[list[RustToken], dict[int, int]] | None:
-    tokens = [
-        RustToken(match.group(0), match.start(), match.end())
-        for match in RUST_TOKEN_PATTERN.finditer(masked)
-    ]
-    stack: list[tuple[int, str]] = []
-    pairs: dict[int, int] = {}
-    for index, token in enumerate(tokens):
-        if token.value in RUST_OPEN_TO_CLOSE:
-            stack.append((index, token.value))
-        elif token.value in RUST_CLOSE_TO_OPEN:
-            if not stack or stack[-1][1] != RUST_CLOSE_TO_OPEN[token.value]:
-                return None
-            opening_index, _ = stack.pop()
-            pairs[opening_index] = index
-            pairs[index] = opening_index
-    if stack:
-        return None
-    return tokens, pairs
 
 
 def binance_crate_root_attribute_is_inert(

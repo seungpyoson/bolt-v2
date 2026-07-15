@@ -3,6 +3,56 @@
 
 from __future__ import annotations
 
+import dataclasses
+import re
+
+
+@dataclasses.dataclass(frozen=True)
+class RustToken:
+    value: str
+    start: int
+    end: int
+
+
+RUST_TOKEN_PATTERN = re.compile(
+    r"""
+    r\#[A-Za-z_][A-Za-z0-9_]*
+    |[A-Za-z_][A-Za-z0-9_]*
+    |::|=>|->|<<=|>>=|\.\.=|\.\.\.|==|!=|<=|>=|&&|\|\|
+    |\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|\.\.
+    |\d(?:[A-Za-z0-9_]|\.(?!\.))*
+    |\S
+    """,
+    re.VERBOSE,
+)
+RUST_OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}"}
+RUST_CLOSE_TO_OPEN = {value: key for key, value in RUST_OPEN_TO_CLOSE.items()}
+
+
+def rust_tokens_and_delimiter_pairs(
+    masked: str,
+) -> tuple[list[RustToken], dict[int, int]] | None:
+    """Tokenize masked Rust and return balanced delimiter indexes."""
+
+    tokens = [
+        RustToken(match.group(0), match.start(), match.end())
+        for match in RUST_TOKEN_PATTERN.finditer(masked)
+    ]
+    stack: list[tuple[int, str]] = []
+    pairs: dict[int, int] = {}
+    for index, token in enumerate(tokens):
+        if token.value in RUST_OPEN_TO_CLOSE:
+            stack.append((index, token.value))
+        elif token.value in RUST_CLOSE_TO_OPEN:
+            if not stack or stack[-1][1] != RUST_CLOSE_TO_OPEN[token.value]:
+                return None
+            opening_index, _ = stack.pop()
+            pairs[opening_index] = index
+            pairs[index] = opening_index
+    if stack:
+        return None
+    return tokens, pairs
+
 
 def blank_preserving_newlines(text: str) -> str:
     return "".join("\n" if char == "\n" else " " for char in text)

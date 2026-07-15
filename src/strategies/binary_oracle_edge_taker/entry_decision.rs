@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicU16, Ordering},
+};
 
 use nautilus_model::{
     enums::OrderSide,
@@ -313,67 +316,91 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) submission_blocked_reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EntrySkipDedupeKey {
-    pub(super) reason_category: BoltV3EntrySkipReasonCategory,
-    pub(super) gate_blocked_by: Vec<BoltV3EntryBlockReason>,
-    pub(super) pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
-    pub(super) market_id: Option<String>,
-    pub(super) fast_venue_available: bool,
-    pub(super) reference_current_price_available: bool,
-    pub(super) fast_venue_incoherent: bool,
+#[derive(Debug, Default)]
+pub(super) struct LegacyBlockedRvNoveltyMask(AtomicU16);
+
+static BLOCKED_RV_NOVELTY: LegacyBlockedRvNoveltyMask = LegacyBlockedRvNoveltyMask::new();
+const _: [(); std::mem::size_of::<u16>()] = [(); std::mem::size_of::<LegacyBlockedRvNoveltyMask>()];
+
+impl LegacyBlockedRvNoveltyMask {
+    pub(super) const DOMAIN_CARDINALITY: u32 = 12;
+
+    const fn new() -> Self {
+        Self(AtomicU16::new(0))
+    }
+
+    pub(super) fn mark_once(
+        &self,
+        gate_result: BoltV3RvGateResult,
+        watermark_present: bool,
+    ) -> bool {
+        let bit = rv_gate_novelty_bit(gate_result, watermark_present);
+        debug_assert!(bit.trailing_zeros() < Self::DOMAIN_CARDINALITY);
+        self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_cardinality(&self) -> u32 {
+        self.0.load(Ordering::Relaxed).count_ones()
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EntrySkipDedupeState {
-    pub(super) current_key: EntrySkipDedupeKey,
-    pub(super) rv_seen_mask: u16,
+#[derive(Debug, Default)]
+pub(super) struct LegacyEntrySkipNoveltyMask(AtomicU16);
+
+static ENTRY_SKIP_NOVELTY: LegacyEntrySkipNoveltyMask = LegacyEntrySkipNoveltyMask::new();
+const _: [(); std::mem::size_of::<u16>()] = [(); std::mem::size_of::<LegacyEntrySkipNoveltyMask>()];
+
+impl LegacyEntrySkipNoveltyMask {
+    pub(super) const DOMAIN_CARDINALITY: u32 = 16;
+
+    const fn new() -> Self {
+        Self(AtomicU16::new(0))
+    }
+
+    pub(super) fn mark_once(&self, reason: BoltV3EntrySkipReasonCategory) -> bool {
+        let index = entry_skip_reason_index(reason);
+        debug_assert!(index < Self::DOMAIN_CARDINALITY);
+        let bit = 1_u16 << index;
+        self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_cardinality(&self) -> u32 {
+        self.0.load(Ordering::Relaxed).count_ones()
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BlockedStrategyInputSourceStateKey {
-    source_id: String,
-    enabled: bool,
-    counts_toward_quorum: bool,
-    status: String,
-    block_reason: Option<String>,
-    last_rejected_reason: Option<String>,
+pub(super) const fn process_blocked_rv_novelty() -> &'static LegacyBlockedRvNoveltyMask {
+    &BLOCKED_RV_NOVELTY
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BlockedStrategyInputDedupeKey {
-    configured_target_id: String,
-    market_selection_ruleset_id: String,
-    market_selection_outcome: String,
-    market_id: Option<String>,
-    up_instrument_id: Option<String>,
-    down_instrument_id: Option<String>,
-    price_to_beat_source: String,
-    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
-    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
-    selected_side: Option<String>,
-    fast_venue_name: Option<String>,
-    fast_venue_available: bool,
-    reference_current_price_source_id: Option<String>,
-    reference_current_price_available: bool,
-    reference_current_price_failed_over: Option<bool>,
-    fast_venue_incoherent: bool,
-    realized_volatility_surface_id: String,
-    realized_volatility_blockers: Vec<String>,
-    realized_volatility_source_states: Vec<BlockedStrategyInputSourceStateKey>,
-    realized_volatility_unknown_source_ids: Vec<String>,
+pub(super) const fn process_entry_skip_novelty() -> &'static LegacyEntrySkipNoveltyMask {
+    &ENTRY_SKIP_NOVELTY
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BlockedStrategyInputDedupeState {
-    pub(super) current_key: BlockedStrategyInputDedupeKey,
-    pub(super) rv_seen_mask: u16,
+const fn entry_skip_reason_index(reason: BoltV3EntrySkipReasonCategory) -> u32 {
+    match reason {
+        BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => 0,
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked => 1,
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked => 2,
+        BoltV3EntrySkipReasonCategory::NoSideSelected => 3,
+        BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => 4,
+        BoltV3EntrySkipReasonCategory::InstrumentIdMissing => 5,
+        BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => 6,
+        BoltV3EntrySkipReasonCategory::EntryPriceMissing => 7,
+        BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => 8,
+        BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => 9,
+        BoltV3EntrySkipReasonCategory::QuantityNotPositive => 10,
+        BoltV3EntrySkipReasonCategory::PositionContractInvalid => 11,
+        BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => 12,
+        BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => 13,
+        BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => 14,
+        BoltV3EntrySkipReasonCategory::Unclassified => 15,
+    }
 }
 
-pub(super) const fn rv_gate_novelty_bit(
-    gate_result: BoltV3RvGateResult,
-    watermark_present: bool,
-) -> u16 {
+const fn rv_gate_novelty_bit(gate_result: BoltV3RvGateResult, watermark_present: bool) -> u16 {
     let gate_index: u32 = match gate_result {
         BoltV3RvGateResult::Accepted => 0,
         BoltV3RvGateResult::MissingSnapshot => 1,
@@ -385,52 +412,6 @@ pub(super) const fn rv_gate_novelty_bit(
     let watermark_index = if watermark_present { 1 } else { 0 };
     let bit_index = gate_index * 2 + watermark_index;
     1_u16 << bit_index
-}
-
-impl BlockedStrategyInputDedupeKey {
-    pub(super) fn from_snapshot(snapshot: &BoltV3StrategyInputEvidenceSnapshot) -> Self {
-        let mut realized_volatility_source_states = snapshot
-            .realized_volatility_source_diagnostics
-            .iter()
-            .map(|diagnostic| BlockedStrategyInputSourceStateKey {
-                source_id: diagnostic.source_id.clone(),
-                enabled: diagnostic.enabled,
-                counts_toward_quorum: diagnostic.counts_toward_quorum,
-                status: diagnostic.status.clone(),
-                block_reason: diagnostic.block_reason.clone(),
-                last_rejected_reason: diagnostic.last_rejected_reason.clone(),
-            })
-            .collect::<Vec<_>>();
-        realized_volatility_source_states
-            .sort_by(|left, right| left.source_id.cmp(&right.source_id));
-
-        Self {
-            configured_target_id: snapshot.configured_target_id.clone(),
-            market_selection_ruleset_id: snapshot.market_selection_ruleset_id.clone(),
-            market_selection_outcome: snapshot.market_selection_outcome.clone(),
-            market_id: snapshot.market_id.clone(),
-            up_instrument_id: snapshot.up_instrument_id.clone(),
-            down_instrument_id: snapshot.down_instrument_id.clone(),
-            price_to_beat_source: snapshot.price_to_beat_source.clone(),
-            gate_blocked_by: snapshot.gate_blocked_by.clone(),
-            pricing_blocked_by: snapshot.pricing_blocked_by.clone(),
-            selected_side: snapshot.selected_side.clone(),
-            fast_venue_name: snapshot.fast_venue_name.clone(),
-            fast_venue_available: snapshot.fast_venue_available,
-            reference_current_price_source_id: snapshot.reference_current_price_source_id.clone(),
-            reference_current_price_available: snapshot.reference_current_price_available,
-            reference_current_price_failed_over: snapshot.reference_current_price_failed_over,
-            fast_venue_incoherent: snapshot.fast_venue_incoherent,
-            realized_volatility_surface_id: snapshot.realized_volatility_surface_id.clone(),
-            realized_volatility_blockers: snapshot.realized_volatility_blockers.clone(),
-            realized_volatility_source_states,
-            realized_volatility_unknown_source_ids: snapshot
-                .realized_volatility_unknown_source_rejections
-                .keys()
-                .cloned()
-                .collect(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

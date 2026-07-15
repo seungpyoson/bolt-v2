@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt::{self, Display, Formatter, Write as FmtWrite},
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::Write,
     path::Path,
 };
 
@@ -16,7 +16,7 @@ use crate::bolt_v3_decision_evidence::{
     BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_ORDER_INTENT_RECORD_KIND,
     BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
     BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionOutcome, BoltV3OrderIntentKind,
-    BoltV3SubmitIntentKind,
+    BoltV3SubmitIntentKind, read_decision_evidence_jsonl_lines,
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -381,19 +381,15 @@ fn read_settlements(path: &Path) -> Result<Vec<ShadowSettlementEvidence>> {
 }
 
 fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    BufReader::new(file)
-        .lines()
+    read_decision_evidence_jsonl_lines(path)?
+        .into_iter()
         .enumerate()
         .filter_map(|(index, line)| {
             let line_number = index + SHADOW_PNL_LINE_NUMBER_BASE;
-            match line {
-                Ok(line) if line.trim().is_empty() => None,
-                Ok(line) => Some(Ok((line_number, line))),
-                Err(error) => Some(Err(anyhow!(
-                    "failed to read line {line_number} in {}: {error}",
-                    path.display()
-                ))),
+            if line.trim().is_empty() {
+                None
+            } else {
+                Some(Ok((line_number, line)))
             }
         })
         .collect()

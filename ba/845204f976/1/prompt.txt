@@ -1,0 +1,978 @@
+generate a review prompt for the pr
+
+---
+
+GPT: PR #1380 Review — chore: refresh NautilusTrader v1.230 pin
+
+Reviewer source: Claude Code CLI (interactive session). Configured model (runtime-provided): claude-fable-5 (Fable 5). Range reviewed: 17bdf952f → 7549b223b (33 files, +389/−418), read-only.
+
+Findings
+
+F1 — HIGH (evidence gap, not a code defect): exact-head CI never completed; the pin's test proof has not executed
+
+- File/line: CI at head 7549b223b (runs 29373677575 CI, 29373677558 Backtester CI, 29373677599 Coverage Enforcer)
+- Evidence: Five jobs have been in_progress for ~14 hours (started 2026-07-14 22:39–22:42Z): build, clippy, nextest archive, bvs-test archive, coverage-enforcer. The nextest archive job is stuck on step 19 "Pack root binary sidecars from archive build" on self-hosted runner gr1w2yn5…; steps "Run Binance SBE timestamp proof from nextest archive" and "Run nextest archive partitions" are still pending. No failures exist — nothing downstream of compile has produced a result at all.
+- Impact: This PR's entire claim is compile/test compatibility with the new pin. Compilation is proven (check-aarch64 green), and the pin census is mechanically proven (source-fence green, which now hard-requires verify_bolt_v3_boundary_evidence.py). But the Binance SBE receive-timestamp proof — the test that validates the fork's central patch — and every nextest/bvs-test partition are unexecuted at this head. Runtime behavior of the NT 0.60 migration is not confirmed.
+- Fix: Re-run the three stalled workflow runs (the runner appears hung, not the code). The PR's own merge requirement ("exact-head ready-PR CI must be green") already blocks merge until this resolves; treat any red that emerges as a fresh review round.
+
+F2 — MEDIUM: governed doctrine doc still claims a pin two generations stale, outside the census fence's coverage
+
+- File/line: docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:8 (also :126)
+- Evidence: At head: "Last NT pin compatibility verified rev: 7c2aafb30fb143069c915a3f2057bb12174405f6" — that's the v1.227.0 pin, superseded twice (by afc014a5, now d636f17). Pre-existing (the #1367 slice missed it too), but this PR's declared scope is exactly "refresh the governed … evidence for the new revision," and this is a governed doc making a current-state pin claim.
+- Impact: A second home for the pin fact that the census fence doesn't scan, so it silently drifts every pin change — a reader gets a false "last verified" revision. Violates one-home-per-fact.
+- Fix (class): Delete the rev claim from the doctrine doc and point to the single owner (runtime-contracts.md nautilus_trader_revision), or add this surface to verify_bolt_v3_boundary_evidence.py so stale pin claims in governed docs fail the fence.
+
+F3 — LOW: hermetic Polymarket fixture provenance is pinned to the v1.227 fork rev; drift vs the live pin is undetectable
+
+- File/line: tests/fixtures/nt_polymarket_query_post_order_params_7c2aafb.txt:2, asserted by tests/config_parsing.rs:2704
+- Evidence: The fixture records PostOrderParams extracted at rev 7c2aafb3; the test asserts the fixture's own recorded revision, not parity with the current pin (d636f17). Two pin generations have passed since extraction.
+- Impact: If NT's Polymarket PostOrderParams/postOnly serialization changed between v1.227 and v1.230, this evidence test stays green while attesting stale source. Evidence decay, pre-existing.
+- Fix: Regenerate the fixture from d636f17 in the pin slice, and (class fix) have the fixture test compare its recorded rev against the census EXPECTED_NT_REV so pin bumps force regeneration.
+
+F4 — LOW: entry-gate reason string claims strategy-core registration but now probes the actor core
+
+- File/line: src/strategies/binary_oracle_edge_taker/mod.rs:7134 (DataActor::trader_id(self).is_none() → ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED), same pattern at current_instrument (:4686)
+- Evidence: NT 0.60 made StrategyCore::trader_id pub(crate) (pinned source crates/trading/src/strategy/core.rs:300), forcing the switch. Trader::add_strategy registers the strategy core + portfolio atomically inside registration (crates/system/src/trader.rs:537–549), so the states can't diverge in production; an actor-only-registered harness would pass this gate but fail loud at order_factory.
+- Impact: Narrow semantic mismatch between the probe and the blocked-reason string; fail-loud, not fail-open. No action strictly required.
+- Fix: None blocking. If NT later exposes a public strategy-core registration probe, prefer it here.
+
+Verification summary
+
+- Dependency integrity — VERIFIED. Both manifests move every nautilus-* dep to d636f17; both locks show all nautilus crates at 0.60.0 from that rev (root 25 refs, BVS 27), zero stale afc014a5 anywhere at head. Non-nautilus lock deltas are semver-compatible transitive bumps only (anyhow, log, rustls, sysinfo, uuid, bytes); nautilus-plugin/libloading/tabled_derive left the graph via an upstream dep-edge removal (the plugin crate still exists in v1.230, just unreferenced). BVS bytes =1.12.0 matches the disclosed minimum; the root graph independently floats to 1.12.1, which is the pre-existing policy split.
+- Fork lineage — VERIFIED via GitHub API. d636f17 = official v1.230.0 (8160730c, tag peeled) + exactly one commit, touching only Binance adapter files (SBE 3:5 consts/HTTP request, symbol-status decode, spot/data.rs+parse.rs receive-clock/ts_init, binary fixture) — matching the declared patch set. Docs' branch claim pin/v1.230.0-sbe-3-5-ts-init confirmed pointing at the pinned SHA.
+- NT 0.60 migration — code-reviewed clean; runtime proof pending (F1). Every adaptation I checked is forced by the pinned upstream source: Portfolio::new arg order, write_to_parquet(&[T]), cache accessors returning owned values, builder .build() → Result (mapped to loud errors/expect, never swallowed), get_event_order/position_topic renames, config() renames (NT 0.60 added DataActor::config), StrategyNative bounds for order_factory. Order-producing maker tests all use full StrategyCore registration with Portfolio; actor-only registration is confined to the four lifecycle/timer tests and its helper's doc comment says so explicitly.
+- RuntimeStrategy — sound. The seal (private module, blanket-only impl) makes external impl RuntimeStrategy impossible for non-Strategy/DataActor types; Box<dyn RuntimeStrategy> remains object-safe with a new test proving both bound and boxed usage. Dropping Strategy + DataActor from the dyn surface was forced (not dyn-compatible in 0.60) and no consumer called those methods through the box — runtime registration goes through concrete Trader::add_strategy.
+- Backtesting compatibility — fail-closed and disclosed. The selector-free fallback function is deleted with zero leftovers; the charset validator now rejects non-ASCII on every id surface at both preflight and NT-config build, with the test flipped to expect_err. The PR body discloses the migration impact accurately.
+- Governance — clean. No design document in the PR; no out-of-scope changes (every rename/signature change traces to the pin); all 8 census surfaces updated plus ledger/status-map, and the census fence is now a hard-required static fence in run_fences.py (this closes the "census un-wired in CI" gap from the #1354 R7 review). No open review threads; no duplicate same-SHA runs masking results.
+
+Verdict
+
+APPROVE — on the committed code. No code defects found; F2–F4 are documentation/evidence-hygiene items. Per your instruction I'm treating gates separately from defects, so state it plainly: merge remains blocked by the PR's own requirements — exact-head CI is stalled and the Binance SBE timestamp proof plus all test partitions have not run at 7549b223b (F1). The three hung runs need a re-run, and green results at this exact head are required before this approval means anything operationally.
+Kimi: 
+   Findings
+
+   Critical
+
+   None.
+
+   High
+
+   None.
+
+   Medium
+
+   1. RuntimeStrategy public API contract is silently narrowed
+
+   • File/line: src/strategies/registry.rs:48–64
+   • Evidence: The trait definition changed from:
+     ```rust
+       pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
+     ```
+     to:
+     ```rust
+       mod runtime_strategy_sealed { ... }
+       pub trait RuntimeStrategy: Component + std::fmt::Debug + runtime_strategy_sealed::Sealed {}
+     ```
+     (src/strategies/registry.rs:60). The blanket impl at line 62 still applies only to T: Strategy +
+     DataActor + Component + Debug, but those bounds are no longer part of the public trait signature.
+   • Impact: Generic callers can no longer rely on RuntimeStrategy implying Strategy + DataActor, and
+     Box<dyn RuntimeStrategy> / BoxedStrategy no longer exposes Strategy/DataActor methods through the
+     trait object. This is an undisclosed weakening of the public API contract, even though the sealed
+     marker correctly restricts implementers.
+   • Fix / verification: Either restore Strategy + DataActor to the public trait definition while keeping
+     the sealed marker:
+     ```rust
+       pub trait RuntimeStrategy: Strategy + DataActor + Component + Debug +
+     runtime_strategy_sealed::Sealed {}
+     ```
+     (the original combination was object-safe), or explicitly document the intentional narrowing in the
+     PR body/docs and add a BoxedStrategy test that exercises the intended available surface.
+
+   Low
+
+   2. Unused StrategyNative import in binary oracle edge taker
+
+   • File/line: src/strategies/binary_oracle_edge_taker/mod.rs:22
+   • Evidence: use nautilus_trading::{..., StrategyNative, nautilus_strategy}; is present, but
+     StrategyNative is not referenced anywhere in the module (no StrategyNative:: calls or bounds). It is
+     used in the sibling orders.rs and in bolt_v3_order_execution.rs, but not here.
+   • Impact: Dead import that will produce unused_imports warnings and may fail a deny(warnings) or
+     strict clippy gate.
+   • Fix / verification: Remove StrategyNative from the import list in
+     src/strategies/binary_oracle_edge_taker/mod.rs.
+
+   3. register_maker_at_runtime_now is now lifecycle-only but keeps a full-registration name
+
+   • File/line: tests/bolt_v3_binary_oracle_maker_runtime.rs:1777–1806
+   • Evidence: register_maker_at_runtime_now now delegates to
+     register_maker_at_runtime_now_with_quote_timer_handler, which calls
+     DataActorNative::core_mut().register(...) with only trader_id, clock, and cache — no portfolio and
+     no order-factory initialization. The new full-registration helper is
+     register_maker_at_runtime_now_for_order_factory (tests/bolt_v3_binary_oracle_maker_runtime.rs:1809).
+   • Impact: The helper name implies the same full runtime registration it performed before the NT 0.60
+     migration, which is misleading and risks future tests using it for order-factory-requiring
+     scenarios.
+   • Fix / verification: Rename register_maker_at_runtime_now to something like
+     register_maker_at_runtime_now_lifecycle_only and update the four lifecycle/timer call sites
+     (tests/bolt_v3_binary_oracle_maker_runtime.rs:1836, 1879, 1923, 1966).
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Verification summary
+
+   • Dependency integrity: Both Cargo.toml files and both Cargo.lock files pin every nautilus-* crate to
+     d636f17604cdbddc28ad40e0e15720e2d19bf860 (NautilusTrader 0.60.0). The fork commit has the official
+     v1.230.0 release commit 8160730c7c550480b0a439fb11086a4c4de15f0b as its sole parent, and the diff
+     from that parent to the fork head contains only Binance Spot SBE 3:5 / symbol-status / receive-clock
+     files plus one binary fixture — consistent with the PR disclosure.
+   • NT 0.60 API adaptations: All ownership/borrowing changes (write_to_parquet(&...)), builder .build()
+     error handling, Portfolio::new argument order, cache.instrument/order API changes,
+     DataActor::trader_id/actor_id disambiguation, and StrategyNative usage in order execution are
+     migration-consistent. Order-producing maker tests use register_maker_for_order_factory /
+     register_maker_strategy_core, which create a Portfolio and call
+     StrategyNative::strategy_core_mut(...).register(...). Actor-only registration is limited to
+     lifecycle/timer tests.
+   • Backtesting compatibility: Non-ASCII catalog instrument IDs now fail closed with
+     ManifestError::UnsupportedInstrumentIdCharset; the PR body accurately discloses this breaking
+     change.
+   • Local non-compile gates: just source-fence-static, python3
+     scripts/verify_bolt_v3_boundary_evidence.py, just fmt-check, and just deny all pass locally (deny
+     emits duplicate-crate warnings but exits clean).
+   • Exact-head CI: Not green at 7549b223ba65c4fb5007ae8ef48d93e0e469a370. Pending/in-progress checks
+     include clippy, build, source-fence, coverage-enforcer, bvs-clippy, and bvs-test archive.
+     mergeStateStatus is BLOCKED; the required reviewer sp-reviewer is requested but has not approved
+     (reviews only show a COMMENTED review from greptile-apps).
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   Verdict
+
+   REQUEST CHANGES — code finding #1 (silent RuntimeStrategy API narrowing) needs resolution or explicit
+   disclosure, and the remaining exact-head CI gates plus required code-owner approval must be satisfied
+   before merge.
+GLM: I now have a complete picture. Let me compile the final review.
+Adversarial Review: PR #1380 — chore: refresh NautilusTrader v1.230 pin
+Reviewer source: Interactive opencode CLI agent (not a CI-configured reviewer).
+Configured model: glm-5.2 (system prompt model ID zai-coding-plan/glm-5.2; matches ci/ai-review.toml [glm] model = "glm-5.2").
+Range reviewed: 17bdf952..7549b223 (9 commits, 33 files, +389/-418).
+Findings
+No findings (Critical, High, Medium, or Low).
+No code defects, governance violations, undisclosed behavior changes, or weakened fail-closed guarantees were identified in the committed range. Details below.
+Verification Summary
+1. Dependency integrity — PASS
+Check	Evidence
+Root Cargo.toml pin	All 22 NT crate entries point to d636f17604cdbddc28ad40e0e15720e2d19bf860. Zero occurrences of old rev afc014a5.
+BVS Cargo.toml pin	All 11 NT crate entries point to same rev. Zero old rev occurrences.
+Lock coherence	Both Cargo.lock files resolve NT crates to 0.60.0 at the pinned source. bytes pin =1.12.0 in BVS manifest matches BVS lock (1.12.0); root lock has 1.12.1 as unconstrained transitive — coherent.
+Fork base	GitHub API confirms fork commit d636f17 has official v1.230.0 release commit 8160730c7c550480b0a439fb11086a4c4de15f0b as its sole parent. The annotated tag v1.230.0 dereferences to this commit.
+Fork scope	seungpyoson/nautilus_trader compare API shows the fork diff touches only crates/adapters/binance/** (12 files: SBE schema 3:5, symbol-status, receive-clock ownership, test fixture). No unrelated NT changes.
+Transitive deps	Non-NT lock changes (anyhow, log, rustls, sysinfo, uuid patch bumps; libloading/tabled_derive/nautilus-plugin removal) are all consequences of the NT 0.59→0.60 graph shift. No unexpected major bumps.
+2. NT 0.60 migration correctness — PASS
+Adaptation	Verification
+cache.instrument(id).cloned() → cache.instrument(&id)	NT 0.60 returns owned InstrumentAny; ref-arg signature. Correct at all 4 call sites in edge taker + maker. .as_ref() used where recover_from_instrument takes &InstrumentAny.
+cache.order_owned(&id) → cache.order(&id)	Renamed/merged in NT 0.60. Both call sites in edge taker updated.
+cache.position_id(&id) == Some(&pos.position_id) → Some(pos.position_id)	NT 0.60 returns owned PositionId (Copy via Ustr). Correct.
+self.core.trader_id() → DataActor::trader_id(self)	Method moved to DataActor trait. Fully-qualified to disambiguate. DataActor imported at mod.rs:9.
+self.core.actor_id() → DataActor::actor_id(self)	Same migration. Updated in stub_runtime_strategy.rs.
+self.core.cache_rc() → self.cache_rc()	Moved to DataActorNative; import added in shared_fixture.rs.
+core_mut().order_factory() → StrategyNative::order_factory() / self.strategy.order_factory()	Moved to StrategyNative trait. Bound widened to S: Strategy + StrategyNative + ?Sized in bolt_v3_order_execution.rs. StrategyNative import in orders.rs:11 brings order_factory() into scope for self.core.order_factory() calls.
+Portfolio::new(cache, clock, None) → Portfolio::new(clock, cache, None)	Arg order swap in NT 0.60. Updated in both maker test and edge taker fixture.
+.build() infallible → .build() returning Result	Production paths propagate via ?/.context()/.map_err(ManifestError::InvalidNtConfig). Test paths use .expect() with descriptive invariant messages. Consistent pattern.
+get_event_orders_topic → get_event_order_topic	Singular rename in NT 0.60. Updated at all call sites (3 test files). Zero old-name occurrences remain.
+write_to_parquet(owned, …) → write_to_parquet(&owned, …)	NT 0.60 takes &[T]. Updated at all call sites across BVS crate.
+HurstVpinDirectionalConfig::new(...) → .builder().build()	NT 0.60 builder pattern. Updated in runner.rs and test.
+config() → maker_config() / complete_set_config()	NT 0.60 Strategy trait defines config(), causing collision. Renamed to disambiguate Bolt config accessors. All callers updated (maker_config() used at bolt_v3_binary_oracle_maker_runtime.rs:1753).
+Order-producing maker tests: register_maker_for_order_factory and register_maker_at_runtime_now_for_order_factory both delegate to register_maker_strategy_core, which calls StrategyNative::strategy_core_mut(maker).register(trader_id, clock, cache, portfolio) — full 4-arg registration with Portfolio and OrderFactory. The order-producing test maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow was correctly switched from lifecycle-only register_maker_at_runtime_now to register_maker_at_runtime_now_for_order_factory.
+Actor-only registration: register_maker_at_runtime_now delegates to register_maker_at_runtime_now_with_quote_timer_handler, which uses the 3-arg core_mut().register(trader_id, clock, cache) lifecycle-only path. The remaining 3 callers (market resolution, on_stop reset, overflow guard tests) are lifecycle/on_start tests that do not produce orders.
+3. RuntimeStrategy contract — PASS
+The sealed marker is effective:
+- runtime_strategy_sealed::Sealed is in a private module — external crates cannot implement it.
+- The blanket impl impl<T> Sealed for T where T: Strategy + DataActor + Component + Debug is the only path to Sealed.
+- The blanket impl impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + Debug is the only path to RuntimeStrategy.
+- Therefore, only types satisfying all four NT bounds can implement RuntimeStrategy. Non-strategy/non-data-actor components are excluded.
+Object safety: RuntimeStrategy: Component + Debug + Sealed. Debug is object-safe, Sealed has no methods (trivially object-safe), and Component is confirmed object-safe by the new test runtime_strategy_blanket_impl_remains_object_safe_for_nt_strategy which constructs BoxedStrategy and dispatches component_id().
+The visible supertrait surface changed (removed Strategy + DataActor from the public bounds), but the semantic contract is preserved through the sealed blanket impl. No callers dispatch Strategy/DataActor methods through Box<dyn RuntimeStrategy> (verified — zero occurrences).
+4. Backtesting compatibility — PASS
+The non-ASCII catalog-instrument-ID rejection is fail-closed: validate_catalog_instrument_id_charset now rejects any character outside [A-Za-z0-9._-] (previously only checked ASCII characters, allowing non-ASCII to pass to the unfiltered-query fallback). The unfiltered fallback (catalog_input_requires_unfiltered_nt_query_for_encoded_directory) was removed because NT 0.60 requires every BacktestDataConfig to carry an instrument/bar selector. The test non_ascii_catalog_input_fails_closed_without_valid_nt_selector confirms the rejection.
+PR body accurately discloses: "BVS validation fails closed until that migration is complete because NautilusTrader 0.60 requires every data config to select instrument_id, instrument_ids, or bar_types."
+No other undisclosed behavior changes: all code-level changes are NT 0.60 API adaptations within the dependency compatibility boundary.
+5. Repository governance — PASS
+Rule	Status
+NO HARDCODES	EXPECTED_NT_REV in verifier scripts is a test assertion constant (existing pattern, both scripts updated consistently). NT rev in docs/naming-audit YAML is evidence text. All consistent with the single Cargo.toml pin.
+NO DUAL PATHS	Single NT fork revision across both Cargo graphs. Single bytes pin source in BVS Cargo.toml.
+NO DEBTS	No TODOs, FIXMEs, or "fix later" added. No unpinned deps introduced.
+Strategy-intent boundaries	No strategy submit mechanics added; execution routing remains in bolt_v3_order_execution.rs.
+Source-fence evidence	scripts/verify_bolt_v3_boundary_evidence.py updated to expect the new rev.
+Scope discipline	Single declared scope (NT pin refresh). PR body states "Remaining accepted scope: None."
+Design document	Present in intermediate commits (d5ca63d08, b967b735e) but absent from final head diff — cleaned up before finalization. No design doc in the committed PR range.
+6. Evidence and merge readiness — PARTIAL (gating, not defects)
+Check	State
+bvs-fmt, deny, check-aarch64, ci-policy, bvs-ci-policy, detector, nextest fingerprint	PASS
+clippy, build, bvs-clippy, bvs-test archive, nextest archive, source-fence, coverage-enforcer	PENDING (CI in progress, no failures observed)
+Code-owner approval (U_kgDOEZMFhA)	Not yet received. Review requested from sp-reviewer. Only greptile-apps (bot) has commented.
+Pending CI and missing code-owner approval are governance gates, not code defects. They must clear before merge per AGENTS.md merge mechanics.
+Verdict
+APPROVE (pending code-owner approval and exact-head CI completion).
+No code defects, governance violations, or undisclosed behavior changes identified in the committed range. The NT 0.60 migration adaptations are correct, the RuntimeStrategy seal is effective and object-safe, the non-ASCII catalog rejection is properly fail-closed and disclosed, and the fork is verified as a clean v1.230.0 base with only declared Binance patches. Merge readiness depends on CI completion and code-owner approval, which are external to this code review.
+Grok: Corrected Adversarial Review — PR #1380
+
+Reviewer source: Interactive Grok Build CLI adversarial review (session-local; not a CI ai-review.toml deliverable)
+Model: Grok 4.5 (xAI)
+CI config models (not this review): glm-5.2, kimi-k2.7-code, claude-opus-4-8
+Range: 17bdf952… → 7549b223… (read-only)
+
+───
+
+Correction
+
+The earlier Critical finding on self.core.order_factory() is withdrawn.
+
+At pin d636f176…, NT implements StrategyNative for StrategyCore itself:
+
+impl StrategyNative for StrategyCore {
+    fn strategy_core(&self) -> &StrategyCore { self }
+    fn strategy_core_mut(&mut self) -> &mut StrategyCore { self }
+}
+
+StrategyNative::order_factory is a default method on that trait. With StrategyNative in scope (as in orders.rs, edge_taker/mod.rs, and mechanical_probe_strategy.rs), self.core.order_factory() is valid method resolution, not a missing inherent method.
+Evidence: bvs-clippy on exact head 7549b223 completed success (~6m), so the BVS probe path type-checks.
+
+───
+
+Findings
+
+Critical
+
+None.
+
+High
+
+None.
+
+Medium
+
+None.
+
+Low
+
+1. Historical doctrine still states NT v1.227.0 pin
+
+• File / line: docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:125
+• Evidence: “Verified Evidence” still says Cargo.toml` pins NT to release `v1.227.0` (`7c2aafb3…`). Governed pin surfaces in this PR were updated (runtime contracts, status map, naming audit, boundary verifier, both Cargo graphs). Boundary census does not require this doctrine file.
+• Impact: Possible operator confusion if the doctrine is read as current pin authority. Not a runtime or CI gate failure under current verifiers.
+• Recommended fix: Mark as a dated historical snapshot, or refresh to d636f176… / v1.230.0-based fork for consistency.
+
+───
+
+Verification summary (unchanged positives)
+
+┌─────────────────┬───────────────────────────────────────────────────────────────────┐
+│ Area            │ Result                                                            │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ Pins            │ Root + BVS: all nautilus-* → 0.60.0 @                             │
+│                 │ d636f17604cdbddc28ad40e0e15720e2d19bf860. Locks coherent. BVS     │
+│                 │ bytes = "=1.12.0" as disclosed.                                   │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ Fork            │ Sole parent 8160730c… (official v1.230.0). Ahead by 1 commit:     │
+│                 │ Binance SBE 3:5 / symbol-status / receive-clock only.             │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ NT 0.60         │ Catalog borrows, builder Result + InvalidNtConfig, non-ASCII      │
+│ adaptations     │ fail-closed + test, Portfolio ctor order, topic renames, cache    │
+│                 │ ownership, StrategyNative on execution, maker registration split  │
+│                 │ (full StrategyCore+Portfolio for order tests; actor-only for      │
+│                 │ lifecycle/timer) — correct.                                       │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ RuntimeStrategy │ Private sealed marker; object-safe Box<dyn RuntimeStrategy>;      │
+│                 │ blanket still requires Strategy+DataActor+Component.              │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ Design doc      │ Added then deleted; not in final tree.                            │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ PR body         │ Accurately discloses non-ASCII catalog migration and remaining    │
+│                 │ live-capital blockers.                                            │
+├─────────────────┼───────────────────────────────────────────────────────────────────┤
+│ Exact-head CI   │ Still incomplete: build / root clippy / source-fence / nextest    │
+│                 │ archives / coverage still pending. bvs-clippy green; deny /       │
+│                 │ policy / AI reviews green. Treat remaining CI and code-owner      │
+│                 │ approval as merge gates, not additional code defects found in the │
+│                 │ diff.                                                             │
+└─────────────────┴───────────────────────────────────────────────────────────────────┘
+
+───
+
+Verdict
+
+APPROVE
+
+One Low docs drift only; no Critical/High/Medium code defects in the committed range. Merge still requires green exact-head ready-PR CI and required code-owner approval per repo policy.
+
+---
+
+make the fixes
+
+---
+
+generate a review prompt for the pr
+
+---
+
+Claude: 
+PR #1380 Review — Round 2
+
+Reviewer source: Claude Code CLI (interactive session, direct review). Configured model (runtime-provided): claude-fable-5 (Fable 5). Range reviewed: 17bdf952f3e9422c6957b88556dbb4f145046754..3585adb2afea035142c95223e215981051167555 — head verified equal to the expected SHA via the GitHub API before review. Files/lines: 39 files, +915/−485. Full-PR scope re-reviewed; the R1 delta (9 files) received line-level scrutiny, and I confirmed Cargo.toml/Cargo.lock (both graphs), crates/, and all of src/ are byte-identical to the R1-reviewed head 7549b223b, so the R1 verification of those surfaces carries forward.
+
+Findings
+
+Medium
+
+- M1 — The capability ledger records a phantom NT surface produced by a scanner tokenizer defect.
+  - File/line: tests/fixtures/bolt_v3_iv/capability-ledger.toml (entry nt.crates.data.src.option_chains.manager.fn, symbol = "Fn"); root cause in src/bolt_v3_iv/capability.rs public_symbols() (prefix loop, ~line 704).
+  - Evidence: I reproduced the scan. crates/data/src/option_chains/manager.rs:333 in pinned d636 is pub const fn is_bootstrapped(...). The scanner's prefix loop uses continue (inner loop) with no longest-match/break, so the line matches both "pub const fn " (→ is_bootstrapped) and "pub const " (→ synthetic token fn). Because the file path contributes option+chain terms, the artifact survives the anchor filter — my emulation produces this exact candidate. The elsewhere-in-suite test whole_checkout_scan_handles_public_const_functions_as_named_surfaces asserts the intent that synthetic fn surfaces must not exist; it only passes there because that fixture's path carries no anchor terms. The ledger also mislabels the symbol as "Fn" when the extracted token is fn (cosmetic — validation keys on surface_id).
+  - Impact: A committed evidence artifact asserts a "supported, reviewed" NT capability surface that does not exist. The gate stays fail-closed (this is an extra entry, not missing coverage), but the ledger's integrity as an audit record is compromised, and any pub-const-fn in an option/greeks-anchored file will keep minting phantom .fn surfaces on future pin bumps.
+  - Required fix: Class fix in public_symbols() — break after the first (longest) matching prefix — then delete the .fn entry. Acceptable as an immediate follow-up rather than blocking this pin slice, since the scanner is deliberately untouched here; if deferred, it needs tracking.
+- M2 — PR body Scope omits two lasting scope disclosures added by the review-gap fixes.
+  - File/line: PR #1380 body (Scope section).
+  - Evidence: The body is unchanged since the previous head. It does not mention (a) the 40-entry capability-ledger closure — 30 new "supported" IV/options capability classifications against v1.230 — or (b) the Polymarket fixture regeneration and the new fixture-revision-vs-Cargo.lock parity check. The #1375 stable-body policy explicitly permits "lasting scope/behavior disclosures" in bodies while banning head SHAs and transient CI status; both items are lasting scope, not receipts.
+  - Impact: The declared scope under-represents what merges; a reader auditing the merge record won't learn the PR expanded the reviewed capability envelope.
+  - Required fix: One body edit adding two Scope bullets (no SHAs, no CI status — compliant with the stable-body rule).
+
+Low
+
+- L1 — Residual pin-claim homes remain outside the census.
+  - File/line: docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md §12 ("current branch contains a dedicated NT pin-bump compatibility slice for … d636f17…"), docs/bolt-v3/2026-04-28-source-grounded-status-map.md rows 46 and the summary bullet.
+  - Evidence: NON_CARGO_PIN_SURFACES at head covers runtime-contracts, schema, doctrine, naming ledger, both verifier scripts, and the fixture — but not these two documents, which carry current-authority claims naming the pin.
+  - Impact: These lines will silently go stale on the next pin bump, exactly the failure mode the doctrine line exhibited before this PR fixed it. (Values are correct today.)
+  - Required fix/verification: Add anchored patterns for these two surfaces to the census, or reword the claims to reference the single owner instead of embedding the SHA.
+
+Merge gates (separate from code findings — no failure evidence exists):
+- Exact-head CI at 3585adb2: green — actionlint, check-aarch64, clippy, test, nextest archive (including the "Run Binance SBE timestamp proof" step, success), nextest fingerprint/reuse, source-fence, deny, detector, ci-policy, cache-persistence audit, bvs-clippy/fmt/detect/ci-policy, all three AI-review checks. Still running at review time: build, bvs-test archive, coverage-enforcer (started ~23:39Z, ~40 min elapsed — normal duration, no stall signature yet; I've armed a monitor and will report when they complete). BVS runtime proof of the backtesting changes rests on bvs-test archive, so it is the load-bearing pending job.
+- Approval: reviewDecision = REVIEW_REQUIRED — no code-owner approval; the only review on record is a COMMENTED from greptile-apps at an older head. Review threads: 0 total, 0 unresolved.
+
+Verification summary
+
+- Dependency/fork integrity — VERIFIED (unchanged from R1, files byte-identical). Both manifests and both locks resolve every nautilus-* crate to 0.60.0 at d636f17… (root 25 refs, BVS 27); zero stale revs in authoritative surfaces. Fork = official v1.230.0 (8160730c, tag peeled) + exactly one commit touching only Binance adapter files (SBE 3:5 consts/HTTP, symbol-status, receive-timestamp ownership, fixture). Non-NT lock changes are cargo re-resolution side effects only: patch bumps (anyhow 1.0.103, log 0.4.33, rustls 0.23.41, sysinfo 0.39.6, uuid 1.23.4, bytes 1.12.x) and nautilus-plugin/libloading/tabled_derive leaving the graph via an upstream dependency-edge removal (the plugin crate still exists in v1.230, unreferenced).
+- NT 0.60 migration — VERIFIED against pinned source; runtime-proven by green nextest at exact head. All adaptations forced by upstream: Portfolio::new(clock, cache, cfg) order (types distinct — compile-enforced), write_to_parquet(&[T]), owned cache accessors, builder .build()→Result mapped to loud context/expect/typed ManifestError::InvalidNtConfig (nothing swallowed), get_event_order/position_topic renames, config() renames (NT 0.60 added DataActor::config). Order-producing maker tests use full StrategyCore registration with Portfolio + OrderFactory (register_maker_strategy_core); actor-only registration is now explicitly named *_lifecycle_only and confined to the four lifecycle/timer tests.
+- RuntimeStrategy — VERIFIED. Private runtime_strategy_sealed module + blanket-only Sealed impl makes external non-Strategy/DataActor implementations impossible; Box<dyn RuntimeStrategy> object-safety is proven by the new test and by all consumers (registry build path uses Component only; runtime registration goes concrete through Trader::add_strategy). I am not recommending restoring Strategy + DataActor as dyn supertraits. The StrategyNative imports are load-bearing (self.core.order_factory() resolves via NT 0.60's impl StrategyNative for StrategyCore) and exact-head clippy is green.
+- Capability ledger — CLOSURE REPRODUCED INDEPENDENTLY. I re-implemented the scanner faithfully (including its multi-prefix tokenization) and ran it over the pinned d636 checkout: 1,454 anchored candidates; validated against the base ledger → exactly 47 errors / 40 unique IDs, matching the stated prior failing set 1:1; against the head ledger → 0 errors. The 7 duplicate occurrences are Cap'n Proto Reader+Builder same-name accessors plus the prefix double-match. The 40 additions are 30 supported + 10 exact not_iv_options, zero duplicates, zero omissions/extras, zero classification/engine-mapping rule changes (81/35 rules identical to base), and the scanner file is untouched. All 40 (path, symbol) pairs exist in pinned source. All 30 supported entries resolve engine owners: capnp Greeks/IV accessors and GreeksConvention conversions → iv_model_data_api/iv_option_metadata_api, BusPayloadType → iv_msgbus_topic, greeks helper → iv_derived_helper, option identifiers/instruments → iv_option_series_id/iv_option_instrument, option-chain additions → iv_option_chain_manager. One entry is a scanner artifact (M1).
+- Pin census and fixtures — VERIFIED. Doctrine header now carries compatibility rev d636 with the full-audit rev 56a4382 deliberately separate (and a test enforcing that separation). The schema's five qsize provenance claims all cite d636, and I verified all three #[builder(default = 100_000)] defaults in pinned crates/live/src/node/config.rs (lines 121, 194, 473). Census now enforces doctrine, schema, naming audit, runtime contracts, both verifier files, and the Polymarket fixture with per-pattern exactly-one anchored match — rejecting stale, missing, duplicate-decoy, and misplaced claims while ignoring unanchored historical revisions; new negative fixtures cover each class. Polymarket fixture: revision, path, SHA-256 (39c2ae4e… — recomputed by me against pinned source, exact match), and both extracted ranges (130–137, 529–547 — byte-compared, exact match) verified; the Rust test now compares the fixture's declared revision with cargo_pinned_nt_revision(), which parses the compiled-in Cargo.lock — the fixture can no longer silently outlive a pin bump.
+- Backtesting behavior — VERIFIED (unchanged from R1). Non-ASCII catalog IDs fail closed via charset validation covering every id surface at preflight and config build; the selector-free fallback function is deleted with zero references remaining; the behavior change is accurately disclosed in the PR body.
+- Governance/scope — clean except M1/M2/L1. No design document in the PR; no TODO/FIXME added; no dual paths; no unpinned dependencies; no verifier weakening (census strictly strengthened; scanner untouched). The review-gap fixes changed no production runtime behavior — the delta since the prior head touches only docs, scripts, tests, and fixtures, and src/ is byte-identical. Historical snapshots (docs/bolt-v3/research/nt-pin-change/, specs, doctrine audit rev) are correctly distinguished from current-authority claims — with the L1 residue noted.
+- Exact-head CI and approval — partially green, pending completion. Everything that has finished is green, including the load-bearing SBE timestamp proof and full nextest partitions at this exact head. build, bvs-test archive, and coverage-enforcer are still running (monitor armed); code-owner approval is outstanding; zero review threads.
+
+Verdict
+
+APPROVE — on the committed code. No code defects block this pin slice; M1, M2, and L1 are follow-up-grade (M1's class fix belongs in a small scanner PR; M2 is a one-time body edit permitted by the stable-body policy). Stated separately: merge remains gated on the three still-running exact-head jobs finishing green — bvs-test archive is the one that runtime-proves the BVS changes — and on the required code-owner approval, which does not yet exist.
+
+✻ Brewed for 14m 2s
+
+※ recap: Reviewing PR #1380 (NautilusTrader v1.230 pin refresh) round 2: code approved, three follow-up findings, nothing blocking. Now waiting on a monitor for the last three CI jobs at head 3585adb2; next step is reporting whether they finish green. (disable recaps in /config)
+
+⏺ Monitor event: "PR #1380 exact-head CI runs (build/bvs-test/coverage) completion at 3585adb2"
+
+⏺ Monitor "PR #1380 exact-head CI runs (build/bvs-test/coverage) completion at 3585adb2" stream ended
+
+The monitor fired — all three runs completed green. Verifying job-level conclusions and that the head hasn't moved before reporting:
+
+  Ran 1 shell command, wrote 2 memories
+
+Exact-head CI update for PR #1380: all three pending runs completed green at 3585adb2 — the CI merge requirement is now fully satisfied.
+
+Verified at job level, with the head unmoved:
+- Primary CI (29377958666): build success — every job green, including the earlier-confirmed nextest archive with the Binance SBE timestamp proof step.
+- Backtester CI (29377958647): bvs-test archive success and backtester-gate success — this was the load-bearing job runtime-proving the BVS non-ASCII fail-closed change and the NT 0.60 catalog/builder adaptations. (bvs-test issue-789 skipped is its normal conditional lane.)
+- Coverage Enforcer (29377958692): success.
+
+The review verdict stands: APPROVE on code, with the three non-blocking follow-ups from my report (scanner tokenizer artifact behind the .fn ledger entry, two missing PR-body scope bullets, and the two residual uncensused pin-claim homes in the contract ledger and status map).
+
+The only remaining merge gate is the required code-owner approval — reviewDecision is still REVIEW_REQUIRED, with zero open review threads. Per the PR's own merge requirements, that approval must come after this final push, and the merge must go through the governed queue.
+GLM:I have now completed a thorough review of the full range. Let me compile the final output.
+Adversarial Review: PR #1380 — chore: refresh NautilusTrader v1.230 pin
+Reviewer source: Interactive opencode CLI agent (not a CI-configured reviewer).
+Exact configured model: glm-5.2 (system prompt model ID zai-coding-plan/glm-5.2; matches ci/ai-review.toml [glm] model = "glm-5.2").
+Range reviewed: 17bdf952f3e9422c6957b88556dbb4f145046754..3585adb2afea035142c95223e215981051167555 (10 commits, 39 files, +915/-485).
+Head verified: 3585adb2afea035142c95223e215981051167555 matches PR headRefOid. New commit vs prior review: 3585adb2a (9 files: +526/-67).
+Findings
+Critical
+None.
+High
+None.
+Medium
+None.
+Low
+None.
+No code defects, governance violations, evidence integrity issues, undisclosed behavior changes, or weakened fail-closed guarantees were identified in the committed range.
+Verification Summary
+1. Dependency and fork integrity — PASS
+Check	Evidence
+Root Cargo.toml / Cargo.lock	All 22 NT manifest entries and all NT lockfile packages resolve to d636f17604cdbddc28ad40e0e15720e2d19bf860.
+BVS Cargo.toml / Cargo.lock	All 11 NT manifest entries and all NT lockfile packages resolve to same rev.
+Stale rev in authoritative surfaces	rg for afc014a5, 7c2aafb3, 6be5a509 across all 4 Cargo files: zero matches.
+Fork base	GitHub API confirms d636f176 parent = 8160730c7c550480b0a439fb11086a4c4de15f0b (sole parent), which is the official v1.230.0 release commit (annotated tag v1.230.0 dereferences to it).
+Fork scope	GitHub compare API: diff touches only crates/adapters/binance/** (12 files: SBE schema 3:5, symbol-status, receive-clock ownership, test fixture). No unrelated changes.
+Non-NT lockfile changes	anyhow 1.0.102→1.0.103, bytes 1.11.1→1.12.x, log 0.4.32→0.4.33, rustls 0.23.40→0.23.41, sysinfo 0.39.3→0.39.6, uuid 1.23.3→1.23.4; libloading, tabled_derive, nautilus-plugin removed. All are transitive consequences of NT 0.59→0.60 graph shift.
+2. NT 0.60 migration correctness — PASS
+Prior review range (17bdf952..7549b223) verified all API adaptations: ownership/cache-access changes, builder Result handling, Portfolio::new arg-order swap, topic renames (get_event_orders_topic→get_event_order_topic), parquet borrows (write_to_parquet(&data)), StrategyNative/DataActorNative trait-method resolution. Order-producing tests use full 4-arg StrategyCore::register with Portfolio + OrderFactory; actor-only registration (3-arg) limited to lifecycle/timer tests. All errors propagated via ?/.context()/.map_err() — none swallowed.
+New commit adds no production code changes — only docs, tests, scripts, fixtures (git diff 7549b223b..3585adb2a --stat confirms zero src/ changes). Maker test renames (register_maker_at_runtime_now→register_maker_at_runtime_now_lifecycle_only) are pure clarity improvements with no behavioral change.
+3. RuntimeStrategy contract — PASS
+Verified in prior review: sealed marker in private runtime_strategy_sealed module prevents external non-Strategy/non-DataActor implementations; blanket impl impl<T> Sealed for T where T: Strategy + DataActor + Component + Debug is the sole path. Box<dyn RuntimeStrategy> confirmed object-safe by test runtime_strategy_blanket_impl_remains_object_safe_for_nt_strategy (dispatches component_id() through vtable). bvs-clippy passes at exact head, confirming no unused-import warnings on StrategyNative imports.
+4. Capability-ledger closure — PASS
+Check	Evidence
+New entries count	Exactly 40 new [[surfaces]] entries added (0 removed).
+Classification breakdown	30 supported, 10 not_iv_options — matches the expected 40-ID closure.
+Duplicates	`sort
+Key entries validated against d636 source	BusPayloadType (41 hits in msgbus/message.rs), OptionGreeks (18 in option_chain.rs), BlackScholesGreeksResult (16 in greeks.rs), Cap'n Proto option_greeks/get_mark_iv/set_mark_iv/etc (8+2 hits in market_capnp.rs), greeks_convention_to_capnp/from_capnp (2 hits each), OptionChainAggregator (15), is_bootstrapped (1 in manager.rs), build_checked (1 in crypto_option.rs), try_update_from_option_greeks (4 in atm_tracker.rs). All confirmed present.
+No broad exclusion / scanner weakening	No blanket ignore added; all 40 entries individually classified.
+5. Pin census and fixtures — PASS
+Check	Evidence
+Doctrine compat rev	Last NT pin compatibility verified rev: d636f176...; Last full NT doctrine audit rev: 56a438... unchanged — deliberately separate.
+Schema qsize claims	5 anchored claims (2× LiveDataEngineConfig, 2× LiveExecEngineConfig, 1× LiveRiskEngineConfig) all use d636f176 and value 100000. NT source config.rs:1075-1077 asserts all three defaults = 100_000.
+Census surfaces	Doctrine, schema, naming-audit YAML, runtime contracts, verifier constants, Polymarket fixture — all enforced as NON_CARGO_PIN_SURFACES with anchored regex patterns.
+Census precision	Rewritten scan_nt_pin_census requires each anchored pattern match to resolve to exactly [EXPECTED_NT_REV].
+Census test coverage	3 new tests: (1) full-audit rev NOT enforced (stays separate), (2) duplicate governed claim in decoy section IS rejected, (3) unanchored historical revision IS ignored.
+6. Polymarket evidence — PASS
+Check	Evidence
+Fixture revision	Revision: d636f17604cdbddc28ad40e0e15720e2d19bf860 — matches pinned NT rev.
+Source SHA-256	Fixture claims 39c2ae4e...; git show d636f176:crates/adapters/polymarket/src/http/query.rs | sha256sum = 39c2ae4e... — exact match.
+Extracted ranges	Lines 130-137 (PostOrderParams struct) and 529-547 (test code) — consistent with file structure.
+Rust test cross-validation	config_parsing.rs extracts fixture revision and asserts == bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision(), which resolves from Cargo.lock via toml::from_str at runtime. Prevents fixture drift.
+Old fixture	nt_polymarket_query_post_order_params_7c2aafb.txt deleted.
+7. Backtesting behavior — PASS
+Verified in prior review: validate_catalog_instrument_id_charset rejects any char outside [A-Za-z0-9._-]; catalog_input_requires_unfiltered_nt_query_for_encoded_directory removed (no second path); test non_ascii_catalog_input_fails_closed_without_valid_nt_selector confirms rejection. PR body discloses: "BVS validation fails closed until that migration is complete."
+8. Governance and scope — PASS
+Check	Evidence
+No design document	git cat-file -e 3585adb2a:docs/superpowers/specs/2026-07-14-nt-v1-230-pin-refresh-design.md → absent at head (cleaned up from intermediate commits).
+No production runtime changes	New commit 3585adb2a touches only docs/, scripts/, tests/, tests/fixtures/. Zero src/ changes.
+No TODO / unpinned dep / dual path	No TODOs added. bytes = "=1.12.0" properly pinned in BVS Cargo.toml. Single NT fork rev across both Cargo graphs.
+Historical vs current authority	Doctrine wording updated: "verified for this doctrine or a later compatibility slice"; schema uses "verified as" (not "currently"); full-audit rev clearly separated from compat rev.
+Scope discipline	Single declared scope (NT pin refresh). PR body: "Remaining accepted scope: None."
+9. Exact-head CI and approval state
+Exact head: 3585adb2afea035142c95223e215981051167555
+PASSING (run 29377958666/647):
+bvs-clippy, check-aarch64, deny, bvs-fmt, bvs-detect, bvs-ci-policy, ci-policy, actionlint, nextest fingerprint, nextest fingerprint reuse, detector, host-health, all 3 AI reviews.
+PENDING (still running, no failures):
+clippy (root), build (root), nextest archive, bvs-test archive, source-fence, coverage-enforcer.
+SKIPPING (expected — gated behind pending jobs):
+smoke, same-sha-main-evidence, merge-readiness-progress, capture, capture-gate, source-fence-static, Mergify Merge Queue.
+Code-owner approval: Not yet received. Review requested from sp-reviewer. Only greptile-apps (bot) has commented. No unresolved review threads.
+Verdict
+APPROVE (pending exact-head CI completion and code-owner approval).
+No code defects found. The capability-ledger closure is exact (40 entries: 30 supported + 10 not_iv_options, zero duplicates), key entries validated against pinned d636 source, the Polymarket fixture SHA-256 matches, the pin census enforces all governed surfaces with anchored text patterns, and the new commit introduces zero production runtime changes. The only merge blockers are the pending CI gates (root clippy/build/tests/source-fence) and the required code-owner approval — both external to this code review.
+Kimi:
+ ● Review header
+
+   • Reviewer source: Kimi Code CLI
+   • Exact configured model: kimi-k2.7-code (from ci/ai-review.toml)
+   • Exact range reviewed:
+     17bdf952f3e9422c6957b88556dbb4f145046754..3585adb2afea035142c95223e215981051167555
+   • Files and line count reviewed: 39 files changed, 915 insertions, 485 deletions; full diff read
+     (3,051 diff lines)
+
+   Findings
+
+   No findings.
+
+   I inspected the dependency graphs, fork ancestry, NT 0.60 API adaptations, RuntimeStrategy sealing,
+   capability-ledger closure, governed pin census, regenerated Polymarket fixture, backtesting
+   compatibility change, governance/scope boundaries, and exact-head CI/approval state. No code defect or
+   governance violation was identified.
+
+   Verification summary
+
+   Dependency/fork integrity
+   • Every nautilus-* crate in both Cargo.lock files resolves to
+     git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#
+     d636f17604cdbddc28ad40e0e15720e2d19bf860.
+   • All Cargo.toml manifest NT pins use rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860".
+   • d636f17604cdbddc28ad40e0e15720e2d19bf860 is the single commit on branch
+     pin/v1.230.0-sbe-3-5-ts-init; its parent is upstream tag v1.230.0
+     (8160730c7c550480b0a439fb11086a4c4de15f0b).
+   • The fork commit diff is confined to crates/adapters/binance/ and corresponds to the declared SBE 3:5
+     schema request, symbol-status decoding, binary fixture, and adapter receive-clock (ts_init)
+     ownership patch.
+   • Non-NT lockfile churn (serde, bytes, num-complex, tokio, toml, unicode-ident) is transitive from NT
+     0.60.0 and pinned in both lockfiles. bytes is explicitly raised to =1.12.0 in the BVS Cargo.toml as
+     disclosed.
+   • No stale NT revision remains in any current authoritative pin surface.
+
+   NT 0.60 migration
+   • StrategyNative/DataActorNative bounds and imports are added exactly where NT 0.60 requires them;
+     exact-head CI clippy is SUCCESS, so no unused-import warning is present.
+   • Cache API changes are correct: instrument() returns owned Option<InstrumentAny> where .cloned() was
+     removed; order_owned() → order(); position_id() now returns Option<PositionId> (not a reference);
+     Portfolio::new(clock, cache, None) matches the d636 signature.
+   • Topic renames (get_event_orders_topic → get_event_order_topic, get_event_positions_topic →
+     get_event_position_topic) match NT 0.60.
+   • DataActor::trader_id(self) replaces self.core.trader_id() cleanly.
+   • BinaryOracleMaker::config() → maker_config() and CompleteSetArbitrage::config() →
+     complete_set_config() avoid the new NT Strategy::config() method; no callers still use .config().
+   • No fail-closed guard was weakened; errors are not swallowed.
+
+   RuntimeStrategy
+   • RuntimeStrategy is sealed via a private runtime_strategy_sealed::Sealed marker trait with a blanket
+     impl for T: Strategy + DataActor + Component + Debug.
+   • Box<dyn RuntimeStrategy> remains object-safe; src/strategies/registry.rs adds a test that constructs
+     a BoxedStrategy and calls component_id().
+   • Strategy and DataActor are no longer public dyn supertraits, which is required for object-safety
+     under NT 0.60.
+
+   Capability ledger
+   • The d636 block contains exactly 40 unique surface_ids: 30 classification = "supported" and 10
+     classification = "not_iv_options". No duplicates.
+   • The 30 supported entries cover the required categories: Greeks helpers (from_actor,
+     greeks_convention_to_capnp/from_capnp), BusPayloadType/OptionGreeks, option identifiers/instruments
+     (OptionSeriesIdError, five build_checked option instruments), Cap’n Proto Greeks/IV accessors and
+     convention conversions, and option-chain manager additions.
+   • Spot checks against the pinned d636 checkout confirm the declared symbols exist at the declared
+     evidence paths.
+   • tests/bolt_v3_iv_capability.rs has a whole_checkout_capability_ledger_matches_fixture test that
+     scans the entire NT checkout and validates against the ledger.
+
+   Pin census and fixtures
+   • scripts/verify_bolt_v3_boundary_evidence.py passed locally. It enforces d636 pins in Cargo surfaces,
+     the five qsize = 100000 provenance claims in the schema doc, the doctrine compatibility revision,
+     the naming-audit revision, the three runtime-contract pin sections, the fixture revision, and the
+     verifier scripts themselves.
+   • Schema doc contains five qsize provenance claims, all pinned to d636 with value 100000.
+   • Doctrine doc keeps the full-audit revision 56a438216442f079edf322a39cdc0d9e655ba6d8 separate and
+     updates only the compatibility revision to d636.
+   • docs/bolt-v3/research/naming/nt-owned-name-audit.yaml pins nautilus_trader_revision to d636.
+   • Polymarket fixture tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt declares
+     revision d636, SHA-256 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d, source path
+     crates/adapters/polymarket/src/http/query.rs, ranges 130-137 and 529-547.
+   • tests/config_parsing.rs::polymarket_post_order_params_declares_camel_case_is_post_only_flag asserts
+     the fixture revision equals bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision().
+
+   Backtesting behavior
+   • BVS validate_catalog_instrument_id_charset now rejects non-ASCII instrument IDs instead of using the
+     selector-free fallback.
+   • The test non_ascii_catalog_input_fails_closed_without_valid_nt_selector replaced
+     non_ascii_catalog_input_omits_nt_instrument_filter.
+   • The PR body accurately discloses this breaking BVS change.
+
+   Governance/scope
+   • No design document was added to the PR.
+   • No TODO/FIXME/XXX/HACK markers were introduced.
+   • All changes are within the declared pin-refresh / NT 0.60 migration scope.
+   • Historical references to old revisions in docs/superpowers/specs/, specs/, and
+     scripts/test_verify_bolt_v3_boundary_evidence.py are historical evidence snapshots, not current
+     authority claims.
+   • just source-fence-static, python3 scripts/verify_bolt_v3_boundary_evidence.py, just fmt-check, and
+     just deny all passed locally.
+
+   Exact-head CI and approval state
+   • PR head matches expected SHA 3585adb2afea035142c95223e215981051167555.
+   • As of this review, exact-head CI has the following still in progress: bvs-test archive,
+     coverage-enforcer. All other jobs are SUCCESS/SKIPPED/NEUTRAL, including build, clippy, deny,
+     check-aarch64, nextest archive, test, source-fence, and both AI review checks.
+   • No genuine CI failure evidence is present.
+   • Required reviewer sp-reviewer is requested but has not yet approved; only the old greptile-apps
+     COMMENTED review exists (on commit cd47436c, not the current head).
+   • Merge readiness requires the remaining exact-head CI jobs to finish green and the required
+     code-owner approval to be granted.
+
+   Verdict
+
+   APPROVE
+
+   No code findings. The PR correctly pins NautilusTrader to the v1.230.0-based fork revision
+   d636f17604cdbddc28ad40e0e15720e2d19bf860, closes the NT 0.60 migration gaps, seals RuntimeStrategy
+   while keeping it object-safe, adds the 40-entry capability-ledger closure, refreshes the governed pin
+   census, regenerates the Polymarket fixture, and makes backtesting catalog instrument IDs fail closed.
+   Merge is blocked only by pending exact-head CI completion (bvs-test archive, coverage-enforcer) and
+   the pending required code-owner approval.
+
+Grok: Adversarial Review — PR #1380
+
+Header
+
+┌──────────────────┬──────────────────────────────────────────────────────────────────┐
+│ Field            │ Value                                                            │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Reviewer source  │ Interactive Grok Build CLI adversarial review (session-local;    │
+│                  │ not a CI ai-review.toml deliverable)                             │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Exact configured │ Grok 4.5 (xAI). CI config models (not this review): glm-5.2,     │
+│ model            │ kimi-k2.7-code, claude-opus-4-8                                  │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Exact range      │ 17bdf952f3e9422c6957b88556dbb4f145046754 …                       │
+│ reviewed         │ 3585adb2afea035142c95223e215981051167555                         │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Head             │ PR head equals expected 3585adb2afea035142c95223e215981051167555 │
+│ verification     │                                                                  │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Files / line     │ 39 files, +915 / −485 (churn 1400)                               │
+│ count            │                                                                  │
+└──────────────────┴──────────────────────────────────────────────────────────────────┘
+
+───
+
+Findings
+
+Critical
+
+None.
+
+High
+
+None.
+
+Medium
+
+1. Capability ledger marks scanner false-positive Fn as supported
+
+• File / line: tests/fixtures/bolt_v3_iv/capability-ledger.toml — surface
+  nt.crates.data.src.option_chains.manager.fn
+  (in the 40-ID closure block added by 3585adb2)
+• Evidence:
+  • Added set is exactly 40 unique IDs: 30 supported + 10 not_iv_options (no removals/changes to other IDs).
+  • This entry is:
+
+surface_id = "nt.crates.data.src.option_chains.manager.fn"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "Fn"
+matched_terms = ["chain", "option"]
+seed_family = "data_actor_subscription"
+classification = "supported"
+
+  • Pinned d636 manager.rs has is_bootstrapped as a real API, but no IV/options API named Fn. The match is Rc<dyn Fn(TimeEvent)> (std callback), not an NT capability.
+  • Engine mapping falls through prefix nt.crates.data.src.option_chains. → iv_option_chain_manager, so validation accepts a non-capability as supported.
+• Impact: Inflates “supported” IV/options surface with non-product noise; weakens the semantic meaning of capability-ledger supported for engine/authz consumers of that classification.
+• Required fix: Reclassify this ID as not_iv_options (exact entry), or drop it only if the scanner/candidate contract allows omission (here it was part of the failing candidate set, so reclassify, don’t drop without scanner fix). Prefer fixing scanner so Fn/std trait names are not promoted.
+
+───
+
+Low
+
+None additional. (Doctrine dual-revision, schema qsize pins, and historical vs current authority are correctly structured under the expanded census.)
+
+───
+
+Verification summary
+
+Dependency / fork integrity
+
+┌──────────────────┬──────────────────────────────────────────────────────────────────┐
+│ Check            │ Result                                                           │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Both Cargo       │ All nautilus-* → rev = d636f17604cdbddc28ad40e0e15720e2d19bf860  │
+│ graphs           │                                                                  │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Both lockfiles   │ Sole NT source …?rev=d636f176…#d636f176…, version 0.60.0         │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Authoritative    │ EXPECTED_NT_REV, naming audit, runtime contracts, schema qsize   │
+│ pin surfaces     │ claims, doctrine compatibility rev, polymarket fixture Revision: │
+│                  │ all d636f176…                                                    │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Doctrine full-   │ Remains deliberate separate:                                     │
+│ audit rev        │ 56a438216442f079edf322a39cdc0d9e655ba6d8 (not gated as pin)      │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Fork ancestry    │ Parent 8160730c… (official v1.230.0); ahead by 1 Binance SBE 3:5 │
+│                  │ / symbol-status / receive-clock commit only                      │
+├──────────────────┼──────────────────────────────────────────────────────────────────┤
+│ Non-NT lock      │ Transitive: anyhow 1.0.102→1.0.103, root bytes 1.11.1→1.12.1,    │
+│ churn            │ log 0.4.32→0.4.33, libloading removed; BVS exact bytes =         │
+│                  │ "=1.12.0" as disclosed                                           │
+└──────────────────┴──────────────────────────────────────────────────────────────────┘
+
+NT 0.60 migration
+
+API adaptations reviewed: catalog & parquet writes; builder Result → ManifestError::InvalidNtConfig / anyhow context; non-ASCII charset fail-closed; Portfolio ctor (clock, cache, …); full vs actor-only registration; topic renames (get_event_order_topic / get_event_position_topic); cache ownership (order/instrument return values); StrategyNative on execution and order-factory registration paths. Fail-closed preserved (no swallowed builder errors). Order-producing maker tests use StrategyNative::strategy_core_mut + Portfolio; lifecycle/timer tests use actor-only register without Portfolio. bvs-clippy green on exact head.
+
+RuntimeStrategy
+
+Private sealed marker + blanket Strategy + DataActor + Component; Box<dyn RuntimeStrategy> object-safe via Component + Debug + Sealed only. Do not restore Strategy/DataActor as dyn supertraits under NT 0.60 (StrategyNative bounds). StrategyNative imports are for trait-method resolution (StrategyCore: StrategyNative); not flagged unused.
+
+Capability ledger
+
+┌───────────────────┬─────────────────────────────────────────────────────────────────┐
+│ Metric            │ Value                                                           │
+├───────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Prior failing set │ 40 unique IDs added                                             │
+│ closed            │                                                                 │
+├───────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Classifications   │ 30 supported, 10 not_iv_options                                 │
+├───────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Omissions /       │ 0 removed, 0 changed other IDs, 0 duplicate IDs                 │
+│ extras / dups     │                                                                 │
+├───────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Classification    │ Unchanged (no broad-rule weaken / blanket ignore)               │
+│ /engine rules     │                                                                 │
+├───────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Engine mapping    │ All covered (prefix and/or per-surface engine_mapping)          │
+│ for 30 supported  │                                                                 │
+├───────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Spot-check vs     │ BusPayloadType::OptionGreeks, GreeksCalculator::from_actor,     │
+│ d636              │ option instrument build_checked, Cap’n Proto IV/greeks          │
+│                   │ accessors + convention conversions, is_bootstrapped / option-   │
+│                   │ chain manager — real. Fn is not (Medium finding above).         │
+└───────────────────┴─────────────────────────────────────────────────────────────────┘
+
+Pin census and fixtures
+
+• Census now includes schema (5 qsize claims @ 100000 / d636), doctrine compatibility line, naming audit, runtime contracts, both verifiers, polymarket fixture.
+• Per-pattern “exactly one governed rev” rejects missing and duplicate-decoy claims; tests cover full-audit independence, decoy rejection, unanchored historical ignore.
+• Polymarket fixture tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt:
+  Revision d636, path crates/adapters/polymarket/src/http/query.rs, SHA-256 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d matches raw pin source, ranges 130–137 and 529–547 match.
+  tests/config_parsing.rs asserts fixture revision == cargo_pinned_nt_revision() from Cargo.lock.
+
+Backtesting behavior
+
+Selector-free unfiltered fallback removed; non-ASCII fail-closed with unit test; PR body discloses migration. Single validation path.
+
+Governance / scope
+
+• Design doc added then deleted — not in final tree.
+• Gap-fix commit (3585adb2) touches only docs/scripts/tests/fixtures — no production src/ behavior change.
+• No TODO/unpinned NT deps/dual catalog path found.
+• Review-gap work is evidence/census/ledger closure for this pin slice (in scope), not hidden product features.
+
+Exact-head CI and approval (merge gates — not code defects)
+
+┌───────────────────────┬─────────────────────────────────────────────────────────────┐
+│ Gate                  │ State at review time                                        │
+├───────────────────────┼─────────────────────────────────────────────────────────────┤
+│ Primary CI            │ In progress (build, clippy, source-fence, nextest archive   │
+│ 29377958666 @         │ pending); deny, check-aarch64, fingerprints green           │
+│ 3585adb2              │                                                             │
+├───────────────────────┼─────────────────────────────────────────────────────────────┤
+│ Backtester CI         │ bvs-clippy success; bvs-test archive pending                │
+│ 29377958647           │                                                             │
+├───────────────────────┼─────────────────────────────────────────────────────────────┤
+│ Coverage 29377958692  │ pending                                                     │
+├───────────────────────┼─────────────────────────────────────────────────────────────┤
+│ Code owner            │ Review requested (sp-reviewer); no approving review on head │
+├───────────────────────┼─────────────────────────────────────────────────────────────┤
+│ Review threads        │ None open                                                   │
+└───────────────────────┴─────────────────────────────────────────────────────────────┘
+
+───
+
+Verdict
+
+REQUEST CHANGES
+
+Code defect: Medium — reclassify nt.crates.data.src.option_chains.manager.fn (symbol = "Fn") out of supported.
+
+Merge gates (separate): exact-head CI not fully green yet; required code-owner approval still missing. Do not merge until both are satisfied after the ledger fix lands on a new head.
+
+---
+
+what's the matter? what are the findings in plain english? make this concise
+
+---
+
+ok fix the issues - what docs?
+
+---
+
+why do we need those docs?
+can we remove them if possible? docs should not be the source of truth
+
+---
+
+ok with the recommended fixes
+
+---
+
+generate a review prompt for the pr
+
+---
+
+Claude: 
+PR #1380 Review — Round 3
+
+Reviewer source: Claude Code CLI (interactive session, direct review). Configured model (runtime-provided): claude-fable-5 (Fable 5). Range reviewed: 17bdf952f3e9422c6957b88556dbb4f145046754..6e7c1fc13d54bd5d91cd25271ea0b2742f4db174 — PR head verified equal to the expected SHA via the GitHub API before review. Files/lines: 41 files, +1,114/−582. Full range reviewed: the 7-file delta since the prior reviewed head received line-level scrutiny; every other file is byte-identical to the previously verified head (empty diff confirmed), so the R1/R2 verification of manifests, locks, all src/ migration code, and BVS carries forward. AGENTS.md (69 lines) and the PR body were read in full.
+
+Findings
+
+Critical
+- None
+
+High
+- None
+
+Medium
+- None
+
+Low
+- None
+
+No substantive findings. All three findings from my previous round are fixed and verified (details in the summary); the fixes introduced no new defects.
+
+1. Blocking findings
+
+None.
+
+2. Non-blocking findings
+
+None. One observation that does not rise to a finding: capability-ledger validation remains one-directional (scan candidates → ledger), so a ledger entry for a surface NT later removes would linger silently. The specific artifact class that actually produced stale entries (synthetic fn symbols) is now blocked by both the scanner fix and a committed-ledger regression test, and no surplus entries exist today (verified by exhaustive re-scan below), so there is no present defect to anchor a finding to.
+
+3. Verification summary
+
+- Dependency/fork integrity — VERIFIED (carried, files byte-identical). Both Cargo graphs and both lockfiles resolve every nautilus-* crate to 0.60.0 at d636f17… on the fork; fork = official v1.230.0 (8160730c) + exactly one commit limited to the declared Binance SBE 3:5 / symbol-status / fixture / receive-clock patch (12 Binance adapter files, confirmed via GitHub compare in R1). Non-NT lock deltas remain re-resolution side effects only.
+- NT 0.60 migration — VERIFIED (carried) + runtime-proven at the prior identical code. All API adaptations forced by pinned upstream source; builder Results propagate loudly (typed ManifestError::InvalidNtConfig, context, expect) — nothing swallowed. src/ is unchanged in this round except the one-line scanner fix.
+- Canonical pin authority — VERIFIED, and this is the round's structural win. EXPECTED_NT_REV is deleted from the verifier. scan_nt_pin_census now derives the expected revision from root Cargo.toml via root_manifest_nt_revision() (scripts/verify_bolt_v3_boundary_evidence.py:1277), which fails closed unless the root manifest declares exactly one shared, immutable, 40-hex revision — rejecting ambiguous roots and non-commit revisions. tracked_cargo_surfaces() (:1152) discovers every tracked Cargo.toml/Cargo.lock via git ls-files (discovery failure itself is a finding), so stale BVS manifests/locks are structurally rejected against the derived revision, as are the anchored evidence claims (doctrine, schema qsize ×5, naming audit, runtime contracts, Polymarket fixture). The test suite's EXPECTED_NT_REV is now fixture_nt_revision() — derived at runtime from the real root manifest — so zero literal pin constants exist outside Cargo.toml. The Binance timestamp dependency identity check was correctly loosened to shape-only (canonical git + 40-hex rev) because it inspects the same root manifest the census enforces — composition verified, and covered by the new test_pin_census_checks_binance_dependency_against_derived_revision. Five new negative fixtures cover derive/stale-dependents/ambiguous/non-commit/binance-vs-derived.
+- Prose documents no longer compete. contract-ledger.md §12 and status-map (header bullet + row 46) no longer embed the NT version/SHA; both now point to "the canonical governed NT revision in root Cargo.toml" while retaining their contract-index and readiness-tracking roles verbatim.
+- public_symbols() — VERIFIED. The fix is continue → break (src/bolt_v3_iv/capability.rs:715): first matching prefix wins. I audited the prefix table — the only prefix-of-prefix pair is "pub const fn " / "pub const ", ordered longer-first, so break gives longest-match and a pub const fn line emits its real symbol exactly once. The renamed regression test reproduces the original failure shape (option-chain path with anchor terms, where the old bug actually escaped) and asserts both the real symbol's presence and the synthetic surface's absence.
+- Capability ledger — RE-REPRODUCED EXHAUSTIVELY. I re-ran my scanner emulation with the fixed semantics over the pinned d636 checkout: 1,438 candidates (16 double-match artifacts eliminated vs the buggy scanner's 1,454), zero validation errors against the head ledger. Full-ledger sweep (385 surfaces): the three known phantom surfaces (…option_chains.manager.fn, …python.volatility.fuzzy.fn, …volatility.fuzzy.fn) are absent; zero entries with symbol = "fn"; zero surface ids ending .fn; zero duplicate ids. The removals correctly covered the two pre-existing indicators phantoms from the same bug class, not just the instance this PR introduced. The new committed_capability_ledger_contains_no_synthetic_fn_symbols test bans lowercase fn symbols exactly, without rejecting legitimate identifiers like Fn whose normalization would end in .fn.
+- RuntimeStrategy / registration split — VERIFIED (carried, byte-identical). Sealing prevents external non-Strategy/DataActor implementations; Box<dyn RuntimeStrategy> object-safety tested; full StrategyCore+Portfolio registration for order-producing tests, *_lifecycle_only actor registration confined to the four lifecycle/timer tests.
+- Backtesting non-ASCII fail-closed — VERIFIED (carried, byte-identical). Charset validation rejects on every id surface at preflight and config build; the selector-free fallback is deleted with no second path; disclosed in the body.
+- Polymarket fixture — VERIFIED (carried). Revision, path, SHA-256 (recomputed: exact match), and both extracted ranges (byte-compared: exact match) against pinned d636 source; the test compares fixture revision to the Cargo.lock-derived revision at runtime.
+- Scope/governance — clean. PR body now discloses the ledger closure, scanner correction, fixture regeneration, and root-canonical parity — compliant with the stable-body rule (no SHAs, no transient status). No design/plan document in the final PR (only the five governed evidence docs are touched). No TODO/FIXME/HACK added, no dual paths, no unpinned dependencies, no verifier weakening (the census is strictly stronger). The delta since the prior head changes no production runtime behavior — one line in the capability scanner (test-consumed evidence tooling), plus docs, scripts, tests, and fixture entries.
+
+4. Exact-head CI and approval state
+
+Reported separately from code findings; no failure evidence exists anywhere.
+
+- CI at 6e7c1fc13: fresh runs in progress at review time (runs 29381320696 CI / 29381320714 Backtester / 29381320704 Coverage). Completed green so far: actionlint, check-aarch64, deny, detector, ci-policy, bvs-fmt/clippy/detect/ci-policy, nextest fingerprint + reuse, all three AI-review checks. Still running: build, clippy, nextest archive, bvs-test archive, coverage-enforcer, and source-fence — the last being the lane that executes the reworked boundary verifier against the real repo. I've armed a monitor and will report when all three runs complete. Note the identical code at the prior head passed all of these lanes; this head's delta is verifier/test/docs/fixture plus the one-line scanner fix, which the in-flight nextest and source-fence lanes will prove.
+- Approval: reviewDecision = REVIEW_REQUIRED — the required code-owner approval (node U_kgDOEZMFhA per AGENTS.md) does not yet exist; the only recorded review is a COMMENTED from greptile-apps at an older head. Review threads: 0 total, 0 unresolved. Merge must come via the governed queue after exact-head green + approval.
+
+5. Verdict
+
+APPROVE. No substantive findings. This round closes every prior finding at the class level — longest-prefix symbol extraction, phantom-entry removal with a regression ban, single derived pin authority in root Cargo.toml with fail-closed ambiguity/non-commit/staleness rejection, and SHA-free prose documents. Merge remains gated (separately from this code verdict) on the in-flight exact-head runs finishing green and on the required code-owner approval.
+Grok: Adversarial Review — PR #1380
+
+┌──────────────┬───────────────────────────────────────────────────────────────────────
+│ Field        │ Value
+├──────────────┼───────────────────────────────────────────────────────────────────────
+│ Reviewer     │ Interactive Grok Build CLI adversarial review (session-local; not a CI
+│ source       │ .toml deliverable)
+├──────────────┼───────────────────────────────────────────────────────────────────────
+│ Exact        │ Grok 4.5 (xAI). CI config models (not this review): glm-5.2, kimi-k2.7
+│ configured   │ claude-opus-4-8
+│ model        │
+├──────────────┼───────────────────────────────────────────────────────────────────────
+│ Head         │ PR head 6e7c1fc13d54bd5d91cd25271ea0b2742f4db174 equals expected head
+│ verification │
+├──────────────┼───────────────────────────────────────────────────────────────────────
+│ Range        │ 17bdf952f3e9422c6957b88556dbb4f145046754..6e7c1fc13d54bd5d91cd25271ea0
+│ reviewed     │
+├──────────────┼───────────────────────────────────────────────────────────────────────
+│ Scope        │ Full range (13 commits, 41 files, +1114 / −582), not tip-only
+└──────────────┴───────────────────────────────────────────────────────────────────────
+
+───
+
+Findings
+
+Critical
+
+None.
+
+High
+
+None.
+
+Medium
+
+None.
+
+Low
+
+None.
+
+No substantive findings.
+
+───
+
+1. Blocking findings
+
+None (code/diff).
+
+───
+
+2. Non-blocking findings
+
+None.
+
+───
+
+3. Verification summary
+
+Dependency / fork integrity
+• Root and BVS Cargo.toml: every nautilus-* pin is
+  git = https://github.com/seungpyoson/nautilus_trader.git,
+  rev = d636f17604cdbddc28ad40e0e15720e2d19bf860.
+• Both lockfiles: sole NT source
+  …?rev=d636f176…#d636f176…, package version 0.60.0.
+• Fork parent 8160730c… (official v1.230.0); single commit
+  fix(binance): preserve schema 3:5 receive contracts
+  (SBE 3:5, symbol-status, fixture, receive-clock) — matches PR body.
+
+NT pin authority (Cargo.toml-first)
+• scripts/verify_bolt_v3_boundary_evidence.py no longer embeds EXPECTED_NT_REV.
+• Census derives revision via root_manifest_nt_revision() from root Cargo.toml (exactly one shared 40-hex rev; rejects ambiguous / non-commit).
+• Dependents (BVS manifest/lock, runtime contracts, schema qsize claims, doctrine compatibility rev, naming audit, Polymarket fixture) are checked against that derived revision.
+• Python tests use fixture_nt_revision() from root Cargo.toml only (not a second hard-coded pin authority).
+• Verifier/test scripts are not pin-evidence surfaces.
+
+Contract ledger / status map
+• Contract ledger and status map no longer embed current NT version/SHA; they point at root Cargo.toml as canonical pin and retain readiness/index roles.
+
+public_symbols() / capability ledger
+• Bug was multi-match on one line: continue over prefixes allowed
+  pub const fn is_bootstrapped → also match pub const  → synthetic fn.
+  Fix: break after first successful prefix (capability.rs);
+  prefix list places pub const fn  before pub const .
+• Regression: named surface …manager.is_bootstrapped, and not …manager.fn.
+• Ledger hygiene: no symbol = "fn" / "Fn"; no surface_id ending in .fn.
+• Known phantoms absent:
+  • nt.crates.data.src.option_chains.manager.fn
+  • nt.crates.indicators.src.python.volatility.fuzzy.fn
+  • nt.crates.indicators.src.volatility.fuzzy.fn
+• Legitimate from_fn retained.
+• committed_capability_ledger_contains_no_synthetic_fn_symbols gates lowercase fn.
+• Whole-checkout test still requires every scanned candidate to be classified (fail-closed on omission).
+
+NT 0.60 migration / RuntimeStrategy / registration
+• Catalog & writes, builder Result → fail-closed errors, non-ASCII charset rejection (unfiltered path removed), Portfolio ctor order, topic renames, StrategyNative execution paths — consistent and fail-closed.
+• RuntimeStrategy: private sealed marker; dyn = Component + Debug + Sealed; object-safe; no Strategy/DataActor dyn supertraits (correct for NT 0.60).
+• Maker tests: full StrategyCore+Portfolio for order-factory paths; lifecycle-only actor register for timer/start tests.
+
+Polymarket fixture
+• tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt: Revision d636, path and ranges match pin source; SHA-256 39c2ae4e… matches raw d636 query.rs.
+• config_parsing asserts fixture revision == cargo_pinned_nt_revision() from Cargo.lock.
+
+Backtesting
+• Non-ASCII catalog IDs fail closed; PR body discloses migration; no second selector-free path.
+
+Governance / scope
+• Design doc added then deleted; not in final tree.
+• PR body covers pin, Binance patches, catalog break, capability scan, fixture/census.
+• Scope stays pin-refresh + NT 0.60 compatibility + evidence closure.
+
+───
+
+4. Exact-head CI and approval state
+
+┌────────────────────────────────────────────────┬────────────────────────────────────┐
+│ Gate                                           │ State (at review time, head        │
+│                                                │ 6e7c1fc13)                         │
+├────────────────────────────────────────────────┼────────────────────────────────────┤
+│ Policy / deny / aarch64 / fingerprints         │ Success                            │
+├────────────────────────────────────────────────┼────────────────────────────────────┤
+│ AI reviews (Claude / GLM / Kimi)               │ Success                            │
+├────────────────────────────────────────────────┼────────────────────────────────────┤
+│ bvs-clippy                                     │ Success                            │
+├────────────────────────────────────────────────┼────────────────────────────────────┤
+│ build, clippy, source-fence, nextest archive,  │ Pending (not treated as code       │
+│ bvs-test archive, coverage-enforcer            │ defects without failure evidence)  │
+├────────────────────────────────────────────────┼────────────────────────────────────┤
+│ Required code owner (sp-reviewer)              │ Requested; no approving review on  │
+│                                                │ head                               │
+├────────────────────────────────────────────────┼────────────────────────────────────┤
+│ Open review threads                            │ None                               │
+└────────────────────────────────────────────────┴────────────────────────────────────┘
+
+Merge still requires green exact-head ready-PR CI and code-owner approval — separately from the clean code review.
+
+───
+
+5. Verdict
+
+APPROVE
+
+No code defects found in the committed range. Pending CI and missing code-owner approval are merge gates only, not review findings.
+
+---
+
+add a detailed comment on a series of review summary

@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "ba845204f976",
+  "session_id": "019f60d7-8211-7060-8292-6fcd460c60a2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T13:27:08.178841Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "84d553f6d31d",
+  "checkpoint_transcript_start": 1825,
+  "transcript_lines_at_start": 1825,
+  "compact_transcript_start": 385,
+  "token_usage": {
+    "input_tokens": 664145,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 43011328,
+    "output_tokens": 78934,
+    "api_call_count": 341
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

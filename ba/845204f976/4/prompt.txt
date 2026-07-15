@@ -1,0 +1,261 @@
+model
+
+---
+
+Implementation is complete, reviewed, committed, and pushed. Do not re-plan or continue feature implementation. The remaining work is to monitor exact-head CI, investigate only genuine failures if any, and finalize the Test Report and PR description for https://github.com/seungpyoson/bolt-v2/pull/1421.
+
+Repository:
+- URL: https://github.com/seungpyoson/bolt-v2
+- Local path: `/code/seungpyoson/bolt-v2`
+- PR: https://github.com/seungpyoson/bolt-v2/pull/1421
+- Branch: `vorflux/strategy-agnostic-substrate`
+- Exact pushed head at handoff:
+  `9eafcbfbff3628919af56ab8eb074f355fefdffd`
+- At the last check, local HEAD, remote branch, and PR head all matched that SHA.
+- The worktree was clean.
+- The PR was ready, not draft.
+
+Approved plan:
+- `/code/.plans/v1-strategy-shared-venue-agnostic.md`
+- `/code/.plans/v1-strategy-shared-venue-agnostic-summary.md`
+- The plan was already approved and fully implemented.
+- Do not re-plan.
+- All 13 approved tasks are complete.
+
+Implementation status:
+- Implementation is DONE.
+- Mandatory simplify review completed.
+- Mandatory correctness review completed and returned `READY`.
+- Approved-plan coverage review returned `PASS` for all 13 tasks.
+- The latest CI repair was also simplify-reviewed and correctness-reviewed.
+- Do not make further feature changes.
+- Make code changes only if exact-head CI reveals a genuine new defect.
+
+Commit history:
+- `a5f1fa62b` — strategy-agnostic shared substrate implementation.
+- `73b1f69e7` — stable-Rust outcome-proof validation fix.
+- An external merge from updated `main` advanced the branch to `2e4b743e0`.
+- `9eafcbfbf` — exact-head CI regression repairs.
+
+Completed implementation:
+1. Moved `FeeProvider` out of the strategy registry into `bolt_v3_providers`.
+2. Added tokenizer-based dependency-direction verification with zero allowed shared-to-strategy back-references.
+3. Renamed maker-specific settlement modules and types to neutral binary-settlement terminology.
+4. Moved `StrategyBuildContext` into `bolt_v3_strategy_context` and added typed runtime capabilities.
+5. Moved strategy-specific archetypes under their strategy modules and split Complete Set’s shared contract from its archetype.
+6. Added one shared strategy registration/context assembly path for all three strategies.
+7. Moved valuation and quantity-normalization seams into neutral shared modules.
+8. Hoisted settlement booking, eligibility, recovery bootstrap, and blind recovery into a shared module.
+9. Hoisted neutral runtime reconciliation and reference-price health orchestration into shared modules.
+10. Replaced live-node Binary Oracle Edge Taker key special-casing with capability-driven settlement health.
+11. Added Complete Set Nautilus event forwarding for accepted, filled, and cancel-rejected events.
+12. Added cycle-free outcome-group proof code and reduced provider-leak allowances from 15 to 10.
+13. Added token-aware substrate structure guards for registration, dependency direction, obsolete paths, neutral APIs, and declaration counts.
+
+Complete Set behavior:
+- Routes basket events through:
+  - `baskets_by_handle`
+  - `basket_handle_by_client_order_id`
+- Supports concurrent baskets sharing one executor.
+- Resolves incoming events by client-order ownership.
+- Rejects duplicate basket handles and duplicate client-order ownership atomically.
+- Remains shadow-only.
+- `forward_settlement_signal` remains rejecting.
+- No readiness or activation gate was relaxed.
+
+Latest exact-head CI repairs:
+1. `crates/backtesting-vertical-slice/src/runner.rs`
+   - Imports `FeeProvider` from `bolt_v3_providers`.
+   - Imports `StrategyBuildContext` from `bolt_v3_strategy_context`.
+2. `src/bolt_v3_live_node/tests/mod.rs`
+   - Settlement-health fixtures now parse a valid TOML assignment through a helper struct instead of parsing a scalar as a TOML document.
+3. `src/bolt_v3_source_integrity.rs`
+   - Complete Set’s exact source membership includes:
+     `src/strategies/complete_set_arbitrage/tests/event_forwarding.rs`
+4. `tests/bolt_v3_production_entrypoint.rs`
+   - Checks delegation to shared `normalize_base_order_quantity`.
+   - Explicitly rejects direct use of `normalize_base_order_quantity_for_execution_venue`.
+5. `tests/bolt_v3_strategy_substrate_structure.rs`
+   - Scans workspace crates for retired registry homes.
+   - Handles direct and grouped imports.
+   - Avoids nested-path false positives.
+   - Skips generated `target/` directories.
+   - Includes positive and negative matcher fixtures.
+
+Reviews:
+- Simplify review found a matcher false-positive edge.
+- Correctness review found:
+  - nested grouped-use false positives
+  - generated `target/` directory traversal
+- Both findings were fixed.
+- The correctness reviewer rechecked the final diff and returned `READY`.
+- No unresolved implementation findings remain.
+
+Permitted local verification passed after the latest repairs:
+- `cargo fmt --all`
+- `just fmt-check`
+- `just deny`
+- `just source-fence-static`
+- `git diff --check`
+- Runtime-literal verifier and self-tests.
+- Dependency-direction verifier and self-tests.
+- Provider-leak verifier and self-tests.
+- Workspace-wide search found no retired production/workspace imports after excluding the matcher’s synthetic test fixtures.
+
+Repository policy:
+- Do not run local Rust compile/test/check/clippy.
+- Rust compile-heavy verification is remote-first.
+- Formatting, deny, Python verifiers, and static source-fence checks are permitted.
+
+Latest exact-head workflows:
+- CI:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/29413641944
+- Backtester CI:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/29413642052
+- Coverage Enforcer:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/29413641991
+- All three were started for:
+  `9eafcbfbff3628919af56ab8eb074f355fefdffd`
+
+Last observed exact-head progress:
+- Passed:
+  - Backtester formatting
+  - Backtester CI policy
+  - main deny
+  - host health
+  - actionlint
+  - nextest fingerprint checks
+- Still running at the handoff:
+  - main Clippy
+  - source-fence Rust wiring
+  - ARM64
+  - Backtester Clippy
+  - Backtester test archive/tests
+  - nextest archive/tests
+  - Coverage Enforcer
+- A background polling job was intentionally stopped at the user’s request.
+- Start a fresh status inspection; do not look for the old polling job.
+
+Authentication:
+- The user explicitly instructed: use the connected GitHub App, not GitHub tokens.
+- `GITHUB_TOKEN__GITHUB` is stale and returns HTTP 401.
+- Ignore the stale environment token.
+- Do not request a replacement personal token.
+- Use the connected GitHub App/integration path.
+- Use `vflux_exec` for all PR mutations.
+- Do not use `gh pr create`, `gh pr edit`, or other direct PR mutation commands.
+- Read-only inspection previously succeeded using the repository’s connected GitHub App credential path without printing credentials.
+
+Required testing disclosures:
+The final response and the PR’s `## Testing` section MUST state:
+
+1. An earlier testing subagent was attempted but failed with this exact error:
+   “An internal error occurred. Please try again. If this issue persists, please contact support.”
+
+2. A later testing subagent:
+   - confirmed local/remote SHA alignment;
+   - could not inspect CI because it selected the stale environment token and received HTTP 401.
+
+3. Direct exact-head CI inspection through the connected GitHub App credential path succeeded afterward.
+
+4. Clearly distinguish:
+   - completed exact-head CI evidence;
+   - infrastructure/tooling failures;
+   - anything that remains unverified.
+
+Do not silently omit either testing-subagent issue.
+
+Stale CI history:
+- Do not use results from these stale heads as current evidence:
+  - `277adef3c1e0f708234c524c28ce6993c8d7ab0c`
+  - `73b1f69e7720c3b6013e331bcb6135449dfd8b1f`
+  - `2e4b743e0072c8241bdb1e78beac8d45905de667`
+- Earlier failures included:
+  - expression-level `#[rustfmt::skip]` unsupported on stable Rust;
+  - `.copied()` on owned `Option` values;
+  - retired Backtester imports;
+  - invalid TOML scalar parsing;
+  - omitted source-integrity membership;
+  - stale quantity-normalization structure assertion.
+- These code defects have been fixed.
+- Earlier Coverage Enforcer failures were downstream of red main and Backtester gates.
+- One earlier Clippy setup failure was a GitHub API DNS/infrastructure failure.
+
+Remaining work only:
+1. Register the repository:
+   `vflux_exec(command="session repos-set seungpyoson/bolt-v2")`
+2. Call `list_tasks` before beginning.
+3. Verify:
+   - clean worktree;
+   - local HEAD;
+   - remote branch HEAD;
+   - PR head;
+   - all match `9eafcbfbff3628919af56ab8eb074f355fefdffd`.
+4. Inspect the three exact-head workflows until terminal.
+5. For every failed job, inspect its complete failing log before deciding whether it is a code issue or infrastructure.
+6. Explicitly verify evidence for:
+   - `bolt_v3_strategy_substrate_structure`
+   - settlement-health tests
+   - source-integrity membership test
+   - Complete Set event-forwarding tests
+   - Clippy
+   - nextest
+   - source-fence Rust wiring
+   - ARM64
+   - Backtester CI
+   - Coverage Enforcer
+7. If exact-head CI reveals a genuine code defect:
+   - make the smallest necessary fix;
+   - run permitted local gates;
+   - complete simplify and correctness review;
+   - commit and push;
+   - start a new exact-head CI cycle.
+8. If exact-head CI passes:
+   - publish Test Report version 2;
+   - rewrite the complete PR description;
+   - verify final SHA alignment;
+   - report that the PR is ready.
+
+Test Report:
+- Existing title: `Strategy substrate verification`
+- Existing report ID: `47`
+- Existing version: `1`
+- Existing status: `partial`
+- Write the final report to:
+  `/code/.generated_artifacts/test_report.md`
+- Submit exactly one report for the final testing cycle.
+- Reuse the same title so it becomes version 2.
+- Derive status honestly from exact-head results.
+
+PR description:
+- Read `/code/.skills/system/pr-description.md` before editing.
+- Rewrite the whole description as one coherent first-time read.
+- Do not append “Update,” “Round,” or “Post-review” sections.
+- Preserve the auto-managed `Session Details` section verbatim.
+- Include a detailed `## Testing` section.
+- Include the required testing-subagent disclosures.
+- Include final exact-head run URLs and terminal results.
+- Mention stale failed-head history only as needed to explain what was fixed.
+- Update through `vflux_exec pr edit`.
+- Do not post a general PR comment unless the user explicitly requests it.
+
+Review focus:
+- Capability-driven registration and settlement health.
+- Shared-layer dependency direction.
+- Neutral admission, settlement, and reconciliation APIs.
+- Complete Set concurrent-basket routing and ownership.
+- Shadow-only and readiness preservation.
+- Backtester/import and structural CI repair correctness.
+- Exact-head evidence only.
+
+Do not merge unless the user explicitly requests it.
+
+Final objective:
+Finish verification and PR finalization for:
+https://github.com/seungpyoson/bolt-v2/pull/1421
+
+Implementation is already complete.
+
+---
+
+you should not be making changes - we should use codex

@@ -3,8 +3,16 @@
   "checkpoint_id": "ba845204f976",
   "strategy": "manual-commit",
   "branch": "vorflux/strategy-agnostic-substrate",
-  "checkpoints_count": 4,
-  "files_touched": null,
+  "checkpoints_count": 6,
+  "files_touched": [
+    "src/bolt_v3_basket_execution.rs",
+    "src/bolt_v3_strategy_registration.rs",
+    "src/strategies/binary_oracle_edge_taker/archetype.rs",
+    "src/strategies/complete_set_arbitrage/archetype.rs",
+    "tests/bolt_v3_provider_binding.rs",
+    "tests/bolt_v3_strategy_substrate_structure.rs",
+    "tests/wiring_registration.rs"
+  ],
   "sessions": [
     {
       "metadata": "/ba/845204f976/0/metadata.json",
@@ -33,13 +41,20 @@
       "compact_transcript": "/ba/845204f976/3/transcript.jsonl",
       "content_hash": "/ba/845204f976/3/content_hash.txt",
       "prompt": "/ba/845204f976/3/prompt.txt"
+    },
+    {
+      "metadata": "/ba/845204f976/4/metadata.json",
+      "transcript": "/ba/845204f976/4/full.jsonl",
+      "compact_transcript": "/ba/845204f976/4/transcript.jsonl",
+      "content_hash": "/ba/845204f976/4/content_hash.txt",
+      "prompt": "/ba/845204f976/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 16727870,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 1132911104,
-    "output_tokens": 1930298,
-    "api_call_count": 8542
+    "input_tokens": 16732567,
+    "cache_creation_tokens": 758345,
+    "cache_read_tokens": 1149184907,
+    "output_tokens": 2027415,
+    "api_call_count": 8634
   }
 }

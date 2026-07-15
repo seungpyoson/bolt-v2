@@ -1,0 +1,61 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "ba845204f976",
+  "session_id": "8b320821-c284-48ee-a68d-241b150770b3",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T13:28:01.966542Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    "src/bolt_v3_basket_execution.rs",
+    "src/bolt_v3_strategy_registration.rs",
+    "src/strategies/binary_oracle_edge_taker/archetype.rs",
+    "src/strategies/complete_set_arbitrage/archetype.rs",
+    "tests/bolt_v3_provider_binding.rs",
+    "tests/bolt_v3_strategy_substrate_structure.rs",
+    "tests/wiring_registration.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "d7f9e85b38d2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 4697,
+    "cache_creation_tokens": 758345,
+    "cache_read_tokens": 16273803,
+    "output_tokens": 97117,
+    "api_call_count": 92
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-15T13:28:01.905506Z",
+    "agent_lines": 115,
+    "agent_removed": 83,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 115,
+    "total_lines_changed": 198,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

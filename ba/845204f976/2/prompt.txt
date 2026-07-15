@@ -1,0 +1,61 @@
+Yes create and amend the issues
+
+---
+
+if we need to work on 9 different issues, I want you to use dynamic fanout to work in parallel - use 5.6 sol medium for implementation
+
+---
+
+resolve CI failure
+
+---
+
+so what's the pr for? why are we not proceeding with implementation?
+
+---
+
+no just proceed with implementation - so is that the docs? we should not have docs only pr - and remove the plan and spec doc once you are requesting to merge pr
+
+---
+
+what's the overall progress? on a scale of 1 to 100?
+
+---
+
+ok proceed
+
+---
+
+why are we hardcoding some number?
+
+---
+
+so that's the only instance I found, but we shouldn't be hardcoding things - you should check overall
+
+---
+
+let's use sol high fast
+
+---
+
+what's your progress overall? on a scale of 1 to 100?
+
+---
+
+what's downstream safety machinery?
+
+---
+
+continue
+
+---
+
+what's the overall progress? on a scale of 1 to 100?
+
+---
+
+you've worked for a while - why there's no progress?
+
+---
+
+ok continue

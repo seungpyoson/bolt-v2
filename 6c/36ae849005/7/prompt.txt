@@ -1,0 +1,33 @@
+I want you to review all the open issues and compare it against the code and assess what are actually needed work - I want you to investigate with hard evidences
+
+---
+
+so what are you sugesting?
+
+---
+
+are you 100% confident about this suggesiton?
+
+---
+
+okay - so too verbose. I don't understand
+
+---
+
+okay deferring is not good. I need to either just close as not relevant, or have clear list of issues
+
+---
+
+close the ones with rationale on why (comment) - and create a single issue to track all these decision logs
+
+---
+
+approve
+
+---
+
+so what are the key verticals to tackle?
+
+---
+
+give me prompts for each vertical to explore and come up with respective architecture and plan and spec

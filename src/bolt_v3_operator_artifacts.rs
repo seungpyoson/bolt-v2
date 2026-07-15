@@ -118,8 +118,8 @@ pub struct LaunchIdentity {
     pub launched_at_unix_secs: u64,
     /// OS process id of the launching process.
     pub pid: u32,
-    /// Host facts observed at launch, `None` when no deploy target was
-    /// configured (no host was observed).
+    /// Current successful strict launches record observed host facts; `None` is
+    /// retained only for legacy durable launch identities.
     pub target_host_facts: Option<ObservedHostFacts>,
 }
 

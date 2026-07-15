@@ -69,9 +69,9 @@ pub struct TargetBinding {
 }
 
 impl TargetBinding {
-    /// A binding gates launch only if at least one of the observable identity
-    /// fields (region / availability_zone / instance_id) is set to a non-blank
-    /// value. `name_tag` alone is informational and does not arm verification.
+    /// Observable identity fields arm IMDS observation and comparison. Without
+    /// one, verification returns `NoTargetConfigured`, which `ops launch`
+    /// rejects. `name_tag` alone is diagnostic-only and is not compared.
     fn has_gating_field(&self) -> bool {
         [
             self.region.as_deref(),

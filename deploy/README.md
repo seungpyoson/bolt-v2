@@ -91,7 +91,7 @@ host's IMDSv2 facts against the `[target]` table and **fails the launch closed**
 
 ```toml
 [target]
-# Any subset of the gating fields; every field that is set must match the running host.
+# Set one or more observable fields; every configured observable field must match.
 region = "..."             # IMDSv2 placement region
 availability_zone = "..."  # IMDSv2 placement availability-zone
 instance_id = "..."        # IMDSv2 instance-id (most specific)
@@ -104,7 +104,7 @@ Behavior:
 - **Absent file, empty `[target]`, or only `name_tag` set:** `TargetVerify` fails before secrets or
   Start because no observable host binding can be proven. `ops status` still reports
   `no-target-configured`, with a non-actionable `unknown` advisory, so the unbound state is visible.
-- **A gating field set (`region`, `availability_zone`, and/or `instance_id`):** `TargetVerify`
+- **An observable field set (`region`, `availability_zone`, and/or `instance_id`):** `TargetVerify`
   fails the launch closed when the observed host facts mismatch, or when host facts cannot be
   observed. A region- or AZ-only binding accepts any instance within that region/AZ; set
   `instance_id` to pin a single instance.

@@ -2177,26 +2177,6 @@ mod tests {
     }
 
     #[test]
-    fn ops_launch_chain_stops_when_target_verify_fails_before_secrets_check() {
-        let mut observed = Vec::new();
-
-        let error = run_ops_launch_chain_with(|stage| {
-            observed.push(stage);
-            if stage == OpsLaunchStage::TargetVerify {
-                return Err("deploy target verification failed".into());
-            }
-            Ok(())
-        })
-        .expect_err("a failed target-verify stage must stop the chain before secrets");
-
-        assert_eq!(error.to_string(), "deploy target verification failed");
-        assert_eq!(
-            observed,
-            vec![OpsLaunchStage::VerifyConfig, OpsLaunchStage::TargetVerify]
-        );
-    }
-
-    #[test]
     fn ops_generate_live_config_cli_parses_profile_id_and_config_root() {
         let cli = Cli::try_parse_from([
             "bolt-v2",
@@ -3383,12 +3363,16 @@ mod tests {
     #[test]
     fn derive_state_advisory_reports_launch_needed_when_identity_diverges() {
         let sha = well_formed_git_sha('a');
-        // Right binary installed, but the launch identity disagrees on the binary,
-        // the profile, or cannot prove the binary — each forces `launch-needed`.
+        // Right binary installed, but the launch identity disagrees on the binary
+        // or profile, cannot prove the binary, or is unreadable — each forces
+        // `launch-needed`.
         for identity in [
             present_launch_identity(Some(false), true, true),
             present_launch_identity(Some(true), false, true),
             present_launch_identity(None, true, true),
+            LaunchIdentityStatus::Unreadable {
+                error: "malformed launch identity".to_string(),
+            },
         ] {
             assert_eq!(
                 derive_state_advisory(

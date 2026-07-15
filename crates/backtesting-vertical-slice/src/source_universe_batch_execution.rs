@@ -511,9 +511,9 @@ where
 /// artifact preflight failure collected under `continue_on_error`, a record
 /// carried forward from a prior report (only after every pinned input hash
 /// matches AND its prior output catalog re-verifies — see
-/// [`carried_output_still_verifies`]), or a pack record that still needs fetch
-/// + verify + run. The carried record is boxed to keep the variants similarly
-/// sized.
+/// [`carried_output_still_verifies`]), or a pack record that still needs to be
+/// fetched, verified, and executed. The carried record is boxed to keep the
+/// variants similarly sized.
 enum BatchWorkItem<'pack> {
     PreflightFailed {
         record: &'pack SourceUniverseExecutionPackRecord,

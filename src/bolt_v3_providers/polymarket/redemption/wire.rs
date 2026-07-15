@@ -5,6 +5,7 @@ use std::io::Cursor;
 use alloy_primitives::keccak256;
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::bounded::{
@@ -13,8 +14,9 @@ use super::bounded::{
 use super::config::{ResolvedRedemptionCredentials, ValidatedRedemptionProfile};
 use super::nonce::SafeNonce;
 use super::query::{
-    NonceRelation, PostStateRelation, RedemptionResolution, SourceBoundVerifiedOutcome,
-    VerifiedOutcomeBinding, classify_nonce_successor,
+    ExactQueryBinding, ExactQuerySet, ExpectedResponseClass, NonceRelation, PostStateRelation,
+    QueryKind, RedemptionResolution, SourceBoundVerifiedOutcome, VerifiedOutcomeBinding,
+    classify_nonce_successor,
 };
 use super::request::{
     FenceMayHaveStartedRequest, OriginalMayHaveStartedRequest, PreparedRequestPair, RequestKind,
@@ -101,6 +103,25 @@ impl BoundedWireResponse {
     }
 }
 
+fn context_failure(
+    credentials: &ResolvedRedemptionCredentials,
+    class: ProjectionClass,
+) -> WireParseError {
+    WireParseError {
+        diagnostic: WireDiagnostic {
+            class: WireFailureClass::IntegrityFailure,
+            http_status: None,
+            projection: RedactedProjection {
+                class,
+                item_count: 0,
+                byte_len: 0,
+                keyed_digest: keyed_digest(credentials.redaction_hmac_key(), &[]),
+                key_version: credentials.key_version(),
+            },
+        },
+    }
+}
+
 struct ActionSourceBinding {
     profile_digest: [u8; WORD_BYTES],
     config_digest: [u8; WORD_BYTES],
@@ -109,6 +130,9 @@ struct ActionSourceBinding {
     source_identity: [u8; WORD_BYTES],
     action_digest: [u8; WORD_BYTES],
     condition_id: [u8; WORD_BYTES],
+    pre_claim_balances: [[u8; WORD_BYTES]; 2],
+    pre_collateral_balance: [u8; WORD_BYTES],
+    expected_redeemed_collateral_balance: [u8; WORD_BYTES],
     safe_nonce: SafeNonce,
     original_body_hash: [u8; WORD_BYTES],
     fence_body_hash: [u8; WORD_BYTES],
@@ -120,20 +144,36 @@ impl ActionSourceBinding {
         credentials: &ResolvedRedemptionCredentials,
         prepared: &PreparedRequestPair,
         source_identity: [u8; WORD_BYTES],
-    ) -> Self {
+    ) -> Option<Self> {
+        if !prepared.matches_context(profile, credentials) {
+            return None;
+        }
+        let (
+            profile_digest,
+            config_digest,
+            relayer_source_identity,
+            chain_source_identity,
+            key_version,
+        ) = prepared.context_identity();
+        if source_identity != relayer_source_identity && source_identity != chain_source_identity {
+            return None;
+        }
         let [original_body_hash, fence_body_hash] = prepared.body_hashes();
-        Self {
-            profile_digest: profile.profile_digest(),
-            config_digest: profile.config_digest(),
-            key_version: credentials.key_version(),
+        Some(Self {
+            profile_digest,
+            config_digest,
+            key_version,
             chain_id: profile.chain_id(),
             source_identity,
             action_digest: prepared.action_digest(),
             condition_id: prepared.condition_id(),
+            pre_claim_balances: prepared.pre_claim_balances(),
+            pre_collateral_balance: prepared.pre_collateral_balance(),
+            expected_redeemed_collateral_balance: prepared.expected_redeemed_collateral_balance(),
             safe_nonce: prepared.safe_nonce(),
             original_body_hash,
             fence_body_hash,
-        }
+        })
     }
 
     fn matches(
@@ -143,7 +183,10 @@ impl ActionSourceBinding {
         prepared: &PreparedRequestPair,
         source_identity: [u8; WORD_BYTES],
     ) -> bool {
-        let expected = Self::for_source(profile, credentials, prepared, source_identity);
+        let Some(expected) = Self::for_source(profile, credentials, prepared, source_identity)
+        else {
+            return false;
+        };
         self.profile_digest == expected.profile_digest
             && self.config_digest == expected.config_digest
             && self.key_version == expected.key_version
@@ -151,9 +194,44 @@ impl ActionSourceBinding {
             && self.source_identity == expected.source_identity
             && self.action_digest == expected.action_digest
             && self.condition_id == expected.condition_id
+            && self.pre_claim_balances == expected.pre_claim_balances
+            && self.pre_collateral_balance == expected.pre_collateral_balance
+            && self.expected_redeemed_collateral_balance
+                == expected.expected_redeemed_collateral_balance
             && self.safe_nonce == expected.safe_nonce
             && self.original_body_hash == expected.original_body_hash
             && self.fence_body_hash == expected.fence_body_hash
+    }
+
+    fn matches_context(
+        &self,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        source_identity: [u8; WORD_BYTES],
+    ) -> bool {
+        self.profile_digest == profile.profile_digest()
+            && self.config_digest == profile.config_digest()
+            && self.key_version == credentials.key_version()
+            && self.chain_id == profile.chain_id()
+            && self.source_identity == source_identity
+    }
+}
+
+fn submit_response_binding(
+    profile: &ValidatedRedemptionProfile,
+    prepared: &PreparedRequestPair,
+    kind: RequestKind,
+) -> ExactQueryBinding {
+    let request = prepared.request(kind);
+    ExactQueryBinding {
+        kind: match kind {
+            RequestKind::Original => QueryKind::OriginalSubmit,
+            RequestKind::Fence => QueryKind::FenceSubmit,
+        },
+        request_digest: request.body_hash(),
+        path_digest: Sha256::digest(profile.submit_path().as_bytes()).into(),
+        calldata_digest: Sha256::digest(request.calldata()).into(),
+        response_class: ExpectedResponseClass::Submit,
     }
 }
 
@@ -162,16 +240,25 @@ impl ActionSourceBinding {
 pub struct RelayerSourceResponse {
     response: BoundedWireResponse,
     binding: ActionSourceBinding,
+    request_binding: ExactQueryBinding,
 }
 
 impl RelayerSourceResponse {
     #[cfg(test)]
-    pub(super) fn from_hermetic_bytes(
+    pub(super) fn from_hermetic_submit_bytes(
         authority: &impl ExactActionBinding,
         profile: &ValidatedRedemptionProfile,
         credentials: &ResolvedRedemptionCredentials,
+        kind: RequestKind,
         bytes: &[u8],
     ) -> Result<Self, WireParseError> {
+        let binding = ActionSourceBinding::for_source(
+            profile,
+            credentials,
+            authority.prepared_request_pair(),
+            profile.relayer_source_identity(),
+        )
+        .ok_or_else(|| context_failure(credentials, ProjectionClass::RelayerResponse))?;
         Ok(Self {
             response: BoundedWireResponse::from_hermetic_bytes(
                 bytes,
@@ -180,12 +267,42 @@ impl RelayerSourceResponse {
                 credentials,
                 ProjectionClass::RelayerResponse,
             )?,
-            binding: ActionSourceBinding::for_source(
+            binding,
+            request_binding: submit_response_binding(
+                profile,
+                authority.prepared_request_pair(),
+                kind,
+            ),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_hermetic_query_bytes(
+        authority: &impl ExactActionBinding,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+        queries: &ExactQuerySet,
+        bytes: &[u8],
+    ) -> Result<Self, WireParseError> {
+        let binding = ActionSourceBinding::for_source(
+            profile,
+            credentials,
+            authority.prepared_request_pair(),
+            profile.relayer_source_identity(),
+        )
+        .ok_or_else(|| context_failure(credentials, ProjectionClass::RelayerResponse))?;
+        Ok(Self {
+            response: BoundedWireResponse::from_hermetic_bytes(
+                bytes,
+                profile.max_relayer_response_bytes(),
                 profile,
                 credentials,
-                authority.prepared_request_pair(),
-                profile.relayer_source_identity(),
-            ),
+                ProjectionClass::RelayerResponse,
+            )?,
+            binding,
+            request_binding: queries
+                .binding(QueryKind::RelayerTransaction)
+                .map_err(|_| context_failure(credentials, ProjectionClass::RelayerResponse))?,
         })
     }
 
@@ -207,7 +324,22 @@ impl RelayerSourceResponse {
         authority: &impl ExactActionBinding,
         profile: &ValidatedRedemptionProfile,
         credentials: &ResolvedRedemptionCredentials,
+        kind: RequestKind,
     ) -> Result<RelayerObservation, WireParseError> {
+        if !authority
+            .prepared_request_pair()
+            .matches_context(profile, credentials)
+            || !self.binding.matches_context(
+                profile,
+                credentials,
+                profile.relayer_source_identity(),
+            )
+        {
+            return Err(context_failure(
+                credentials,
+                ProjectionClass::RelayerResponse,
+            ));
+        }
         if !self.binding.matches(
             profile,
             credentials,
@@ -217,6 +349,13 @@ impl RelayerSourceResponse {
             return Err(self
                 .response
                 .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        if self.request_binding
+            != submit_response_binding(profile, authority.prepared_request_pair(), kind)
+        {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IntegrityFailure, credentials));
         }
         let parsed: SubmitWire<'_> = serde_json::from_slice(self.response.bytes.as_slice())
             .map_err(|_| {
@@ -250,9 +389,24 @@ impl RelayerSourceResponse {
         authority: &impl ExactActionBinding,
         profile: &ValidatedRedemptionProfile,
         credentials: &ResolvedRedemptionCredentials,
+        queries: &ExactQuerySet,
         expected: &RelayerObservation,
         kind: RequestKind,
     ) -> Result<RelayerObservation, WireParseError> {
+        if !authority
+            .prepared_request_pair()
+            .matches_context(profile, credentials)
+            || !self.binding.matches_context(
+                profile,
+                credentials,
+                profile.relayer_source_identity(),
+            )
+        {
+            return Err(context_failure(
+                credentials,
+                ProjectionClass::RelayerResponse,
+            ));
+        }
         if !self.binding.matches(
             profile,
             credentials,
@@ -262,6 +416,11 @@ impl RelayerSourceResponse {
             return Err(self
                 .response
                 .failure(WireFailureClass::IdentityMismatch, credentials));
+        }
+        if queries.binding(QueryKind::RelayerTransaction).ok() != Some(self.request_binding) {
+            return Err(self
+                .response
+                .failure(WireFailureClass::IntegrityFailure, credentials));
         }
         let exact: ExactOne<'_> =
             serde_json::from_slice(self.response.bytes.as_slice()).map_err(|_| {
@@ -333,6 +492,7 @@ pub struct FinalizedChainSourceResponse {
     binding: ActionSourceBinding,
     finalized_block_number: [u8; WORD_BYTES],
     finalized_block_hash: [u8; WORD_BYTES],
+    request_binding: ExactQueryBinding,
 }
 
 impl FinalizedChainSourceResponse {
@@ -341,10 +501,19 @@ impl FinalizedChainSourceResponse {
         authority: &impl ExactActionBinding,
         profile: &ValidatedRedemptionProfile,
         credentials: &ResolvedRedemptionCredentials,
+        queries: &ExactQuerySet,
+        kind: QueryKind,
         finalized_block_number: [u8; WORD_BYTES],
         finalized_block_hash: [u8; WORD_BYTES],
         bytes: &[u8],
     ) -> Result<Self, WireParseError> {
+        let binding = ActionSourceBinding::for_source(
+            profile,
+            credentials,
+            authority.prepared_request_pair(),
+            profile.chain_source_identity(),
+        )
+        .ok_or_else(|| context_failure(credentials, ProjectionClass::ChainResponse))?;
         Ok(Self {
             response: BoundedWireResponse::from_hermetic_bytes(
                 bytes,
@@ -353,14 +522,12 @@ impl FinalizedChainSourceResponse {
                 credentials,
                 ProjectionClass::ChainResponse,
             )?,
-            binding: ActionSourceBinding::for_source(
-                profile,
-                credentials,
-                authority.prepared_request_pair(),
-                profile.chain_source_identity(),
-            ),
+            binding,
             finalized_block_number,
             finalized_block_hash,
+            request_binding: queries
+                .binding(kind)
+                .map_err(|_| context_failure(credentials, ProjectionClass::ChainResponse))?,
         })
     }
 
@@ -376,11 +543,20 @@ impl FinalizedChainSourceResponse {
             && self.binding.source_identity == other.binding.source_identity
             && self.binding.action_digest == other.binding.action_digest
             && self.binding.condition_id == other.binding.condition_id
+            && self.binding.pre_claim_balances == other.binding.pre_claim_balances
+            && self.binding.pre_collateral_balance == other.binding.pre_collateral_balance
+            && self.binding.expected_redeemed_collateral_balance
+                == other.binding.expected_redeemed_collateral_balance
             && self.binding.safe_nonce == other.binding.safe_nonce
             && self.binding.original_body_hash == other.binding.original_body_hash
             && self.binding.fence_body_hash == other.binding.fence_body_hash
             && self.finalized_block_number == other.finalized_block_number
             && self.finalized_block_hash == other.finalized_block_hash
+    }
+
+    fn matches_query(&self, queries: &ExactQuerySet, kind: QueryKind) -> bool {
+        queries.binding(kind).ok() == Some(self.request_binding)
+            && self.request_binding.kind == kind
     }
 
     fn matches_action(
@@ -411,6 +587,7 @@ pub struct ExactQueryResponses {
 impl ExactQueryResponses {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        queries: &ExactQuerySet,
         credentials: &ResolvedRedemptionCredentials,
         nonce: FinalizedChainSourceResponse,
         original_execution: FinalizedChainSourceResponse,
@@ -419,18 +596,18 @@ impl ExactQueryResponses {
         safe_boundary: FinalizedChainSourceResponse,
         finalized_head: FinalizedChainSourceResponse,
     ) -> Result<Self, WireParseError> {
-        for response in [
-            &nonce,
-            &original_execution,
-            &fence_execution,
-            &post_state,
-            &safe_boundary,
-            &finalized_head,
+        for (response, kind) in [
+            (&nonce, QueryKind::SafeNonce),
+            (&original_execution, QueryKind::OriginalFinalizedReceiptLogs),
+            (&fence_execution, QueryKind::FenceFinalizedReceiptLogs),
+            (&post_state, QueryKind::RawPostState),
+            (&safe_boundary, QueryKind::SafeBoundary),
+            (&finalized_head, QueryKind::FinalizedHead),
         ] {
-            if !nonce.same_binding(response) {
+            if !nonce.same_binding(response) || !response.matches_query(queries, kind) {
                 return Err(response
                     .response
-                    .failure(WireFailureClass::IdentityMismatch, credentials));
+                    .failure(WireFailureClass::IntegrityFailure, credentials));
             }
         }
         Ok(Self {
@@ -513,6 +690,27 @@ impl ExactQueryResponses {
         self.verify(profile, credentials, attempt.prepared(), true)
     }
 
+    pub(super) fn matches_context_binding(
+        &self,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+    ) -> bool {
+        [
+            &self.nonce,
+            &self.original_execution,
+            &self.fence_execution,
+            &self.post_state,
+            &self.safe_boundary,
+            &self.finalized_head,
+        ]
+        .iter()
+        .all(|response| {
+            response
+                .binding
+                .matches_context(profile, credentials, profile.chain_source_identity())
+        })
+    }
+
     fn verify(
         &self,
         profile: &ValidatedRedemptionProfile,
@@ -520,6 +718,9 @@ impl ExactQueryResponses {
         prepared: &PreparedRequestPair,
         fence_durably_authorized: bool,
     ) -> Result<SourceBoundVerifiedOutcome, WireParseError> {
+        if !prepared.matches_context(profile, credentials) {
+            return Err(context_failure(credentials, ProjectionClass::ChainResponse));
+        }
         for response in [
             &self.nonce,
             &self.original_execution,
@@ -528,6 +729,13 @@ impl ExactQueryResponses {
             &self.safe_boundary,
             &self.finalized_head,
         ] {
+            if !response.binding.matches_context(
+                profile,
+                credentials,
+                profile.chain_source_identity(),
+            ) {
+                return Err(context_failure(credentials, ProjectionClass::ChainResponse));
+            }
             if !response.matches_action(profile, credentials, prepared) {
                 return Err(response
                     .response
@@ -558,7 +766,12 @@ impl ExactQueryResponses {
         let boundary_number = parse_quantity_word(boundary.block_number);
         let boundary_hash = parse_word(boundary.block_hash);
         let on_chain_nonce = parse_word(nonce.result).map(SafeNonce::from_be_bytes);
-        let post_balances = [parse_word(post.results[0]), parse_word(post.results[1])];
+        let post_claim_balances = [
+            parse_word(post.claim_results[0]),
+            parse_word(post.claim_results[1]),
+        ];
+        let post_collateral_balance = parse_word(post.collateral_balance);
+        let (collateral, output_asset) = profile.post_state_assets();
         let (factory, implementation, fallback_handler, guard) = profile.safe_boundary();
         let common_identity_matches = finalized.query_id == "finalized_head"
             && finalized.chain_id == profile.chain_id()
@@ -575,6 +788,9 @@ impl ExactQueryResponses {
             && decode_address(post.target)
                 == Some(prepared.request(RequestKind::Original).identity().target())
             && parse_word(post.condition_id) == Some(prepared.condition_id())
+            && decode_address(post.collateral) == Some(collateral)
+            && decode_address(post.output_asset) == Some(output_asset)
+            && decode_address(post.account) == Some(profile.safe_address())
             && post_number == finalized_number
             && post_hash == finalized_hash
             && boundary.query_id == "safe_boundary"
@@ -616,14 +832,20 @@ impl ExactQueryResponses {
         let execution_identities_match = original_receipt.is_some() && fence_receipt.is_some();
         let original_present = original_receipt.flatten();
         let fence_present = fence_receipt.flatten();
-        let post_state = match post_balances {
-            [Some(first), Some(second)] if [first, second] == [[0; WORD_BYTES]; 2] => {
+        let post_state = match (post_claim_balances, post_collateral_balance) {
+            ([Some(first), Some(second)], Some(collateral_balance))
+                if [first, second] == [[0; WORD_BYTES]; 2]
+                    && collateral_balance == prepared.expected_redeemed_collateral_balance() =>
+            {
                 Some(PostStateRelation::Redeemed)
             }
-            [Some(first), Some(second)] if [first, second] == prepared.pre_balances() => {
+            ([Some(first), Some(second)], Some(collateral_balance))
+                if [first, second] == prepared.pre_claim_balances()
+                    && collateral_balance == prepared.pre_collateral_balance() =>
+            {
                 Some(PostStateRelation::Unchanged)
             }
-            [Some(_), Some(_)] => Some(PostStateRelation::Drifted),
+            ([Some(_), Some(_)], Some(_)) => Some(PostStateRelation::Drifted),
             _ => None,
         };
         let nonce_relation = on_chain_nonce.map(|observed| {
@@ -669,7 +891,6 @@ impl ExactQueryResponses {
         Ok(SourceBoundVerifiedOutcome::from_raw_verifier(
             resolution,
             profile,
-            credentials,
             prepared,
             VerifiedOutcomeBinding {
                 finalized_block_number: self.finalized_head.finalized_block_number,
@@ -846,6 +1067,7 @@ pub enum WireFailureClass {
     Malformed,
     WrongItemCount,
     IdentityMismatch,
+    IntegrityFailure,
     FieldTooLarge,
     UnknownState,
 }
@@ -1180,12 +1402,20 @@ struct PostStateWire<'a> {
     target: &'a str,
     #[serde(rename = "conditionId", borrow)]
     condition_id: &'a str,
+    #[serde(borrow)]
+    collateral: &'a str,
+    #[serde(rename = "outputAsset", borrow)]
+    output_asset: &'a str,
+    #[serde(borrow)]
+    account: &'a str,
     #[serde(rename = "blockNumber", borrow)]
     block_number: &'a str,
     #[serde(rename = "blockHash", borrow)]
     block_hash: &'a str,
-    #[serde(borrow)]
-    results: [&'a str; 2],
+    #[serde(rename = "claimResults", borrow)]
+    claim_results: [&'a str; 2],
+    #[serde(rename = "collateralBalance", borrow)]
+    collateral_balance: &'a str,
 }
 
 #[derive(Deserialize)]

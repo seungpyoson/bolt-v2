@@ -232,6 +232,46 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         )
         self.assert_rejected(root, "exact terminal consumption")
 
+    def test_two_claim_only_terminal_state_is_rejected(self) -> None:
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/wire.rs",
+            "    collateral_balance: &'a str,\n",
+            "",
+        )
+        self.assert_rejected(root, "post-state balance contract is incomplete")
+
+    def test_runtime_dummy_index_sets_cannot_be_reconstructed(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "config.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nstruct BadRuntimeIndexes { dummy_index_sets: [1, 2] }\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "runtime dummy index sets are reconstructed")
+
+    def test_prepared_action_must_own_exact_context_identity(self) -> None:
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/request.rs",
+            "    profile_digest: [u8; WORD_BYTES],\n",
+            "",
+        )
+        self.assert_rejected(root, "prepared action context binding is incomplete")
+
+    def test_source_response_must_own_exact_query_binding(self) -> None:
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/wire.rs",
+            "    request_binding: ExactQueryBinding,\n",
+            "",
+        )
+        self.assert_rejected(root, "source response query binding is incomplete")
+
 
 if __name__ == "__main__":
     import lane_governor

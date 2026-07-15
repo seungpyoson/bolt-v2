@@ -11,7 +11,9 @@ const WORD_BYTES: usize = 32;
 /// mint it after durably acquiring the condition mutation lease.
 pub struct ExactConditionSnapshotLease {
     condition_id: [u8; WORD_BYTES],
-    pre_balances: [[u8; WORD_BYTES]; 2],
+    pre_claim_balances: [[u8; WORD_BYTES]; 2],
+    pre_collateral_balance: [u8; WORD_BYTES],
+    expected_redeemed_collateral_balance: [u8; WORD_BYTES],
     snapshot_generation: u64,
 }
 
@@ -53,10 +55,20 @@ pub struct FenceMayHaveStartedPermit {
 }
 
 impl ExactConditionSnapshotLease {
-    pub(super) fn parts(&self) -> ([u8; WORD_BYTES], [[u8; WORD_BYTES]; 2], u64) {
+    pub(super) fn parts(
+        &self,
+    ) -> (
+        [u8; WORD_BYTES],
+        [[u8; WORD_BYTES]; 2],
+        [u8; WORD_BYTES],
+        [u8; WORD_BYTES],
+        u64,
+    ) {
         (
             self.condition_id,
-            self.pre_balances,
+            self.pre_claim_balances,
+            self.pre_collateral_balance,
+            self.expected_redeemed_collateral_balance,
             self.snapshot_generation,
         )
     }
@@ -126,7 +138,9 @@ macro_rules! zeroize_on_drop {
 zeroize_on_drop!(
     ExactConditionSnapshotLease,
     condition_id,
-    pre_balances,
+    pre_claim_balances,
+    pre_collateral_balance,
+    expected_redeemed_collateral_balance,
     snapshot_generation
 );
 zeroize_on_drop!(
@@ -163,12 +177,16 @@ pub(super) mod hermetic {
 
     pub(super) fn snapshot(
         condition_id: [u8; WORD_BYTES],
-        pre_balances: [[u8; WORD_BYTES]; 2],
+        pre_claim_balances: [[u8; WORD_BYTES]; 2],
+        pre_collateral_balance: [u8; WORD_BYTES],
+        expected_redeemed_collateral_balance: [u8; WORD_BYTES],
         snapshot_generation: u64,
     ) -> ExactConditionSnapshotLease {
         ExactConditionSnapshotLease {
             condition_id,
-            pre_balances,
+            pre_claim_balances,
+            pre_collateral_balance,
+            expected_redeemed_collateral_balance,
             snapshot_generation,
         }
     }

@@ -160,6 +160,15 @@ def _function_signatures(tokens: list[str]) -> dict[str, list[list[str]]]:
     return signatures
 
 
+def _struct_fields(source: str, name: str) -> set[str]:
+    match = re.search(
+        rf"(?:pub(?:\([^)]*\))?\s+)?struct\s+{name}(?:<'[^>]+>)?\s*{{([^}}]*)}}",
+        source,
+        re.S,
+    )
+    return set(re.findall(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:", match.group(1), re.M)) if match else set()
+
+
 def verify_structural_reachability(root: pathlib.Path) -> list[str]:
     errors: list[str] = []
     provider = pathlib.Path("src/bolt_v3_providers/polymarket.rs")
@@ -290,6 +299,7 @@ def verify_opaque_surfaces(root: pathlib.Path) -> list[str]:
     required_binding = {
         "resolution", "profile_digest", "config_digest", "key_version", "chain_id",
         "relayer_source_identity", "chain_source_identity", "action_digest", "condition_id",
+        "pre_claim_balances", "pre_collateral_balance", "expected_redeemed_collateral_balance",
         "safe_nonce", "original_body_hash", "fence_body_hash", "finalized_block_number",
         "finalized_block_hash", "fence_authorized",
     }
@@ -304,6 +314,47 @@ def verify_opaque_surfaces(root: pathlib.Path) -> list[str]:
             errors.append("AO-REDEEM exact terminal consumption lacks source capability binding")
     if re.search(r"pub fn resolution\s*\(", query_source):
         errors.append("AO-REDEEM terminal resolution bypasses exact terminal consumption")
+    request_source = (root / REDEMPTION_ROOT / "request.rs").read_text(encoding="utf-8")
+    capability_source = (root / REDEMPTION_ROOT / "capability.rs").read_text(encoding="utf-8")
+    required_state = {
+        "pre_claim_balances", "pre_collateral_balance",
+        "expected_redeemed_collateral_balance",
+    }
+    if not required_state.issubset(_struct_fields(request_source, "PreparedRequestPair")) or not required_state.issubset(
+        _struct_fields(capability_source, "ExactConditionSnapshotLease")
+    ):
+        errors.append("AO-REDEEM post-state balance contract is incomplete")
+    required_context = {
+        "profile_digest", "config_digest", "relayer_source_identity", "chain_source_identity",
+        "credential_key_version",
+    }
+    request_signatures = _function_signatures(rust_tokens(request_source))
+    context_signatures = request_signatures.get("matches_context", [])
+    if not required_context.issubset(_struct_fields(request_source, "PreparedRequestPair")) or not any(
+        {"ValidatedRedemptionProfile", "ResolvedRedemptionCredentials", "bool"}.issubset(signature)
+        for signature in map(set, context_signatures)
+    ):
+        errors.append("AO-REDEEM prepared action context binding is incomplete")
+    config_source = (root / REDEMPTION_ROOT / "config.rs").read_text(encoding="utf-8")
+    if re.search(r"dummy_index_sets\s*:\s*\[\s*1\s*,\s*2\s*\]", config_source):
+        errors.append("AO-REDEEM runtime dummy index sets are reconstructed")
+    wire_source = (root / REDEMPTION_ROOT / "wire.rs").read_text(encoding="utf-8")
+    query_source = (root / REDEMPTION_ROOT / "query.rs").read_text(encoding="utf-8")
+    exact_query_fields = {
+        "kind", "request_digest", "path_digest", "calldata_digest", "response_class",
+    }
+    response_binding_fields = {
+        name: _struct_fields(wire_source, name)
+        for name in ("RelayerSourceResponse", "FinalizedChainSourceResponse")
+    }
+    query_signatures = _function_signatures(rust_tokens(wire_source)).get("matches_query", [])
+    if _struct_fields(query_source, "ExactQueryBinding") != exact_query_fields or any(
+        "request_binding" not in fields for fields in response_binding_fields.values()
+    ) or not any(
+        {"ExactQuerySet", "QueryKind", "bool"}.issubset(signature)
+        for signature in map(set, query_signatures)
+    ):
+        errors.append("AO-REDEEM source response query binding is incomplete")
     return errors
 
 
@@ -326,6 +377,8 @@ def verify(root: pathlib.Path) -> list[str]:
     adapter, safe, relayer = manifest.get("adapter", {}), manifest.get("safe", {}), manifest.get("relayer", {})
     if adapter.get("external_abi") != "redeemPositions(address,bytes32,bytes32,uint256[])" or adapter.get("ignored_argument_indices") != [0, 1, 3]:
         errors.append("AO-REDEEM adapter ABI/dummy arguments are not exactly source-fenced")
+    if manifest.get("adapter_arguments", {}).get("dummy_index_sets") != [1, 2]:
+        errors.append("AO-REDEEM adapter dummy index structural contract drifted")
     if safe.get("nonce_abi") != "nonce()" or safe.get("nonce_selector") != "0xaffed0e0" or safe.get("operation") != "call" or safe.get("value") != "0":
         errors.append("AO-REDEEM same-nonce fence ABI drifted")
     if relayer.get("explicit_nonce") != "source-proven" or relayer.get("competing_same_nonce") != "unproven":
@@ -337,8 +390,8 @@ def verify(root: pathlib.Path) -> list[str]:
         or not str(rpc.get("origin", "")).startswith("https://")
         or set(rpc)
         != {
-            "origin", "max_origin_bytes", "max_response_bytes", "overflow_probe_bytes",
-            "max_receipt_logs", "finality_confirmations",
+            "origin", "path", "max_origin_bytes", "max_path_bytes", "max_response_bytes",
+            "overflow_probe_bytes", "max_receipt_logs", "finality_confirmations",
         }
     ):
         errors.append("AO-REDEEM configured source identities are not exact and source-fenced")
@@ -397,6 +450,14 @@ def verify(root: pathlib.Path) -> list[str]:
         errors.append("AO-REDEEM exact raw response set is partial or open")
     if "required_confirmations" not in wire_source or "confirmed_at" not in wire_source:
         errors.append("AO-REDEEM terminal outcomes omit configured finality")
+    post_state = re.search(r"struct PostStateWire<'a>\s*{([^}]*)}", wire_source, re.S)
+    required_post_fields = {
+        "query_id", "target", "condition_id", "collateral", "output_asset", "account",
+        "block_number", "block_hash", "claim_results", "collateral_balance",
+    }
+    actual_post_fields = set(re.findall(r"^\s*(\w+)\s*:", post_state.group(1), re.M)) if post_state else set()
+    if actual_post_fields != required_post_fields:
+        errors.append("AO-REDEEM post-state balance contract is incomplete")
 
     errors.extend(verify_structural_reachability(root))
     errors.extend(verify_capabilities(root))
@@ -419,6 +480,13 @@ def verify(root: pathlib.Path) -> list[str]:
         "fabricated_reader_has_no_production_proof_path",
         "cross_action_outcome_reuse_is_rejected",
         "profile_key_source_and_finalized_bindings_fail_closed",
+        "standard_negative_risk_original_and_fence_post_state_fixtures",
+        "zero_and_dust_collateral_balances_are_exact",
+        "wrong_output_and_post_state_drift_fail_closed",
+        "swapped_or_replayed_post_state_source_fails_closed",
+        "consistent_dummy_index_set_mutation_is_not_replaced",
+        "old_prepared_new_profile_key_and_source_fail_closed",
+        "swapped_query_capabilities_are_rejected_before_parsing",
     )
     for name in required_tests:
         if f"fn {name}" not in tests:

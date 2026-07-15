@@ -5,11 +5,14 @@ use super::request::{
     FenceMayHaveStartedRequest, OriginalMayHaveStartedRequest, PreparedRequestPair, RequestKind,
 };
 use super::wire::{ExactQueryResponses, RelayerObservation};
+use sha2::{Digest, Sha256};
 
 const WORD_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryKind {
+    OriginalSubmit,
+    FenceSubmit,
     RelayerTransaction,
     SafeNonce,
     OriginalFinalizedReceiptLogs,
@@ -19,17 +22,61 @@ pub enum QueryKind {
     SafeBoundary,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExpectedResponseClass {
+    Submit,
+    RelayerTransaction,
+    SafeNonce,
+    ExecutionReceipt,
+    PostState,
+    SafeBoundary,
+    FinalizedHead,
+}
+
+impl ExpectedResponseClass {
+    fn for_kind(kind: QueryKind) -> Self {
+        match kind {
+            QueryKind::OriginalSubmit | QueryKind::FenceSubmit => Self::Submit,
+            QueryKind::RelayerTransaction => Self::RelayerTransaction,
+            QueryKind::SafeNonce => Self::SafeNonce,
+            QueryKind::OriginalFinalizedReceiptLogs | QueryKind::FenceFinalizedReceiptLogs => {
+                Self::ExecutionReceipt
+            }
+            QueryKind::RawPostState => Self::PostState,
+            QueryKind::SafeBoundary => Self::SafeBoundary,
+            QueryKind::FinalizedHead => Self::FinalizedHead,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExactQueryBinding {
+    pub(super) kind: QueryKind,
+    pub(super) request_digest: [u8; WORD_BYTES],
+    pub(super) path_digest: [u8; WORD_BYTES],
+    pub(super) calldata_digest: [u8; WORD_BYTES],
+    pub(super) response_class: ExpectedResponseClass,
+}
+
 #[derive(Clone, Copy)]
 struct QueryOffset {
     kind: QueryKind,
     start: usize,
     len: usize,
+    binding: ExactQueryBinding,
 }
 
 const EMPTY_OFFSET: QueryOffset = QueryOffset {
     kind: QueryKind::SafeNonce,
     start: 0,
     len: 0,
+    binding: ExactQueryBinding {
+        kind: QueryKind::SafeNonce,
+        request_digest: [0; WORD_BYTES],
+        path_digest: [0; WORD_BYTES],
+        calldata_digest: [0; WORD_BYTES],
+        response_class: ExpectedResponseClass::SafeNonce,
+    },
 };
 
 pub struct ExactQuerySet {
@@ -60,25 +107,38 @@ impl ExactQuerySet {
         prepared: &PreparedRequestPair,
         relayer: Option<&RelayerObservation>,
     ) -> Result<Self, QueryError> {
+        if !prepared.matches_profile(profile) {
+            return Err(QueryError::IntegrityFailure);
+        }
         let mut result = Self::empty(profile);
         if let Some(observation) = relayer {
             let transaction_id = observation.transaction_id();
-            result.append(QueryKind::RelayerTransaction, |bytes| {
-                bytes.extend(br#"{"kind":"relayer_transaction","path":"#)?;
-                bytes.append_json_string(profile.transaction_path().as_bytes())?;
-                bytes.extend(br#","transaction_id":"#)?;
-                bytes.append_json_string(transaction_id)?;
-                bytes.push(b'}')
-            })?;
+            result.append(
+                QueryKind::RelayerTransaction,
+                profile.transaction_path().as_bytes(),
+                &[],
+                |bytes| {
+                    bytes.extend(br#"{"kind":"relayer_transaction","path":"#)?;
+                    bytes.append_json_string(profile.transaction_path().as_bytes())?;
+                    bytes.extend(br#","transaction_id":"#)?;
+                    bytes.append_json_string(transaction_id)?;
+                    bytes.push(b'}')
+                },
+            )?;
         }
         let safe = profile.safe_address();
-        result.append(QueryKind::SafeNonce, |bytes| {
-            bytes.extend(br#"{"kind":"safe_nonce","safe":"0x"#)?;
-            bytes.append_hex(&safe)?;
-            bytes.extend(br#","calldata":"0x"#)?;
-            bytes.append_hex(&profile.nonce_selector())?;
-            bytes.extend(br#""}"#)
-        })?;
+        result.append(
+            QueryKind::SafeNonce,
+            profile.chain_path().as_bytes(),
+            &profile.nonce_selector(),
+            |bytes| {
+                bytes.extend(br#"{"kind":"safe_nonce","safe":"0x"#)?;
+                bytes.append_hex(&safe)?;
+                bytes.extend(br#","calldata":"0x"#)?;
+                bytes.append_hex(&profile.nonce_selector())?;
+                bytes.extend(br#""}"#)
+            },
+        )?;
         for (kind, request_kind) in [
             (
                 QueryKind::OriginalFinalizedReceiptLogs,
@@ -90,47 +150,76 @@ impl ExactQuerySet {
                 .request(request_kind)
                 .identity()
                 .safe_transaction_hash();
-            result.append(kind, |bytes| {
-                bytes.extend(br#"{"kind":"finalized_receipt_logs","safe":"0x"#)?;
-                bytes.append_hex(&safe)?;
-                bytes.extend(br#","safe_transaction_hash":"0x"#)?;
-                bytes.append_hex(&hash)?;
-                bytes.extend(br#"","required_confirmations":"#)?;
-                append_decimal(bytes, profile.finality_confirmations())?;
-                bytes.extend(br#","max_logs":"#)?;
-                append_decimal(bytes, profile.max_receipt_logs() as u64)?;
-                bytes.push(b'}')
-            })?;
+            result.append(
+                kind,
+                profile.chain_path().as_bytes(),
+                prepared.request(request_kind).calldata(),
+                |bytes| {
+                    bytes.extend(br#"{"kind":"finalized_receipt_logs","safe":"0x"#)?;
+                    bytes.append_hex(&safe)?;
+                    bytes.extend(br#","safe_transaction_hash":"0x"#)?;
+                    bytes.append_hex(&hash)?;
+                    bytes.extend(br#"","required_confirmations":"#)?;
+                    append_decimal(bytes, profile.finality_confirmations())?;
+                    bytes.extend(br#","max_logs":"#)?;
+                    append_decimal(bytes, profile.max_receipt_logs() as u64)?;
+                    bytes.push(b'}')
+                },
+            )?;
         }
         let request = prepared.request(RequestKind::Original);
-        result.append(QueryKind::RawPostState, |bytes| {
-            bytes.extend(br#"{"kind":"raw_post_state","target":"0x"#)?;
-            bytes.append_hex(&request.identity().target())?;
-            bytes.extend(br#","condition_id":"0x"#)?;
-            bytes.append_hex(&prepared.condition_id())?;
-            bytes.extend(br#","pre_balances":["0x"#)?;
-            bytes.append_hex(&prepared.pre_balances()[0])?;
-            bytes.extend(br#"","0x"#)?;
-            bytes.append_hex(&prepared.pre_balances()[1])?;
-            bytes.extend(br#""]}"#)
-        })?;
+        let (collateral, output_asset) = profile.post_state_assets();
+        result.append(
+            QueryKind::RawPostState,
+            profile.chain_path().as_bytes(),
+            request.calldata(),
+            |bytes| {
+                bytes.extend(br#"{"kind":"raw_post_state","target":"0x"#)?;
+                bytes.append_hex(&request.identity().target())?;
+                bytes.extend(br#","condition_id":"0x"#)?;
+                bytes.append_hex(&prepared.condition_id())?;
+                bytes.extend(br#","collateral":"0x"#)?;
+                bytes.append_hex(&collateral)?;
+                bytes.extend(br#","output_asset":"0x"#)?;
+                bytes.append_hex(&output_asset)?;
+                bytes.extend(br#","account":"0x"#)?;
+                bytes.append_hex(&safe)?;
+                bytes.extend(br#","pre_claim_balances":["0x"#)?;
+                bytes.append_hex(&prepared.pre_claim_balances()[0])?;
+                bytes.extend(br#"","0x"#)?;
+                bytes.append_hex(&prepared.pre_claim_balances()[1])?;
+                bytes.extend(br#""],"pre_collateral_balance":"0x"#)?;
+                bytes.append_hex(&prepared.pre_collateral_balance())?;
+                bytes.extend(br#"","expected_redeemed_collateral_balance":"0x"#)?;
+                bytes.append_hex(&prepared.expected_redeemed_collateral_balance())?;
+                bytes.extend(br#""}"#)
+            },
+        )?;
         let (factory, implementation, fallback_handler, guard) = profile.safe_boundary();
-        result.append(QueryKind::SafeBoundary, |bytes| {
-            bytes.extend(br#"{"kind":"safe_boundary","safe":"0x"#)?;
-            bytes.append_hex(&safe)?;
-            bytes.extend(br#","factory":"0x"#)?;
-            bytes.append_hex(&factory)?;
-            bytes.extend(br#","implementation":"0x"#)?;
-            bytes.append_hex(&implementation)?;
-            bytes.extend(br#","fallback_handler":"0x"#)?;
-            bytes.append_hex(&fallback_handler)?;
-            bytes.extend(br#","guard":"0x"#)?;
-            bytes.append_hex(&guard)?;
-            bytes.extend(br#"","modules":[]}"#)
-        })?;
-        result.append(QueryKind::FinalizedHead, |bytes| {
-            bytes.extend(br#"{"kind":"finalized_head"}"#)
-        })?;
+        result.append(
+            QueryKind::SafeBoundary,
+            profile.chain_path().as_bytes(),
+            &[],
+            |bytes| {
+                bytes.extend(br#"{"kind":"safe_boundary","safe":"0x"#)?;
+                bytes.append_hex(&safe)?;
+                bytes.extend(br#","factory":"0x"#)?;
+                bytes.append_hex(&factory)?;
+                bytes.extend(br#","implementation":"0x"#)?;
+                bytes.append_hex(&implementation)?;
+                bytes.extend(br#","fallback_handler":"0x"#)?;
+                bytes.append_hex(&fallback_handler)?;
+                bytes.extend(br#","guard":"0x"#)?;
+                bytes.append_hex(&guard)?;
+                bytes.extend(br#"","modules":[]}"#)
+            },
+        )?;
+        result.append(
+            QueryKind::FinalizedHead,
+            profile.chain_path().as_bytes(),
+            &[],
+            |bytes| bytes.extend(br#"{"kind":"finalized_head"}"#),
+        )?;
         Ok(result)
     }
 
@@ -164,6 +253,17 @@ impl ExactQuerySet {
         Ok(&self.bytes.as_slice()[offset.start..offset.start + offset.len])
     }
 
+    pub(super) fn binding(&self, kind: QueryKind) -> Result<ExactQueryBinding, QueryError> {
+        let mut matches = self.offsets[..self.len]
+            .iter()
+            .filter(|offset| offset.kind == kind);
+        let binding = matches.next().ok_or(QueryError::Index)?.binding;
+        if matches.next().is_some() {
+            return Err(QueryError::BindingMismatch);
+        }
+        Ok(binding)
+    }
+
     fn empty(profile: &ValidatedRedemptionProfile) -> Self {
         Self {
             bytes: CappedBytes::with_capacity(profile.max_query_bytes()),
@@ -175,6 +275,8 @@ impl ExactQuerySet {
     fn append(
         &mut self,
         kind: QueryKind,
+        path: &[u8],
+        calldata: &[u8],
         write: impl FnOnce(&mut CappedBytes) -> Result<(), super::bounded::CappedIoError>,
     ) -> Result<(), QueryError> {
         if self.len == self.offsets.len() {
@@ -183,7 +285,19 @@ impl ExactQuerySet {
         let start = self.bytes.len();
         write(&mut self.bytes).map_err(|_| QueryError::Capacity)?;
         let len = self.bytes.len() - start;
-        self.offsets[self.len] = QueryOffset { kind, start, len };
+        let request_digest = Sha256::digest(&self.bytes.as_slice()[start..start + len]).into();
+        self.offsets[self.len] = QueryOffset {
+            kind,
+            start,
+            len,
+            binding: ExactQueryBinding {
+                kind,
+                request_digest,
+                path_digest: Sha256::digest(path).into(),
+                calldata_digest: Sha256::digest(calldata).into(),
+                response_class: ExpectedResponseClass::for_kind(kind),
+            },
+        };
         self.len += 1;
         Ok(())
     }
@@ -214,6 +328,7 @@ pub enum QueryError {
     Capacity,
     Index,
     BindingMismatch,
+    IntegrityFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +375,9 @@ pub struct SourceBoundVerifiedOutcome {
     chain_source_identity: [u8; WORD_BYTES],
     action_digest: [u8; WORD_BYTES],
     condition_id: [u8; WORD_BYTES],
+    pre_claim_balances: [[u8; WORD_BYTES]; 2],
+    pre_collateral_balance: [u8; WORD_BYTES],
+    expected_redeemed_collateral_balance: [u8; WORD_BYTES],
     safe_nonce: SafeNonce,
     original_body_hash: [u8; WORD_BYTES],
     fence_body_hash: [u8; WORD_BYTES],
@@ -278,21 +396,30 @@ impl SourceBoundVerifiedOutcome {
     pub(super) fn from_raw_verifier(
         resolution: RedemptionResolution,
         profile: &ValidatedRedemptionProfile,
-        credentials: &ResolvedRedemptionCredentials,
         prepared: &PreparedRequestPair,
         binding: VerifiedOutcomeBinding,
     ) -> Self {
         let [original_body_hash, fence_body_hash] = prepared.body_hashes();
+        let (
+            profile_digest,
+            config_digest,
+            relayer_source_identity,
+            chain_source_identity,
+            key_version,
+        ) = prepared.context_identity();
         Self {
             resolution,
-            profile_digest: profile.profile_digest(),
-            config_digest: profile.config_digest(),
-            key_version: credentials.key_version(),
+            profile_digest,
+            config_digest,
+            key_version,
             chain_id: profile.chain_id(),
-            relayer_source_identity: profile.relayer_source_identity(),
-            chain_source_identity: profile.chain_source_identity(),
+            relayer_source_identity,
+            chain_source_identity,
             action_digest: prepared.action_digest(),
             condition_id: prepared.condition_id(),
+            pre_claim_balances: prepared.pre_claim_balances(),
+            pre_collateral_balance: prepared.pre_collateral_balance(),
+            expected_redeemed_collateral_balance: prepared.expected_redeemed_collateral_balance(),
             safe_nonce: prepared.safe_nonce(),
             original_body_hash,
             fence_body_hash,
@@ -331,14 +458,23 @@ impl SourceBoundVerifiedOutcome {
         fence_authorized: bool,
     ) -> Result<RedemptionResolution, QueryError> {
         let [original_body_hash, fence_body_hash] = prepared.body_hashes();
-        if self.profile_digest != profile.profile_digest()
+        if !prepared.matches_context(profile, credentials)
+            || self.profile_digest != profile.profile_digest()
             || self.config_digest != profile.config_digest()
             || self.key_version != credentials.key_version()
             || self.chain_id != profile.chain_id()
             || self.relayer_source_identity != profile.relayer_source_identity()
             || self.chain_source_identity != profile.chain_source_identity()
-            || self.action_digest != prepared.action_digest()
+            || !responses.matches_context_binding(profile, credentials)
+        {
+            return Err(QueryError::IntegrityFailure);
+        }
+        if self.action_digest != prepared.action_digest()
             || self.condition_id != prepared.condition_id()
+            || self.pre_claim_balances != prepared.pre_claim_balances()
+            || self.pre_collateral_balance != prepared.pre_collateral_balance()
+            || self.expected_redeemed_collateral_balance
+                != prepared.expected_redeemed_collateral_balance()
             || self.safe_nonce != prepared.safe_nonce()
             || self.original_body_hash != original_body_hash
             || self.fence_body_hash != fence_body_hash

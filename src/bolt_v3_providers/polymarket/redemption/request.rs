@@ -118,6 +118,10 @@ impl SignedRequest {
         &self.metadata
     }
 
+    pub(super) fn body_hash(&self) -> [u8; WORD_BYTES] {
+        self.body.hash()
+    }
+
     fn projection(&self, credentials: &ResolvedRedemptionCredentials) -> RedactedProjection {
         self.body.projection(
             ProjectionClass::RequestBody,
@@ -139,8 +143,15 @@ impl Drop for SignedRequest {
 pub struct PreparedRequestPair {
     original: SignedRequest,
     fence: SignedRequest,
+    profile_digest: [u8; WORD_BYTES],
+    config_digest: [u8; WORD_BYTES],
+    relayer_source_identity: [u8; WORD_BYTES],
+    chain_source_identity: [u8; WORD_BYTES],
+    credential_key_version: u32,
     condition_id: [u8; WORD_BYTES],
-    pre_balances: [[u8; WORD_BYTES]; 2],
+    pre_claim_balances: [[u8; WORD_BYTES]; 2],
+    pre_collateral_balance: [u8; WORD_BYTES],
+    expected_redeemed_collateral_balance: [u8; WORD_BYTES],
     action_digest: [u8; WORD_BYTES],
     snapshot_generation: u64,
     lane_generation: u64,
@@ -188,12 +199,53 @@ impl PreparedRequestPair {
         self.condition_id
     }
 
-    pub(super) fn pre_balances(&self) -> [[u8; WORD_BYTES]; 2] {
-        self.pre_balances
+    pub(super) fn pre_claim_balances(&self) -> [[u8; WORD_BYTES]; 2] {
+        self.pre_claim_balances
+    }
+
+    pub(super) fn pre_collateral_balance(&self) -> [u8; WORD_BYTES] {
+        self.pre_collateral_balance
+    }
+
+    pub(super) fn expected_redeemed_collateral_balance(&self) -> [u8; WORD_BYTES] {
+        self.expected_redeemed_collateral_balance
     }
 
     pub(super) fn action_digest(&self) -> [u8; WORD_BYTES] {
         self.action_digest
+    }
+
+    pub(super) fn context_identity(
+        &self,
+    ) -> (
+        [u8; WORD_BYTES],
+        [u8; WORD_BYTES],
+        [u8; WORD_BYTES],
+        [u8; WORD_BYTES],
+        u32,
+    ) {
+        (
+            self.profile_digest,
+            self.config_digest,
+            self.relayer_source_identity,
+            self.chain_source_identity,
+            self.credential_key_version,
+        )
+    }
+
+    pub(super) fn matches_context(
+        &self,
+        profile: &ValidatedRedemptionProfile,
+        credentials: &ResolvedRedemptionCredentials,
+    ) -> bool {
+        self.matches_profile(profile) && self.credential_key_version == credentials.key_version()
+    }
+
+    pub(super) fn matches_profile(&self, profile: &ValidatedRedemptionProfile) -> bool {
+        self.profile_digest == profile.profile_digest()
+            && self.config_digest == profile.config_digest()
+            && self.relayer_source_identity == profile.relayer_source_identity()
+            && self.chain_source_identity == profile.chain_source_identity()
     }
 
     pub(super) fn safe_nonce(&self) -> SafeNonce {
@@ -314,7 +366,14 @@ impl AuthorizedRequest<'_> {
 impl Drop for PreparedRequestPair {
     fn drop(&mut self) {
         self.condition_id.zeroize();
-        self.pre_balances.zeroize();
+        self.profile_digest.zeroize();
+        self.config_digest.zeroize();
+        self.relayer_source_identity.zeroize();
+        self.chain_source_identity.zeroize();
+        self.credential_key_version.zeroize();
+        self.pre_claim_balances.zeroize();
+        self.pre_collateral_balance.zeroize();
+        self.expected_redeemed_collateral_balance.zeroize();
         self.action_digest.zeroize();
     }
 }
@@ -346,7 +405,13 @@ pub fn build_request_pair(
     if input.metadata.len() > profile.max_metadata_bytes() {
         return Err(RedemptionRequestError::MetadataTooLarge);
     }
-    let (condition_id, pre_balances, snapshot_generation) = snapshot.parts();
+    let (
+        condition_id,
+        pre_claim_balances,
+        pre_collateral_balance,
+        expected_redeemed_collateral_balance,
+        snapshot_generation,
+    ) = snapshot.parts();
     let (safe_address, safe_nonce, original_capacity, fence_capacity, lane_generation) =
         nonce_capacity.parts();
     if safe_address != profile.safe_address()
@@ -383,12 +448,28 @@ pub fn build_request_pair(
         input.metadata.as_bytes(),
         builder_timestamp,
     )?;
-    let action_digest = action_digest(profile, &original, &fence, condition_id, pre_balances);
+    let action_digest = action_digest(
+        profile,
+        credentials.key_version(),
+        &original,
+        &fence,
+        condition_id,
+        pre_claim_balances,
+        pre_collateral_balance,
+        expected_redeemed_collateral_balance,
+    );
     Ok(PreparedRequestPair {
         original,
         fence,
+        profile_digest: profile.profile_digest(),
+        config_digest: profile.config_digest(),
+        relayer_source_identity: profile.relayer_source_identity(),
+        chain_source_identity: profile.chain_source_identity(),
+        credential_key_version: credentials.key_version(),
         condition_id,
-        pre_balances,
+        pre_claim_balances,
+        pre_collateral_balance,
+        expected_redeemed_collateral_balance,
         action_digest,
         snapshot_generation,
         lane_generation,
@@ -668,17 +749,27 @@ fn safe_transaction_hash(
 
 fn action_digest(
     profile: &ValidatedRedemptionProfile,
+    credential_key_version: u32,
     original: &SignedRequest,
     fence: &SignedRequest,
     condition_id: [u8; WORD_BYTES],
-    pre_balances: [[u8; WORD_BYTES]; 2],
+    pre_claim_balances: [[u8; WORD_BYTES]; 2],
+    pre_collateral_balance: [u8; WORD_BYTES],
+    expected_redeemed_collateral_balance: [u8; WORD_BYTES],
 ) -> [u8; WORD_BYTES] {
     let mut digest = Sha256::new();
+    digest.update(profile.profile_digest());
+    digest.update(profile.config_digest());
+    digest.update(profile.relayer_source_identity());
+    digest.update(profile.chain_source_identity());
+    digest.update(credential_key_version.to_be_bytes());
     digest.update(profile.chain_id().to_be_bytes());
     digest.update(profile.safe_address());
     digest.update(condition_id);
-    digest.update(pre_balances[0]);
-    digest.update(pre_balances[1]);
+    digest.update(pre_claim_balances[0]);
+    digest.update(pre_claim_balances[1]);
+    digest.update(pre_collateral_balance);
+    digest.update(expected_redeemed_collateral_balance);
     digest.update(original.body.as_slice());
     digest.update(original.headers.as_slice());
     digest.update(fence.body.as_slice());

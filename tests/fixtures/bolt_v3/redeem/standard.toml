@@ -1,5 +1,9 @@
 market_mode = "standard"
 condition_id = "0x1000000000000000000000000000000000000000000000000000000000000001"
-pre_balances = ["1", "1000000"]
-expected_post_balances = ["0", "0"]
+pre_claim_balances = ["1", "1000000"]
+pre_collateral_balance = "0"
+expected_redeemed_collateral_balance = "1000000"
+expected_original_claim_balances = ["0", "0"]
+expected_fence_claim_balances = ["1", "1000000"]
+expected_fence_collateral_balance = "0"
 scaled_integer_edges = ["0", "1", "999999", "1000000", "18446744073709551615", "340282366920938463463374607431768211455"]

@@ -42,6 +42,10 @@ fn credentials(profile: &ValidatedRedemptionProfile) -> ResolvedRedemptionCreden
     resolve_credentials(profile, "hermetic-region", &mut source).unwrap()
 }
 
+fn scaled_word(value: &str) -> [u8; 32] {
+    *SafeNonce::from_decimal(value).unwrap().as_word()
+}
+
 fn prepared(
     profile: &ValidatedRedemptionProfile,
     credentials: &ResolvedRedemptionCredentials,
@@ -49,7 +53,36 @@ fn prepared(
     condition: u8,
     nonce: SafeNonce,
 ) -> PreparedRequestPair {
-    let snapshot = hermetic::snapshot([condition; 32], [[1; 32], [2; 32]], 7);
+    prepared_with_state(
+        profile,
+        credentials,
+        mode,
+        condition,
+        nonce,
+        [[1; 32], [2; 32]],
+        [3; 32],
+        [4; 32],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepared_with_state(
+    profile: &ValidatedRedemptionProfile,
+    credentials: &ResolvedRedemptionCredentials,
+    mode: MarketMode,
+    condition: u8,
+    nonce: SafeNonce,
+    pre_claim_balances: [[u8; 32]; 2],
+    pre_collateral_balance: [u8; 32],
+    expected_redeemed_collateral_balance: [u8; 32],
+) -> PreparedRequestPair {
+    let snapshot = hermetic::snapshot(
+        [condition; 32],
+        pre_claim_balances,
+        pre_collateral_balance,
+        expected_redeemed_collateral_balance,
+        7,
+    );
     let capacity = hermetic::nonce_capacity(
         profile.safe_address(),
         nonce,
@@ -100,6 +133,8 @@ fn chain_response(
     authority: &impl ExactActionBinding,
     profile: &ValidatedRedemptionProfile,
     credentials: &ResolvedRedemptionCredentials,
+    queries: &ExactQuerySet,
+    kind: QueryKind,
     value: Value,
 ) -> FinalizedChainSourceResponse {
     let mut finalized_block_number = [0; 32];
@@ -108,6 +143,8 @@ fn chain_response(
         authority,
         profile,
         credentials,
+        queries,
+        kind,
         finalized_block_number,
         [0xa5; 32],
         &serde_json::to_vec(&value).unwrap(),
@@ -119,17 +156,36 @@ fn relayer_response(
     authority: &impl ExactActionBinding,
     profile: &ValidatedRedemptionProfile,
     credentials: &ResolvedRedemptionCredentials,
+    queries: &ExactQuerySet,
     value: Value,
 ) -> RelayerSourceResponse {
-    RelayerSourceResponse::from_hermetic_bytes(
+    RelayerSourceResponse::from_hermetic_query_bytes(
         authority,
         profile,
         credentials,
+        queries,
         &serde_json::to_vec(&value).unwrap(),
     )
     .unwrap()
 }
 
+#[derive(Clone, Copy)]
+enum PostMutation {
+    None,
+    WrongOutput,
+    SwappedClaims,
+    ReplayedCondition,
+}
+
+#[derive(Clone, Copy)]
+enum QueryBindingSwap {
+    None,
+    NonceFinalized,
+    Receipts,
+    PostBoundary,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn raw_responses(
     authority: &impl ExactActionBinding,
     profile: &ValidatedRedemptionProfile,
@@ -139,8 +195,41 @@ fn raw_responses(
     reorged: Option<RequestKind>,
     wrong_query_id: Option<RequestKind>,
     observed_nonce: SafeNonce,
-    post_balances: [[u8; 32]; 2],
+    post_claim_balances: [[u8; 32]; 2],
+    post_collateral_balance: [u8; 32],
 ) -> ExactQueryResponses {
+    raw_responses_with_mutation(
+        authority,
+        profile,
+        credentials,
+        queries,
+        winner,
+        reorged,
+        wrong_query_id,
+        observed_nonce,
+        post_claim_balances,
+        post_collateral_balance,
+        PostMutation::None,
+        QueryBindingSwap::None,
+    )
+    .unwrap()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raw_responses_with_mutation(
+    authority: &impl ExactActionBinding,
+    profile: &ValidatedRedemptionProfile,
+    credentials: &ResolvedRedemptionCredentials,
+    queries: &ExactQuerySet,
+    winner: Option<RequestKind>,
+    reorged: Option<RequestKind>,
+    wrong_query_id: Option<RequestKind>,
+    observed_nonce: SafeNonce,
+    post_claim_balances: [[u8; 32]; 2],
+    post_collateral_balance: [u8; 32],
+    post_mutation: PostMutation,
+    query_binding_swap: QueryBindingSwap,
+) -> Result<ExactQueryResponses, WireParseError> {
     let values = query_values(queries);
     let nonce_query = values
         .iter()
@@ -217,12 +306,34 @@ fn raw_responses(
             "canonicalBlock": canonical_block
         })
     };
+    let post_condition = if matches!(post_mutation, PostMutation::ReplayedCondition) {
+        format!("0x{}", "ff".repeat(32))
+    } else {
+        post["condition_id"].as_str().unwrap().to_owned()
+    };
+    let post_output = if matches!(post_mutation, PostMutation::WrongOutput) {
+        format!("0x{}", "ee".repeat(20))
+    } else {
+        post["output_asset"].as_str().unwrap().to_owned()
+    };
+    let claims = if matches!(post_mutation, PostMutation::SwappedClaims) {
+        [post_claim_balances[1], post_claim_balances[0]]
+    } else {
+        post_claim_balances
+    };
     ExactQueryResponses::new(
+        queries,
         credentials,
         chain_response(
             authority,
             profile,
             credentials,
+            queries,
+            if matches!(query_binding_swap, QueryBindingSwap::NonceFinalized) {
+                QueryKind::FinalizedHead
+            } else {
+                QueryKind::SafeNonce
+            },
             json!({
                 "queryId": "safe_nonce",
                 "safeAddress": nonce_query["safe"],
@@ -236,31 +347,59 @@ fn raw_responses(
             authority,
             profile,
             credentials,
+            queries,
+            if matches!(query_binding_swap, QueryBindingSwap::Receipts) {
+                QueryKind::FenceFinalizedReceiptLogs
+            } else {
+                QueryKind::OriginalFinalizedReceiptLogs
+            },
             execution(0, RequestKind::Original),
         ),
         chain_response(
             authority,
             profile,
             credentials,
+            queries,
+            if matches!(query_binding_swap, QueryBindingSwap::Receipts) {
+                QueryKind::OriginalFinalizedReceiptLogs
+            } else {
+                QueryKind::FenceFinalizedReceiptLogs
+            },
             execution(1, RequestKind::Fence),
         ),
         chain_response(
             authority,
             profile,
             credentials,
+            queries,
+            if matches!(query_binding_swap, QueryBindingSwap::PostBoundary) {
+                QueryKind::SafeBoundary
+            } else {
+                QueryKind::RawPostState
+            },
             json!({
                 "queryId": "raw_post_state",
                 "target": post["target"],
-                "conditionId": post["condition_id"],
+                "conditionId": post_condition,
+                "collateral": post["collateral"],
+                "outputAsset": post_output,
+                "account": post["account"],
                 "blockNumber": head_number,
                 "blockHash": head_hash.clone(),
-                "results": post_balances.map(|value| format!("0x{}", hex::encode(value)))
+                "claimResults": claims.map(|value| format!("0x{}", hex::encode(value))),
+                "collateralBalance": format!("0x{}", hex::encode(post_collateral_balance))
             }),
         ),
         chain_response(
             authority,
             profile,
             credentials,
+            queries,
+            if matches!(query_binding_swap, QueryBindingSwap::PostBoundary) {
+                QueryKind::RawPostState
+            } else {
+                QueryKind::SafeBoundary
+            },
             json!({
                 "queryId": "safe_boundary",
                 "safe": boundary["safe"],
@@ -277,6 +416,12 @@ fn raw_responses(
             authority,
             profile,
             credentials,
+            queries,
+            if matches!(query_binding_swap, QueryBindingSwap::NonceFinalized) {
+                QueryKind::SafeNonce
+            } else {
+                QueryKind::FinalizedHead
+            },
             json!({
                 "queryId": "finalized_head",
                 "chainId": 137,
@@ -285,7 +430,73 @@ fn raw_responses(
             }),
         ),
     )
-    .unwrap()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terminal_resolution(
+    profile: &ValidatedRedemptionProfile,
+    credentials: &ResolvedRedemptionCredentials,
+    mode: MarketMode,
+    condition: u8,
+    pre_claim_balances: [[u8; 32]; 2],
+    pre_collateral_balance: [u8; 32],
+    expected_redeemed_collateral_balance: [u8; 32],
+    winner: RequestKind,
+) -> RedemptionResolution {
+    let original = authorize_original(prepared_with_state(
+        profile,
+        credentials,
+        mode,
+        condition,
+        SafeNonce::ZERO,
+        pre_claim_balances,
+        pre_collateral_balance,
+        expected_redeemed_collateral_balance,
+    ));
+    match winner {
+        RequestKind::Original => {
+            let queries =
+                ExactQuerySet::after_original_response_loss(profile, &original, None).unwrap();
+            let responses = raw_responses(
+                &original,
+                profile,
+                credentials,
+                &queries,
+                Some(RequestKind::Original),
+                None,
+                None,
+                SafeNonce::from_decimal("1").unwrap(),
+                [[0; 32]; 2],
+                expected_redeemed_collateral_balance,
+            );
+            responses
+                .verify_after_original(profile, credentials, &original)
+                .unwrap()
+                .consume_after_original(&responses, profile, credentials, &original)
+                .unwrap()
+        }
+        RequestKind::Fence => {
+            let fence = authorize_fence(original);
+            let queries = ExactQuerySet::after_fence_response_loss(profile, &fence, None).unwrap();
+            let responses = raw_responses(
+                &fence,
+                profile,
+                credentials,
+                &queries,
+                Some(RequestKind::Fence),
+                None,
+                None,
+                SafeNonce::from_decimal("1").unwrap(),
+                pre_claim_balances,
+                pre_collateral_balance,
+            );
+            responses
+                .verify_after_fence(profile, credentials, &fence)
+                .unwrap()
+                .consume_after_fence(&responses, profile, credentials, &fence)
+                .unwrap()
+        }
+    }
 }
 
 #[test]
@@ -302,7 +513,14 @@ fn standard_and_negative_risk_fixtures() {
     ] {
         let value: toml::Value = toml::from_str(fixture).unwrap();
         assert_eq!(value["market_mode"].as_str(), Some(expected));
-        assert_eq!(value["expected_post_balances"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value["expected_original_claim_balances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(value["expected_redeemed_collateral_balance"].is_str());
     }
     let profile = profile();
     let credentials = credentials(&profile);
@@ -326,6 +544,411 @@ fn standard_and_negative_risk_fixtures() {
         )
         .same_nonce()
     );
+}
+
+#[test]
+fn standard_negative_risk_original_and_fence_post_state_fixtures() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    for (fixture, mode, condition) in [
+        (
+            include_str!("../../../../tests/fixtures/bolt_v3/redeem/standard.toml"),
+            MarketMode::Standard,
+            1,
+        ),
+        (
+            include_str!("../../../../tests/fixtures/bolt_v3/redeem/negative-risk.toml"),
+            MarketMode::NegativeRisk,
+            2,
+        ),
+    ] {
+        let value: toml::Value = toml::from_str(fixture).unwrap();
+        let claims = value["pre_claim_balances"].as_array().unwrap();
+        let pre_claim_balances = [
+            scaled_word(claims[0].as_str().unwrap()),
+            scaled_word(claims[1].as_str().unwrap()),
+        ];
+        let pre_collateral_balance = scaled_word(value["pre_collateral_balance"].as_str().unwrap());
+        let expected_redeemed_collateral_balance = scaled_word(
+            value["expected_redeemed_collateral_balance"]
+                .as_str()
+                .unwrap(),
+        );
+        let expected_original = value["expected_original_claim_balances"]
+            .as_array()
+            .unwrap();
+        let expected_fence = value["expected_fence_claim_balances"].as_array().unwrap();
+        assert_eq!(
+            [
+                scaled_word(expected_original[0].as_str().unwrap()),
+                scaled_word(expected_original[1].as_str().unwrap()),
+            ],
+            [[0; 32]; 2]
+        );
+        assert_eq!(
+            [
+                scaled_word(expected_fence[0].as_str().unwrap()),
+                scaled_word(expected_fence[1].as_str().unwrap()),
+            ],
+            pre_claim_balances
+        );
+        assert_eq!(
+            scaled_word(value["expected_fence_collateral_balance"].as_str().unwrap()),
+            pre_collateral_balance
+        );
+        assert_eq!(
+            terminal_resolution(
+                &profile,
+                &credentials,
+                mode,
+                condition,
+                pre_claim_balances,
+                pre_collateral_balance,
+                expected_redeemed_collateral_balance,
+                RequestKind::Original,
+            ),
+            RedemptionResolution::RedemptionFinalized
+        );
+        assert_eq!(
+            terminal_resolution(
+                &profile,
+                &credentials,
+                mode,
+                condition,
+                pre_claim_balances,
+                pre_collateral_balance,
+                expected_redeemed_collateral_balance,
+                RequestKind::Fence,
+            ),
+            RedemptionResolution::PermanentlyFencedNoEffect
+        );
+    }
+}
+
+#[test]
+fn zero_and_dust_collateral_balances_are_exact() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    for (pre_collateral, expected_collateral) in [
+        (scaled_word("0"), scaled_word("0")),
+        (scaled_word("1"), scaled_word("2")),
+    ] {
+        assert_eq!(
+            terminal_resolution(
+                &profile,
+                &credentials,
+                MarketMode::Standard,
+                3,
+                [scaled_word("1"), scaled_word("0")],
+                pre_collateral,
+                expected_collateral,
+                RequestKind::Original,
+            ),
+            RedemptionResolution::RedemptionFinalized
+        );
+        assert_eq!(
+            terminal_resolution(
+                &profile,
+                &credentials,
+                MarketMode::Standard,
+                3,
+                [scaled_word("1"), scaled_word("0")],
+                pre_collateral,
+                expected_collateral,
+                RequestKind::Fence,
+            ),
+            RedemptionResolution::PermanentlyFencedNoEffect
+        );
+    }
+}
+
+#[test]
+fn consistent_dummy_index_set_mutation_is_not_replaced() {
+    let changed_config = CONFIG.replace("dummy_index_sets = [1, 2]", "dummy_index_sets = [3, 4]");
+    let changed_manifest =
+        MANIFEST.replace("dummy_index_sets = [1, 2]", "dummy_index_sets = [3, 4]");
+    let changed = validate_profile(&changed_config, &changed_manifest).unwrap();
+    assert_eq!(changed.adapter_arguments().2, [3, 4]);
+}
+
+#[test]
+fn wrong_output_and_post_state_drift_fail_closed() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let original = authorize_original(prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    ));
+    let queries = ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+    for (mutation, collateral_balance) in [
+        (PostMutation::WrongOutput, [4; 32]),
+        (PostMutation::None, [9; 32]),
+    ] {
+        let responses = raw_responses_with_mutation(
+            &original,
+            &profile,
+            &credentials,
+            &queries,
+            Some(RequestKind::Original),
+            None,
+            None,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[0; 32]; 2],
+            collateral_balance,
+            mutation,
+            QueryBindingSwap::None,
+        )
+        .unwrap();
+        assert_eq!(
+            responses
+                .verify_after_original(&profile, &credentials, &original)
+                .unwrap()
+                .consume_after_original(&responses, &profile, &credentials, &original)
+                .unwrap(),
+            RedemptionResolution::IntegrityFailure
+        );
+    }
+}
+
+#[test]
+fn swapped_or_replayed_post_state_source_fails_closed() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    for mutation in [PostMutation::SwappedClaims, PostMutation::ReplayedCondition] {
+        let original = authorize_original(prepared(
+            &profile,
+            &credentials,
+            MarketMode::NegativeRisk,
+            2,
+            SafeNonce::ZERO,
+        ));
+        let fence = authorize_fence(original);
+        let queries = ExactQuerySet::after_fence_response_loss(&profile, &fence, None).unwrap();
+        let responses = raw_responses_with_mutation(
+            &fence,
+            &profile,
+            &credentials,
+            &queries,
+            Some(RequestKind::Fence),
+            None,
+            None,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[1; 32], [2; 32]],
+            [3; 32],
+            mutation,
+            QueryBindingSwap::None,
+        )
+        .unwrap();
+        assert_eq!(
+            responses
+                .verify_after_fence(&profile, &credentials, &fence)
+                .unwrap()
+                .consume_after_fence(&responses, &profile, &credentials, &fence)
+                .unwrap(),
+            RedemptionResolution::IntegrityFailure
+        );
+    }
+}
+
+#[test]
+fn swapped_query_capabilities_are_rejected_before_parsing() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let original = authorize_original(prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    ));
+    let queries = ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+    for swap in [
+        QueryBindingSwap::NonceFinalized,
+        QueryBindingSwap::Receipts,
+        QueryBindingSwap::PostBoundary,
+    ] {
+        let error = raw_responses_with_mutation(
+            &original,
+            &profile,
+            &credentials,
+            &queries,
+            None,
+            None,
+            None,
+            SafeNonce::ZERO,
+            [[1; 32], [2; 32]],
+            [3; 32],
+            PostMutation::None,
+            swap,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.diagnostic.class, WireFailureClass::IntegrityFailure);
+    }
+}
+
+#[test]
+fn old_prepared_new_profile_key_and_source_fail_closed() {
+    let old_profile = profile();
+    let old_credentials = credentials(&old_profile);
+    let original = authorize_original(prepared(
+        &old_profile,
+        &old_credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    ));
+    let queries =
+        ExactQuerySet::after_original_response_loss(&old_profile, &original, None).unwrap();
+    let responses = raw_responses(
+        &original,
+        &old_profile,
+        &old_credentials,
+        &queries,
+        None,
+        None,
+        None,
+        SafeNonce::ZERO,
+        [[1; 32], [2; 32]],
+        [3; 32],
+    );
+    let outcome = responses
+        .verify_after_original(&old_profile, &old_credentials, &original)
+        .unwrap();
+
+    let key_config = CONFIG.replace("key_version = 1", "key_version = 2");
+    let key_profile = validate_profile(&key_config, MANIFEST).unwrap();
+    let key_credentials = credentials(&key_profile);
+    assert!(matches!(
+        ExactQuerySet::after_original_response_loss(&key_profile, &original, None),
+        Err(QueryError::IntegrityFailure)
+    ));
+    let key_prepared = prepared(
+        &key_profile,
+        &key_credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    );
+    assert_ne!(
+        original.prepared().action_digest(),
+        key_prepared.action_digest()
+    );
+    let construction_error = RelayerSourceResponse::from_hermetic_submit_bytes(
+        &original,
+        &key_profile,
+        &key_credentials,
+        RequestKind::Original,
+        br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        construction_error.diagnostic.class,
+        WireFailureClass::IntegrityFailure
+    );
+    let chain_construction_error = FinalizedChainSourceResponse::from_hermetic_bytes(
+        &original,
+        &key_profile,
+        &key_credentials,
+        &queries,
+        QueryKind::SafeNonce,
+        [1; 32],
+        [2; 32],
+        b"{}",
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        chain_construction_error.diagnostic.class,
+        WireFailureClass::IntegrityFailure
+    );
+    assert_eq!(
+        responses
+            .verify_after_original(&key_profile, &key_credentials, &original)
+            .err()
+            .unwrap()
+            .diagnostic
+            .class,
+        WireFailureClass::IntegrityFailure
+    );
+    assert_eq!(
+        outcome.consume_after_original(&responses, &key_profile, &key_credentials, &original,),
+        Err(QueryError::IntegrityFailure)
+    );
+
+    for (changed_config, changed_manifest) in [
+        (
+            CONFIG.replace("max_metadata_bytes = 256", "max_metadata_bytes = 255"),
+            MANIFEST.to_owned(),
+        ),
+        (
+            CONFIG.replace(
+                "https://relayer-v2.polymarket.com",
+                "https://relayer-review.invalid",
+            ),
+            MANIFEST.replace(
+                "https://relayer-v2.polymarket.com",
+                "https://relayer-review.invalid",
+            ),
+        ),
+        (
+            CONFIG.replace("https://polygon-rpc.com", "https://rpc-review.invalid"),
+            MANIFEST.replace("https://polygon-rpc.com", "https://rpc-review.invalid"),
+        ),
+    ] {
+        let changed_profile = validate_profile(&changed_config, &changed_manifest).unwrap();
+        let changed_credentials = credentials(&changed_profile);
+        assert!(matches!(
+            ExactQuerySet::after_original_response_loss(&changed_profile, &original, None),
+            Err(QueryError::IntegrityFailure)
+        ));
+        let changed_prepared = prepared(
+            &changed_profile,
+            &changed_credentials,
+            MarketMode::Standard,
+            1,
+            SafeNonce::ZERO,
+        );
+        assert_ne!(
+            original.prepared().action_digest(),
+            changed_prepared.action_digest()
+        );
+        let error = RelayerSourceResponse::from_hermetic_submit_bytes(
+            &original,
+            &changed_profile,
+            &changed_credentials,
+            RequestKind::Original,
+            br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.diagnostic.class, WireFailureClass::IntegrityFailure);
+        assert_eq!(
+            responses
+                .verify_after_original(&changed_profile, &changed_credentials, &original)
+                .err()
+                .unwrap()
+                .diagnostic
+                .class,
+            WireFailureClass::IntegrityFailure
+        );
+        let drift_outcome = responses
+            .verify_after_original(&old_profile, &old_credentials, &original)
+            .unwrap();
+        assert_eq!(
+            drift_outcome.consume_after_original(
+                &responses,
+                &changed_profile,
+                &changed_credentials,
+                &original,
+            ),
+            Err(QueryError::IntegrityFailure)
+        );
+    }
 }
 
 #[test]
@@ -398,15 +1021,18 @@ fn exact_relayer_record_binds_every_source_field() {
         1,
         SafeNonce::ZERO,
     ));
-    let submit = RelayerSourceResponse::from_hermetic_bytes(
+    let submit = RelayerSourceResponse::from_hermetic_submit_bytes(
         &original,
         &profile,
         &credentials,
+        RequestKind::Original,
         br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
     )
     .unwrap()
-    .parse_submit(&original, &profile, &credentials)
+    .parse_submit(&original, &profile, &credentials, RequestKind::Original)
     .unwrap();
+    let queries =
+        ExactQuerySet::after_original_response_loss(&profile, &original, Some(&submit)).unwrap();
     let body: Value =
         serde_json::from_slice(original.prepared().hermetic_body(RequestKind::Original)).unwrap();
     let record = json!([{
@@ -424,12 +1050,13 @@ fn exact_relayer_record_binds_every_source_field() {
         "createdAt": "2026-07-15T00:00:00Z",
         "updatedAt": "2026-07-15T00:00:00Z"
     }]);
-    let response = relayer_response(&original, &profile, &credentials, record.clone());
+    let response = relayer_response(&original, &profile, &credentials, &queries, record.clone());
     response
         .parse_exact_transaction(
             &original,
             &profile,
             &credentials,
+            &queries,
             &submit,
             RequestKind::Original,
         )
@@ -448,21 +1075,20 @@ fn exact_relayer_record_binds_every_source_field() {
     ] {
         let mut tampered = record.clone();
         tampered[0][field] = Value::String("tampered".into());
-        let response = relayer_response(&original, &profile, &credentials, tampered);
+        let response = relayer_response(&original, &profile, &credentials, &queries, tampered);
         assert!(
             response
                 .parse_exact_transaction(
                     &original,
                     &profile,
                     &credentials,
+                    &queries,
                     &submit,
                     RequestKind::Original,
                 )
                 .is_err()
         );
     }
-    let queries =
-        ExactQuerySet::after_original_response_loss(&profile, &original, Some(&submit)).unwrap();
     assert_eq!(queries.kind_count(QueryKind::RelayerTransaction), 1);
 }
 
@@ -488,6 +1114,7 @@ fn original_wins_only_with_finalized_post_state() {
         None,
         SafeNonce::from_decimal("1").unwrap(),
         [[0; 32]; 2],
+        [4; 32],
     );
     assert_eq!(
         responses
@@ -521,6 +1148,7 @@ fn fence_wins_only_with_unchanged_post_state() {
         None,
         SafeNonce::from_decimal("1").unwrap(),
         [[1; 32], [2; 32]],
+        [3; 32],
     );
     assert_eq!(
         responses
@@ -563,6 +1191,7 @@ fn unrelated_nonce_fails_closed() {
         None,
         SafeNonce::from_decimal("9").unwrap(),
         [[1; 32], [2; 32]],
+        [3; 32],
     );
     assert_eq!(
         responses
@@ -876,6 +1505,7 @@ fn raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields() {
         None,
         SafeNonce::from_decimal("1").unwrap(),
         [[9; 32], [8; 32]],
+        [3; 32],
     );
     assert_eq!(
         responses
@@ -895,6 +1525,7 @@ fn raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields() {
         None,
         SafeNonce::from_decimal("1").unwrap(),
         [[0; 32]; 2],
+        [4; 32],
     );
     assert_eq!(
         reorged
@@ -914,6 +1545,7 @@ fn raw_queries_reject_duplicate_missing_conflicting_and_fabricated_fields() {
         Some(RequestKind::Original),
         SafeNonce::from_decimal("1").unwrap(),
         [[0; 32]; 2],
+        [4; 32],
     );
     assert_eq!(
         wrong_id
@@ -955,10 +1587,11 @@ fn fabricated_reader_has_no_production_proof_path() {
         1,
         SafeNonce::ZERO,
     ));
-    let response = RelayerSourceResponse::from_hermetic_bytes(
+    let response = RelayerSourceResponse::from_hermetic_submit_bytes(
         &original,
         &profile,
         &credentials,
+        RequestKind::Original,
         br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
     )
     .unwrap();
@@ -990,6 +1623,7 @@ fn cross_action_outcome_reuse_is_rejected() {
         None,
         SafeNonce::ZERO,
         [[1; 32], [2; 32]],
+        [3; 32],
     );
     let outcome = responses
         .verify_after_original(&profile, &credentials, &original)
@@ -1030,6 +1664,7 @@ fn profile_key_source_and_finalized_bindings_fail_closed() {
         None,
         SafeNonce::ZERO,
         [[1; 32], [2; 32]],
+        [3; 32],
     );
     let outcome = responses
         .verify_after_original(&profile, &credentials, &original)
@@ -1044,21 +1679,26 @@ fn profile_key_source_and_finalized_bindings_fail_closed() {
             &changed_credentials,
             &original,
         ),
-        Err(QueryError::BindingMismatch)
+        Err(QueryError::IntegrityFailure)
     );
 
-    let wrong_source = RelayerSourceResponse::from_hermetic_bytes(
+    let wrong_source = RelayerSourceResponse::from_hermetic_submit_bytes(
         &original,
         &profile,
         &credentials,
+        RequestKind::Original,
         br#"{"transactionID":"exact-id","state":"STATE_NEW","transactionHash":""}"#,
     )
     .unwrap()
     .with_hermetic_source_identity([0x77; 32]);
-    assert!(
+    assert_eq!(
         wrong_source
-            .parse_submit(&original, &profile, &credentials)
-            .is_err()
+            .parse_submit(&original, &profile, &credentials, RequestKind::Original)
+            .err()
+            .unwrap()
+            .diagnostic
+            .class,
+        WireFailureClass::IntegrityFailure
     );
 
     let finalized_responses = raw_responses(
@@ -1071,6 +1711,7 @@ fn profile_key_source_and_finalized_bindings_fail_closed() {
         None,
         SafeNonce::ZERO,
         [[1; 32], [2; 32]],
+        [3; 32],
     );
     let finalized_outcome = finalized_responses
         .verify_after_original(&profile, &credentials, &original)
@@ -1097,6 +1738,7 @@ fn profile_key_source_and_finalized_bindings_fail_closed() {
         None,
         SafeNonce::ZERO,
         [[1; 32], [2; 32]],
+        [3; 32],
     );
     let source_outcome = source_responses
         .verify_after_original(&profile, &credentials, &original)
@@ -1109,7 +1751,7 @@ fn profile_key_source_and_finalized_bindings_fail_closed() {
             &credentials,
             &original,
         ),
-        Err(QueryError::BindingMismatch)
+        Err(QueryError::IntegrityFailure)
     );
 }
 

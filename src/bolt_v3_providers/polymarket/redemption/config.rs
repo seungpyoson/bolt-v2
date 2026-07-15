@@ -74,7 +74,9 @@ struct RawRelayer {
 #[serde(deny_unknown_fields)]
 struct RawRpc {
     origin: String,
+    path: String,
     max_origin_bytes: usize,
+    max_path_bytes: usize,
     max_response_bytes: usize,
     overflow_probe_bytes: usize,
     max_receipt_logs: usize,
@@ -230,6 +232,7 @@ struct RawManifestSourceSnapshots {
 #[serde(deny_unknown_fields)]
 struct RawManifestWire {
     chain_origin: String,
+    chain_path: String,
     max_query_items: usize,
     max_query_bytes: usize,
     max_transaction_items: usize,
@@ -279,6 +282,7 @@ pub struct ValidatedRedemptionProfile {
     nonce_selector: [u8; SELECTOR_BYTES],
     relayer_origin: Box<str>,
     chain_origin: Box<str>,
+    chain_path: Box<str>,
     submit_path: Box<str>,
     transaction_path: Box<str>,
     nonce_path: Box<str>,
@@ -315,6 +319,10 @@ impl ValidatedRedemptionProfile {
 
     pub(super) fn chain_source_identity(&self) -> [u8; WORD_BYTES] {
         self.chain_source_identity
+    }
+
+    pub(super) fn chain_path(&self) -> &str {
+        &self.chain_path
     }
 
     pub fn max_request_bytes(&self) -> usize {
@@ -355,6 +363,10 @@ impl ValidatedRedemptionProfile {
         } else {
             self.standard_target
         }
+    }
+
+    pub(super) fn post_state_assets(&self) -> ([u8; ADDRESS_BYTES], [u8; ADDRESS_BYTES]) {
+        (self.collateral, self.output_asset)
     }
 
     pub(super) fn redemption_selector(&self) -> [u8; SELECTOR_BYTES] {
@@ -441,6 +453,7 @@ impl Drop for ValidatedRedemptionProfile {
         self.nonce_selector.zeroize();
         self.relayer_origin.as_mut().zeroize();
         self.chain_origin.as_mut().zeroize();
+        self.chain_path.as_mut().zeroize();
         self.submit_path.as_mut().zeroize();
         self.transaction_path.as_mut().zeroize();
         self.nonce_path.as_mut().zeroize();
@@ -528,10 +541,15 @@ pub fn validate_profile(
     if config.wallet.modules != manifest.safe_boundary.modules
         || !config.wallet.modules.is_empty()
         || config.adapter.dummy_index_sets != manifest.adapter_arguments.dummy_index_sets
-        || config.adapter.dummy_index_sets.as_slice() != [1, 2]
     {
         return Err(RedemptionConfigError::DeploymentMismatch);
     }
+    let dummy_index_sets: [u64; 2] = config
+        .adapter
+        .dummy_index_sets
+        .as_slice()
+        .try_into()
+        .map_err(|_| RedemptionConfigError::DeploymentMismatch)?;
     let credential_paths = [
         config.credentials.signer_private_key_ssm_path,
         config.credentials.builder_api_key_ssm_path,
@@ -575,11 +593,12 @@ pub fn validate_profile(
         output_asset: parse_address(&config.adapter.output_asset, false)?,
         dummy_account: parse_address(&config.adapter.dummy_account, true)?,
         dummy_parent: parse_fixed(&config.adapter.dummy_parent_collection_id)?,
-        dummy_index_sets: [1, 2],
+        dummy_index_sets,
         redemption_selector: parse_fixed(&manifest.adapter.external_selector)?,
         nonce_selector: parse_fixed(&manifest.safe.nonce_selector)?,
         relayer_origin: config.relayer.origin.into_boxed_str(),
         chain_origin: config.rpc.origin.into_boxed_str(),
+        chain_path: config.rpc.path.into_boxed_str(),
         submit_path: config.relayer.submit_path.into_boxed_str(),
         transaction_path: config.relayer.transaction_path.into_boxed_str(),
         nonce_path: config.relayer.nonce_path.into_boxed_str(),
@@ -655,6 +674,7 @@ fn validate_manifest(
         || config.relayer.competing_same_nonce_conformance
         || config.relayer.origin != relayer.origin
         || config.rpc.origin != wire.chain_origin
+        || config.rpc.path != wire.chain_path
         || config.relayer.submit_path != relayer.submit_path
         || config.relayer.transaction_path != relayer.transaction_path
         || config.relayer.nonce_path != relayer.nonce_path
@@ -664,6 +684,7 @@ fn validate_manifest(
         || config.relayer.nonce_path.len() > config.relayer.max_path_bytes
         || !config.relayer.origin.starts_with("https://")
         || config.rpc.origin.len() > config.rpc.max_origin_bytes
+        || config.rpc.path.len() > config.rpc.max_path_bytes
         || !config.rpc.origin.starts_with("https://")
         || wire.max_query_items == 0
         || wire.max_transaction_items != 1
@@ -691,6 +712,7 @@ fn validate_manifest(
         || config.relayer.max_header_bytes == 0
         || config.rpc.max_response_bytes == 0
         || config.rpc.max_origin_bytes == 0
+        || config.rpc.max_path_bytes == 0
         || config.rpc.max_receipt_logs == 0
         || config.rpc.finality_confirmations == 0
         || config.credentials.max_value_bytes == 0

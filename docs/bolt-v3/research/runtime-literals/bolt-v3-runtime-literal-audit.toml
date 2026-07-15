@@ -21348,22 +21348,6 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encodi
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
 kind = "number"
-literal = "2"
-context = "pre_balances: [[u8; WORD_BYTES]; 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
-kind = "number"
-literal = "2"
-context = "pub(super) fn parts(&self) -> ([u8; WORD_BYTES], [[u8; WORD_BYTES]; 2], u64) {"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
-kind = "number"
 literal = "0"
 context = "&& self.durable_generation != 0"
 classification = "ao_redeem_source_fenced_protocol_constant"
@@ -21435,41 +21419,9 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encodi
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "1"
-context = "|| config.adapter.dummy_index_sets.as_slice() != [1, 2]"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "2"
-context = "|| config.adapter.dummy_index_sets.as_slice() != [1, 2]"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
 literal = "\"/bolt/\""
 context = "if !path.starts_with(\"/bolt/\")"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "1"
-context = "dummy_index_sets: [1, 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
-kind = "number"
-literal = "2"
-context = "dummy_index_sets: [1, 2],"
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
@@ -22356,40 +22308,8 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encodi
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
 kind = "string"
-literal = "br#\",\"pre_balances\":[\"0x\"#"
-context = "bytes.extend(br#\",\"pre_balances\":[\"0x\"#)?;"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "0"
-context = "bytes.append_hex(&prepared.pre_balances()[0])?;"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "string"
 literal = "br#\"\",\"0x\"#"
 context = "bytes.extend(br#\"\",\"0x\"#)?;"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "number"
-literal = "1"
-context = "bytes.append_hex(&prepared.pre_balances()[1])?;"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "string"
-literal = "br#\"\"]}\"#"
-context = "bytes.extend(br#\"\"]}\"#)"
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
@@ -22438,14 +22358,6 @@ path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
 kind = "string"
 literal = "br#\"\",\"modules\":[]}\"#"
 context = "bytes.extend(br#\"\",\"modules\":[]}\"#)"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
-kind = "string"
-literal = "br#\"{\"kind\":\"finalized_head\"}\"#"
-context = "bytes.extend(br#\"{\"kind\":\"finalized_head\"}\"#)"
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
@@ -22606,22 +22518,6 @@ path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "number"
 literal = "1"
 context = "1,"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "2"
-context = "pre_balances: [[u8; WORD_BYTES]; 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "2"
-context = "pub(super) fn pre_balances(&self) -> [[u8; WORD_BYTES]; 2] {"
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
@@ -23099,30 +22995,6 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encodi
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "2"
-context = "pre_balances: [[u8; WORD_BYTES]; 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "0"
-context = "digest.update(pre_balances[0]);"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
-kind = "number"
-literal = "1"
-context = "digest.update(pre_balances[1]);"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "string"
 literal = "\"0x\""
 context = ".strip_prefix(\"0x\")"
@@ -23291,22 +23163,6 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encodi
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "number"
-literal = "0"
-context = "let post_balances = [parse_word(post.results[0]), parse_word(post.results[1])];"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "number"
-literal = "1"
-context = "let post_balances = [parse_word(post.results[0]), parse_word(post.results[1])];"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "string"
 literal = "\"finalized_head\""
 context = "let common_identity_matches = finalized.query_id == \"finalized_head\""
@@ -23366,14 +23222,6 @@ path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "string"
 literal = "\"fence_finalized_receipt_logs\""
 context = "\"fence_finalized_receipt_logs\","
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "number"
-literal = "2"
-context = "[Some(first), Some(second)] if [first, second] == [[0; WORD_BYTES]; 2] => {"
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
 
@@ -23676,14 +23524,6 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encodi
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
 kind = "number"
-literal = "2"
-context = "results: [&'a str; 2],"
-classification = "ao_redeem_source_fenced_protocol_constant"
-reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
-kind = "number"
 literal = "0"
 context = "modules: [&'a str; 0],"
 classification = "ao_redeem_source_fenced_protocol_constant"
@@ -23912,3 +23752,211 @@ literal = "0"
 context = "let mut output = Zeroizing::new(vec![0; value.len()].into_boxed_slice());"
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant or fixed-width encoding fact; operational capacities remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = '''2'''
+context = '''pre_claim_balances: [[u8; WORD_BYTES]; 2],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/capability.rs"
+kind = "number"
+literal = '''2'''
+context = '''[[u8; WORD_BYTES]; 2],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = '''2'''
+context = '''let dummy_index_sets: [u64; 2] = config'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| config.rpc.max_path_bytes == 0'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''request_digest: [0; WORD_BYTES],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''path_digest: [0; WORD_BYTES],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''calldata_digest: [0; WORD_BYTES],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#","collateral":"0x"#'''
+context = '''bytes.extend(br#","collateral":"0x"#)?;'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#","output_asset":"0x"#'''
+context = '''bytes.extend(br#","output_asset":"0x"#)?;'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#","account":"0x"#'''
+context = '''bytes.extend(br#","account":"0x"#)?;'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#","pre_claim_balances":["0x"#'''
+context = '''bytes.extend(br#","pre_claim_balances":["0x"#)?;'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''bytes.append_hex(&prepared.pre_claim_balances()[0])?;'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = '''1'''
+context = '''bytes.append_hex(&prepared.pre_claim_balances()[1])?;'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#""],"pre_collateral_balance":"0x"#'''
+context = '''bytes.extend(br#""],"pre_collateral_balance":"0x"#)?;'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#"","expected_redeemed_collateral_balance":"0x"#'''
+context = '''bytes.extend(br#"","expected_redeemed_collateral_balance":"0x"#)?;'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "string"
+literal = '''br#"{"kind":"finalized_head"}"#'''
+context = '''|bytes| bytes.extend(br#"{"kind":"finalized_head"}"#),'''
+classification = "redemption_exact_query_schema_fragment"
+reason = "This is a fixed field or framing fragment of the source-fenced exact redemption query schema; all operational values are supplied by the validated profile or prepared action."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = '''2'''
+context = '''pre_claim_balances: [[u8; WORD_BYTES]; 2],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = '''2'''
+context = '''pre_claim_balances: [[u8; WORD_BYTES]; 2],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = '''2'''
+context = '''pub(super) fn pre_claim_balances(&self) -> [[u8; WORD_BYTES]; 2] {'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = '''0'''
+context = '''digest.update(pre_claim_balances[0]);'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = '''1'''
+context = '''digest.update(pre_claim_balances[1]);'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = '''2'''
+context = '''pre_claim_balances: [[u8; WORD_BYTES]; 2],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = '''0'''
+context = '''parse_word(post.claim_results[0]),'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = '''1'''
+context = '''parse_word(post.claim_results[1]),'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = '''2'''
+context = '''if [first, second] == [[0; WORD_BYTES]; 2]'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = '''2'''
+context = '''claim_results: [&'a str; 2],'''
+classification = "redemption_exact_state_structure"
+reason = "This is an index, arity, protocol width, or invalid-value sentinel of the exact redemption state representation, not an operator runtime value."

@@ -85,6 +85,7 @@ relayer_sha256 = "2eca6f416f90d17aa6719254e3970573b395efea5159ccdc5eed67bd6e84a3
 
 [wire]
 chain_origin = "https://polygon-rpc.com"
+chain_path = "/"
 max_query_items = 7
 max_query_bytes = 4096
 max_transaction_items = 1

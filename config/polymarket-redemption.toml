@@ -11,6 +11,18 @@ safe_implementation = "0x3E5c63644E683549055b9Be8653de26E0B4CD36E"
 fallback_handler = "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99"
 guard = "0x0000000000000000000000000000000000000000"
 modules = []
+owners = ["0x13c81bfb4db09c99553572402310b67429c19a53"]
+threshold = 1
+
+[transaction_policy]
+http_method = "POST"
+operation = 0
+value = "0"
+safe_tx_gas = "0"
+base_gas = "0"
+gas_price = "0"
+gas_token = "0x0000000000000000000000000000000000000000"
+refund_receiver = "0x0000000000000000000000000000000000000000"
 
 [adapter]
 standard_target = "0xADa100874d00e3331D00F2007a9c336a65009718"
@@ -31,7 +43,8 @@ transaction_path = "/transaction"
 nonce_path = "/nonce"
 max_origin_bytes = 256
 max_path_bytes = 64
-max_request_bytes = 4096
+max_original_request_bytes = 4096
+max_fence_request_bytes = 4096
 max_response_bytes = 2097152
 overflow_probe_bytes = 1
 max_transaction_items = 1
@@ -65,3 +78,9 @@ max_value_bytes = 4096
 max_acquisition_bytes = 4096
 max_path_bytes = 256
 key_version = 1
+
+[working_set]
+startup_structural_bytes = 65536
+operational_structural_bytes = 65536
+max_startup_working_set_bytes = 75628
+max_operational_working_set_bytes = 14790791

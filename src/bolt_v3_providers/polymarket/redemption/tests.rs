@@ -4,7 +4,10 @@ use std::cmp::Ordering;
 use std::io::Cursor;
 
 use alloy_primitives::keccak256;
+use base64::{Engine, engine::general_purpose};
+use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
+use sha2::Sha256;
 
 use super::capability::hermetic;
 use super::config::HermeticCredentialSource;
@@ -12,8 +15,13 @@ use super::*;
 
 const CONFIG: &str = include_str!("../../../../config/polymarket-redemption.toml");
 const MANIFEST: &str = include_str!("../../../../ci/polymarket-redemption-provider-manifest.toml");
+const CONFIGURED_OWNER: &str = "0x13c81bfb4db09c99553572402310b67429c19a53";
 const OWNER: &str = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
 const PRIVATE_KEY: &[u8] = b"0000000000000000000000000000000000000000000000000000000000000001";
+
+fn working_set() -> WholeWorkingSetReservation {
+    hermetic::working_set(usize::MAX, usize::MAX, 1)
+}
 
 fn credential_value(
     path: &str,
@@ -34,19 +42,173 @@ fn credential_value(
 }
 
 fn profile() -> ValidatedRedemptionProfile {
-    validate_profile().unwrap()
+    hermetic_profile(
+        &CONFIG.replace(CONFIGURED_OWNER, OWNER),
+        &MANIFEST.replace(CONFIGURED_OWNER, OWNER),
+    )
+    .unwrap()
 }
 
 fn hermetic_profile(
     config: &str,
     manifest: &str,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
-    super::config::validate_profile_hermetic(config, manifest, config.len(), manifest.len())
+    super::config::validate_profile_hermetic(
+        config,
+        manifest,
+        config.len(),
+        manifest.len(),
+        working_set(),
+    )
 }
 
 fn credentials(profile: &ValidatedRedemptionProfile) -> ResolvedRedemptionCredentials {
     let mut source = HermeticCredentialSource::new(credential_value);
     resolve_credentials(profile, "hermetic-region", &mut source).unwrap()
+}
+
+fn worst_case_credential_value(
+    path: &str,
+    sink: &mut CredentialSink<'_>,
+) -> Result<(), RedemptionConfigError> {
+    if path.ends_with("private-key") {
+        sink.append(PRIVATE_KEY)
+    } else if path.ends_with("builder-api-secret") {
+        sink.append(b"QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB")
+    } else if path.ends_with("redaction-hmac-key") {
+        sink.append(&[b'r'; 64])
+    } else {
+        sink.append(&[0; 64])
+    }
+}
+
+fn worst_case_credentials(profile: &ValidatedRedemptionProfile) -> ResolvedRedemptionCredentials {
+    let mut source = HermeticCredentialSource::new(worst_case_credential_value);
+    resolve_credentials(profile, "hermetic-region", &mut source).unwrap()
+}
+
+fn profile_with_request_limits(
+    original_limit: usize,
+    fence_limit: usize,
+    header_limit: usize,
+) -> ValidatedRedemptionProfile {
+    let mut config = CONFIG
+        .replacen(
+            "max_original_request_bytes = 4096",
+            &format!("max_original_request_bytes = {original_limit}"),
+            1,
+        )
+        .replacen(
+            "max_fence_request_bytes = 4096",
+            &format!("max_fence_request_bytes = {fence_limit}"),
+            1,
+        )
+        .replacen(
+            "max_header_bytes = 1024",
+            &format!("max_header_bytes = {header_limit}"),
+            1,
+        )
+        .replacen("max_value_bytes = 4096", "max_value_bytes = 64", 1)
+        .replacen(
+            "max_acquisition_bytes = 4096",
+            "max_acquisition_bytes = 64",
+            1,
+        );
+    let mut manifest = MANIFEST
+        .replacen(
+            "max_original_request_bytes = 4096",
+            &format!("max_original_request_bytes = {original_limit}"),
+            1,
+        )
+        .replacen(
+            "max_fence_request_bytes = 4096",
+            &format!("max_fence_request_bytes = {fence_limit}"),
+            1,
+        )
+        .replacen(
+            "max_header_bytes = 1024",
+            &format!("max_header_bytes = {header_limit}"),
+            1,
+        )
+        .replace("max_acquisition_bytes = 4096", "max_acquisition_bytes = 64")
+        .replacen(
+            "max_credential_value_bytes = 4096",
+            "max_credential_value_bytes = 64",
+            1,
+        )
+        .replacen(
+            "max_credential_acquisition_bytes = 4096",
+            "max_credential_acquisition_bytes = 64",
+            1,
+        );
+    let parsed_config: toml::Value = toml::from_str(&config).unwrap();
+    let parsed_manifest: toml::Value = toml::from_str(&manifest).unwrap();
+    let relayer = &parsed_config["relayer"];
+    let rpc = &parsed_config["rpc"];
+    let query = &parsed_config["query"];
+    let credential = &parsed_config["credentials"];
+    let allocation = &parsed_manifest["allocation_boundary"];
+    let working = &parsed_config["working_set"];
+    let operational = (relayer["max_original_request_bytes"].as_integer().unwrap()
+        + relayer["max_fence_request_bytes"].as_integer().unwrap()
+        + 2 * (relayer["max_header_bytes"].as_integer().unwrap()
+            + relayer["max_metadata_bytes"].as_integer().unwrap())
+        + query["max_bytes"].as_integer().unwrap()
+        + query["max_items"].as_integer().unwrap()
+            * allocation["query_offset_layout_bytes"]
+                .as_integer()
+                .unwrap()
+        + relayer["max_response_bytes"].as_integer().unwrap()
+        + relayer["overflow_probe_bytes"].as_integer().unwrap()
+        + relayer["max_transaction_id_bytes"].as_integer().unwrap()
+        + (query["max_items"].as_integer().unwrap() - 1)
+            * (rpc["max_response_bytes"].as_integer().unwrap()
+                + rpc["overflow_probe_bytes"].as_integer().unwrap())
+        + credential["max_acquisition_bytes"].as_integer().unwrap()
+        + 6 * credential["max_value_bytes"].as_integer().unwrap()
+        + rpc["max_receipt_logs"].as_integer().unwrap()
+            * allocation["receipt_log_index_layout_bytes"]
+                .as_integer()
+                .unwrap()
+        + working["operational_structural_bytes"]
+            .as_integer()
+            .unwrap()) as usize;
+    config = config.replacen(
+        "max_operational_working_set_bytes = 14790791",
+        &format!("max_operational_working_set_bytes = {operational}"),
+        1,
+    );
+    manifest = manifest.replacen(
+        "max_operational_working_set_bytes = 14790791",
+        &format!("max_operational_working_set_bytes = {operational}"),
+        1,
+    );
+    let source_bytes = config.len() + manifest.len();
+    let startup = source_bytes + 65_536;
+    config = config.replacen(
+        "max_startup_working_set_bytes = 75628",
+        &format!("max_startup_working_set_bytes = {startup}"),
+        1,
+    );
+    manifest = manifest
+        .replacen(
+            "startup_source_bytes = 10092",
+            &format!("startup_source_bytes = {source_bytes}"),
+            1,
+        )
+        .replacen(
+            "max_startup_working_set_bytes = 75628",
+            &format!("max_startup_working_set_bytes = {startup}"),
+            1,
+        );
+    super::config::validate_profile_hermetic(
+        &config,
+        &manifest,
+        config.len(),
+        manifest.len(),
+        hermetic::working_set(startup, operational, 1),
+    )
+    .unwrap()
 }
 
 fn scaled_word(value: &str) -> [u8; 32] {
@@ -93,8 +255,8 @@ fn prepared_with_state(
     let capacity = hermetic::nonce_capacity(
         profile.safe_address(),
         nonce,
-        profile.max_request_bytes(),
-        profile.max_request_bytes(),
+        profile.max_request_bytes_for(false),
+        profile.max_request_bytes_for(true),
         11,
     );
     build_request_pair(
@@ -102,18 +264,50 @@ fn prepared_with_state(
         credentials,
         snapshot,
         capacity,
-        RedemptionBuildInput::new(mode, OWNER, "hermetic-redemption"),
+        RedemptionBuildInput::new(mode, "hermetic-redemption"),
         1_700_000_000,
     )
     .unwrap()
 }
 
+fn build_worst_case_pair(
+    profile: &ValidatedRedemptionProfile,
+    credentials: &ResolvedRedemptionCredentials,
+) -> Result<PreparedRequestPair, RedemptionRequestError> {
+    let nonce = SafeNonce::from_decimal(
+        "115792089237316195423570985008687907853269984665640564039457584007913129639934",
+    )
+    .unwrap();
+    let metadata = String::from_utf8(vec![0; profile.max_metadata_bytes()]).unwrap();
+    build_request_pair(
+        profile,
+        credentials,
+        hermetic::snapshot([1; 32], [[1; 32], [2; 32]], [3; 32], [4; 32], 7),
+        hermetic::nonce_capacity(
+            profile.safe_address(),
+            nonce,
+            profile.max_request_bytes_for(false),
+            profile.max_request_bytes_for(true),
+            11,
+        ),
+        RedemptionBuildInput::new(MarketMode::NegativeRisk, &metadata),
+        u64::MAX,
+    )
+}
+
 fn authorize_original(prepared: PreparedRequestPair) -> OriginalMayHaveStartedRequest {
     let (binding, original_hash, _, snapshot_generation, lane_generation) =
         prepared.hermetic_bindings();
+    let (owner_set, threshold) = prepared.hermetic_safe_owner_contract();
     prepared
         .authorize_original(
-            hermetic::fresh(binding, snapshot_generation, lane_generation),
+            hermetic::fresh(
+                binding,
+                owner_set,
+                threshold,
+                snapshot_generation,
+                lane_generation,
+            ),
             hermetic::original_durable(binding, original_hash, 13),
         )
         .unwrap()
@@ -122,9 +316,16 @@ fn authorize_original(prepared: PreparedRequestPair) -> OriginalMayHaveStartedRe
 fn authorize_fence(original: OriginalMayHaveStartedRequest) -> FenceMayHaveStartedRequest {
     let (binding, original_hash, fence_hash, snapshot_generation, lane_generation) =
         original.prepared().hermetic_bindings();
+    let (owner_set, threshold) = original.prepared().hermetic_safe_owner_contract();
     original
         .authorize_fence(
-            hermetic::fresh(binding, snapshot_generation, lane_generation),
+            hermetic::fresh(
+                binding,
+                owner_set,
+                threshold,
+                snapshot_generation,
+                lane_generation,
+            ),
             hermetic::fence_durable(binding, original_hash, fence_hash, 17),
         )
         .unwrap()
@@ -192,7 +393,7 @@ enum QueryBindingSwap {
     PostBoundary,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ReceiptMutation {
     None,
     MissingPayout,
@@ -207,6 +408,10 @@ enum ReceiptMutation {
     Malformed(RequestKind),
     AlsoCompatible(RequestKind),
     ExtraLogs(usize),
+    DuplicateLogIndex,
+    OutOfOrderLogIndex,
+    WrongSafeOwner,
+    WrongSafeThreshold,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -425,7 +630,47 @@ fn raw_responses_with_receipt_mutation(
                     | ReceiptMutation::CorruptSafe(_)
                     | ReceiptMutation::Malformed(_)
                     | ReceiptMutation::AlsoCompatible(_)
-                    | ReceiptMutation::ExtraLogs(_) => {}
+                    | ReceiptMutation::ExtraLogs(_)
+                    | ReceiptMutation::DuplicateLogIndex
+                    | ReceiptMutation::OutOfOrderLogIndex
+                    | ReceiptMutation::WrongSafeOwner
+                    | ReceiptMutation::WrongSafeThreshold => {}
+                }
+            }
+            if receipt_mutation == ReceiptMutation::DuplicateLogIndex {
+                if kind == RequestKind::Original {
+                    logs[1]["logIndex"] = logs[0]["logIndex"].clone();
+                } else {
+                    logs.push(json!({
+                        "address": format!("0x{}", "aa".repeat(20)),
+                        "topics": [format!("0x{}", "77".repeat(32))],
+                        "data": "0x",
+                        "blockNumber": "0x2",
+                        "blockHash": block_hash.clone(),
+                        "transactionHash": transaction_hash.clone(),
+                        "transactionIndex": "0x0",
+                        "logIndex": "0x0",
+                        "removed": false
+                    }));
+                }
+            }
+            if receipt_mutation == ReceiptMutation::OutOfOrderLogIndex {
+                if kind == RequestKind::Original {
+                    logs[0]["logIndex"] = json!("0x2");
+                    logs[1]["logIndex"] = json!("0x1");
+                } else {
+                    logs[0]["logIndex"] = json!("0x2");
+                    logs.push(json!({
+                        "address": format!("0x{}", "aa".repeat(20)),
+                        "topics": [format!("0x{}", "77".repeat(32))],
+                        "data": "0x",
+                        "blockNumber": "0x2",
+                        "blockHash": block_hash.clone(),
+                        "transactionHash": transaction_hash.clone(),
+                        "transactionIndex": "0x0",
+                        "logIndex": "0x1",
+                        "removed": false
+                    }));
                 }
             }
             if let ReceiptMutation::ExtraLogs(count) = receipt_mutation {
@@ -598,6 +843,16 @@ fn raw_responses_with_receipt_mutation(
                 "fallbackHandler": boundary["fallback_handler"],
                 "guard": boundary["guard"],
                 "modules": [],
+                "owners": if receipt_mutation == ReceiptMutation::WrongSafeOwner {
+                    json!([format!("0x{}", "ee".repeat(20))])
+                } else {
+                    boundary["owners"].clone()
+                },
+                "threshold": if receipt_mutation == ReceiptMutation::WrongSafeThreshold {
+                    json!(2)
+                } else {
+                    boundary["threshold"].clone()
+                },
                 "blockNumber": head_number,
                 "blockHash": head_hash.clone()
             }),
@@ -1477,7 +1732,13 @@ fn stale_pre_send_token_is_rejected() {
         prepared.hermetic_bindings();
     assert!(matches!(
         prepared.authorize_original(
-            hermetic::fresh(binding, snapshot_generation + 1, lane_generation),
+            hermetic::fresh(
+                binding,
+                owner_set,
+                threshold,
+                snapshot_generation + 1,
+                lane_generation
+            ),
             hermetic::original_durable(binding, original_hash, 1)
         ),
         Err(RedemptionRequestError::CapabilityMismatch)
@@ -1502,9 +1763,16 @@ fn fence_first_is_unrepresentable_and_mismatched_fence_is_rejected() {
     ));
     let (binding, original_hash, fence_hash, snapshot_generation, lane_generation) =
         original.prepared().hermetic_bindings();
+    let (owner_set, threshold) = original.prepared().hermetic_safe_owner_contract();
     assert!(matches!(
         original.authorize_fence(
-            hermetic::fresh(binding, snapshot_generation, lane_generation),
+            hermetic::fresh(
+                binding,
+                owner_set,
+                threshold,
+                snapshot_generation,
+                lane_generation
+            ),
             hermetic::fence_durable(binding, original_hash, [0; 32], 1)
         ),
         Err(RedemptionRequestError::CapabilityMismatch)
@@ -1519,16 +1787,16 @@ fn concurrent_conditions_cannot_share_one_nonce_permit() {
     let permit = hermetic::nonce_capacity(
         profile.safe_address(),
         SafeNonce::ZERO,
-        profile.max_request_bytes(),
-        profile.max_request_bytes(),
+        profile.max_request_bytes_for(false),
+        profile.max_request_bytes_for(true),
         1,
     );
     let first = build_request_pair(
         &profile,
         &credentials,
-        hermetic::snapshot([1; 32], [[1; 32], [2; 32]], 1),
+        hermetic::snapshot([1; 32], [[1; 32], [2; 32]], [3; 32], [4; 32], 1),
         permit,
-        RedemptionBuildInput::new(MarketMode::Standard, OWNER, "one"),
+        RedemptionBuildInput::new(MarketMode::Standard, "one"),
         1,
     );
     assert!(first.is_ok());
@@ -1559,12 +1827,12 @@ fn full_width_nonce_domain_and_maximum_are_deterministic() {
     assert!(SafeNonce::from_decimal("not-a-nonce").is_err());
     let profile = profile();
     let credentials = credentials(&profile);
-    let snapshot = hermetic::snapshot([1; 32], [[1; 32], [2; 32]], 1);
+    let snapshot = hermetic::snapshot([1; 32], [[1; 32], [2; 32]], [3; 32], [4; 32], 1);
     let capacity = hermetic::nonce_capacity(
         profile.safe_address(),
         maximum,
-        profile.max_request_bytes(),
-        profile.max_request_bytes(),
+        profile.max_request_bytes_for(false),
+        profile.max_request_bytes_for(true),
         1,
     );
     assert!(matches!(
@@ -1573,7 +1841,7 @@ fn full_width_nonce_domain_and_maximum_are_deterministic() {
             &credentials,
             snapshot,
             capacity,
-            RedemptionBuildInput::new(MarketMode::Standard, OWNER, "max"),
+            RedemptionBuildInput::new(MarketMode::Standard, "max"),
             1,
         ),
         Err(RedemptionRequestError::NonceExhausted)
@@ -1974,6 +2242,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len() - 1,
             MANIFEST.len(),
+            working_set(),
         )
         .is_err()
     );
@@ -1983,12 +2252,19 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len(),
             MANIFEST.len() - 1,
+            working_set(),
         )
         .is_err()
     );
     assert!(
-        super::config::validate_profile_hermetic(CONFIG, MANIFEST, CONFIG.len(), MANIFEST.len(),)
-            .is_ok()
+        super::config::validate_profile_hermetic(
+            CONFIG,
+            MANIFEST,
+            CONFIG.len(),
+            MANIFEST.len(),
+            working_set(),
+        )
+        .is_ok()
     );
     assert!(
         super::config::validate_profile_hermetic(
@@ -1996,6 +2272,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len() + 1,
             MANIFEST.len() + 1,
+            working_set(),
         )
         .is_ok()
     );
@@ -2006,6 +2283,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len(),
             MANIFEST.len(),
+            working_set(),
         )
         .is_err()
     );
@@ -2016,6 +2294,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             &oversized_manifest,
             CONFIG.len(),
             MANIFEST.len(),
+            working_set(),
         )
         .is_err()
     );
@@ -2027,13 +2306,14 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
     let query = &config["query"];
     let credentials = &config["credentials"];
     let allocation = &manifest["allocation_boundary"];
-    let peak = 2
-        * (relayer["max_request_bytes"].as_integer().unwrap()
-            + relayer["max_header_bytes"].as_integer().unwrap()
+    let working_set_config = &config["working_set"];
+    let peak = relayer["max_original_request_bytes"].as_integer().unwrap()
+        + relayer["max_fence_request_bytes"].as_integer().unwrap()
+        + 2 * (relayer["max_header_bytes"].as_integer().unwrap()
             + relayer["max_metadata_bytes"].as_integer().unwrap())
         + query["max_bytes"].as_integer().unwrap()
         + query["max_items"].as_integer().unwrap()
-            * allocation["query_binding_bytes_per_item"]
+            * allocation["query_offset_layout_bytes"]
                 .as_integer()
                 .unwrap()
         + relayer["max_response_bytes"].as_integer().unwrap()
@@ -2043,10 +2323,19 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             * (rpc["max_response_bytes"].as_integer().unwrap()
                 + rpc["overflow_probe_bytes"].as_integer().unwrap())
         + credentials["max_acquisition_bytes"].as_integer().unwrap()
-        + 6 * credentials["max_value_bytes"].as_integer().unwrap();
+        + 6 * credentials["max_value_bytes"].as_integer().unwrap()
+        + rpc["max_receipt_logs"].as_integer().unwrap()
+            * allocation["receipt_log_index_layout_bytes"]
+                .as_integer()
+                .unwrap()
+        + working_set_config["operational_structural_bytes"]
+            .as_integer()
+            .unwrap();
     assert_eq!(
         peak,
-        allocation["max_peak_payload_bytes"].as_integer().unwrap()
+        allocation["max_operational_working_set_bytes"]
+            .as_integer()
+            .unwrap()
     );
 }
 
@@ -2056,7 +2345,10 @@ fn oversized_profile_elements_and_maxima_fail_closed() {
         CONFIG.replace("dummy_index_sets = [1, 2]", "dummy_index_sets = [1, 2, 3]");
     assert!(hermetic_profile(&oversized_elements, MANIFEST).is_err());
 
-    let oversized_maximum = CONFIG.replace("max_request_bytes = 4096", "max_request_bytes = 8192");
+    let oversized_maximum = CONFIG.replace(
+        "max_original_request_bytes = 4096",
+        "max_original_request_bytes = 8192",
+    );
     assert!(hermetic_profile(&oversized_maximum, MANIFEST).is_err());
 
     let oversized_manifest_elements = MANIFEST.replace(
@@ -2231,6 +2523,285 @@ fn present_invalid_losing_and_winning_receipts_fail_closed() {
                     .unwrap(),
                 RedemptionResolution::IntegrityFailure
             );
+        }
+    }
+}
+
+#[test]
+fn typed_policy_drives_json_eip712_and_http_method() {
+    let profile = profile_with_request_limits(4096, 4096, 2048);
+    let credentials = worst_case_credentials(&profile);
+    let prepared = build_worst_case_pair(&profile, &credentials).unwrap();
+    let body_bytes = prepared.hermetic_body(RequestKind::Original);
+    let body: Value = serde_json::from_slice(body_bytes).unwrap();
+    let policy: toml::Value = toml::from_str(CONFIG).unwrap();
+    let policy = &policy["transaction_policy"];
+    assert_eq!(
+        body["signatureParams"]["gasPrice"],
+        policy["gas_price"].as_str().unwrap()
+    );
+    assert_eq!(
+        body["signatureParams"]["operation"],
+        policy["operation"].as_integer().unwrap().to_string()
+    );
+    assert_eq!(
+        body["signatureParams"]["safeTxGas"],
+        policy["safe_tx_gas"].as_str().unwrap()
+    );
+    assert_eq!(
+        body["signatureParams"]["baseGas"],
+        policy["base_gas"].as_str().unwrap()
+    );
+    assert_eq!(
+        body["signatureParams"]["gasToken"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase(),
+        policy["gas_token"].as_str().unwrap().to_ascii_lowercase()
+    );
+    assert_eq!(
+        body["signatureParams"]["refundReceiver"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase(),
+        policy["refund_receiver"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase()
+    );
+
+    let headers: Value =
+        serde_json::from_slice(prepared.hermetic_headers(RequestKind::Original)).unwrap();
+    let decoded_secret = general_purpose::STANDARD
+        .decode(credentials.builder_api_secret())
+        .unwrap();
+    let mut hmac = Hmac::<Sha256>::new_from_slice(&decoded_secret).unwrap();
+    hmac.update(u64::MAX.to_string().as_bytes());
+    hmac.update(policy["http_method"].as_str().unwrap().as_bytes());
+    hmac.update(profile.submit_path().as_bytes());
+    hmac.update(body_bytes);
+    let expected = general_purpose::URL_SAFE.encode(hmac.finalize().into_bytes());
+    assert_eq!(headers["POLY_BUILDER_SIGNATURE"], expected);
+    assert_ne!(
+        prepared
+            .request(RequestKind::Original)
+            .identity()
+            .safe_transaction_hash(),
+        [0; 32]
+    );
+}
+
+#[test]
+fn whole_working_set_reservation_and_capacity_failures_are_exact() {
+    let config: toml::Value = toml::from_str(CONFIG).unwrap();
+    let startup = config["working_set"]["max_startup_working_set_bytes"]
+        .as_integer()
+        .unwrap() as usize;
+    let operational = config["working_set"]["max_operational_working_set_bytes"]
+        .as_integer()
+        .unwrap() as usize;
+    assert!(validate_profile(hermetic::working_set(startup, operational, 1)).is_ok());
+    assert!(matches!(
+        validate_profile(hermetic::working_set(startup - 1, operational, 1)),
+        Err(RedemptionConfigError::Capacity)
+    ));
+    assert!(matches!(
+        validate_profile(hermetic::working_set(startup, operational - 1, 1)),
+        Err(RedemptionConfigError::Capacity)
+    ));
+    assert!(matches!(
+        super::bounded::CappedBytes::try_with_capacity(usize::MAX),
+        Err(super::bounded::CappedIoError::Allocation)
+    ));
+    assert_eq!(super::query::query_offset_layout_bytes(), 128);
+}
+
+#[test]
+fn original_and_fence_worst_case_builder_limits_are_exact() {
+    let baseline = profile_with_request_limits(4096, 4096, 2048);
+    let credentials = worst_case_credentials(&baseline);
+    let prepared = build_worst_case_pair(&baseline, &credentials).unwrap();
+    let original_len = prepared.hermetic_body(RequestKind::Original).len();
+    let fence_len = prepared.hermetic_body(RequestKind::Fence).len();
+    let original_header_len = prepared.hermetic_headers(RequestKind::Original).len();
+    let fence_header_len = prepared.hermetic_headers(RequestKind::Fence).len();
+    assert_eq!(original_header_len, fence_header_len);
+
+    for (original_limit, fence_limit, header_limit, succeeds) in [
+        (original_len - 1, 4096, 2048, false),
+        (original_len, fence_len, original_header_len, true),
+        (
+            original_len + 1,
+            fence_len + 1,
+            original_header_len + 1,
+            true,
+        ),
+        (4096, fence_len - 1, 2048, false),
+        (4096, 4096, original_header_len - 1, false),
+        (4096, 4096, original_header_len, true),
+        (4096, 4096, original_header_len + 1, true),
+    ] {
+        let bounded = profile_with_request_limits(original_limit, fence_limit, header_limit);
+        let credentials = worst_case_credentials(&bounded);
+        let result = build_worst_case_pair(&bounded, &credentials);
+        assert_eq!(result.is_ok(), succeeds);
+        if !succeeds {
+            assert!(matches!(
+                result,
+                Err(RedemptionRequestError::RequestTooLarge)
+            ));
+        }
+    }
+}
+
+#[test]
+fn signer_and_finalized_safe_owner_set_are_exact() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let prepared = prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    );
+    assert_eq!(
+        prepared.request(RequestKind::Original).owner(),
+        credentials.signer_address()
+    );
+    let (binding, original_hash, _, snapshot_generation, lane_generation) =
+        prepared.hermetic_bindings();
+    let (_, threshold) = prepared.hermetic_safe_owner_contract();
+    assert!(matches!(
+        prepared.authorize_original(
+            hermetic::fresh(
+                binding,
+                [0; 32],
+                threshold,
+                snapshot_generation,
+                lane_generation
+            ),
+            hermetic::original_durable(binding, original_hash, 1),
+        ),
+        Err(RedemptionRequestError::CapabilityMismatch)
+    ));
+
+    let wrong_owner = format!("0x{}", "ee".repeat(20));
+    let owner_config = CONFIG.replace(CONFIGURED_OWNER, &wrong_owner);
+    let owner_manifest = MANIFEST.replace(CONFIGURED_OWNER, &wrong_owner);
+    let owner_profile = hermetic_profile(&owner_config, &owner_manifest).unwrap();
+    let mut source = HermeticCredentialSource::new(credential_value);
+    assert!(matches!(
+        resolve_credentials(&owner_profile, "hermetic-region", &mut source),
+        Err(RedemptionConfigError::SignerMismatch)
+    ));
+    assert!(
+        hermetic_profile(
+            &CONFIG.replace("threshold = 1", "threshold = 2"),
+            &MANIFEST.replace("threshold = 1", "threshold = 2"),
+        )
+        .is_err()
+    );
+    assert!(
+        hermetic_profile(
+            &CONFIG.replace(&format!("owners = [\"{CONFIGURED_OWNER}\"]"), "owners = []",),
+            &MANIFEST.replace(&format!("owners = [\"{CONFIGURED_OWNER}\"]"), "owners = []",),
+        )
+        .is_err()
+    );
+
+    for mutation in [
+        ReceiptMutation::WrongSafeOwner,
+        ReceiptMutation::WrongSafeThreshold,
+    ] {
+        let original = authorize_original(prepared(
+            &profile,
+            &credentials,
+            MarketMode::Standard,
+            1,
+            SafeNonce::ZERO,
+        ));
+        let queries =
+            ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+        let responses = raw_responses_with_receipt_mutation(
+            &original,
+            &profile,
+            &credentials,
+            &queries,
+            Some(RequestKind::Original),
+            None,
+            None,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[0; 32]; 2],
+            [4; 32],
+            PostMutation::None,
+            QueryBindingSwap::None,
+            mutation,
+        )
+        .unwrap();
+        assert_eq!(
+            responses
+                .verify_after_original(&profile, &credentials, &original)
+                .unwrap()
+                .consume_after_original(&responses, &profile, &credentials, &original)
+                .unwrap(),
+            RedemptionResolution::IntegrityFailure
+        );
+    }
+}
+
+#[test]
+fn duplicate_and_out_of_order_log_indices_fail_closed() {
+    for mode in [MarketMode::Standard, MarketMode::NegativeRisk] {
+        for (winner, nonce, claims, collateral) in [
+            (
+                RequestKind::Original,
+                SafeNonce::from_decimal("1").unwrap(),
+                [[0; 32]; 2],
+                [4; 32],
+            ),
+            (
+                RequestKind::Fence,
+                SafeNonce::from_decimal("1").unwrap(),
+                [[1; 32], [2; 32]],
+                [3; 32],
+            ),
+        ] {
+            for mutation in [
+                ReceiptMutation::DuplicateLogIndex,
+                ReceiptMutation::OutOfOrderLogIndex,
+            ] {
+                let profile = profile();
+                let credentials = credentials(&profile);
+                let original =
+                    authorize_original(prepared(&profile, &credentials, mode, 1, SafeNonce::ZERO));
+                let queries =
+                    ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+                let responses = raw_responses_with_receipt_mutation(
+                    &original,
+                    &profile,
+                    &credentials,
+                    &queries,
+                    Some(winner),
+                    None,
+                    None,
+                    nonce,
+                    claims,
+                    collateral,
+                    PostMutation::None,
+                    QueryBindingSwap::None,
+                    mutation,
+                )
+                .unwrap();
+                assert_eq!(
+                    responses
+                        .verify_after_original(&profile, &credentials, &original)
+                        .unwrap()
+                        .consume_after_original(&responses, &profile, &credentials, &original)
+                        .unwrap(),
+                    RedemptionResolution::IntegrityFailure
+                );
+            }
         }
     }
 }

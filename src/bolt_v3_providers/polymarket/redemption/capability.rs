@@ -5,6 +5,16 @@ use super::nonce::SafeNonce;
 const ADDRESS_BYTES: usize = 20;
 const WORD_BYTES: usize = 32;
 
+/// AO-CAPSULE-owned reservation for the complete startup and operational set.
+///
+/// This linear value is required before embedded profile parsing and is retained
+/// by the validated profile. AO-REDEEM deliberately has no production issuer.
+pub struct WholeWorkingSetReservation {
+    startup_capacity: usize,
+    operational_capacity: usize,
+    reservation_generation: u64,
+}
+
 /// Capsule-owned exclusive snapshot of one condition and its exact pre-state.
 ///
 /// This linear value has no production constructor in AO-REDEEM. AO-CAPSULE will
@@ -32,8 +42,18 @@ pub struct SafeNonceBodyCapacityPermit {
 /// Fresh Capsule validation performed immediately before original authorization.
 pub struct FreshPreSendValidation {
     action_binding: [u8; WORD_BYTES],
+    safe_owner_set_digest: [u8; WORD_BYTES],
+    safe_threshold: u64,
     snapshot_generation: u64,
     lane_generation: u64,
+}
+
+impl WholeWorkingSetReservation {
+    pub(super) fn covers(&self, startup_required: usize, operational_required: usize) -> bool {
+        self.reservation_generation != 0
+            && self.startup_capacity >= startup_required
+            && self.operational_capacity >= operational_required
+    }
 }
 
 /// Quorum-durable evidence that the exact original body may have started.
@@ -90,10 +110,14 @@ impl FreshPreSendValidation {
     pub(super) fn matches(
         &self,
         action_binding: [u8; WORD_BYTES],
+        safe_owner_set_digest: [u8; WORD_BYTES],
+        safe_threshold: u64,
         snapshot_generation: u64,
         lane_generation: u64,
     ) -> bool {
         self.action_binding == action_binding
+            && self.safe_owner_set_digest == safe_owner_set_digest
+            && self.safe_threshold == safe_threshold
             && self.snapshot_generation == snapshot_generation
             && self.lane_generation == lane_generation
     }
@@ -136,6 +160,12 @@ macro_rules! zeroize_on_drop {
 }
 
 zeroize_on_drop!(
+    WholeWorkingSetReservation,
+    startup_capacity,
+    operational_capacity,
+    reservation_generation
+);
+zeroize_on_drop!(
     ExactConditionSnapshotLease,
     condition_id,
     pre_claim_balances,
@@ -154,6 +184,8 @@ zeroize_on_drop!(
 zeroize_on_drop!(
     FreshPreSendValidation,
     action_binding,
+    safe_owner_set_digest,
+    safe_threshold,
     snapshot_generation,
     lane_generation
 );
@@ -174,6 +206,18 @@ zeroize_on_drop!(
 #[cfg(test)]
 pub(super) mod hermetic {
     use super::*;
+
+    pub(super) fn working_set(
+        startup_capacity: usize,
+        operational_capacity: usize,
+        reservation_generation: u64,
+    ) -> WholeWorkingSetReservation {
+        WholeWorkingSetReservation {
+            startup_capacity,
+            operational_capacity,
+            reservation_generation,
+        }
+    }
 
     pub(super) fn snapshot(
         condition_id: [u8; WORD_BYTES],
@@ -209,11 +253,15 @@ pub(super) mod hermetic {
 
     pub(super) fn fresh(
         action_binding: [u8; WORD_BYTES],
+        safe_owner_set_digest: [u8; WORD_BYTES],
+        safe_threshold: u64,
         snapshot_generation: u64,
         lane_generation: u64,
     ) -> FreshPreSendValidation {
         FreshPreSendValidation {
             action_binding,
+            safe_owner_set_digest,
+            safe_threshold,
             snapshot_generation,
             lane_generation,
         }

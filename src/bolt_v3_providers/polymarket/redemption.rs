@@ -19,7 +19,7 @@ mod tests;
 pub use bounded::{ProjectionClass, RedactedProjection};
 pub use capability::{
     ExactConditionSnapshotLease, FenceMayHaveStartedPermit, FreshPreSendValidation,
-    OriginalMayHaveStartedPermit, SafeNonceBodyCapacityPermit,
+    OriginalMayHaveStartedPermit, SafeNonceBodyCapacityPermit, WholeWorkingSetReservation,
 };
 pub use config::{
     CappedSsmCredentialSource, CredentialSink, RedemptionConfigError,

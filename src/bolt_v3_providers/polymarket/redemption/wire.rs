@@ -445,7 +445,7 @@ impl RelayerSourceResponse {
             || decode_address(transaction.proxy_address) != Some(request.identity().safe_address())
             || !hex_matches(transaction.data, request.calldata())
             || SafeNonce::from_decimal(transaction.nonce).ok() != Some(request.identity().nonce())
-            || transaction.value != "0"
+            || transaction.value != profile.transaction_policy().value_decimal()
             || transaction.transaction_type != "SAFE"
             || transaction.metadata.as_bytes() != request.metadata()
         {
@@ -589,6 +589,12 @@ pub struct ExactQueryResponses {
     post_state: FinalizedChainSourceResponse,
     safe_boundary: FinalizedChainSourceResponse,
     finalized_head: FinalizedChainSourceResponse,
+}
+
+pub(super) const fn wire_structural_layout_bytes() -> usize {
+    std::mem::size_of::<ExactQueryResponses>()
+        + std::mem::size_of::<RelayerSourceResponse>()
+        + std::mem::size_of::<ExecutionLogSummary>()
 }
 
 impl ExactQueryResponses {
@@ -801,6 +807,7 @@ impl ExactQueryResponses {
         let post_collateral_balance = parse_word(post.collateral_balance);
         let (collateral, output_asset) = profile.post_state_assets();
         let (factory, implementation, fallback_handler, guard) = profile.safe_boundary();
+        let (safe_owners, safe_threshold, _) = profile.safe_owner_contract();
         let common_identity_matches = finalized.query_id == "finalized_head"
             && finalized.chain_id == profile.chain_id()
             && finalized_number.is_some_and(|value| value != [0; WORD_BYTES])
@@ -828,6 +835,8 @@ impl ExactQueryResponses {
             && decode_address(boundary.fallback_handler) == Some(fallback_handler)
             && decode_address(boundary.guard) == Some(guard)
             && boundary.modules.is_empty()
+            && boundary.owners.map(decode_address) == safe_owners.map(Some)
+            && boundary.threshold == safe_threshold
             && boundary_number == finalized_number
             && boundary_hash == finalized_hash;
 
@@ -853,6 +862,14 @@ impl ExactQueryResponses {
             profile.finality_confirmations(),
             profile.max_receipt_logs(),
         );
+        if original_receipt == ReceiptCompatibility::Capacity
+            || fence_receipt == ReceiptCompatibility::Capacity
+        {
+            return Err(self
+                .original_execution
+                .response
+                .failure(WireFailureClass::Capacity, credentials));
+        }
         let execution_identities_match = original_receipt != ReceiptCompatibility::Invalid
             && fence_receipt != ReceiptCompatibility::Invalid;
         let original_present = original_receipt == ReceiptCompatibility::Compatible;
@@ -1032,8 +1049,11 @@ fn validate_execution_query(
         receipt_transaction_index,
         max_execution_logs,
     };
+    let Ok(seed) = ExecutionLogsSeed::try_new(expected) else {
+        return ReceiptCompatibility::Capacity;
+    };
     let mut deserializer = serde_json::Deserializer::from_str(receipt.logs.get());
-    let summary = ExecutionLogsSeed { expected }
+    let summary = seed
         .deserialize(&mut deserializer)
         .ok()
         .filter(|_| deserializer.end().is_ok());
@@ -1055,6 +1075,7 @@ enum ReceiptCompatibility {
     Absent,
     Compatible,
     Invalid,
+    Capacity,
 }
 
 #[derive(Clone, Copy)]
@@ -1072,17 +1093,51 @@ struct ExpectedExecutionLogs<'a> {
 
 struct ExecutionLogsSeed<'a> {
     expected: ExpectedExecutionLogs<'a>,
+    log_indices: FixedLogIndexState,
 }
 
 struct ExecutionLogsVisitor<'a> {
     expected: ExpectedExecutionLogs<'a>,
+    log_indices: FixedLogIndexState,
 }
 
-#[derive(Default)]
 struct ExecutionLogSummary {
     safe_successes: usize,
     payouts: usize,
     invalid: bool,
+    log_indices: FixedLogIndexState,
+}
+
+struct FixedLogIndexState {
+    slots: Vec<[u8; WORD_BYTES]>,
+    len: usize,
+}
+
+impl FixedLogIndexState {
+    fn try_new(capacity: usize) -> Result<Self, ()> {
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(capacity).map_err(|_| ())?;
+        slots.resize(capacity, [0; WORD_BYTES]);
+        Ok(Self { slots, len: 0 })
+    }
+
+    fn strictly_after(&mut self, value: [u8; WORD_BYTES]) -> bool {
+        if self.len == self.slots.len() || self.len > 0 && self.slots[self.len - 1] >= value {
+            return false;
+        }
+        self.slots[self.len] = value;
+        self.len += 1;
+        true
+    }
+}
+
+impl<'a> ExecutionLogsSeed<'a> {
+    fn try_new(expected: ExpectedExecutionLogs<'a>) -> Result<Self, ()> {
+        Ok(Self {
+            log_indices: FixedLogIndexState::try_new(expected.max_execution_logs)?,
+            expected,
+        })
+    }
 }
 
 impl<'de> DeserializeSeed<'de> for ExecutionLogsSeed<'_> {
@@ -1094,6 +1149,7 @@ impl<'de> DeserializeSeed<'de> for ExecutionLogsSeed<'_> {
     {
         deserializer.deserialize_seq(ExecutionLogsVisitor {
             expected: self.expected,
+            log_indices: self.log_indices,
         })
     }
 }
@@ -1109,7 +1165,12 @@ impl<'de> Visitor<'de> for ExecutionLogsVisitor<'_> {
     where
         A: SeqAccess<'de>,
     {
-        let mut summary = ExecutionLogSummary::default();
+        let mut summary = ExecutionLogSummary {
+            safe_successes: 0,
+            payouts: 0,
+            invalid: false,
+            log_indices: self.log_indices,
+        };
         let mut count = 0usize;
         while let Some(log) = sequence.next_element::<ExecutionLogWire<'de>>()? {
             count = count
@@ -1117,6 +1178,14 @@ impl<'de> Visitor<'de> for ExecutionLogsVisitor<'_> {
                 .ok_or_else(|| de::Error::custom("execution log count overflow"))?;
             if count > self.expected.max_execution_logs {
                 return Err(de::Error::invalid_length(count, &self));
+            }
+            let Some(log_index) = parse_quantity_word(log.log_index) else {
+                summary.invalid = true;
+                continue;
+            };
+            if !summary.log_indices.strictly_after(log_index) {
+                summary.invalid = true;
+                continue;
             }
             classify_execution_log(&log, self.expected, &mut summary);
         }
@@ -1800,6 +1869,9 @@ struct SafeBoundaryWire<'a> {
     guard: &'a str,
     #[serde(borrow)]
     modules: [&'a str; 0],
+    #[serde(borrow)]
+    owners: [&'a str; 1],
+    threshold: u64,
     #[serde(rename = "blockNumber", borrow)]
     block_number: &'a str,
     #[serde(rename = "blockHash", borrow)]

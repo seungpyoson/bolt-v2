@@ -41,8 +41,11 @@ implementation = "0x3E5c63644E683549055b9Be8653de26E0B4CD36E"
 fallback_handler = "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99"
 guard = "0x0000000000000000000000000000000000000000"
 modules = []
+owners = ["0x13c81bfb4db09c99553572402310b67429c19a53"]
+threshold = 1
 
 [safe]
+http_method = "POST"
 nonce_abi = "nonce()"
 nonce_selector = "0xaffed0e0"
 operation = "call"
@@ -107,7 +110,8 @@ max_acquisition_bytes = 4096
 max_relayer_origin_bytes = 256
 max_chain_origin_bytes = 256
 max_path_bytes = 64
-max_request_bytes = 4096
+max_original_request_bytes = 4096
+max_fence_request_bytes = 4096
 max_relayer_response_bytes = 2097152
 max_chain_response_bytes = 2097152
 max_transaction_id_bytes = 256
@@ -120,8 +124,13 @@ max_query_bytes = 4096
 max_credential_value_bytes = 4096
 max_credential_acquisition_bytes = 4096
 max_credential_path_bytes = 256
-query_binding_bytes_per_item = 192
-max_peak_payload_bytes = 14725191
+query_offset_layout_bytes = 128
+receipt_log_index_layout_bytes = 32
+startup_source_bytes = 10092
+startup_structural_bytes = 65536
+operational_structural_bytes = 65536
+max_startup_working_set_bytes = 75628
+max_operational_working_set_bytes = 14790791
 
 [terminal_events]
 safe_execution_success_signature = "ExecutionSuccess(bytes32,uint256)"

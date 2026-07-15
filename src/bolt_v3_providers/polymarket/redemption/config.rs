@@ -2,11 +2,14 @@ use std::fmt;
 
 use alloy_primitives::keccak256;
 use hmac::{Hmac, Mac};
+use k256::ecdsa::SigningKey;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::bounded::{ProjectionClass, RedactedProjection};
+use super::capability::WholeWorkingSetReservation;
+use super::nonce::SafeNonce;
 
 const ADDRESS_BYTES: usize = 20;
 const WORD_BYTES: usize = 32;
@@ -14,8 +17,8 @@ const SELECTOR_BYTES: usize = 4;
 const EMBEDDED_CONFIG: &[u8] = include_bytes!("../../../../config/polymarket-redemption.toml");
 const EMBEDDED_MANIFEST: &[u8] =
     include_bytes!("../../../../ci/polymarket-redemption-provider-manifest.toml");
-const REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_234;
-const REVIEWED_MANIFEST_SOURCE_BYTES: usize = 7_030;
+const REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_750;
+const REVIEWED_MANIFEST_SOURCE_BYTES: usize = 7_342;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,11 +27,13 @@ struct RawConfig {
     enabled: bool,
     provider_manifest_id: String,
     wallet: RawWallet,
+    transaction_policy: RawTransactionPolicy,
     adapter: RawAdapter,
     relayer: RawRelayer,
     rpc: RawRpc,
     query: RawQuery,
     credentials: RawCredentialPaths,
+    working_set: RawWorkingSet,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +47,21 @@ struct RawWallet {
     fallback_handler: String,
     guard: String,
     modules: [String; 0],
+    owners: [String; 1],
+    threshold: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTransactionPolicy {
+    http_method: String,
+    operation: u8,
+    value: String,
+    safe_tx_gas: String,
+    base_gas: String,
+    gas_price: String,
+    gas_token: String,
+    refund_receiver: String,
 }
 
 #[derive(Deserialize)]
@@ -68,7 +88,8 @@ struct RawRelayer {
     nonce_path: String,
     max_origin_bytes: usize,
     max_path_bytes: usize,
-    max_request_bytes: usize,
+    max_original_request_bytes: usize,
+    max_fence_request_bytes: usize,
     max_response_bytes: usize,
     overflow_probe_bytes: usize,
     max_transaction_items: usize,
@@ -111,6 +132,15 @@ struct RawCredentialPaths {
     max_acquisition_bytes: usize,
     max_path_bytes: usize,
     key_version: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWorkingSet {
+    startup_structural_bytes: usize,
+    operational_structural_bytes: usize,
+    max_startup_working_set_bytes: usize,
+    max_operational_working_set_bytes: usize,
 }
 
 #[derive(Deserialize)]
@@ -184,11 +214,14 @@ struct RawManifestSafeBoundary {
     fallback_handler: String,
     guard: String,
     modules: [String; 0],
+    owners: [String; 1],
+    threshold: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifestSafe {
+    http_method: String,
     nonce_abi: String,
     nonce_selector: String,
     operation: String,
@@ -271,7 +304,8 @@ struct RawManifestAllocationBoundary {
     max_relayer_origin_bytes: usize,
     max_chain_origin_bytes: usize,
     max_path_bytes: usize,
-    max_request_bytes: usize,
+    max_original_request_bytes: usize,
+    max_fence_request_bytes: usize,
     max_relayer_response_bytes: usize,
     max_chain_response_bytes: usize,
     max_transaction_id_bytes: usize,
@@ -284,8 +318,13 @@ struct RawManifestAllocationBoundary {
     max_credential_value_bytes: usize,
     max_credential_acquisition_bytes: usize,
     max_credential_path_bytes: usize,
-    query_binding_bytes_per_item: usize,
-    max_peak_payload_bytes: usize,
+    query_offset_layout_bytes: usize,
+    receipt_log_index_layout_bytes: usize,
+    startup_source_bytes: usize,
+    startup_structural_bytes: usize,
+    operational_structural_bytes: usize,
+    max_startup_working_set_bytes: usize,
+    max_operational_working_set_bytes: usize,
 }
 
 #[derive(Deserialize)]
@@ -327,6 +366,60 @@ struct RawManifestActivation {
     has_durable_state: bool,
 }
 
+pub(super) struct TypedSafeTransactionPolicy {
+    http_method: Box<[u8]>,
+    operation: u8,
+    value_decimal: Box<str>,
+    value_word: [u8; WORD_BYTES],
+    safe_tx_gas_decimal: Box<str>,
+    safe_tx_gas_word: [u8; WORD_BYTES],
+    base_gas_decimal: Box<str>,
+    base_gas_word: [u8; WORD_BYTES],
+    gas_price_decimal: Box<str>,
+    gas_price_word: [u8; WORD_BYTES],
+    gas_token: [u8; ADDRESS_BYTES],
+    refund_receiver: [u8; ADDRESS_BYTES],
+}
+
+impl TypedSafeTransactionPolicy {
+    pub(super) fn http_method(&self) -> &[u8] {
+        &self.http_method
+    }
+    pub(super) fn operation(&self) -> u8 {
+        self.operation
+    }
+    pub(super) fn value_decimal(&self) -> &str {
+        &self.value_decimal
+    }
+    pub(super) fn value_word(&self) -> [u8; WORD_BYTES] {
+        self.value_word
+    }
+    pub(super) fn safe_tx_gas_decimal(&self) -> &str {
+        &self.safe_tx_gas_decimal
+    }
+    pub(super) fn safe_tx_gas_word(&self) -> [u8; WORD_BYTES] {
+        self.safe_tx_gas_word
+    }
+    pub(super) fn base_gas_decimal(&self) -> &str {
+        &self.base_gas_decimal
+    }
+    pub(super) fn base_gas_word(&self) -> [u8; WORD_BYTES] {
+        self.base_gas_word
+    }
+    pub(super) fn gas_price_decimal(&self) -> &str {
+        &self.gas_price_decimal
+    }
+    pub(super) fn gas_price_word(&self) -> [u8; WORD_BYTES] {
+        self.gas_price_word
+    }
+    pub(super) fn gas_token(&self) -> [u8; ADDRESS_BYTES] {
+        self.gas_token
+    }
+    pub(super) fn refund_receiver(&self) -> [u8; ADDRESS_BYTES] {
+        self.refund_receiver
+    }
+}
+
 pub struct ValidatedRedemptionProfile {
     profile_digest: [u8; WORD_BYTES],
     config_digest: [u8; WORD_BYTES],
@@ -338,6 +431,10 @@ pub struct ValidatedRedemptionProfile {
     safe_implementation: [u8; ADDRESS_BYTES],
     fallback_handler: [u8; ADDRESS_BYTES],
     guard: [u8; ADDRESS_BYTES],
+    safe_owners: [[u8; ADDRESS_BYTES]; 1],
+    safe_owner_set_digest: [u8; WORD_BYTES],
+    safe_threshold: u64,
+    transaction_policy: TypedSafeTransactionPolicy,
     standard_target: [u8; ADDRESS_BYTES],
     negative_risk_target: [u8; ADDRESS_BYTES],
     collateral: [u8; ADDRESS_BYTES],
@@ -359,7 +456,8 @@ pub struct ValidatedRedemptionProfile {
     submit_path: Box<str>,
     transaction_path: Box<str>,
     nonce_path: Box<str>,
-    max_request_bytes: usize,
+    max_original_request_bytes: usize,
+    max_fence_request_bytes: usize,
     max_relayer_response_bytes: usize,
     max_rpc_response_bytes: usize,
     overflow_probe_bytes: usize,
@@ -375,6 +473,9 @@ pub struct ValidatedRedemptionProfile {
     max_credential_bytes: usize,
     max_credential_acquisition_bytes: usize,
     key_version: u32,
+    max_startup_working_set_bytes: usize,
+    max_operational_working_set_bytes: usize,
+    _working_set: WholeWorkingSetReservation,
 }
 
 impl ValidatedRedemptionProfile {
@@ -399,7 +500,16 @@ impl ValidatedRedemptionProfile {
     }
 
     pub fn max_request_bytes(&self) -> usize {
-        self.max_request_bytes
+        self.max_original_request_bytes
+            .max(self.max_fence_request_bytes)
+    }
+
+    pub(super) fn max_request_bytes_for(&self, fence: bool) -> usize {
+        if fence {
+            self.max_fence_request_bytes
+        } else {
+            self.max_original_request_bytes
+        }
     }
 
     pub fn max_relayer_response_bytes(&self) -> usize {
@@ -420,6 +530,13 @@ impl ValidatedRedemptionProfile {
 
     pub fn max_query_bytes(&self) -> usize {
         self.max_query_bytes
+    }
+
+    pub fn working_set_capacities(&self) -> (usize, usize) {
+        (
+            self.max_startup_working_set_bytes,
+            self.max_operational_working_set_bytes,
+        )
     }
 
     pub(super) fn chain_id(&self) -> u64 {
@@ -518,6 +635,18 @@ impl ValidatedRedemptionProfile {
         )
     }
 
+    pub(super) fn safe_owner_contract(&self) -> ([[u8; ADDRESS_BYTES]; 1], u64, [u8; WORD_BYTES]) {
+        (
+            self.safe_owners,
+            self.safe_threshold,
+            self.safe_owner_set_digest,
+        )
+    }
+
+    pub(super) fn transaction_policy(&self) -> &TypedSafeTransactionPolicy {
+        &self.transaction_policy
+    }
+
     pub(super) fn max_header_bytes(&self) -> usize {
         self.max_header_bytes
     }
@@ -535,6 +664,9 @@ impl Drop for ValidatedRedemptionProfile {
         self.safe_implementation.zeroize();
         self.fallback_handler.zeroize();
         self.guard.zeroize();
+        self.safe_owners.zeroize();
+        self.safe_owner_set_digest.zeroize();
+        self.safe_threshold.zeroize();
         self.standard_target.zeroize();
         self.negative_risk_target.zeroize();
         self.collateral.zeroize();
@@ -568,6 +700,8 @@ pub enum RedemptionConfigError {
     InvalidSsmPath,
     SecretResolution,
     SecretBound,
+    Capacity,
+    SignerMismatch,
 }
 
 impl fmt::Display for RedemptionConfigError {
@@ -581,12 +715,15 @@ impl fmt::Display for RedemptionConfigError {
 
 impl std::error::Error for RedemptionConfigError {}
 
-pub fn validate_profile() -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
+pub fn validate_profile(
+    working_set: WholeWorkingSetReservation,
+) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
     validate_profile_bytes(
         EMBEDDED_CONFIG,
         EMBEDDED_MANIFEST,
         REVIEWED_CONFIG_SOURCE_BYTES,
         REVIEWED_MANIFEST_SOURCE_BYTES,
+        working_set,
     )
 }
 
@@ -595,10 +732,18 @@ fn validate_profile_bytes(
     manifest_bytes: &[u8],
     reviewed_config_bytes: usize,
     reviewed_manifest_bytes: usize,
+    working_set: WholeWorkingSetReservation,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
     if config_bytes.len() > reviewed_config_bytes || manifest_bytes.len() > reviewed_manifest_bytes
     {
         return Err(RedemptionConfigError::InvalidBounds);
+    }
+    let source_bytes = config_bytes
+        .len()
+        .checked_add(manifest_bytes.len())
+        .ok_or(RedemptionConfigError::InvalidBounds)?;
+    if !working_set.covers(source_bytes, 0) {
+        return Err(RedemptionConfigError::Capacity);
     }
     let config_toml =
         std::str::from_utf8(config_bytes).map_err(|_| RedemptionConfigError::InvalidToml)?;
@@ -616,7 +761,18 @@ fn validate_profile_bytes(
     {
         return Err(RedemptionConfigError::ManifestMismatch);
     }
-    validate_manifest(&manifest, &config)?;
+    validate_manifest(&manifest, &config, source_bytes)?;
+    let startup_required = source_bytes
+        .checked_add(config.working_set.startup_structural_bytes)
+        .ok_or(RedemptionConfigError::InvalidBounds)?;
+    let operational_required =
+        closed_form_operational_bytes(&config, &manifest.allocation_boundary)?;
+    if startup_required != config.working_set.max_startup_working_set_bytes
+        || operational_required != config.working_set.max_operational_working_set_bytes
+        || !working_set.covers(startup_required, operational_required)
+    {
+        return Err(RedemptionConfigError::Capacity);
+    }
     let deployment = &manifest.deployment;
     for (configured, fenced) in [
         (&config.wallet.safe_address, &deployment.safe_address),
@@ -664,11 +820,37 @@ fn validate_profile_bytes(
     }
     if config.wallet.modules != manifest.safe_boundary.modules
         || !config.wallet.modules.is_empty()
+        || config.wallet.owners != manifest.safe_boundary.owners
+        || config.wallet.threshold != manifest.safe_boundary.threshold
         || config.adapter.dummy_index_sets != manifest.adapter_arguments.dummy_index_sets
     {
         return Err(RedemptionConfigError::DeploymentMismatch);
     }
     let dummy_index_sets = config.adapter.dummy_index_sets;
+    let safe_owners = [parse_address(&config.wallet.owners[0], false)?];
+    let safe_threshold = config.wallet.threshold;
+    let mut owner_hasher = Sha256::new();
+    owner_hasher.update(safe_owners[0]);
+    owner_hasher.update(safe_threshold.to_be_bytes());
+    let safe_owner_set_digest = owner_hasher.finalize().into();
+    let transaction_policy = TypedSafeTransactionPolicy {
+        http_method: config
+            .transaction_policy
+            .http_method
+            .into_bytes()
+            .into_boxed_slice(),
+        operation: config.transaction_policy.operation,
+        value_word: parse_decimal_word(&config.transaction_policy.value)?,
+        value_decimal: config.transaction_policy.value.into_boxed_str(),
+        safe_tx_gas_word: parse_decimal_word(&config.transaction_policy.safe_tx_gas)?,
+        safe_tx_gas_decimal: config.transaction_policy.safe_tx_gas.into_boxed_str(),
+        base_gas_word: parse_decimal_word(&config.transaction_policy.base_gas)?,
+        base_gas_decimal: config.transaction_policy.base_gas.into_boxed_str(),
+        gas_price_word: parse_decimal_word(&config.transaction_policy.gas_price)?,
+        gas_price_decimal: config.transaction_policy.gas_price.into_boxed_str(),
+        gas_token: parse_address(&config.transaction_policy.gas_token, true)?,
+        refund_receiver: parse_address(&config.transaction_policy.refund_receiver, true)?,
+    };
     let credential_paths = [
         config.credentials.signer_private_key_ssm_path,
         config.credentials.builder_api_key_ssm_path,
@@ -706,6 +888,10 @@ fn validate_profile_bytes(
         safe_implementation: parse_address(&config.wallet.safe_implementation, false)?,
         fallback_handler: parse_address(&config.wallet.fallback_handler, false)?,
         guard: parse_address(&config.wallet.guard, true)?,
+        safe_owners,
+        safe_owner_set_digest,
+        safe_threshold,
+        transaction_policy,
         standard_target: parse_address(&config.adapter.standard_target, false)?,
         negative_risk_target: parse_address(&config.adapter.negative_risk_target, false)?,
         collateral: parse_address(&config.adapter.collateral, false)?,
@@ -745,7 +931,8 @@ fn validate_profile_bytes(
         submit_path: config.relayer.submit_path.into_boxed_str(),
         transaction_path: config.relayer.transaction_path.into_boxed_str(),
         nonce_path: config.relayer.nonce_path.into_boxed_str(),
-        max_request_bytes: config.relayer.max_request_bytes,
+        max_original_request_bytes: config.relayer.max_original_request_bytes,
+        max_fence_request_bytes: config.relayer.max_fence_request_bytes,
         max_relayer_response_bytes: config.relayer.max_response_bytes,
         max_rpc_response_bytes: config.rpc.max_response_bytes,
         overflow_probe_bytes: config.relayer.overflow_probe_bytes,
@@ -761,6 +948,9 @@ fn validate_profile_bytes(
         max_credential_bytes: config.credentials.max_value_bytes,
         max_credential_acquisition_bytes: config.credentials.max_acquisition_bytes,
         key_version: config.credentials.key_version,
+        max_startup_working_set_bytes: config.working_set.max_startup_working_set_bytes,
+        max_operational_working_set_bytes: config.working_set.max_operational_working_set_bytes,
+        _working_set: working_set,
     };
     Ok(profile)
 }
@@ -771,18 +961,21 @@ pub(super) fn validate_profile_hermetic(
     manifest_toml: &str,
     reviewed_config_bytes: usize,
     reviewed_manifest_bytes: usize,
+    working_set: WholeWorkingSetReservation,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
     validate_profile_bytes(
         config_toml.as_bytes(),
         manifest_toml.as_bytes(),
         reviewed_config_bytes,
         reviewed_manifest_bytes,
+        working_set,
     )
 }
 
 fn validate_manifest(
     manifest: &RawManifest,
     config: &RawConfig,
+    startup_source_bytes: usize,
 ) -> Result<(), RedemptionConfigError> {
     let adapter = &manifest.adapter;
     let safe = &manifest.safe;
@@ -790,7 +983,9 @@ fn validate_manifest(
     let wire = &manifest.wire;
     let allocation = &manifest.allocation_boundary;
     let terminal = &manifest.terminal_events;
-    let peak_payload_bytes = closed_form_peak_payload_bytes(config, allocation)?;
+    let operational_bytes = closed_form_operational_bytes(config, allocation)?;
+    let startup_layout = mechanical_startup_structural_bytes();
+    let operational_layout = mechanical_operational_structural_bytes();
     if adapter.reviewed_repository.is_empty()
         || adapter.reviewed_revision.len() != 40
         || adapter.standard_source.is_empty()
@@ -808,14 +1003,29 @@ fn validate_manifest(
         || manifest.deployment.wallet_type != "SAFE"
         || config.wallet.wallet_type != "SAFE"
         || manifest.safe_boundary.verification != "exact-query-required"
+        || manifest.safe_boundary.threshold != 1
+        || config.wallet.threshold != 1
+        || safe.http_method != "POST"
+        || safe.http_method != config.transaction_policy.http_method
         || safe.nonce_abi != "nonce()"
         || safe.operation != "call"
+        || config.transaction_policy.operation != 0
         || safe.value != "0"
         || safe.safe_tx_gas != "0"
         || safe.base_gas != "0"
         || safe.gas_price != "0"
         || !is_zero_address(&safe.gas_token)
         || !is_zero_address(&safe.refund_receiver)
+        || safe.value != config.transaction_policy.value
+        || safe.safe_tx_gas != config.transaction_policy.safe_tx_gas
+        || safe.base_gas != config.transaction_policy.base_gas
+        || safe.gas_price != config.transaction_policy.gas_price
+        || !safe
+            .gas_token
+            .eq_ignore_ascii_case(&config.transaction_policy.gas_token)
+        || !safe
+            .refund_receiver
+            .eq_ignore_ascii_case(&config.transaction_policy.refund_receiver)
         || safe.signature_bytes != 65
         || relayer.reviewed_repository.is_empty()
         || relayer.reviewed_revision.len() != 40
@@ -863,7 +1073,8 @@ fn validate_manifest(
         || config.query.max_items > wire.max_query_items
         || config.query.max_bytes == 0
         || config.query.max_bytes > wire.max_query_bytes
-        || config.relayer.max_request_bytes == 0
+        || config.relayer.max_original_request_bytes == 0
+        || config.relayer.max_fence_request_bytes == 0
         || config.relayer.max_response_bytes == 0
         || config.relayer.max_transaction_id_bytes == 0
         || config.relayer.max_timestamp_bytes == 0
@@ -938,7 +1149,8 @@ fn validate_manifest(
         || config.rpc.max_origin_bytes > allocation.max_chain_origin_bytes
         || config.relayer.max_path_bytes > allocation.max_path_bytes
         || config.rpc.max_path_bytes > allocation.max_path_bytes
-        || config.relayer.max_request_bytes > allocation.max_request_bytes
+        || config.relayer.max_original_request_bytes > allocation.max_original_request_bytes
+        || config.relayer.max_fence_request_bytes > allocation.max_fence_request_bytes
         || config.relayer.max_response_bytes > allocation.max_relayer_response_bytes
         || config.rpc.max_response_bytes > allocation.max_chain_response_bytes
         || config.relayer.max_transaction_id_bytes > allocation.max_transaction_id_bytes
@@ -951,17 +1163,44 @@ fn validate_manifest(
         || config.credentials.max_value_bytes > allocation.max_credential_value_bytes
         || config.credentials.max_acquisition_bytes > allocation.max_credential_acquisition_bytes
         || config.credentials.max_path_bytes > allocation.max_credential_path_bytes
-        || allocation.query_binding_bytes_per_item == 0
-        || peak_payload_bytes != allocation.max_peak_payload_bytes
+        || allocation.query_offset_layout_bytes != super::query::query_offset_layout_bytes()
+        || allocation.receipt_log_index_layout_bytes != WORD_BYTES
+        || allocation.startup_source_bytes != startup_source_bytes
+        || config.working_set.startup_structural_bytes > allocation.startup_structural_bytes
+        || config.working_set.operational_structural_bytes > allocation.operational_structural_bytes
+        || startup_layout > config.working_set.startup_structural_bytes
+        || operational_layout > config.working_set.operational_structural_bytes
+        || config.working_set.max_startup_working_set_bytes
+            > allocation.max_startup_working_set_bytes
+        || config.working_set.max_operational_working_set_bytes
+            > allocation.max_operational_working_set_bytes
+        || operational_bytes != config.working_set.max_operational_working_set_bytes
+        || operational_bytes != allocation.max_operational_working_set_bytes
+        || startup_source_bytes.checked_add(config.working_set.startup_structural_bytes)
+            != Some(config.working_set.max_startup_working_set_bytes)
     {
         return Err(RedemptionConfigError::ManifestDrift);
     }
     Ok(())
 }
 
-fn closed_form_peak_payload_bytes(
+const fn mechanical_startup_structural_bytes() -> usize {
+    std::mem::size_of::<RawConfig>()
+        + std::mem::size_of::<RawManifest>()
+        + std::mem::size_of::<ValidatedRedemptionProfile>()
+}
+
+const fn mechanical_operational_structural_bytes() -> usize {
+    std::mem::size_of::<ValidatedRedemptionProfile>()
+        + std::mem::size_of::<ResolvedRedemptionCredentials>()
+        + super::request::request_structural_layout_bytes()
+        + super::query::query_structural_layout_bytes()
+        + super::wire::wire_structural_layout_bytes()
+}
+
+fn closed_form_operational_bytes(
     config: &RawConfig,
-    allocation: &RawManifestAllocationBoundary,
+    _allocation: &RawManifestAllocationBoundary,
 ) -> Result<usize, RedemptionConfigError> {
     let checked_add = |left: usize, right: usize| {
         left.checked_add(right)
@@ -971,21 +1210,24 @@ fn closed_form_peak_payload_bytes(
         left.checked_mul(right)
             .ok_or(RedemptionConfigError::InvalidBounds)
     };
-    let request_pair = checked_mul(
-        2,
+    let request_pair = checked_add(
         checked_add(
+            config.relayer.max_original_request_bytes,
+            config.relayer.max_fence_request_bytes,
+        )?,
+        checked_mul(
+            2,
             checked_add(
-                config.relayer.max_request_bytes,
                 config.relayer.max_header_bytes,
+                config.relayer.max_metadata_bytes,
             )?,
-            config.relayer.max_metadata_bytes,
         )?,
     )?;
     let query = checked_add(
         config.query.max_bytes,
         checked_mul(
             config.query.max_items,
-            allocation.query_binding_bytes_per_item,
+            super::query::query_offset_layout_bytes(),
         )?,
     )?;
     let relayer_response = checked_add(
@@ -1006,10 +1248,26 @@ fn closed_form_peak_payload_bytes(
         config.credentials.max_acquisition_bytes,
         checked_mul(6, config.credentials.max_value_bytes)?,
     )?;
+    let receipt_state = checked_mul(config.rpc.max_receipt_logs, WORD_BYTES)?;
     checked_add(
         checked_add(request_pair, query)?,
-        checked_add(checked_add(relayer_response, chain_responses)?, credentials)?,
+        checked_add(
+            checked_add(relayer_response, chain_responses)?,
+            checked_add(
+                credentials,
+                checked_add(
+                    receipt_state,
+                    config.working_set.operational_structural_bytes,
+                )?,
+            )?,
+        )?,
     )
+}
+
+fn parse_decimal_word(value: &str) -> Result<[u8; WORD_BYTES], RedemptionConfigError> {
+    SafeNonce::from_decimal(value)
+        .map(|nonce| *nonce.as_word())
+        .map_err(|_| RedemptionConfigError::ManifestDrift)
 }
 
 fn parse_address(
@@ -1076,6 +1334,7 @@ pub struct ResolvedRedemptionCredentials {
     builder_api_secret: Zeroizing<Vec<u8>>,
     builder_passphrase: Zeroizing<Vec<u8>>,
     redaction_hmac_key: Zeroizing<Vec<u8>>,
+    signer_address: [u8; ADDRESS_BYTES],
     key_version: u32,
 }
 
@@ -1105,6 +1364,10 @@ impl ResolvedRedemptionCredentials {
 
     pub(super) fn signer_private_key(&self) -> &[u8] {
         self.signer_private_key.as_ref()
+    }
+
+    pub(super) fn signer_address(&self) -> [u8; ADDRESS_BYTES] {
+        self.signer_address
     }
 
     pub(super) fn builder_api_key(&self) -> &[u8] {
@@ -1143,7 +1406,7 @@ pub fn resolve_credentials(
         let mut acquisition_storage = Vec::new();
         acquisition_storage
             .try_reserve_exact(max_acquisition_bytes)
-            .map_err(|_| RedemptionConfigError::InvalidBounds)?;
+            .map_err(|_| RedemptionConfigError::Capacity)?;
         acquisition_storage.resize(max_acquisition_bytes, 0);
         let mut acquisition = Zeroizing::new(acquisition_storage);
         let mut sink = CredentialSink {
@@ -1157,7 +1420,7 @@ pub fn resolve_credentials(
         let mut exact_storage = Vec::new();
         exact_storage
             .try_reserve_exact(sink.len)
-            .map_err(|_| RedemptionConfigError::InvalidBounds)?;
+            .map_err(|_| RedemptionConfigError::Capacity)?;
         exact_storage.resize(sink.len, 0);
         let mut exact = Zeroizing::new(exact_storage);
         exact.copy_from_slice(&sink.storage[..sink.len]);
@@ -1165,14 +1428,20 @@ pub fn resolve_credentials(
     }
 
     let paths = &profile.credential_paths;
+    let signer_private_key = one(
+        region,
+        &paths[0],
+        profile.max_credential_bytes,
+        profile.max_credential_acquisition_bytes,
+        source,
+    )?;
+    let signer_address = derive_signer_address(&signer_private_key)?;
+    let (safe_owners, safe_threshold, _) = profile.safe_owner_contract();
+    if safe_threshold != 1 || safe_owners != [signer_address] {
+        return Err(RedemptionConfigError::SignerMismatch);
+    }
     Ok(ResolvedRedemptionCredentials {
-        signer_private_key: one(
-            region,
-            &paths[0],
-            profile.max_credential_bytes,
-            profile.max_credential_acquisition_bytes,
-            source,
-        )?,
+        signer_private_key,
         builder_api_key: one(
             region,
             &paths[1],
@@ -1201,8 +1470,23 @@ pub fn resolve_credentials(
             profile.max_credential_acquisition_bytes,
             source,
         )?,
+        signer_address,
         key_version: profile.key_version,
     })
+}
+
+fn derive_signer_address(value: &[u8]) -> Result<[u8; ADDRESS_BYTES], RedemptionConfigError> {
+    let encoded = value.strip_prefix(b"0x").unwrap_or(value);
+    let mut secret = Zeroizing::new([0u8; WORD_BYTES]);
+    hex::decode_to_slice(encoded, &mut *secret)
+        .map_err(|_| RedemptionConfigError::SecretResolution)?;
+    let signing_key = SigningKey::from_bytes((&*secret).into())
+        .map_err(|_| RedemptionConfigError::SecretResolution)?;
+    let public = signing_key.verifying_key().to_encoded_point(false);
+    let digest = keccak256(&public.as_bytes()[1..]);
+    let mut address = [0; ADDRESS_BYTES];
+    address.copy_from_slice(&digest[WORD_BYTES - ADDRESS_BYTES..]);
+    Ok(address)
 }
 
 #[cfg(test)]

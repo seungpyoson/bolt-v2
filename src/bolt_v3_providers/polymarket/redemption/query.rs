@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 const WORD_BYTES: usize = 32;
 
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryKind {
     OriginalSubmit,
@@ -22,6 +23,7 @@ pub enum QueryKind {
     SafeBoundary,
 }
 
+#[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExpectedResponseClass {
     Submit,
@@ -49,6 +51,7 @@ impl ExpectedResponseClass {
     }
 }
 
+#[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ExactQueryBinding {
     pub(super) kind: QueryKind,
@@ -58,12 +61,17 @@ pub(super) struct ExactQueryBinding {
     pub(super) response_class: ExpectedResponseClass,
 }
 
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct QueryOffset {
     kind: QueryKind,
     start: usize,
     len: usize,
     binding: ExactQueryBinding,
+}
+
+pub(super) const fn query_offset_layout_bytes() -> usize {
+    std::mem::size_of::<QueryOffset>()
 }
 
 const EMPTY_OFFSET: QueryOffset = QueryOffset {
@@ -83,6 +91,10 @@ pub struct ExactQuerySet {
     bytes: CappedBytes,
     offsets: Vec<QueryOffset>,
     len: usize,
+}
+
+pub(super) const fn query_structural_layout_bytes() -> usize {
+    std::mem::size_of::<ExactQuerySet>() + std::mem::size_of::<SourceBoundVerifiedOutcome>()
 }
 
 impl ExactQuerySet {
@@ -196,6 +208,7 @@ impl ExactQuerySet {
             },
         )?;
         let (factory, implementation, fallback_handler, guard) = profile.safe_boundary();
+        let (owners, threshold, _) = profile.safe_owner_contract();
         result.append(
             QueryKind::SafeBoundary,
             profile.chain_path().as_bytes(),
@@ -211,7 +224,11 @@ impl ExactQuerySet {
                 bytes.append_hex(&fallback_handler)?;
                 bytes.extend(br#","guard":"0x"#)?;
                 bytes.append_hex(&guard)?;
-                bytes.extend(br#"","modules":[]}"#)
+                bytes.extend(br#"","modules":[],"owners":["0x"#)?;
+                bytes.append_hex(&owners[0])?;
+                bytes.extend(br#""],"threshold":"#)?;
+                append_decimal(bytes, threshold)?;
+                bytes.extend(br#"}"#)
             },
         )?;
         result.append(
@@ -268,11 +285,11 @@ impl ExactQuerySet {
         let mut offsets = Vec::new();
         offsets
             .try_reserve_exact(profile.max_query_items())
-            .map_err(|_| QueryError::Allocation)?;
+            .map_err(|_| QueryError::Capacity)?;
         offsets.resize(profile.max_query_items(), EMPTY_OFFSET);
         Ok(Self {
             bytes: CappedBytes::try_with_capacity(profile.max_query_bytes())
-                .map_err(|_| QueryError::Allocation)?,
+                .map_err(|_| QueryError::Capacity)?,
             offsets,
             len: 0,
         })
@@ -331,7 +348,6 @@ fn append_decimal(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryError {
-    Allocation,
     Capacity,
     Index,
     BindingMismatch,

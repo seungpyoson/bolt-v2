@@ -173,8 +173,8 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         source = path.read_text(encoding="utf-8")
         path.write_text(
             source.replace(
-                "pub fn validate_profile()",
-                "pub fn validate_profile(config_toml: &str)",
+                "pub fn validate_profile(\n    working_set: WholeWorkingSetReservation,",
+                "pub fn validate_profile(\n    config_toml: &str,\n    working_set: WholeWorkingSetReservation,",
                 1,
             ),
             encoding="utf-8",
@@ -194,8 +194,8 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         self.mutate(
             root,
             "src/bolt_v3_providers/polymarket/redemption/config.rs",
-            "REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_234",
-            "REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_235",
+            "REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_750",
+            "REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_751",
         )
         self.assert_rejected(root, "pre-parse reviewed source bound")
 
@@ -204,8 +204,8 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         self.mutate(
             root,
             str(verifier.MANIFEST_PATH),
-            "max_peak_payload_bytes = 14725191",
-            "max_peak_payload_bytes = 14725190",
+            "max_operational_working_set_bytes = 14790791",
+            "max_operational_working_set_bytes = 14790790",
         )
         self.assert_rejected(root, "closed-form peak")
 
@@ -341,6 +341,76 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
             "",
         )
         self.assert_rejected(root, "source response query binding is incomplete")
+
+    def test_typed_transaction_policy_cannot_be_bypassed_by_literals(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "request.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace(
+                "profile.transaction_policy()",
+                "TypedSafeTransactionPolicy::hardcoded()",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "typed transaction policy")
+
+    def test_whole_working_set_reservation_and_mechanical_layout_are_required(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "capability.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace("pub struct WholeWorkingSetReservation", "struct RemovedReservation", 1),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "whole working-set reservation")
+
+        root = self.fixture()
+        path = root / verifier.MANIFEST_PATH
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace(
+                "query_offset_layout_bytes = ",
+                "query_binding_bytes_per_item = ",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "mechanical working-set layout")
+
+    def test_signer_and_safe_owner_authority_cannot_return_to_the_caller(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "request.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace(
+                "pub fn new(mode: MarketMode, metadata: &'a str)",
+                "pub fn new(mode: MarketMode, owner_address: &'a str, metadata: &'a str)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "caller signer authority")
+
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "wire.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace("    owners: [&'a str; 1],\n", "", 1),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "finalized Safe owner boundary")
+
+    def test_receipt_log_ordering_state_cannot_be_removed(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "wire.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace("struct FixedLogIndexState", "struct RemovedLogIndexState", 1),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "strict receipt log coordinates")
 
 
 if __name__ == "__main__":

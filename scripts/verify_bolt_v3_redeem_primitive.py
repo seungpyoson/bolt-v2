@@ -49,6 +49,7 @@ EXPECTED_BLOBS = {
 }
 
 CAPABILITIES = (
+    "WholeWorkingSetReservation",
     "ExactConditionSnapshotLease",
     "SafeNonceBodyCapacityPermit",
     "FreshPreSendValidation",
@@ -381,6 +382,29 @@ def verify(root: pathlib.Path) -> list[str]:
         errors.append("AO-REDEEM adapter dummy index structural contract drifted")
     if safe.get("nonce_abi") != "nonce()" or safe.get("nonce_selector") != "0xaffed0e0" or safe.get("operation") != "call" or safe.get("value") != "0":
         errors.append("AO-REDEEM same-nonce fence ABI drifted")
+    transaction_policy = config.get("transaction_policy", {})
+    expected_policy_fields = {
+        "http_method", "operation", "value", "safe_tx_gas", "base_gas", "gas_price",
+        "gas_token", "refund_receiver",
+    }
+    if (
+        set(transaction_policy) != expected_policy_fields
+        or transaction_policy.get("http_method") != safe.get("http_method")
+        or transaction_policy.get("operation") != 0
+        or any(transaction_policy.get(field) != safe.get(field) for field in (
+            "value", "safe_tx_gas", "base_gas", "gas_price", "gas_token", "refund_receiver",
+        ))
+    ):
+        errors.append("AO-REDEEM typed transaction policy is not uniquely TOML-owned and source-fenced")
+    wallet, safe_boundary = config.get("wallet", {}), manifest.get("safe_boundary", {})
+    if (
+        wallet.get("owners") != safe_boundary.get("owners")
+        or wallet.get("threshold") != 1
+        or safe_boundary.get("threshold") != 1
+        or not isinstance(wallet.get("owners"), list)
+        or len(wallet.get("owners", [])) != 1
+    ):
+        errors.append("AO-REDEEM exact Safe owner set and threshold are not TOML-owned and source-fenced")
     if relayer.get("explicit_nonce") != "source-proven" or relayer.get("competing_same_nonce") != "unproven":
         errors.append("AO-REDEEM relayer nonce capability is overstated")
     rpc, wire = config.get("rpc", {}), manifest.get("wire", {})
@@ -401,7 +425,8 @@ def verify(root: pathlib.Path) -> list[str]:
         (rpc.get("max_origin_bytes"), allocation.get("max_chain_origin_bytes")),
         (config.get("relayer", {}).get("max_path_bytes"), allocation.get("max_path_bytes")),
         (rpc.get("max_path_bytes"), allocation.get("max_path_bytes")),
-        (config.get("relayer", {}).get("max_request_bytes"), allocation.get("max_request_bytes")),
+        (config.get("relayer", {}).get("max_original_request_bytes"), allocation.get("max_original_request_bytes")),
+        (config.get("relayer", {}).get("max_fence_request_bytes"), allocation.get("max_fence_request_bytes")),
         (config.get("relayer", {}).get("max_response_bytes"), allocation.get("max_relayer_response_bytes")),
         (rpc.get("max_response_bytes"), allocation.get("max_chain_response_bytes")),
         (config.get("relayer", {}).get("max_transaction_id_bytes"), allocation.get("max_transaction_id_bytes")),
@@ -419,20 +444,42 @@ def verify(root: pathlib.Path) -> list[str]:
         errors.append("AO-REDEEM allocation-driving maximum exceeds its reviewed manifest bound")
     try:
         peak = (
-            2 * (config["relayer"]["max_request_bytes"] + config["relayer"]["max_header_bytes"] + config["relayer"]["max_metadata_bytes"])
+            config["relayer"]["max_original_request_bytes"]
+            + config["relayer"]["max_fence_request_bytes"]
+            + 2 * (config["relayer"]["max_header_bytes"] + config["relayer"]["max_metadata_bytes"])
             + config["query"]["max_bytes"]
-            + config["query"]["max_items"] * allocation["query_binding_bytes_per_item"]
+            + config["query"]["max_items"] * allocation["query_offset_layout_bytes"]
             + config["relayer"]["max_response_bytes"] + config["relayer"]["overflow_probe_bytes"]
             + config["relayer"]["max_transaction_id_bytes"]
             + (config["query"]["max_items"] - 1)
             * (config["rpc"]["max_response_bytes"] + config["rpc"]["overflow_probe_bytes"])
             + config["credentials"]["max_acquisition_bytes"]
             + 6 * config["credentials"]["max_value_bytes"]
+            + config["rpc"]["max_receipt_logs"] * allocation["receipt_log_index_layout_bytes"]
+            + config["working_set"]["operational_structural_bytes"]
         )
     except (KeyError, TypeError):
         peak = None
-    if peak != allocation.get("max_peak_payload_bytes"):
+    if peak != allocation.get("max_operational_working_set_bytes"):
         errors.append("AO-REDEEM closed-form peak payload bound drifted")
+    startup = (
+        (root / CONFIG_PATH).stat().st_size
+        + (root / MANIFEST_PATH).stat().st_size
+        + config.get("working_set", {}).get("startup_structural_bytes", 0)
+    )
+    if (
+        allocation.get("startup_source_bytes")
+        != (root / CONFIG_PATH).stat().st_size + (root / MANIFEST_PATH).stat().st_size
+        or startup != allocation.get("max_startup_working_set_bytes")
+        or startup != config.get("working_set", {}).get("max_startup_working_set_bytes")
+        or peak != config.get("working_set", {}).get("max_operational_working_set_bytes")
+    ):
+        errors.append("AO-REDEEM startup/operational whole working-set bound drifted")
+    if set(config.get("working_set", {})) != {
+        "startup_structural_bytes", "operational_structural_bytes",
+        "max_startup_working_set_bytes", "max_operational_working_set_bytes",
+    }:
+        errors.append("AO-REDEEM whole working-set TOML schema is not exact")
     if manifest.get("activation") != {"primitive_enabled": False, "requires_competing_same_nonce_conformance": True, "has_active_caller": False, "has_durable_state": False}:
         errors.append("AO-REDEEM manifest is not mechanically disabled and pure")
     if config.get("enabled") is not False or config.get("provider_manifest_id") != manifest.get("manifest_id"):
@@ -447,6 +494,9 @@ def verify(root: pathlib.Path) -> list[str]:
         "max_acquisition_bytes", "max_path_bytes", "key_version",
     }
     if set(credentials) != expected_credentials or any(not credentials[field].startswith("/bolt/") for field in expected_credentials if field.endswith("_ssm_path")):
+        errors.append("AO-REDEEM credentials must use exact grouped SSM-only capacity schema")
+    config_text = (root / CONFIG_PATH).read_text(encoding="utf-8")
+    if re.search(r"(?m)^\s*(?:api_key|private_key|secret|passphrase)\s*=", config_text):
         errors.append("AO-REDEEM credentials must use exact grouped SSM-only capacity schema")
     boundary = manifest.get("credential_boundary", {})
     if boundary.get("source") != "aws-ssm-capped-sink" or not isinstance(boundary.get("max_acquisition_bytes"), int) or credentials.get("max_acquisition_bytes", 0) > boundary.get("max_acquisition_bytes", 0):
@@ -474,6 +524,50 @@ def verify(root: pathlib.Path) -> list[str]:
     )
     if re.search(r"vec!\s*\[\s*0\s*;", allocation_sources) or "CappedBytes::with_capacity" in allocation_sources:
         errors.append("AO-REDEEM production allocation bypasses fallible reservation")
+    capability_source = (root / REDEMPTION_ROOT / "capability.rs").read_text(encoding="utf-8")
+    if (
+        "pub struct WholeWorkingSetReservation" not in capability_source
+        or "_working_set: WholeWorkingSetReservation" not in config_source
+        or not any("WholeWorkingSetReservation" in signature for signature in signatures.get("validate_profile", []))
+    ):
+        errors.append("AO-REDEEM whole working-set reservation is not acquired before profile/credential input")
+    request_source = (root / REDEMPTION_ROOT / "request.rs").read_text(encoding="utf-8")
+    if (
+        "profile.transaction_policy()" not in request_source
+        or 'hmac.update(b"POST")' in request_source
+        or '"gasPrice":"0","operation":"0"' in request_source
+        or "TypedSafeTransactionPolicy::hardcoded" in request_source
+    ):
+        errors.append("AO-REDEEM request construction bypasses the typed transaction policy")
+    build_input = _struct_fields(request_source, "RedemptionBuildInput")
+    if (
+        "owner_address" in build_input
+        or re.search(r"pub\s+fn\s+new\s*\([^)]*owner_address", request_source, re.S)
+        or "signer_address" not in _struct_fields(config_source, "ResolvedRedemptionCredentials")
+    ):
+        errors.append("AO-REDEEM caller signer authority was not removed")
+    if "query_binding_bytes_per_item" in allocation or not all(
+        isinstance(allocation.get(field), int) and allocation[field] > 0
+        for field in (
+            "query_offset_layout_bytes", "receipt_log_index_layout_bytes",
+            "startup_source_bytes", "startup_structural_bytes",
+            "operational_structural_bytes",
+        )
+    ):
+        errors.append("AO-REDEEM mechanical working-set layout is incomplete")
+    if allocation.get("query_offset_layout_bytes") != 128 or allocation.get("receipt_log_index_layout_bytes") != 32:
+        errors.append("AO-REDEEM mechanical working-set layout does not match fixed Rust representations")
+    if not all(name in allocation_sources for name in (
+        "mechanical_startup_structural_bytes", "mechanical_operational_structural_bytes",
+        "std::mem::size_of", "query_offset_layout_bytes", "wire_structural_layout_bytes",
+        "request_structural_layout_bytes",
+    )):
+        errors.append("AO-REDEEM structural overhead is not mechanically accounted")
+    if not all(needle in allocation_sources for needle in (
+        "RedemptionConfigError::Capacity", "RedemptionRequestError::Capacity",
+        "QueryError::Capacity", "WireFailureClass::Capacity",
+    )):
+        errors.append("AO-REDEEM allocation exhaustion lacks a distinct transient Capacity class")
 
     terminal = manifest.get("terminal_events", {})
     expected_terminal = {
@@ -561,6 +655,15 @@ def verify(root: pathlib.Path) -> list[str]:
     actual_post_fields = set(re.findall(r"^\s*(\w+)\s*:", post_state.group(1), re.M)) if post_state else set()
     if actual_post_fields != required_post_fields:
         errors.append("AO-REDEEM post-state balance contract is incomplete")
+    safe_boundary = _struct_fields(wire_source, "SafeBoundaryWire")
+    if not {"owners", "threshold"}.issubset(safe_boundary):
+        errors.append("AO-REDEEM finalized Safe owner boundary is incomplete")
+    if (
+        "struct FixedLogIndexState" not in wire_source
+        or "strictly_after" not in wire_source
+        or "FixedLogIndexState" not in wire_source
+    ):
+        errors.append("AO-REDEEM strict receipt log coordinates are not fixed-capacity and ordered")
 
     errors.extend(verify_structural_reachability(root))
     errors.extend(verify_capabilities(root))
@@ -595,6 +698,11 @@ def verify(root: pathlib.Path) -> list[str]:
         "standard_and_negative_risk_adapter_log_failures_are_integrity_failures",
         "present_invalid_losing_and_winning_receipts_fail_closed",
         "receipt_log_limit_minus_one_limit_and_limit_plus_one_are_exact",
+        "typed_policy_drives_json_eip712_and_http_method",
+        "whole_working_set_reservation_and_capacity_failures_are_exact",
+        "original_and_fence_worst_case_builder_limits_are_exact",
+        "signer_and_finalized_safe_owner_set_are_exact",
+        "duplicate_and_out_of_order_log_indices_fail_closed",
     )
     for name in required_tests:
         if f"fn {name}" not in tests:

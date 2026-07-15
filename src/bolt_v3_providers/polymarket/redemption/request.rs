@@ -39,17 +39,12 @@ pub enum RequestKind {
 
 pub struct RedemptionBuildInput<'a> {
     mode: MarketMode,
-    owner_address: &'a str,
     metadata: &'a str,
 }
 
 impl<'a> RedemptionBuildInput<'a> {
-    pub fn new(mode: MarketMode, owner_address: &'a str, metadata: &'a str) -> Self {
-        Self {
-            mode,
-            owner_address,
-            metadata,
-        }
+    pub fn new(mode: MarketMode, metadata: &'a str) -> Self {
+        Self { mode, metadata }
     }
 }
 
@@ -148,6 +143,8 @@ pub struct PreparedRequestPair {
     relayer_source_identity: [u8; WORD_BYTES],
     chain_source_identity: [u8; WORD_BYTES],
     credential_key_version: u32,
+    safe_owner_set_digest: [u8; WORD_BYTES],
+    safe_threshold: u64,
     mode: MarketMode,
     condition_id: [u8; WORD_BYTES],
     pre_claim_balances: [[u8; WORD_BYTES]; 2],
@@ -174,6 +171,11 @@ pub struct FenceMayHaveStartedRequest {
     original: OriginalMayHaveStartedRequest,
     _fresh: FreshPreSendValidation,
     _durable: FenceMayHaveStartedPermit,
+}
+
+pub(super) const fn request_structural_layout_bytes() -> usize {
+    std::mem::size_of::<FenceMayHaveStartedRequest>()
+        + std::mem::size_of::<AuthorizedRequest<'static>>()
 }
 
 impl PreparedRequestPair {
@@ -268,6 +270,8 @@ impl PreparedRequestPair {
     ) -> Result<OriginalMayHaveStartedRequest, RedemptionRequestError> {
         if !fresh.matches(
             self.action_digest,
+            self.safe_owner_set_digest,
+            self.safe_threshold,
             self.snapshot_generation,
             self.lane_generation,
         ) || !durable.matches(self.action_digest, self.original.body.hash())
@@ -309,6 +313,11 @@ impl PreparedRequestPair {
     pub(super) fn hermetic_headers(&self, kind: RequestKind) -> &[u8] {
         self.request(kind).headers.as_slice()
     }
+
+    #[cfg(test)]
+    pub(super) fn hermetic_safe_owner_contract(&self) -> ([u8; WORD_BYTES], u64) {
+        (self.safe_owner_set_digest, self.safe_threshold)
+    }
 }
 
 impl OriginalMayHaveStartedRequest {
@@ -325,6 +334,8 @@ impl OriginalMayHaveStartedRequest {
     ) -> Result<FenceMayHaveStartedRequest, RedemptionRequestError> {
         if !fresh.matches(
             self.prepared.action_digest,
+            self.prepared.safe_owner_set_digest,
+            self.prepared.safe_threshold,
             self.prepared.snapshot_generation,
             self.prepared.lane_generation,
         ) || !durable.matches(
@@ -376,6 +387,8 @@ impl Drop for PreparedRequestPair {
         self.relayer_source_identity.zeroize();
         self.chain_source_identity.zeroize();
         self.credential_key_version.zeroize();
+        self.safe_owner_set_digest.zeroize();
+        self.safe_threshold.zeroize();
         self.pre_claim_balances.zeroize();
         self.pre_collateral_balance.zeroize();
         self.expected_redeemed_collateral_balance.zeroize();
@@ -397,6 +410,7 @@ pub enum RedemptionRequestError {
     CapabilityMismatch,
     CapacityPermitMismatch,
     Read,
+    Capacity,
 }
 
 pub fn build_request_pair(
@@ -420,15 +434,16 @@ pub fn build_request_pair(
     let (safe_address, safe_nonce, original_capacity, fence_capacity, lane_generation) =
         nonce_capacity.parts();
     if safe_address != profile.safe_address()
-        || original_capacity != profile.max_request_bytes()
-        || fence_capacity != profile.max_request_bytes()
+        || original_capacity != profile.max_request_bytes_for(false)
+        || fence_capacity != profile.max_request_bytes_for(true)
     {
         return Err(RedemptionRequestError::CapacityPermitMismatch);
     }
     if safe_nonce.is_max() {
         return Err(RedemptionRequestError::NonceExhausted);
     }
-    let owner = decode_address(input.owner_address)?;
+    let owner = credentials.signer_address();
+    let (_, safe_threshold, safe_owner_set_digest) = profile.safe_owner_contract();
     let target = profile.target(input.mode == MarketMode::NegativeRisk);
     let original_calldata = redemption_calldata(profile, condition_id);
     let mut fence_calldata = [0u8; CALLDATA_BYTES];
@@ -442,6 +457,7 @@ pub fn build_request_pair(
         safe_nonce,
         input.metadata.as_bytes(),
         builder_timestamp,
+        RequestKind::Original,
     )?;
     let fence = signed_request(
         profile,
@@ -452,6 +468,7 @@ pub fn build_request_pair(
         safe_nonce,
         input.metadata.as_bytes(),
         builder_timestamp,
+        RequestKind::Fence,
     )?;
     let action_digest = action_digest(
         profile,
@@ -472,6 +489,8 @@ pub fn build_request_pair(
         relayer_source_identity: profile.relayer_source_identity(),
         chain_source_identity: profile.chain_source_identity(),
         credential_key_version: credentials.key_version(),
+        safe_owner_set_digest,
+        safe_threshold,
         mode: input.mode,
         condition_id,
         pre_claim_balances,
@@ -539,15 +558,10 @@ fn signed_request(
     nonce: SafeNonce,
     metadata: &[u8],
     builder_timestamp: u64,
+    kind: RequestKind,
 ) -> Result<SignedRequest, RedemptionRequestError> {
-    let safe_transaction_hash = safe_transaction_hash(
-        profile.chain_id(),
-        profile.safe_address(),
-        target,
-        calldata,
-        nonce,
-    );
-    let signature = sign_hash(credentials, owner, safe_transaction_hash)?;
+    let safe_transaction_hash = safe_transaction_hash(profile, target, calldata, nonce);
+    let signature = sign_hash(credentials, safe_transaction_hash)?;
     let identity = ActionIdentity {
         chain_id: profile.chain_id(),
         safe_address: profile.safe_address(),
@@ -556,7 +570,9 @@ fn signed_request(
         calldata_hash: keccak256(calldata).0,
         safe_transaction_hash,
     };
-    let body = request_body(profile, owner, &identity, calldata, metadata, &signature)?;
+    let body = request_body(
+        profile, owner, &identity, calldata, metadata, &signature, kind,
+    )?;
     let headers = authorization_headers(profile, credentials, builder_timestamp, &body)?;
     let mut stored_calldata = [0; CALLDATA_BYTES];
     stored_calldata[..calldata.len()].copy_from_slice(calldata);
@@ -573,7 +589,6 @@ fn signed_request(
 
 fn sign_hash(
     credentials: &ResolvedRedemptionCredentials,
-    expected_owner: [u8; ADDRESS_BYTES],
     hash: [u8; WORD_BYTES],
 ) -> Result<[u8; SIGNATURE_BYTES], RedemptionRequestError> {
     let encoded = credentials
@@ -584,11 +599,6 @@ fn sign_hash(
     hex::decode_to_slice(encoded, &mut *secret).map_err(|_| RedemptionRequestError::Signing)?;
     let signing_key =
         SigningKey::from_bytes((&*secret).into()).map_err(|_| RedemptionRequestError::Signing)?;
-    let public = signing_key.verifying_key().to_encoded_point(false);
-    let derived = keccak256(&public.as_bytes()[1..]);
-    if derived[WORD_BYTES - ADDRESS_BYTES..] != expected_owner {
-        return Err(RedemptionRequestError::SignerMismatch);
-    }
     let (signature, recovery_id) = signing_key
         .sign_prehash_recoverable(&hash)
         .map_err(|_| RedemptionRequestError::Signing)?;
@@ -605,11 +615,13 @@ fn request_body(
     calldata: &[u8],
     metadata: &[u8],
     signature: &[u8; SIGNATURE_BYTES],
+    kind: RequestKind,
 ) -> Result<CappedBytes, RedemptionRequestError> {
     let mut nonce_decimal = [0; MAX_NONCE_DECIMAL_BYTES];
     let nonce_len = identity.nonce.write_decimal(&mut nonce_decimal);
     let mut body =
-        CappedBytes::try_with_capacity(profile.max_request_bytes()).map_err(map_capped_error)?;
+        CappedBytes::try_with_capacity(profile.max_request_bytes_for(kind == RequestKind::Fence))
+            .map_err(map_capped_error)?;
     body.extend(br#"{"type":"SAFE","from":"0x"#)
         .map_err(map_capped_error)?;
     body.append_hex(&owner).map_err(map_capped_error)?;
@@ -628,7 +640,33 @@ fn request_body(
     body.extend(br#"","signature":"0x"#)
         .map_err(map_capped_error)?;
     body.append_hex(signature).map_err(map_capped_error)?;
-    body.extend(br#"","signatureParams":{"gasPrice":"0","operation":"0","safeTxGas":"0","baseGas":"0","gasToken":"0x0000000000000000000000000000000000000000","refundReceiver":"0x0000000000000000000000000000000000000000"},"metadata":"#)
+    let policy = profile.transaction_policy();
+    let mut operation_decimal = [0; MAX_U64_DECIMAL_BYTES];
+    let operation_len = write_u64_decimal(u64::from(policy.operation()), &mut operation_decimal);
+    body.extend(br#"","signatureParams":{"gasPrice":"#)
+        .map_err(map_capped_error)?;
+    body.extend(policy.gas_price_decimal().as_bytes())
+        .map_err(map_capped_error)?;
+    body.extend(br#"","operation":"#)
+        .map_err(map_capped_error)?;
+    body.extend(&operation_decimal[..operation_len])
+        .map_err(map_capped_error)?;
+    body.extend(br#"","safeTxGas":"#)
+        .map_err(map_capped_error)?;
+    body.extend(policy.safe_tx_gas_decimal().as_bytes())
+        .map_err(map_capped_error)?;
+    body.extend(br#"","baseGas":"#).map_err(map_capped_error)?;
+    body.extend(policy.base_gas_decimal().as_bytes())
+        .map_err(map_capped_error)?;
+    body.extend(br#"","gasToken":"0x"#)
+        .map_err(map_capped_error)?;
+    body.append_hex(&policy.gas_token())
+        .map_err(map_capped_error)?;
+    body.extend(br#"","refundReceiver":"0x"#)
+        .map_err(map_capped_error)?;
+    body.append_hex(&policy.refund_receiver())
+        .map_err(map_capped_error)?;
+    body.extend(br#""},"metadata":"#)
         .map_err(map_capped_error)?;
     body.append_json_string(metadata)
         .map_err(map_capped_error)?;
@@ -653,7 +691,7 @@ fn authorization_headers(
     let mut decoded = Vec::new();
     decoded
         .try_reserve_exact(decoded_capacity)
-        .map_err(|_| RedemptionRequestError::Authorization)?;
+        .map_err(|_| RedemptionRequestError::Capacity)?;
     decoded.resize(decoded_capacity, 0);
     let mut decoded_secret = Zeroizing::new(decoded);
     let decoded_len = general_purpose::STANDARD
@@ -662,7 +700,7 @@ fn authorization_headers(
     let mut hmac = Hmac::<Sha256>::new_from_slice(&decoded_secret[..decoded_len])
         .map_err(|_| RedemptionRequestError::Authorization)?;
     hmac.update(&timestamp_bytes[..timestamp_len]);
-    hmac.update(b"POST");
+    hmac.update(profile.transaction_policy().http_method());
     hmac.update(profile.submit_path().as_bytes());
     hmac.update(body.as_slice());
     let signature = hmac.finalize().into_bytes();
@@ -720,12 +758,14 @@ fn redemption_calldata(
 }
 
 fn safe_transaction_hash(
-    chain_id: u64,
-    safe_address: [u8; ADDRESS_BYTES],
+    profile: &ValidatedRedemptionProfile,
     target: [u8; ADDRESS_BYTES],
     calldata: &[u8],
     nonce: SafeNonce,
 ) -> [u8; WORD_BYTES] {
+    let chain_id = profile.chain_id();
+    let safe_address = profile.safe_address();
+    let policy = profile.transaction_policy();
     let domain_type_hash = keccak256(b"EIP712Domain(uint256 chainId,address verifyingContract)");
     let safe_tx_type_hash = keccak256(
         b"SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)",
@@ -739,14 +779,14 @@ fn safe_transaction_hash(
     let words = [
         safe_tx_type_hash.0,
         address_word(target),
-        u64_word(0),
+        policy.value_word(),
         keccak256(calldata).0,
-        u64_word(0),
-        u64_word(0),
-        u64_word(0),
-        u64_word(0),
-        address_word([0; ADDRESS_BYTES]),
-        address_word([0; ADDRESS_BYTES]),
+        u64_word(u64::from(policy.operation())),
+        policy.safe_tx_gas_word(),
+        policy.base_gas_word(),
+        policy.gas_price_word(),
+        address_word(policy.gas_token()),
+        address_word(policy.refund_receiver()),
         *nonce.as_word(),
     ];
     let mut structure = [0; WORD_BYTES * 11];
@@ -780,6 +820,9 @@ fn action_digest(
     digest.update(credential_key_version.to_be_bytes());
     digest.update(profile.chain_id().to_be_bytes());
     digest.update(profile.safe_address());
+    let (_, safe_threshold, safe_owner_set_digest) = profile.safe_owner_contract();
+    digest.update(safe_owner_set_digest);
+    digest.update(safe_threshold.to_be_bytes());
     digest.update([match mode {
         MarketMode::Standard => 0,
         MarketMode::NegativeRisk => 1,
@@ -794,20 +837,6 @@ fn action_digest(
     digest.update(fence.body.as_slice());
     digest.update(fence.headers.as_slice());
     digest.finalize().into()
-}
-
-fn decode_address(value: &str) -> Result<[u8; ADDRESS_BYTES], RedemptionRequestError> {
-    decode_fixed(value).map_err(|_| RedemptionRequestError::InvalidAddress)
-}
-
-fn decode_fixed<const N: usize>(value: &str) -> Result<[u8; N], RedemptionRequestError> {
-    let encoded = value
-        .strip_prefix("0x")
-        .ok_or(RedemptionRequestError::InvalidBytes32)?;
-    let mut output = [0; N];
-    hex::decode_to_slice(encoded, &mut output)
-        .map_err(|_| RedemptionRequestError::InvalidBytes32)?;
-    Ok(output)
 }
 
 fn address_word(address: [u8; ADDRESS_BYTES]) -> [u8; WORD_BYTES] {
@@ -848,8 +877,8 @@ fn write_u64_decimal(mut value: u64, output: &mut [u8; MAX_U64_DECIMAL_BYTES]) -
 fn map_capped_error(error: CappedIoError) -> RedemptionRequestError {
     match error {
         CappedIoError::Read => RedemptionRequestError::Read,
-        CappedIoError::Allocation => RedemptionRequestError::RequestTooLarge,
-        CappedIoError::Capacity | CappedIoError::InvalidLimit | CappedIoError::Oversize(_) => {
+        CappedIoError::Allocation | CappedIoError::InvalidLimit => RedemptionRequestError::Capacity,
+        CappedIoError::Capacity | CappedIoError::Oversize(_) => {
             RedemptionRequestError::RequestTooLarge
         }
     }
@@ -859,7 +888,7 @@ fn zeroizing_vec_from_slice(value: &[u8]) -> Result<Zeroizing<Vec<u8>>, Redempti
     let mut storage = Vec::new();
     storage
         .try_reserve_exact(value.len())
-        .map_err(|_| RedemptionRequestError::RequestTooLarge)?;
+        .map_err(|_| RedemptionRequestError::Capacity)?;
     storage.resize(value.len(), 0);
     let mut output = Zeroizing::new(storage);
     output.copy_from_slice(value);

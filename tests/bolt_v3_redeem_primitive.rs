@@ -21,6 +21,6 @@ fn standard_and_negative_risk_fixtures() {
 
 #[test]
 fn primitive_is_mechanically_disabled() {
-    validate_profile().unwrap();
+    let _sealed_profile_boundary = validate_profile;
     assert!(!MECHANICALLY_ENABLED);
 }

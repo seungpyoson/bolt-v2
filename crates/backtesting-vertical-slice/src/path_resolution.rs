@@ -55,6 +55,23 @@ pub fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
     resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
 }
 
+/// Resolve a control artifact referenced by an execution pack.
+///
+/// Ordinary relative paths are owned by the pack directory and must not be
+/// shadowed by an ambient working-directory file. Canonical repo-relative and
+/// repo-scratch paths retain the repository-aware behavior used by generated
+/// packs, while absolute paths remain exact.
+#[must_use]
+pub fn resolve_pack_control_path(pack_base_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if looks_repo_relative(path) || looks_repo_scratch_path(path) {
+        return resolve_existing_path(pack_base_dir, path);
+    }
+    pack_base_dir.join(path)
+}
+
 /// Resolve a CLI-supplied path that must reference an existing input, with no
 /// referencing-artifact directory to anchor against (the binary entrypoint
 /// variant of [`resolve_existing_path`]).
@@ -302,6 +319,24 @@ mod tests {
         for marker in REPO_ROOT_MARKERS {
             assert!(root.join(marker).exists(), "missing {marker}");
         }
+    }
+
+    #[test]
+    fn pack_control_paths_are_pack_relative_even_when_missing() {
+        let pack_base_dir = std::env::temp_dir().join("pack-control-path-resolution");
+        let declared = Path::new("missing-control.json");
+
+        assert_eq!(
+            resolve_pack_control_path(&pack_base_dir, declared),
+            pack_base_dir.join(declared)
+        );
+    }
+
+    #[test]
+    fn pack_control_paths_preserve_repo_relative_resolution() {
+        let resolved = resolve_pack_control_path(Path::new("unused"), Path::new("crates"));
+        assert!(resolved.is_absolute(), "resolved: {}", resolved.display());
+        assert!(resolved.join("backtesting-vertical-slice").is_dir());
     }
 
     #[test]

@@ -305,6 +305,46 @@ fn continue_on_error_records_control_preflight_failure_and_runs_later_record() {
 }
 
 #[test]
+fn continue_on_error_isolates_malformed_runner_output_and_runs_later_record() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0u64, b"synthetic object zero".to_vec()),
+        (1u64, b"synthetic object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let mut runner = MalformedFirstCatalogHashRunner::default();
+
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: true,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("malformed runner output is isolated to its record");
+
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    );
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(report.records[0].sequence, 1);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].sequence, 0);
+    assert_eq!(report.failures[0].failure_stage, "validate_run_output");
+    assert!(report.failures[0].error.contains("catalog_hash"));
+    assert_eq!(runner.calls, vec![0, 1]);
+}
+
+#[test]
 fn http_source_universe_fetcher_rejects_zero_timeout() {
     match HttpSourceUniverseObjectFetcher::new(Some(0), None) {
         Ok(_) => panic!("zero timeout accepted"),
@@ -2757,6 +2797,32 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash: sha256_hex(b"catalog-hash"),
+        })
+    }
+}
+
+#[derive(Default)]
+struct MalformedFirstCatalogHashRunner {
+    calls: Vec<u64>,
+}
+
+impl SourceUniverseOperatorRunner for MalformedFirstCatalogHashRunner {
+    fn run(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        _object_bytes: &[u8],
+        _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+        _output_dir: &Path,
+    ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
+        self.calls.push(record.sequence);
+        Ok(SourceUniverseBatchExecutionRunOutput {
+            canonical_rows: 7,
+            nt_catalog_rows: 7,
+            catalog_hash: if record.sequence == 0 {
+                "not-a-sha256".to_string()
+            } else {
+                sha256_hex(b"catalog-hash")
+            },
         })
     }
 }

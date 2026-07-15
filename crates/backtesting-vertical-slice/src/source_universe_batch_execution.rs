@@ -1949,6 +1949,17 @@ where
             );
         }
     };
+    if let Err(error) = validate_sha256_hex(&run_output.catalog_hash)
+        .context("validate operator run output catalog_hash")
+    {
+        return record_error_slot(
+            record,
+            execution_record_sha256,
+            "validate_run_output",
+            error,
+            config,
+        );
+    }
 
     RecordSlot::Completed(SourceUniverseBatchExecutionRecord {
         sequence: record.sequence,

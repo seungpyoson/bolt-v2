@@ -18,7 +18,6 @@ target_namespace = "backtesting-vertical-slice"
 
 [commands.test]
 cargo_args = ["nextest", "run", "--locked"]
-compile_args = ["nextest", "run", "--locked", "--no-run"]
 
 [commands.clippy]
 recipe = "managed-clippy"

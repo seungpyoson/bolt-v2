@@ -773,6 +773,14 @@ fn accepted_dataset_for_run_spec_hash(
     object_sha256: &str,
 ) -> Result<(SourceProofReport, AcceptedDataset)> {
     let registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    accepted_dataset_for_run_spec_hash_with_registry(spec, object_sha256, &registry)
+}
+
+fn accepted_dataset_for_run_spec_hash_with_registry(
+    spec: &RunSpec,
+    object_sha256: &str,
+    registry: &SourceBindingRegistry,
+) -> Result<(SourceProofReport, AcceptedDataset)> {
     ensure!(
         spec.source_proof.is_accepted(),
         "source proof is not accepted: status {:?}",
@@ -790,7 +798,7 @@ fn accepted_dataset_for_run_spec_hash(
         &spec.source_proof,
         &spec.accepted_object,
         object_sha256,
-        &registry,
+        registry,
     )
     .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
     Ok((spec.source_proof.clone(), accepted))
@@ -837,8 +845,31 @@ pub fn validate_run_spec_manifest_for_object_hash(
     output_dir: &Path,
     object_sha256: &str,
 ) -> Result<()> {
+    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    validate_run_spec_manifest_for_object_hash_with_registry(
+        spec,
+        output_dir,
+        object_sha256,
+        &registry,
+    )
+}
+
+/// Validate every pre-payload run-spec gate against an already parsed exact
+/// source-binding registry snapshot.
+///
+/// # Errors
+///
+/// Returns an error when converter, source-proof ledger, or manifest
+/// validation fails.
+pub fn validate_run_spec_manifest_for_object_hash_with_registry(
+    spec: &RunSpec,
+    output_dir: &Path,
+    object_sha256: &str,
+    registry: &SourceBindingRegistry,
+) -> Result<()> {
     validate_converter_config(&spec.converter)?;
-    let (_, accepted) = accepted_dataset_for_run_spec_hash(spec, object_sha256)?;
+    let (_, accepted) =
+        accepted_dataset_for_run_spec_hash_with_registry(spec, object_sha256, registry)?;
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
     if spec.manifest.catalog_inputs.len() == 1 {
         let manifest = local_run_manifest_for_output(spec, output_dir)?;
@@ -1203,7 +1234,23 @@ pub fn run_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<RunArtifacts> {
-    run_from_run_spec_inner(spec, object_bytes, output_dir, true)
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true, None)
+}
+
+/// Run the vertical slice against the exact source-binding registry snapshot
+/// already accepted by a caller's pre-payload control boundary.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run_from_run_spec`], while guaranteeing the
+/// run never reopens `RunSpec::source_bindings_path`.
+pub fn run_from_run_spec_with_registry(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    registry: &SourceBindingRegistry,
+) -> Result<RunArtifacts> {
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true, Some(registry))
 }
 
 fn run_from_run_spec_inner(
@@ -1211,6 +1258,7 @@ fn run_from_run_spec_inner(
     object_bytes: &[u8],
     output_dir: &Path,
     reuse_completed_output: bool,
+    source_binding_registry: Option<&SourceBindingRegistry>,
 ) -> Result<RunArtifacts> {
     validate_converter_config(&spec.converter)?;
     let adapter =
@@ -1249,7 +1297,12 @@ fn run_from_run_spec_inner(
     );
 
     // Gate 1: accept the source proof and bind the object via the ledger.
-    let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash(spec, &verified_sha256)?;
+    let (accepted_proof, accepted) = match source_binding_registry {
+        Some(registry) => {
+            accepted_dataset_for_run_spec_hash_with_registry(spec, &verified_sha256, registry)?
+        }
+        None => accepted_dataset_for_run_spec_hash(spec, &verified_sha256)?,
+    };
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
 
     let conversion_fingerprint = conversion_fingerprint_for(spec, &accepted)?;
@@ -1438,7 +1491,7 @@ where
     let base_gz_bytes = gz_bytes.to_vec();
     let base_output_dir = output_dir.to_path_buf();
     let mut artifacts = tokio::task::spawn_blocking(move || {
-        run_from_run_spec_inner(&base_spec, &base_gz_bytes, &base_output_dir, false)
+        run_from_run_spec_inner(&base_spec, &base_gz_bytes, &base_output_dir, false, None)
     })
     .await
     .context("join base run for artifact-store path")??;

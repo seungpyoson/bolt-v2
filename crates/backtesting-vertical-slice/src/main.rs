@@ -21,9 +21,7 @@ use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
 
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
-    backfill_execution_plan::{
-        BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
-    },
+    backfill_execution_plan::{BackfillExecutionPlan, validate_execution_plan_for_run_spec},
     nt_catalog_capability::NtCatalogSsmCredentialResolver,
     operator::{
         MultiTableRunArtifacts, OperatorRunArtifacts, PublishOptions, PublishedArtifact,
@@ -451,99 +449,6 @@ fn read_execution_plan(path: &Path) -> Result<BackfillExecutionPlan> {
     serde_json::from_slice(&bytes).context("parse execution-plan JSON")
 }
 
-fn validate_execution_plan_for_run_spec(
-    plan: &BackfillExecutionPlan,
-    run_spec_hash: &str,
-    spec: &RunSpec,
-) -> Result<()> {
-    ensure!(
-        plan.status == BackfillExecutionPlanStatus::Ready,
-        "execution plan status must be ready"
-    );
-    ensure!(
-        plan.blocking_issues.is_empty(),
-        "execution plan has blocking issues"
-    );
-    ensure!(
-        plan.run_spec_hash == run_spec_hash,
-        "execution plan run_spec_hash {} does not match submitted run-spec {run_spec_hash}",
-        plan.run_spec_hash
-    );
-    let binding = BackfillExecutionRunBinding::from_run_spec(spec);
-    ensure!(
-        plan.operator_run_id == binding.run_id,
-        "execution plan operator_run_id mismatch"
-    );
-    ensure!(
-        plan.output_prefix == binding.output_prefix,
-        "execution plan output_prefix mismatch"
-    );
-    ensure!(
-        plan.source_proof_id == binding.source_proof_id
-            && plan.source_proof_version == binding.source_proof_version,
-        "execution plan source proof mismatch"
-    );
-    ensure!(
-        plan.source_binding == binding.source_binding,
-        "execution plan source binding mismatch"
-    );
-    ensure!(
-        plan.table_family == binding.table_family,
-        "execution plan table_family {} does not match submitted run-spec {}",
-        plan.table_family,
-        binding.table_family
-    );
-    ensure!(
-        plan.object_count == 1 && plan.objects.len() == 1,
-        "execution plan must bind exactly one accepted object"
-    );
-    let object = &plan.objects[0];
-    ensure!(
-        plan.accepted_bytes == object.bytes,
-        "execution plan accepted_bytes mismatch"
-    );
-    ensure!(
-        object.s3_uri == binding.raw_sample_uri && object.s3_uri == binding.accepted_object_s3_uri,
-        "execution plan object URI mismatch"
-    );
-    ensure!(
-        object.sha256 == binding.raw_sample_hash && object.sha256 == binding.accepted_object_sha256,
-        "execution plan object hash mismatch"
-    );
-    ensure!(
-        object.source_url == binding.accepted_object_source_url,
-        "execution plan object source URL mismatch"
-    );
-    ensure!(
-        object.bytes == binding.accepted_object_bytes,
-        "execution plan object byte count mismatch"
-    );
-    ensure!(
-        object.archive_date == binding.accepted_object_archive_date,
-        "execution plan object archive date mismatch"
-    );
-    ensure!(
-        plan.max_object_bytes == binding.max_object_bytes && object.bytes <= plan.max_object_bytes,
-        "execution plan object byte budget mismatch"
-    );
-    ensure!(
-        plan.max_decoded_bytes == binding.max_decoded_bytes,
-        "execution plan decoded byte budget mismatch"
-    );
-    ensure!(
-        plan.max_source_rows > 0,
-        "execution plan max_source_rows must be positive"
-    );
-    ensure!(
-        plan.max_projected_row_groups > 0,
-        "execution plan max_projected_row_groups must be positive"
-    );
-    ensure!(
-        plan.max_wall_seconds > 0,
-        "execution plan max_wall_seconds must be positive"
-    );
-    Ok(())
-}
 fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
     let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
     let actual_bytes = metadata.len();

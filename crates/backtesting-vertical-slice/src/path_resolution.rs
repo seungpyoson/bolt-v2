@@ -18,7 +18,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 const REPO_TOP_LEVEL_DIRS: [&str; 4] = ["specs", "crates", "docs", "scripts"];
 const REPO_SCRATCH_DIRS: [&str; 1] = ["target"];
@@ -59,17 +59,140 @@ pub fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
 ///
 /// Ordinary relative paths are owned by the pack directory and must not be
 /// shadowed by an ambient working-directory file. Canonical repo-relative and
-/// repo-scratch paths retain the repository-aware behavior used by generated
-/// packs, while absolute paths remain exact.
-#[must_use]
-pub fn resolve_pack_control_path(pack_base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
+/// repo-scratch paths resolve below the marker-bearing repository root which
+/// owns the pack. The returned path is canonical, so a symlink cannot conceal
+/// an escape from either allowed root.
+///
+/// # Errors
+///
+/// Returns an error for absolute paths, parent traversal, missing inputs, a
+/// repo-relative identity without an owning marker root, or a canonical path
+/// outside both the pack directory and its owning repository.
+pub fn resolve_pack_control_path(pack_base_dir: &Path, path: &Path) -> Result<PathBuf> {
+    ensure!(
+        !path.is_absolute(),
+        "pack control path {} must be relative",
+        path.display()
+    );
+    ensure!(
+        !has_parent_component(path),
+        "pack control path {} must not contain parent traversal",
+        path.display()
+    );
+    ensure!(
+        path.components()
+            .any(|component| matches!(component, Component::Normal(_))),
+        "pack control path must contain a portable path component"
+    );
+
+    let canonical_pack_dir = pack_base_dir.canonicalize().with_context(|| {
+        format!(
+            "canonicalize execution-pack directory {}",
+            pack_base_dir.display()
+        )
+    })?;
+    let canonical_repo_root = marker_repo_root_from_base_dir(&canonical_pack_dir)
+        .or_else(|| repo_root_dirs().into_iter().next())
+        .map(|root| {
+            root.canonicalize()
+                .with_context(|| format!("canonicalize repository root {}", root.display()))
+        })
+        .transpose()?;
+
+    let candidate = if looks_repo_relative(path) || looks_repo_scratch_path(path) {
+        canonical_repo_root
+            .as_ref()
+            .with_context(|| {
+                format!(
+                    "pack control path {} is repository-relative but pack directory {} has no marker-bearing repository root",
+                    path.display(),
+                    canonical_pack_dir.display()
+                )
+            })?
+            .join(path)
+    } else {
+        canonical_pack_dir.join(path)
+    };
+    let canonical_candidate = candidate
+        .canonicalize()
+        .with_context(|| format!("canonicalize pack control path {}", candidate.display()))?;
+    let contained_by_pack = canonical_candidate.starts_with(&canonical_pack_dir);
+    let contained_by_repo = canonical_repo_root
+        .as_ref()
+        .is_some_and(|root| canonical_candidate.starts_with(root));
+    ensure!(
+        contained_by_pack || contained_by_repo,
+        "pack control path {} resolves outside pack directory {}{}",
+        path.display(),
+        canonical_pack_dir.display(),
+        canonical_repo_root
+            .as_ref()
+            .map(|root| format!(" and repository root {}", root.display()))
+            .unwrap_or_default()
+    );
+    Ok(canonical_candidate)
+}
+
+/// Validate an operator-controlled output identity as one portable component.
+///
+/// # Errors
+///
+/// Returns an error when `value` is empty, `.`/`..`, or contains any character
+/// outside the portable `[A-Za-z0-9._-]` set.
+pub fn validate_portable_path_component(field: &str, value: &str) -> Result<()> {
+    ensure!(!value.is_empty(), "{field} must not be empty");
+    ensure!(
+        value != "." && value != "..",
+        "{field} must not be {value:?}"
+    );
+    ensure!(
+        value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        "{field} {value:?} must be one portable [A-Za-z0-9._-]+ path component"
+    );
+    Ok(())
+}
+
+/// Resolve one validated child below an existing output root, rejecting an
+/// already-present symlink or canonical escape.
+///
+/// # Errors
+///
+/// Returns an error for an invalid component, a missing output root, an
+/// existing symlink, or an existing child outside the canonical output root.
+pub fn resolve_contained_output_component(output_root: &Path, component: &str) -> Result<PathBuf> {
+    validate_portable_path_component("operator_run_id", component)?;
+    let canonical_root = output_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize batch output directory {}",
+            output_root.display()
+        )
+    })?;
+    let candidate = canonical_root.join(component);
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) => {
+            ensure!(
+                !metadata.file_type().is_symlink(),
+                "operator output {} must not be a symlink",
+                candidate.display()
+            );
+            let canonical_candidate = candidate
+                .canonicalize()
+                .with_context(|| format!("canonicalize operator output {}", candidate.display()))?;
+            ensure!(
+                canonical_candidate.starts_with(&canonical_root),
+                "operator output {} resolves outside batch output directory {}",
+                candidate.display(),
+                canonical_root.display()
+            );
+            Ok(canonical_candidate)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
+        Err(error) => {
+            Err(error).with_context(|| format!("inspect operator output {}", candidate.display()))
+        }
     }
-    if looks_repo_relative(path) || looks_repo_scratch_path(path) {
-        return resolve_existing_path(pack_base_dir, path);
-    }
-    pack_base_dir.join(path)
 }
 
 /// Resolve a CLI-supplied path that must reference an existing input, with no
@@ -322,21 +445,31 @@ mod tests {
     }
 
     #[test]
-    fn pack_control_paths_are_pack_relative_even_when_missing() {
-        let pack_base_dir = std::env::temp_dir().join("pack-control-path-resolution");
-        let declared = Path::new("missing-control.json");
+    fn pack_control_paths_are_canonical_and_pack_relative() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let declared = Path::new("control.json");
+        fs::write(temp_dir.path().join(declared), "{}").expect("write control");
 
         assert_eq!(
-            resolve_pack_control_path(&pack_base_dir, declared),
-            pack_base_dir.join(declared)
+            resolve_pack_control_path(temp_dir.path(), declared).expect("resolve pack control"),
+            temp_dir.path().canonicalize().unwrap().join(declared)
         );
     }
 
     #[test]
     fn pack_control_paths_preserve_repo_relative_resolution() {
-        let resolved = resolve_pack_control_path(Path::new("unused"), Path::new("crates"));
+        let resolved = resolve_pack_control_path(Path::new("."), Path::new("crates"))
+            .expect("resolve repo-relative control");
         assert!(resolved.is_absolute(), "resolved: {}", resolved.display());
         assert!(resolved.join("backtesting-vertical-slice").is_dir());
+    }
+
+    #[test]
+    fn pack_control_paths_reject_missing_inputs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let error = resolve_pack_control_path(temp_dir.path(), Path::new("missing-control.json"))
+            .expect_err("missing pack control must fail closed");
+        assert!(error.to_string().contains("canonicalize pack control path"));
     }
 
     #[test]

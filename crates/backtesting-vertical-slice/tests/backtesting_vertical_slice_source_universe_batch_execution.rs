@@ -1694,6 +1694,100 @@ fn prepare_batch_rejects_duplicate_operator_run_ids_before_fetch() {
     result.expect_err("duplicate operator_run_id values must fail preflight");
 }
 
+#[test]
+fn prepare_batch_rejects_pack_scope_and_record_control_drift_before_fetch() {
+    for (scope, mutate) in [
+        ("schema", ("schema_version", "unsupported-pack-schema")),
+        ("venue", ("venue", "different-venue")),
+        ("universe", ("universe_id", "different-universe")),
+        ("table_family", ("table_family", "different-family")),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fixture = write_valid_single_record_pack(temp_dir.path());
+        rewrite_pack_field(
+            &fixture.pack_path,
+            mutate.0,
+            serde_json::Value::String(mutate.1.to_string()),
+        );
+        let objects = vec![(0, b"accepted object bytes".to_vec())];
+        let mut fetcher = SequencedFetcher::from_objects(&objects);
+        let fetch_calls = fetcher.calls();
+        let mut runner = RecordingRunner::default();
+
+        let result = execute_source_universe_batch(
+            "source-universe-batch-synthetic",
+            &fixture.pack_path,
+            &fixture.output_dir,
+            Some(1),
+            &mut fetcher,
+            &mut runner,
+        );
+
+        assert!(
+            fetch_calls.lock().expect("fetch calls").is_empty(),
+            "{scope} drift must reject before fetch; result: {result:?}"
+        );
+        result.expect_err("pack scope drift must fail preflight");
+    }
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        0,
+        "selected_object_sha256",
+        serde_json::Value::String("f".repeat(64)),
+    );
+    let objects = vec![(0, b"accepted object bytes".to_vec())];
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    );
+    assert!(fetch_calls.lock().expect("fetch calls").is_empty());
+    result.expect_err("record/control object drift must fail preflight");
+}
+
+#[cfg(unix)]
+#[test]
+fn prepare_batch_rejects_existing_symlinked_operator_output_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read execution pack"))
+            .expect("parse execution pack");
+    fs::create_dir_all(&fixture.output_dir).expect("create output root");
+    let outside = temp_dir.path().join("outside-output");
+    fs::create_dir_all(&outside).expect("create outside output");
+    std::os::unix::fs::symlink(
+        &outside,
+        fixture.output_dir.join(&pack.records[0].operator_run_id),
+    )
+    .expect("create escaping operator-output symlink");
+    let objects = vec![(0, b"accepted object bytes".to_vec())];
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    );
+
+    assert!(fetch_calls.lock().expect("fetch calls").is_empty());
+    result.expect_err("existing symlinked operator output must fail preflight");
+}
+
 // ── Fix 1: path-traversal class — sha256 validation at the consume boundary ──
 
 /// A pack record with a `../`-prefixed sha256 field must be rejected at pack

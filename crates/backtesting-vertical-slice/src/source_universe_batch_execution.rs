@@ -6,7 +6,7 @@
 //! single-object operator path, and summarize the completed records.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -21,13 +21,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::atomic_artifact_write::atomic_write;
+use crate::backfill_accepted_tranche::BackfillAcceptedTrancheManifest;
+use crate::backfill_execution_plan::{
+    BackfillExecutionPlan, ValidatedBackfillExecutionControls,
+    validate_backfill_execution_control_bytes,
+};
 use crate::catalog_projection::logical_catalog_hash;
-use crate::path_resolution::resolve_pack_control_path;
+use crate::path_resolution::{
+    resolve_contained_output_component, resolve_pack_control_path, validate_portable_path_component,
+};
 use crate::{
-    operator::{CATALOG_DIR, RunSpec, run_from_run_spec},
+    operator::{
+        CATALOG_DIR, RunSpec, run_from_run_spec_with_registry,
+        validate_run_spec_manifest_for_object_hash_with_registry,
+    },
+    source_proof::SourceBindingRegistry,
     source_universe_execution_pack::{
-        SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
-        SourceUniverseExecutionPackStatus,
+        SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION, SourceUniverseExecutionPack,
+        SourceUniverseExecutionPackRecord, SourceUniverseExecutionPackStatus,
     },
 };
 
@@ -59,10 +70,17 @@ pub trait SourceUniverseOperatorRunner {
 pub struct SourceUniverseVerifiedControlArtifacts {
     pub run_spec_path: PathBuf,
     pub run_spec_bytes: Arc<[u8]>,
+    pub run_spec: Arc<RunSpec>,
     pub accepted_tranche_path: PathBuf,
     pub accepted_tranche_bytes: Arc<[u8]>,
+    pub accepted_tranche: Arc<BackfillAcceptedTrancheManifest>,
     pub execution_plan_path: PathBuf,
     pub execution_plan_bytes: Arc<[u8]>,
+    pub execution_plan: Arc<BackfillExecutionPlan>,
+    pub source_bindings_path: PathBuf,
+    pub source_bindings_bytes: Arc<[u8]>,
+    pub source_bindings_sha256: String,
+    pub source_bindings: Arc<SourceBindingRegistry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,20 +353,12 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
-        let run_spec_text = std::str::from_utf8(control_artifacts.run_spec_bytes.as_ref())
-            .with_context(|| {
-                format!(
-                    "decode verified run-spec {} as UTF-8",
-                    control_artifacts.run_spec_path.display()
-                )
-            })?;
-        let run_spec: RunSpec = toml::from_str(run_spec_text).with_context(|| {
-            format!(
-                "parse verified run-spec TOML {}",
-                control_artifacts.run_spec_path.display()
-            )
-        })?;
-        let artifacts = run_from_run_spec(&run_spec, object_bytes, output_dir)?;
+        let artifacts = run_from_run_spec_with_registry(
+            &control_artifacts.run_spec,
+            object_bytes,
+            output_dir,
+            &control_artifacts.source_bindings,
+        )?;
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
             nt_catalog_rows: artifacts.output.read_back_count as u64,
@@ -543,6 +553,167 @@ struct BatchPlan<'pack> {
     work_items: Vec<BatchWorkItem<'pack>>,
 }
 
+fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Result<()> {
+    ensure!(
+        pack.schema_version == SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
+        "execution pack schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
+        pack.schema_version
+    );
+    ensure!(
+        !pack.pack_id.trim().is_empty(),
+        "execution pack pack_id must not be empty"
+    );
+    ensure!(
+        !pack.universe_id.trim().is_empty(),
+        "execution pack universe_id must not be empty"
+    );
+    ensure!(
+        !pack.venue.trim().is_empty(),
+        "execution pack venue must not be empty"
+    );
+    ensure!(
+        !pack.table_family.trim().is_empty(),
+        "execution pack table_family must not be empty"
+    );
+
+    let mut operator_run_ids = BTreeSet::new();
+    for record in &pack.records {
+        validate_portable_path_component("operator_run_id", &record.operator_run_id).with_context(
+            || {
+                format!(
+                    "validate pack record {} operator_run_id {:?}",
+                    record.sequence, record.operator_run_id
+                )
+            },
+        )?;
+        ensure!(
+            operator_run_ids.insert(record.operator_run_id.as_str()),
+            "execution pack {} has duplicate operator_run_id {:?}",
+            pack.pack_id,
+            record.operator_run_id
+        );
+    }
+    Ok(())
+}
+
+fn validate_pack_record_control_alignment(
+    pack: &SourceUniverseExecutionPack,
+    record: &SourceUniverseExecutionPackRecord,
+    controls: &ValidatedBackfillExecutionControls,
+) -> Result<()> {
+    let run_spec = &controls.run_spec;
+    let tranche = &controls.accepted_tranche;
+    let plan = &controls.execution_plan;
+    let object = plan
+        .objects
+        .first()
+        .context("validated execution plan is missing its accepted object")?;
+    let identity = run_spec
+        .identity
+        .single()
+        .context("source-universe execution pack requires one instrument identity")?;
+
+    ensure!(
+        pack.venue == run_spec.source_proof.venue,
+        "execution pack venue {:?} does not match run_spec source-proof venue {:?}",
+        pack.venue,
+        run_spec.source_proof.venue
+    );
+    ensure!(
+        pack.universe_id == run_spec.source_proof.instrument_universe_id,
+        "execution pack universe_id {:?} does not match run_spec source-proof instrument_universe_id {:?}",
+        pack.universe_id,
+        run_spec.source_proof.instrument_universe_id
+    );
+    ensure!(
+        pack.table_family == run_spec.source_proof.table_family,
+        "execution pack table_family {:?} does not match run_spec source-proof table_family {:?}",
+        pack.table_family,
+        run_spec.source_proof.table_family
+    );
+    ensure!(
+        record.operator_run_id == run_spec.manifest.run_id
+            && record.operator_run_id == plan.operator_run_id,
+        "pack record operator_run_id does not match retained controls"
+    );
+    ensure!(
+        record.source_binding == run_spec.source_proof.source_binding
+            && record.source_binding == run_spec.manifest.venue_binding_key
+            && record.source_binding == tranche.source_binding
+            && record.source_binding == plan.source_binding,
+        "pack record source_binding does not match retained controls"
+    );
+    ensure!(
+        record.category == run_spec.source_proof.product_category,
+        "pack record category does not match retained run_spec source proof"
+    );
+    ensure!(
+        record.symbol == identity.venue_symbol,
+        "pack record symbol does not match retained run_spec instrument identity"
+    );
+    ensure!(
+        record.archive_date == run_spec.accepted_object.archive_date
+            && record.archive_date == object.archive_date,
+        "pack record archive_date does not match retained controls"
+    );
+    ensure!(
+        record.source_uri == run_spec.accepted_object.s3_uri
+            && record.source_uri == run_spec.source_proof.raw_sample_uri
+            && record.source_uri == object.s3_uri,
+        "pack record source_uri does not match retained controls"
+    );
+    ensure!(
+        record.source_url == run_spec.accepted_object.source_url
+            && record.source_url == object.source_url,
+        "pack record source_url does not match retained controls"
+    );
+    ensure!(
+        record.selected_object_sha256 == run_spec.accepted_object.sha256
+            && record.selected_object_sha256 == run_spec.source_proof.raw_sample_hash
+            && record.selected_object_sha256 == object.sha256,
+        "pack record selected_object_sha256 does not match retained controls"
+    );
+    ensure!(
+        record.selected_object_bytes == run_spec.accepted_object.bytes
+            && record.selected_object_bytes == object.bytes,
+        "pack record selected_object_bytes does not match retained controls"
+    );
+    ensure!(
+        record.source_proof_id == run_spec.source_proof.source_proof_id
+            && record.source_proof_id == plan.source_proof_id,
+        "pack record source_proof_id does not match retained controls"
+    );
+    ensure!(
+        record.source_proof_version == run_spec.source_proof.source_proof_version
+            && record.source_proof_version == plan.source_proof_version,
+        "pack record source_proof_version does not match retained controls"
+    );
+    ensure!(
+        record.accepted_tranche_id == tranche.tranche_id
+            && record.accepted_tranche_id == plan.accepted_tranche_id,
+        "pack record accepted_tranche_id does not match retained controls"
+    );
+    ensure!(
+        record.output_prefix == run_spec.manifest.output_prefix
+            && record.output_prefix == plan.output_prefix,
+        "pack record output_prefix does not match retained controls"
+    );
+    ensure!(
+        record.run_spec_sha256 == controls.run_spec_sha256,
+        "pack record run_spec_sha256 does not match retained bytes"
+    );
+    ensure!(
+        record.accepted_tranche_sha256 == controls.accepted_tranche_sha256,
+        "pack record accepted_tranche_sha256 does not match retained bytes"
+    );
+    ensure!(
+        record.execution_plan_sha256 == controls.execution_plan_sha256,
+        "pack record execution_plan_sha256 does not match retained bytes"
+    );
+    Ok(())
+}
+
 fn prepare_batch(
     batch_id: &str,
     execution_pack_path: &Path,
@@ -564,6 +735,7 @@ fn prepare_batch(
         .with_context(|| format!("read execution pack {}", execution_pack_path.display()))?;
     let pack: SourceUniverseExecutionPack = serde_json::from_slice(&pack_bytes)
         .with_context(|| format!("parse execution pack {}", execution_pack_path.display()))?;
+    validate_execution_pack_identity(&pack)?;
     ensure!(
         matches!(
             pack.status,
@@ -580,6 +752,16 @@ fn prepare_batch(
         .to_path_buf();
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
+    for record in &pack.records {
+        resolve_contained_output_component(output_dir, &record.operator_run_id).with_context(
+            || {
+                format!(
+                    "validate output containment for pack record {} ({})",
+                    record.sequence, record.operator_run_id
+                )
+            },
+        )?;
+    }
 
     // Resuming into the dir holding the resume report itself would only fail
     // later, at the clean-write report guard (which refuses to overwrite the
@@ -632,6 +814,7 @@ fn prepare_batch(
     // is the operator's explicit execution window. Each unique resolved file is
     // read once, while every selected record's expected digest is still checked.
     let mut verified_artifact_cache = BTreeMap::new();
+    let mut verified_registry_cache = BTreeMap::new();
     let mut verified_control_artifacts = BTreeMap::new();
     let mut control_artifact_failures = BTreeMap::new();
     for record in pack
@@ -651,7 +834,23 @@ fn prepare_batch(
             pack.pack_id,
             record.sequence,
         );
-        match verify_pack_control_artifacts(&pack_base_dir, record, &mut verified_artifact_cache) {
+        let record_output_dir =
+            resolve_contained_output_component(output_dir, &record.operator_run_id).with_context(
+                || {
+                    format!(
+                        "validate selected output containment for pack record {} ({})",
+                        record.sequence, record.operator_run_id
+                    )
+                },
+            )?;
+        match verify_pack_control_artifacts(
+            &pack,
+            &pack_base_dir,
+            record,
+            &record_output_dir,
+            &mut verified_artifact_cache,
+            &mut verified_registry_cache,
+        ) {
             Ok(verified) => {
                 verified_control_artifacts.insert(record.sequence, verified);
             }
@@ -680,6 +879,13 @@ struct VerifiedArtifactContent {
     bytes: Arc<[u8]>,
 }
 
+#[derive(Clone)]
+struct VerifiedSourceBindingRegistry {
+    sha256: String,
+    bytes: Arc<[u8]>,
+    registry: Arc<SourceBindingRegistry>,
+}
+
 struct ControlArtifactPin<'record> {
     role: &'static str,
     sha256_field: &'static str,
@@ -688,9 +894,12 @@ struct ControlArtifactPin<'record> {
 }
 
 fn verify_pack_control_artifacts(
+    pack: &SourceUniverseExecutionPack,
     pack_base_dir: &Path,
     record: &SourceUniverseExecutionPackRecord,
+    record_output_dir: &Path,
     verified_artifact_cache: &mut BTreeMap<PathBuf, VerifiedArtifactContent>,
+    verified_registry_cache: &mut BTreeMap<PathBuf, VerifiedSourceBindingRegistry>,
 ) -> Result<SourceUniverseVerifiedControlArtifacts> {
     let (run_spec_path, run_spec_bytes) = verify_pack_control_artifact(
         pack_base_dir,
@@ -726,13 +935,91 @@ fn verify_pack_control_artifacts(
         verified_artifact_cache,
     )?;
 
+    let validated = validate_backfill_execution_control_bytes(
+        run_spec_bytes.as_ref(),
+        accepted_tranche_bytes.as_ref(),
+        execution_plan_bytes.as_ref(),
+    )
+    .with_context(|| {
+        format!(
+            "validate typed control triple for pack record {} ({})",
+            record.sequence, record.operator_run_id
+        )
+    })?;
+    validate_pack_record_control_alignment(pack, record, &validated)?;
+
+    let source_bindings_path =
+        resolve_pack_control_path(pack_base_dir, &validated.run_spec.source_bindings_path)
+            .with_context(|| {
+                format!(
+                    "resolve source_bindings_path {} for pack record {} ({})",
+                    validated.run_spec.source_bindings_path.display(),
+                    record.sequence,
+                    record.operator_run_id
+                )
+            })?;
+    let verified_registry =
+        if let Some(verified) = verified_registry_cache.get(&source_bindings_path) {
+            verified.clone()
+        } else {
+            let bytes = fs::read(&source_bindings_path).with_context(|| {
+                format!(
+                    "read source-bindings registry snapshot {} for pack record {} ({})",
+                    source_bindings_path.display(),
+                    record.sequence,
+                    record.operator_run_id
+                )
+            })?;
+            let text = std::str::from_utf8(&bytes).with_context(|| {
+                format!(
+                    "decode source-bindings registry snapshot {} as UTF-8",
+                    source_bindings_path.display()
+                )
+            })?;
+            let registry = SourceBindingRegistry::from_toml_str(text).with_context(|| {
+                format!(
+                    "parse source-bindings registry snapshot {}",
+                    source_bindings_path.display()
+                )
+            })?;
+            let verified = VerifiedSourceBindingRegistry {
+                sha256: hex::encode(Sha256::digest(&bytes)),
+                bytes: Arc::from(bytes),
+                registry: Arc::new(registry),
+            };
+            verified_registry_cache.insert(source_bindings_path.clone(), verified.clone());
+            verified
+        };
+
+    validate_run_spec_manifest_for_object_hash_with_registry(
+        &validated.run_spec,
+        record_output_dir,
+        &record.selected_object_sha256,
+        &verified_registry.registry,
+    )
+    .with_context(|| {
+        format!(
+            "validate source proof and run manifest against retained registry {} for pack record {} ({})",
+            source_bindings_path.display(),
+            record.sequence,
+            record.operator_run_id
+        )
+    })?;
+
     Ok(SourceUniverseVerifiedControlArtifacts {
         run_spec_path,
         run_spec_bytes,
+        run_spec: Arc::new(validated.run_spec),
         accepted_tranche_path,
         accepted_tranche_bytes,
+        accepted_tranche: Arc::new(validated.accepted_tranche),
         execution_plan_path,
         execution_plan_bytes,
+        execution_plan: Arc::new(validated.execution_plan),
+        source_bindings_path,
+        source_bindings_bytes: verified_registry.bytes,
+        source_bindings_sha256: verified_registry.sha256,
+        source_bindings: verified_registry.registry,
     })
 }
 
@@ -755,7 +1042,16 @@ fn verify_pack_control_artifact(
         )
     })?;
 
-    let resolved_path = resolve_pack_control_path(pack_base_dir, pin.declared_path);
+    let resolved_path =
+        resolve_pack_control_path(pack_base_dir, pin.declared_path).with_context(|| {
+            format!(
+                "resolve pack record {} ({}) pinned artifact {} declared at {}",
+                record.sequence,
+                record.operator_run_id,
+                pin.role,
+                pin.declared_path.display()
+            )
+        })?;
     let verified = if let Some(verified) = verified_artifact_cache.get(&resolved_path) {
         verified.clone()
     } else {
@@ -952,6 +1248,17 @@ where
         } => (*record, *control_artifacts),
     };
 
+    if let Err(error) = resolve_contained_output_component(output_dir, &record.operator_run_id)
+        .with_context(|| {
+            format!(
+                "revalidate output containment before fetch for {}",
+                record.operator_run_id
+            )
+        })
+    {
+        return record_error_slot(record, "validate_output", error, config);
+    }
+
     let object_bytes = match fetcher
         .fetch(record)
         .with_context(|| format!("fetch source object for {}", record.operator_run_id))
@@ -965,7 +1272,19 @@ where
         return record_error_slot(record, "verify_object", error, config);
     }
 
-    let record_output_dir = output_dir.join(&record.operator_run_id);
+    let record_output_dir =
+        match resolve_contained_output_component(output_dir, &record.operator_run_id).with_context(
+            || {
+                format!(
+                    "revalidate output containment after fetch for {}",
+                    record.operator_run_id
+                )
+            },
+        ) {
+            Ok(record_output_dir) => record_output_dir,
+            Err(error) => return record_error_slot(record, "validate_output", error, config),
+        };
+
     let run_output = match runner
         .run(record, &object_bytes, control_artifacts, &record_output_dir)
         .with_context(|| format!("run operator {}", record.operator_run_id))
@@ -1328,16 +1647,75 @@ mod tests {
         };
         let mut resume_records = BTreeMap::new();
         resume_records.insert(prior.sequence, prior.clone());
+        let run_spec_bytes: Arc<[u8]> = Arc::from(
+            include_bytes!(
+                "../../../specs/023-nt-research-analytics-platform/reference/\
+                 source-universe-execution-packs/\
+                 bybit-public-archive-tick-trades-2025-06-01-2026-06-01/\
+                 execution-pack/runs/\
+                 00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/\
+                 run-spec.toml"
+            )
+            .as_slice(),
+        );
+        let accepted_tranche_bytes: Arc<[u8]> = Arc::from(
+            include_bytes!(
+                "../../../specs/023-nt-research-analytics-platform/reference/\
+                 source-universe-execution-packs/\
+                 bybit-public-archive-tick-trades-2025-06-01-2026-06-01/\
+                 execution-pack/runs/\
+                 00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/\
+                 backfill-accepted-tranche-manifest.json"
+            )
+            .as_slice(),
+        );
+        let execution_plan_bytes: Arc<[u8]> = Arc::from(
+            include_bytes!(
+                "../../../specs/023-nt-research-analytics-platform/reference/\
+                 source-universe-execution-packs/\
+                 bybit-public-archive-tick-trades-2025-06-01-2026-06-01/\
+                 execution-pack/runs/\
+                 00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/\
+                 backfill-execution-plan.json"
+            )
+            .as_slice(),
+        );
+        let controls = validate_backfill_execution_control_bytes(
+            &run_spec_bytes,
+            &accepted_tranche_bytes,
+            &execution_plan_bytes,
+        )
+        .expect("committed controls validate");
+        let source_bindings_bytes: Arc<[u8]> = Arc::from(
+            include_bytes!(
+                "../../../specs/023-nt-research-analytics-platform/reference/\
+                 backfill-source-bindings.v1.toml"
+            )
+            .as_slice(),
+        );
+        let source_bindings = Arc::new(
+            SourceBindingRegistry::from_toml_str(
+                std::str::from_utf8(&source_bindings_bytes).expect("registry is UTF-8"),
+            )
+            .expect("registry parses"),
+        );
         let mut verified_control_artifacts = BTreeMap::new();
         verified_control_artifacts.insert(
             0,
             SourceUniverseVerifiedControlArtifacts {
                 run_spec_path: PathBuf::from("run-spec.toml"),
-                run_spec_bytes: Arc::from(Vec::<u8>::new()),
+                run_spec_bytes,
+                run_spec: Arc::new(controls.run_spec),
                 accepted_tranche_path: PathBuf::from("tranche.json"),
-                accepted_tranche_bytes: Arc::from(Vec::<u8>::new()),
+                accepted_tranche_bytes,
+                accepted_tranche: Arc::new(controls.accepted_tranche),
                 execution_plan_path: PathBuf::from("execution-plan.json"),
-                execution_plan_bytes: Arc::from(Vec::<u8>::new()),
+                execution_plan_bytes,
+                execution_plan: Arc::new(controls.execution_plan),
+                source_bindings_path: PathBuf::from("source-bindings.toml"),
+                source_bindings_sha256: hex::encode(Sha256::digest(source_bindings_bytes.as_ref())),
+                source_bindings_bytes,
+                source_bindings,
             },
         );
         OwnedBatchPlan {

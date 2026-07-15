@@ -10,14 +10,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::{Context, Result as AnyResult, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backfill_accepted_tranche::{
-        BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
-        BackfillAcceptedTrancheStatus,
+        BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION, BackfillAcceptedTrancheManifest,
+        BackfillAcceptedTrancheObject, BackfillAcceptedTrancheStatus,
     },
-    hashing::sha256_hex,
+    hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::RunSpec,
     path_resolution::{resolve_existing_path, resolve_output_dir},
     source_proof::SourceProofUsageScope,
@@ -192,6 +193,335 @@ pub struct BackfillExecutionPlanArtifact {
     pub path: PathBuf,
     pub content_hash: String,
     pub bytes: u64,
+}
+
+/// One strict, cross-bound parse of the three controls retained by an
+/// execution-pack record.
+#[derive(Debug, Clone)]
+pub struct ValidatedBackfillExecutionControls {
+    pub run_spec: RunSpec,
+    pub accepted_tranche: BackfillAcceptedTrancheManifest,
+    pub execution_plan: BackfillExecutionPlan,
+    pub run_spec_sha256: String,
+    pub accepted_tranche_sha256: String,
+    pub execution_plan_sha256: String,
+}
+
+/// Validate the accepted-tranche contract independently of plan evaluation.
+///
+/// # Errors
+///
+/// Returns an error unless the manifest is an accepted, blocker-free,
+/// one-complete-object tranche whose counters and digest fields are exact.
+pub fn validate_backfill_accepted_tranche_manifest(
+    tranche: &BackfillAcceptedTrancheManifest,
+) -> AnyResult<()> {
+    ensure!(
+        tranche.schema_version == BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
+        "accepted_tranche schema_version mismatch: expected {}, got {}",
+        BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
+        tranche.schema_version
+    );
+    ensure!(
+        !tranche.tranche_id.trim().is_empty(),
+        "accepted_tranche tranche_id must not be empty"
+    );
+    ensure!(
+        tranche.status == BackfillAcceptedTrancheStatus::Accepted,
+        "accepted_tranche status must be accepted"
+    );
+    ensure!(
+        tranche.blocking_issues.is_empty(),
+        "accepted_tranche must not contain blocking issues"
+    );
+    ensure!(
+        tranche.object_count == 1 && tranche.objects.len() == 1,
+        "accepted_tranche must bind exactly one object"
+    );
+    ensure!(
+        !tranche.source_proof_scope_report_id.trim().is_empty(),
+        "accepted_tranche source_proof_scope_report_id must not be empty"
+    );
+    validate_sha256_shape(
+        "accepted_tranche source_proof_scope_report_hash",
+        &tranche.source_proof_scope_report_hash,
+    )?;
+    ensure!(
+        !tranche.source_proof_id.trim().is_empty() && tranche.source_proof_version > 0,
+        "accepted_tranche source proof identity must be complete"
+    );
+    ensure!(
+        !tranche.source_binding.trim().is_empty(),
+        "accepted_tranche source_binding must not be empty"
+    );
+    ensure!(
+        !tranche.table_family.trim().is_empty(),
+        "accepted_tranche table_family must not be empty"
+    );
+    ensure!(
+        !tranche.parent_manifest_id.trim().is_empty(),
+        "accepted_tranche parent_manifest_id must not be empty"
+    );
+
+    let object = &tranche.objects[0];
+    ensure!(
+        !object.s3_uri.trim().is_empty(),
+        "accepted_tranche object s3_uri must not be empty"
+    );
+    ensure!(
+        !object.source_url.trim().is_empty(),
+        "accepted_tranche object source_url must not be empty"
+    );
+    validate_sha256_shape("accepted_tranche object sha256", &object.sha256)?;
+    ensure!(
+        object.bytes > 0,
+        "accepted_tranche object bytes must be positive"
+    );
+    ensure!(
+        !object.archive_date.trim().is_empty(),
+        "accepted_tranche object archive_date must not be empty"
+    );
+    ensure!(
+        tranche.accepted_bytes == object.bytes,
+        "accepted_tranche accepted_bytes {} does not equal object bytes {}",
+        tranche.accepted_bytes,
+        object.bytes
+    );
+    validate_object_selection_metadata(
+        "accepted_tranche object",
+        &object.source_row_groups,
+        object.predicate_ref.as_deref(),
+        false,
+    )?;
+    Ok(())
+}
+
+/// Validate one execution plan against the exact run-spec bytes submitted to
+/// the operator CLI or retained by an execution pack.
+///
+/// # Errors
+///
+/// Returns an error for schema, status, scope, binding, object, digest, budget,
+/// or selection-metadata drift.
+pub fn validate_execution_plan_for_run_spec(
+    plan: &BackfillExecutionPlan,
+    run_spec_hash: &str,
+    spec: &RunSpec,
+) -> AnyResult<()> {
+    ensure!(
+        plan.schema_version == BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+        "execution plan schema_version mismatch: expected {}, got {}",
+        BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+        plan.schema_version
+    );
+    ensure!(
+        !plan.plan_id.trim().is_empty(),
+        "execution plan plan_id must not be empty"
+    );
+    ensure!(
+        plan.status == BackfillExecutionPlanStatus::Ready,
+        "execution plan status must be ready"
+    );
+    ensure!(
+        plan.blocking_issues.is_empty(),
+        "execution plan has blocking issues"
+    );
+    ensure!(
+        !plan.accepted_tranche_id.trim().is_empty(),
+        "execution plan accepted_tranche_id must not be empty"
+    );
+    validate_sha256_shape(
+        "execution plan accepted_tranche_manifest_hash",
+        &plan.accepted_tranche_manifest_hash,
+    )?;
+    validate_sha256_shape("execution plan run_spec_hash", &plan.run_spec_hash)?;
+    validate_sha256_shape("submitted run_spec_hash", run_spec_hash)?;
+    ensure!(
+        plan.run_spec_hash == run_spec_hash,
+        "execution plan run_spec_hash {} does not match submitted run-spec {run_spec_hash}",
+        plan.run_spec_hash
+    );
+    let binding = BackfillExecutionRunBinding::from_run_spec(spec);
+    ensure!(
+        plan.operator_run_id == binding.run_id,
+        "execution plan operator_run_id mismatch"
+    );
+    ensure!(
+        plan.output_prefix == binding.output_prefix,
+        "execution plan output_prefix mismatch"
+    );
+    ensure!(
+        plan.source_proof_id == binding.source_proof_id
+            && plan.source_proof_version == binding.source_proof_version,
+        "execution plan source proof mismatch"
+    );
+    ensure!(
+        plan.source_binding == binding.source_binding,
+        "execution plan source binding mismatch"
+    );
+    ensure!(
+        plan.table_family == binding.table_family,
+        "execution plan table_family {} does not match submitted run-spec {}",
+        plan.table_family,
+        binding.table_family
+    );
+    ensure!(
+        plan.source_usage_scope == binding.source_usage_scope,
+        "execution plan source usage scope mismatch"
+    );
+    ensure!(
+        plan.object_count == 1 && plan.objects.len() == 1,
+        "execution plan must bind exactly one accepted object"
+    );
+    let object = &plan.objects[0];
+    validate_sha256_shape("execution plan object sha256", &object.sha256)?;
+    ensure!(
+        plan.accepted_bytes == object.bytes,
+        "execution plan accepted_bytes mismatch"
+    );
+    ensure!(
+        object.s3_uri == binding.raw_sample_uri && object.s3_uri == binding.accepted_object_s3_uri,
+        "execution plan object URI mismatch"
+    );
+    ensure!(
+        object.sha256 == binding.raw_sample_hash && object.sha256 == binding.accepted_object_sha256,
+        "execution plan object hash mismatch"
+    );
+    ensure!(
+        object.source_url == binding.accepted_object_source_url,
+        "execution plan object source URL mismatch"
+    );
+    ensure!(
+        object.bytes == binding.accepted_object_bytes,
+        "execution plan object byte count mismatch"
+    );
+    ensure!(
+        object.archive_date == binding.accepted_object_archive_date,
+        "execution plan object archive date mismatch"
+    );
+    ensure!(
+        plan.max_object_bytes == binding.max_object_bytes && object.bytes <= plan.max_object_bytes,
+        "execution plan object byte budget mismatch"
+    );
+    ensure!(
+        plan.max_decoded_bytes == binding.max_decoded_bytes,
+        "execution plan decoded byte budget mismatch"
+    );
+    ensure!(
+        plan.max_source_rows > 0,
+        "execution plan max_source_rows must be positive"
+    );
+    ensure!(
+        plan.max_projected_row_groups > 0,
+        "execution plan max_projected_row_groups must be positive"
+    );
+    ensure!(
+        plan.max_wall_seconds > 0,
+        "execution plan max_wall_seconds must be positive"
+    );
+    validate_object_selection_metadata(
+        "execution plan object",
+        &object.source_row_groups,
+        object.predicate_ref.as_deref(),
+        plan.require_object_selection_metadata,
+    )?;
+    Ok(())
+}
+
+/// Strictly parse and cross-bind the retained run spec, accepted tranche, and
+/// execution plan using the exact bytes hashed by the execution pack.
+///
+/// # Errors
+///
+/// Returns an error for parse failure, an invalid individual artifact, a hash
+/// mismatch between artifacts, or any plan which is not exactly the result of
+/// evaluating the retained tranche/run-spec with its declared work budget.
+pub fn validate_backfill_execution_control_bytes(
+    run_spec_bytes: &[u8],
+    accepted_tranche_bytes: &[u8],
+    execution_plan_bytes: &[u8],
+) -> AnyResult<ValidatedBackfillExecutionControls> {
+    let run_spec_text =
+        std::str::from_utf8(run_spec_bytes).context("decode retained run_spec as UTF-8")?;
+    let run_spec: RunSpec =
+        toml::from_str(run_spec_text).context("parse retained run_spec TOML")?;
+    let accepted_tranche: BackfillAcceptedTrancheManifest =
+        serde_json::from_slice(accepted_tranche_bytes)
+            .context("parse retained accepted_tranche JSON")?;
+    let execution_plan: BackfillExecutionPlan = serde_json::from_slice(execution_plan_bytes)
+        .context("parse retained execution_plan JSON")?;
+    let run_spec_sha256 = sha256_hex(run_spec_bytes);
+    let accepted_tranche_sha256 = sha256_hex(accepted_tranche_bytes);
+    let execution_plan_sha256 = sha256_hex(execution_plan_bytes);
+
+    validate_backfill_accepted_tranche_manifest(&accepted_tranche)?;
+    validate_execution_plan_for_run_spec(&execution_plan, &run_spec_sha256, &run_spec)?;
+    ensure!(
+        execution_plan.accepted_tranche_id == accepted_tranche.tranche_id,
+        "execution_plan accepted_tranche_id does not match retained accepted_tranche"
+    );
+    ensure!(
+        execution_plan.accepted_tranche_manifest_hash == accepted_tranche_sha256,
+        "execution_plan accepted_tranche_manifest_hash does not match retained accepted_tranche bytes"
+    );
+
+    let expected_plan = evaluate_backfill_execution_plan(
+        execution_plan.plan_id.clone(),
+        accepted_tranche_sha256.clone(),
+        &accepted_tranche,
+        run_spec_sha256.clone(),
+        &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+        BackfillExecutionWorkBudget {
+            max_source_rows: execution_plan.max_source_rows,
+            max_projected_row_groups: execution_plan.max_projected_row_groups,
+            max_wall_seconds: execution_plan.max_wall_seconds,
+            require_object_selection_metadata: execution_plan.require_object_selection_metadata,
+        },
+    );
+    ensure!(
+        execution_plan == expected_plan,
+        "retained execution_plan is not the exact evaluation of its accepted_tranche, run_spec, and declared work budget"
+    );
+
+    Ok(ValidatedBackfillExecutionControls {
+        run_spec,
+        accepted_tranche,
+        execution_plan,
+        run_spec_sha256,
+        accepted_tranche_sha256,
+        execution_plan_sha256,
+    })
+}
+
+fn validate_sha256_shape(field: &str, value: &str) -> AnyResult<()> {
+    ensure!(
+        is_lowercase_sha256_hex(value),
+        "{field} must be exactly 64 lowercase hexadecimal characters"
+    );
+    Ok(())
+}
+
+fn validate_object_selection_metadata(
+    field: &str,
+    source_row_groups: &[u64],
+    predicate_ref: Option<&str>,
+    required: bool,
+) -> AnyResult<()> {
+    ensure!(
+        source_row_groups.windows(2).all(|pair| pair[0] < pair[1]),
+        "{field} source_row_groups must be strictly increasing and unique"
+    );
+    if let Some(predicate_ref) = predicate_ref {
+        ensure!(
+            !predicate_ref.trim().is_empty(),
+            "{field} predicate_ref must not be empty when present"
+        );
+    }
+    ensure!(
+        !required || !source_row_groups.is_empty() || predicate_ref.is_some(),
+        "{field} requires source_row_groups or predicate_ref selection metadata"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -10,7 +10,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::catalog_projection::logical_catalog_hash;
-use crate::path_resolution::resolve_existing_path;
+use crate::path_resolution::resolve_pack_control_path;
 use crate::{
     operator::{CATALOG_DIR, RunSpec, run_from_run_spec},
     source_universe_execution_pack::{
@@ -45,10 +45,24 @@ pub trait SourceUniverseOperatorRunner {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         object_bytes: &[u8],
-        run_spec_path: &Path,
-        execution_plan_path: &Path,
+        control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput>;
+}
+
+/// Exact control-artifact bytes verified against an execution-pack record.
+///
+/// Runners consume these bytes instead of reopening mutable source paths after
+/// a potentially long object fetch. `Arc` keeps shared tranche/plan content
+/// cheap across selected records and parallel workers.
+#[derive(Debug, Clone)]
+pub struct SourceUniverseVerifiedControlArtifacts {
+    pub run_spec_path: PathBuf,
+    pub run_spec_bytes: Arc<[u8]>,
+    pub accepted_tranche_path: PathBuf,
+    pub accepted_tranche_bytes: Arc<[u8]>,
+    pub execution_plan_path: PathBuf,
+    pub execution_plan_bytes: Arc<[u8]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,16 +329,22 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         &mut self,
         _record: &SourceUniverseExecutionPackRecord,
         object_bytes: &[u8],
-        run_spec_path: &Path,
-        _execution_plan_path: &Path,
+        control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
-        let run_spec_bytes = fs::read(run_spec_path)
-            .with_context(|| format!("read run-spec {}", run_spec_path.display()))?;
-        let run_spec_text = std::str::from_utf8(&run_spec_bytes)
-            .with_context(|| format!("decode run-spec {} as UTF-8", run_spec_path.display()))?;
-        let run_spec: RunSpec = toml::from_str(run_spec_text)
-            .with_context(|| format!("parse run-spec TOML {}", run_spec_path.display()))?;
+        let run_spec_text = std::str::from_utf8(control_artifacts.run_spec_bytes.as_ref())
+            .with_context(|| {
+                format!(
+                    "decode verified run-spec {} as UTF-8",
+                    control_artifacts.run_spec_path.display()
+                )
+            })?;
+        let run_spec: RunSpec = toml::from_str(run_spec_text).with_context(|| {
+            format!(
+                "parse verified run-spec TOML {}",
+                control_artifacts.run_spec_path.display()
+            )
+        })?;
         let artifacts = run_from_run_spec(&run_spec, object_bytes, output_dir)?;
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
@@ -379,14 +399,7 @@ where
     // report is identical for the same outcomes.
     let mut slots: Vec<Option<RecordSlot>> = (0..plan.work_items.len()).map(|_| None).collect();
     for (slot_index, work_item) in plan.work_items.iter().enumerate() {
-        let slot = process_work_item(
-            work_item,
-            &plan.pack_base_dir,
-            output_dir,
-            &config,
-            fetcher,
-            runner,
-        );
+        let slot = process_work_item(work_item, output_dir, &config, fetcher, runner);
         let stop = !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_));
         slots[slot_index] = Some(slot);
         if stop {
@@ -440,7 +453,6 @@ where
     let stop_flag = AtomicBool::new(false);
 
     let work_items = plan.work_items.as_slice();
-    let pack_base_dir = plan.pack_base_dir.as_path();
     std::thread::scope(|scope| -> Result<()> {
         let mut handles = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
@@ -462,14 +474,8 @@ where
                         break;
                     }
                     let work_item = &work_items[index];
-                    let slot = process_work_item(
-                        work_item,
-                        pack_base_dir,
-                        output_dir,
-                        config,
-                        &mut fetcher,
-                        &mut runner,
-                    );
+                    let slot =
+                        process_work_item(work_item, output_dir, config, &mut fetcher, &mut runner);
                     if !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_)) {
                         stop_flag.store(true, Ordering::SeqCst);
                     }
@@ -506,7 +512,10 @@ where
 /// similarly sized.
 enum BatchWorkItem<'pack> {
     Carried(Box<SourceUniverseBatchExecutionRecord>),
-    NeedsWork(&'pack SourceUniverseExecutionPackRecord),
+    NeedsWork {
+        record: &'pack SourceUniverseExecutionPackRecord,
+        control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
+    },
 }
 
 /// Outcome for one work item, kept in original-sequence slot order so the
@@ -523,7 +532,6 @@ struct StoppedRecord {
 }
 
 struct BatchPlan<'pack> {
-    pack_base_dir: PathBuf,
     work_items: Vec<BatchWorkItem<'pack>>,
 }
 
@@ -604,27 +612,178 @@ fn prepare_batch(
         })?;
     }
 
-    let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
-
     let record_limit = config
         .record_limit
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(usize::MAX);
 
+    // Bind the selected records to the exact control bytes pinned by the pack
+    // before resume processing, cache access, source fetches, or worker
+    // construction. Selection is intentional: committed campaign packs retain
+    // only a bounded golden subset of generated run artifacts, and record_limit
+    // is the operator's explicit execution window. Each unique resolved file is
+    // read once, while every selected record's expected digest is still checked.
+    let mut verified_artifact_cache = BTreeMap::new();
+    let mut verified_control_artifacts = BTreeMap::new();
+    for record in pack
+        .records
+        .iter()
+        .filter(|record| {
+            config
+                .start_sequence
+                .is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(record_limit)
+    {
+        let verified =
+            verify_pack_control_artifacts(&pack_base_dir, record, &mut verified_artifact_cache)?;
+        ensure!(
+            verified_control_artifacts
+                .insert(record.sequence, verified)
+                .is_none(),
+            "execution pack {} has duplicate selected sequence {}",
+            pack.pack_id,
+            record.sequence,
+        );
+    }
+
+    let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
+
     Ok(OwnedBatchPlan {
         pack,
-        pack_base_dir,
+        verified_control_artifacts,
         resume_records,
         start_sequence: config.start_sequence,
         record_limit,
     })
 }
 
+#[derive(Clone)]
+struct VerifiedArtifactContent {
+    sha256: String,
+    bytes: Arc<[u8]>,
+}
+
+struct ControlArtifactPin<'record> {
+    role: &'static str,
+    sha256_field: &'static str,
+    declared_path: &'record Path,
+    expected_sha256: &'record str,
+}
+
+fn verify_pack_control_artifacts(
+    pack_base_dir: &Path,
+    record: &SourceUniverseExecutionPackRecord,
+    verified_artifact_cache: &mut BTreeMap<PathBuf, VerifiedArtifactContent>,
+) -> Result<SourceUniverseVerifiedControlArtifacts> {
+    let (run_spec_path, run_spec_bytes) = verify_pack_control_artifact(
+        pack_base_dir,
+        record,
+        ControlArtifactPin {
+            role: "run_spec",
+            sha256_field: "run_spec_sha256",
+            declared_path: &record.run_spec_path,
+            expected_sha256: &record.run_spec_sha256,
+        },
+        verified_artifact_cache,
+    )?;
+    let (accepted_tranche_path, accepted_tranche_bytes) = verify_pack_control_artifact(
+        pack_base_dir,
+        record,
+        ControlArtifactPin {
+            role: "accepted_tranche",
+            sha256_field: "accepted_tranche_sha256",
+            declared_path: &record.accepted_tranche_path,
+            expected_sha256: &record.accepted_tranche_sha256,
+        },
+        verified_artifact_cache,
+    )?;
+    let (execution_plan_path, execution_plan_bytes) = verify_pack_control_artifact(
+        pack_base_dir,
+        record,
+        ControlArtifactPin {
+            role: "execution_plan",
+            sha256_field: "execution_plan_sha256",
+            declared_path: &record.execution_plan_path,
+            expected_sha256: &record.execution_plan_sha256,
+        },
+        verified_artifact_cache,
+    )?;
+
+    Ok(SourceUniverseVerifiedControlArtifacts {
+        run_spec_path,
+        run_spec_bytes,
+        accepted_tranche_path,
+        accepted_tranche_bytes,
+        execution_plan_path,
+        execution_plan_bytes,
+    })
+}
+
+fn verify_pack_control_artifact(
+    pack_base_dir: &Path,
+    record: &SourceUniverseExecutionPackRecord,
+    pin: ControlArtifactPin<'_>,
+    verified_artifact_cache: &mut BTreeMap<PathBuf, VerifiedArtifactContent>,
+) -> Result<(PathBuf, Arc<[u8]>)> {
+    validate_sha256_hex(pin.expected_sha256).with_context(|| {
+        format!(
+            "pack record {} (operator_run_id {}) has an invalid {} for pinned artifact {} \
+             at {}: expected 64 lowercase-hex chars, got {}",
+            record.sequence,
+            record.operator_run_id,
+            pin.sha256_field,
+            pin.role,
+            pin.declared_path.display(),
+            pin.expected_sha256,
+        )
+    })?;
+
+    let resolved_path = resolve_pack_control_path(pack_base_dir, pin.declared_path);
+    let verified = if let Some(verified) = verified_artifact_cache.get(&resolved_path) {
+        verified.clone()
+    } else {
+        let bytes = fs::read(&resolved_path).with_context(|| {
+            format!(
+                "read pack record {} (operator_run_id {}) pinned artifact {} at {} \
+                 (declared {}) with expected SHA-256 {}",
+                record.sequence,
+                record.operator_run_id,
+                pin.role,
+                resolved_path.display(),
+                pin.declared_path.display(),
+                pin.expected_sha256,
+            )
+        })?;
+        let verified = VerifiedArtifactContent {
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            bytes: Arc::<[u8]>::from(bytes),
+        };
+        verified_artifact_cache.insert(resolved_path.clone(), verified.clone());
+        verified
+    };
+
+    ensure!(
+        verified.sha256 == pin.expected_sha256,
+        "pack record {} (operator_run_id {}) pinned artifact {} SHA-256 mismatch at {} \
+         (declared {}): expected {}, got {}",
+        record.sequence,
+        record.operator_run_id,
+        pin.role,
+        resolved_path.display(),
+        pin.declared_path.display(),
+        pin.expected_sha256,
+        verified.sha256,
+    );
+
+    Ok((resolved_path, verified.bytes))
+}
+
 /// Owns the parsed pack and resume map so the `'pack`-lifetime [`BatchPlan`]
 /// work items can borrow from it without an extra clone of every pack record.
 struct OwnedBatchPlan {
     pack: SourceUniverseExecutionPack,
-    pack_base_dir: PathBuf,
+    verified_control_artifacts: BTreeMap<u64, SourceUniverseVerifiedControlArtifacts>,
     resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
     start_sequence: Option<u64>,
     record_limit: usize,
@@ -658,13 +817,16 @@ impl OwnedBatchPlan {
                 {
                     BatchWorkItem::Carried(Box::new(prior.clone()))
                 }
-                _ => BatchWorkItem::NeedsWork(record),
+                _ => BatchWorkItem::NeedsWork {
+                    record,
+                    control_artifacts: self
+                        .verified_control_artifacts
+                        .get(&record.sequence)
+                        .expect("selected record control artifacts were verified"),
+                },
             })
             .collect();
-        BatchPlan {
-            pack_base_dir: self.pack_base_dir.clone(),
-            work_items,
-        }
+        BatchPlan { work_items }
     }
 }
 
@@ -729,7 +891,6 @@ fn load_resume_records(
 
 fn process_work_item<F, R>(
     work_item: &BatchWorkItem<'_>,
-    pack_base_dir: &Path,
     output_dir: &Path,
     config: &SourceUniverseBatchExecutionConfig,
     fetcher: &mut F,
@@ -739,7 +900,7 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
-    let record = match work_item {
+    let (record, control_artifacts) = match work_item {
         // Carried records are pushed verbatim, skipping fetch + verify + run.
         // Verbatim includes the prior run's output_dir (provenance is kept,
         // not rewritten), so a resumed report can reference artifacts outside
@@ -747,7 +908,10 @@ where
         BatchWorkItem::Carried(record) => {
             return RecordSlot::Completed((**record).clone());
         }
-        BatchWorkItem::NeedsWork(record) => *record,
+        BatchWorkItem::NeedsWork {
+            record,
+            control_artifacts,
+        } => (*record, *control_artifacts),
     };
 
     let object_bytes = match fetcher
@@ -763,17 +927,9 @@ where
         return record_error_slot(record, "verify_object", error, config);
     }
 
-    let run_spec_path = resolve_existing_path(pack_base_dir, &record.run_spec_path);
-    let execution_plan_path = resolve_existing_path(pack_base_dir, &record.execution_plan_path);
     let record_output_dir = output_dir.join(&record.operator_run_id);
     let run_output = match runner
-        .run(
-            record,
-            &object_bytes,
-            &run_spec_path,
-            &execution_plan_path,
-            &record_output_dir,
-        )
+        .run(record, &object_bytes, control_artifacts, &record_output_dir)
         .with_context(|| format!("run operator {}", record.operator_run_id))
     {
         Ok(run_output) => run_output,
@@ -1128,9 +1284,21 @@ mod tests {
         };
         let mut resume_records = BTreeMap::new();
         resume_records.insert(prior.sequence, prior.clone());
+        let mut verified_control_artifacts = BTreeMap::new();
+        verified_control_artifacts.insert(
+            0,
+            SourceUniverseVerifiedControlArtifacts {
+                run_spec_path: PathBuf::from("run-spec.toml"),
+                run_spec_bytes: Arc::from(Vec::<u8>::new()),
+                accepted_tranche_path: PathBuf::from("tranche.json"),
+                accepted_tranche_bytes: Arc::from(Vec::<u8>::new()),
+                execution_plan_path: PathBuf::from("execution-plan.json"),
+                execution_plan_bytes: Arc::from(Vec::<u8>::new()),
+            },
+        );
         OwnedBatchPlan {
             pack,
-            pack_base_dir: PathBuf::from("."),
+            verified_control_artifacts,
             resume_records,
             start_sequence: None,
             record_limit: usize::MAX,
@@ -1202,7 +1370,10 @@ mod tests {
         let owned_plan = owned_plan_with_carry(&record);
         let plan = owned_plan.plan();
         assert!(
-            matches!(plan.work_items.as_slice(), [BatchWorkItem::NeedsWork(_)]),
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
             "a carried record with a missing prior catalog must re-execute, not carry forward"
         );
     }

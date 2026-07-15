@@ -11766,14 +11766,6 @@ reason = "Stable outcome-group model canonical evidence label or enum tag; runti
 [[allowed]]
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
-literal = '''"grouping_proof.proof_fingerprint"'''
-context = '''} => validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?,'''
-classification = "outcome_group_model_evidence_schema_label"
-reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_groups.rs"
-kind = "string"
 literal = '''"grouping_proof.attestation_sha256"'''
 context = '''validate_sha256_field("grouping_proof.attestation_sha256", attestation_sha256)?;'''
 classification = "outcome_group_model_evidence_schema_label"

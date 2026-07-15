@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6c36ae849005",
+  "session_id": "019f6454-7970-7d81-ab6c-43cb6b2c011a",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T14:02:24.1813Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_outcome_groups.rs"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-terra",
+  "turn_id": "9f16f235f767",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 126099,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2425344,
+    "output_tokens": 7505,
+    "api_call_count": 39
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-15T14:02:24.132217Z",
+    "agent_lines": 4,
+    "agent_removed": 6,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 4,
+    "total_lines_changed": 10,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

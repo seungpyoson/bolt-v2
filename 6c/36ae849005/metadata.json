@@ -3,7 +3,7 @@
   "checkpoint_id": "6c36ae849005",
   "strategy": "manual-commit",
   "branch": "vorflux/strategy-agnostic-substrate",
-  "checkpoints_count": 5,
+  "checkpoints_count": 6,
   "files_touched": [
     "src/bolt_v3_outcome_groups.rs"
   ],
@@ -42,13 +42,20 @@
       "compact_transcript": "/6c/36ae849005/4/transcript.jsonl",
       "content_hash": "/6c/36ae849005/4/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/6c/36ae849005/5/metadata.json",
+      "transcript": "/6c/36ae849005/5/full.jsonl",
+      "compact_transcript": "/6c/36ae849005/5/transcript.jsonl",
+      "content_hash": "/6c/36ae849005/5/content_hash.txt",
+      "prompt": "/6c/36ae849005/5/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 16479800,
+    "input_tokens": 16605899,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 1211437312,
-    "output_tokens": 1539621,
-    "api_call_count": 8733
+    "cache_read_tokens": 1213862656,
+    "output_tokens": 1547126,
+    "api_call_count": 8772
   }
 }

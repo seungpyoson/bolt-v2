@@ -1,0 +1,41 @@
+is the kimicode api endpoint openai compatible?
+
+---
+
+the same for glm coding plan api
+
+---
+
+can you just check by verifying our endpoints?
+
+---
+
+[Image #1]  tell me how to put here
+
+---
+
+what about deepseek?
+
+---
+
+for these 3 models - tell me what to put for the parameters I provided
+
+---
+
+[Image #1] what's the gateway model id?
+
+---
+
+are you sure about this?
+
+---
+
+what about kimi? it's kimi-for-coding? not specifically kimi-2.7 or something like this?
+
+---
+
+[Image #1] check if kimi supports these
+
+---
+
+I'm trying to use kimi high speed

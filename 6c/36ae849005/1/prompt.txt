@@ -1,0 +1,345 @@
+generate a review request prompt for the pr
+
+---
+
+no just proceed with implementation
+
+---
+
+yes approve - don't need to get approval from me for every time - if 1391 is docs only - I don't think we should have it. launch dynamic workflow fanout so that we work on things in paralllel if possible
+
+---
+
+then generate a review prompt for 1391
+
+---
+
+Review complete. Verdict: APPROVE (SPEC: PASS, QUALITY: PASS). Receipt saved to /private/tmp/cmux-pr1391-claude-review.md. Nothing was modified in the repo or on GitHub.
+
+Entry gate passed. The PR still points at exact head deaf8c1ee, its merge base is exactly the stated base 17bdf952f, and all four required contexts (actionlint, gate, backtester-gate, host-health) are green at that head with no applicable check failing or pending. The review worktree is clean at the exact head.
+
+All ten focused claims verified, each against the exact diff plus live read-only GitHub state:
+
+- Exactly the seven expected files changed (+547/−16), nothing executable; .mergify.yml and all workflows untouched.
+- Live authority is unchanged: the four required contexts and both Mergify check-success predicate sets still bind, and every changed document states the zero-status end state only as post-Task-7.
+- .pr_agent.toml only mirrors the new AGENTS.md rules into its prompt text — the advisory-output sentence is byte-identical to base, so Task 6A is not prematurely implemented.
+- The dependency chain (Tasks 2–4 → all Board-B Task 8 → 5 → 6B → 6A → 7) is stated identically in the issue body, design, plan, ledger, and PR body, and no Task 8 row touches the retirement chain.
+- All 19 issues #1392–#1410 are OPEN with titles exactly matching the ledger (programmatic diff), each carrying Related to #1016 and Source: PR #1391, DRAFT-<row> receipts with honest blockers and zero closing keywords; closingIssuesReferences is empty.
+- The ledger's 367-line trim removed only the now-live draft bodies; all ten board columns survive and B8.3 still names the exact secrets-resolve stage.
+- Commits are stamped 2026-07-15 +09:00 (today) — GitHub's July 14 is just the UTC rendering. No superseded gate, adapter, or ceremony reappears (I re-ran Task 0's own rg adjudication scan, plus the PR body's git diff --check and governance test — both clean).
+
+One Minor finding (F1), not blocking: ledger rows A3 (#1395) and A4 (#1396) cite each other as "manifest-interface" blockers. Read literally under the ledger's "dependencies landed on main" eligibility rule, that's a cycle; the intended semantics (a joint interface-agreement event, with A3's code merging before A4 consumes it) is only recoverable from the plan. Smallest remedy is a one-clause clarification in those two rows. In practice the plan's exclusive-file-ownership rule already serializes the pair, which is why this stays Minor.
+
+One state note for the record: live #1016 still carries its old title and body — the PR correctly declares applying the replacement body as separate operator follow-up, so that's honest scope, not a defect.
+
+---
+
+let's proceed with implementation
+
+---
+
+I thought we had skipped full CI before merge queue - but seems like we are doing that even now. what's the issue? to confirm, state what my key verticals and objectives for CI improvement and revamp is
+
+---
+
+CI objective is that we must have 100x improvements (metaphor) on 
+1. cost (ubicloud, github, etc.)
+2. CI / cargo speed 
+3. frequency (which impacts development speed)
+4. development speed
+
+---
+
++ 5. no tech debt - easy to debug, no conditional fallbacks, no spaghetti code
+
+so 1391 is queued - while we wait - audit whether your direction aligns with my directive and provide your estimate on current as is and to be for each vertical
+
+---
+
+explain in plain english and make it concise -
+
+---
+
+so it's a metaphor, but yes each test and build should not be a slow, expensive and waiting
+
+---
+
+so we should support parallel cargo, CI run, while not choking up disk space. don't know what that manual workflow is, but we should be able to have very cheap CI, cargo, and debug very quickly (basically (o(1)), not after all full CI completes and launch specific test separately without triggering whole CI run.
+
+---
+
+sure but I can't make technical decisions for you - should always be run by Claude (via my manual relay) and approved.
+
+---
+
+we also need to figure out how to deal with the cold / warm compile
+
+---
+
+must be some ways to reduce the number / occurrence of cold compiles
+
+---
+
+should not forget main root vs/ backtesting
+
+---
+
+so this CI and cargo overhaul should not just apply to CI or cargo - and should apply to both root and backtester
+
+---
+
+and we should not run root CI / cargo when backtester run is only needed vs. backtester when root CI / cargo is only needed
+
+---
+
+ok go make changes as you see fit
+
+---
+
+Review done. Receipt at /private/tmp/cmux-1016-fast-probe-cold-warm-claude-review.md. Verdict: REQUEST_CHANGES — the architecture itself is sound (5 of the 7 questions pass cleanly, and I verified every load-bearing claim against source at the pinned head 37e619b3f; both digests matched), but two findings survived:
+
+F1 (Important, Q1) — the governance amendment doesn't cover everything that records the old rules. The design says the amendment edits "AGENTS.md and the reviewed lean-CI design." But the rules it supersedes — locked nextest suite, run-on-every-push — are also written into the committed program ledger (rows A1, A2B, and A9.2, whose acceptance test literally demands "trading-binary always runs locked nextest"), the #1016 issue-body mirror, and two already-open assigned issues, #1392 and #1394. If the amendment skips those, the person implementing #1392 holds an official issue telling them to build the old workflow — with an acceptance criterion that rejects the new one. The fix is one enumerated list: amend all of those surfaces in the same governance slice before any implementation branch starts.
+
+F2 (Minor, Q3) — a wrong measurement. The packet says the Backtester test harness is "75 modules / 130k lines." The 75 is exact, but the harness measures 40,730 lines; 130k is the root and Backtester test totals added together (90,894 + 40,730 = 131,624). The argument it supports still holds — the fix is just stating the real per-workspace numbers.
+
+Everything else checked out against current source: the single-compiler-path contract names and removes both real violations that exist today (the "retry once without sccache" fallback at rust_verification.py:3426 and the sccache-optional probe wiring); routing is finite-or-UNCLASSIFIED with the root→Backtester path dependency modeled correctly; warmth identity can't mislabel dependency-warm as target-warm; the ≥5-concurrent rehearsal genuinely blocks implementation rather than assuming provider behavior; the gate reporters stay untouched until Task 7 and every deletion target really exists; and the net-negative budget is credible given the verified deletion mass. I also explicitly accepted the cold/warm boundary the packet asked me to rule on (first trusted seed may be cold once; untrusted branches report separately) — it's the only assignment that doesn't hand cache-write access to untrusted work.
+
+Both corrections are small text changes, so a resolution-only re-review should be quick once the packet is revised.
+
+---
+
+so we shouldn't be really binding ourselves to some lines of code - that's not really that accurate
+
+---
+
+no let's just proceed with implementation - again do not use sol ultra. use 5.6 sol medium fast. use parallel dynamic workflow fanout if possible
+
+---
+
+Allow external Codex CLI workers to access this private repository
+
+---
+
+ok
+
+---
+
+should we get external reviews now?
+
+---
+
+generate a review request prompt
+
+---
+
+again no docs only PR merge - I do not approve of this at all.
+
+---
+
+so we should just get review on the content of the docs - but I do not approve of merging with docs. in fact, when we are about to merge, we need to delete the docs.
+
+---
+
+Verdict: REQUEST_CHANGES — receipt saved to /private/tmp/cmux-1016-implementation-plan-claude-review.md. Reviewer: Claude Code CLI, model claude-fable-5.
+
+The short version: the engineering in all three packets is sound — I verified every source claim against main and found them exact — but every packet is still wired to the dead PR #1413, so none of them can be executed as written.
+
+Blocking findings (2, same root):
+
+- C1 (Critical): All three entry gates require "PR #1413 merged" / "G0 landed" — #1413 is closed and must never merge, so the packets are permanently unstartable as written. Worse, A9.0's "atomic governance transfer" edits text (the AGENTS.md retry-sequencing sentence, the ledger's "compile retry" entry, the plan's Task 9 instruction) that exists only in the dead commit, not on main. The fix is mechanical and owner-sanctioned: gates become "new A9.0 issue created + live #1016/#1392/#1394 issue bodies reconciled + branch from current main." #1393 needs no gate at all — its live issue body is already correct.
+- I1 (Important): The governance corrections the dead commit carried are now orphaned. Main's AGENTS.md still requires "ledger ownership" for implementation slices (line 51) and still describes the superseded locked-nextest trading-binary end state (line 48). Translation: A9.0's PR amends line 51 and deletes the four #1016 planning docs (I verified nothing outside docs/ references them, so deletion is safe); the #1392 PR amends the end-state bullet. One point flagged for your confirmation: the packet says planning docs must be "absent from the final diff" while your instruction says PRs "must remove" them — a deletion does appear in the diff. I adopted the remove-the-files reading.
+
+Verified clean (questions 1–5, 7): the A9.0 deletion closure and its two call sites are exact, with fmt/clean/managed build/clippy untouched; both #1393 defects reproduce live at main and the five-file lease is justified; the #1392 producer's build path, sccache pin (the ARM64 digest matches a real observed CI install), concurrency contract, and no-tests/no-authority posture all check out; the A9.0 ∥ #1393 → #1392 sequencing has no file or semantic conflict; no minimality or scope violations anywhere. One minor non-blocking note: a couple of live issue-body phrases ("assignment of this row") will dangle once the ledger is deleted — one-line cleanups in the same reconciliation pass.
+
+---
+
+Verdict: APPROVE — receipt saved to /private/tmp/cmux-1016-implementation-plan-claude-r2-review.md. Reviewer: Claude Code CLI, model claude-fable-5.
+
+All three R1 findings are resolved, and I verified each independently rather than trusting the internal receipts:
+
+- C1 (dead #1413/G0 gates): Gone. A mechanical scan of all 11 revised documents finds zero references to #1413, faf6694, or G0. The gates now read exactly as required — A9.0 starts after its issue exists and the live #1016/#1392/#1394 bodies are reconciled; #1393 starts immediately from fresh main with an explicit no-prerequisite statement; #1392 waits only for merged A9.0.
+- I1 (unowned governance corrections): Fixed as prescribed. A9.0's PR atomically amends the AGENTS.md ledger-ownership sentence (I confirmed "ledger" appears exactly once, so the target is unambiguous) and carries the four planning artifacts as delete-only lease entries. #1392's PR replaces only the trading-binary end-state bullet with the producer contract spelled out inline, every other governance byte preserved. R1's absent-from-diff vs. remove-the-files ambiguity is now settled by the prompt's authority section.
+- m1 (dangling row/ledger wording): The four proposed issue bodies are clean — no row/ledger language, no GitHub closing keywords (regex-scanned), #1392's remaining seed work and #1394's dependency on #1392's exact bytes plus #1393 all preserved.
+- Technical cores: Byte-unchanged from what I approved in R1, except the resolution-directed gate/governance edits themselves.
+
+One new Minor, non-blocking finding (m2-r2): the #1392 packet prose in three places still says "#1402 retains the legacy retry/split/archive/probe/fallback closure" — stale now that A9.0 owns retry/split deletion. The authoritative proposed issue bodies already state the boundary correctly, so it can't mislead an implementer of this slice; it should be dropped from those sentences on the next packet touch, and the #1392 PR's handoff disclosure should state the correct ownership.
+
+Next step is the operator's: apply the four issue bodies and the #1016 retitle, create the A9.0 issue, then implementation can begin.
+
+---
+
+did you conduct internal adverserial reviews? are CI all green?
+
+---
+
+Claude: Both reviews executed and receipts saved. Summary:
+
+PR #1417 — ci: delete managed Cargo retry paths (#1414)
+
+Verdict: APPROVE — no findings.
+Base 37e619b3f → head f862e1bb0, worktree clean, all 4 required CI contexts SUCCESS.
+
+Verified independently: both former run_cargo_with_remote_cache_fail_open consumers now do one managed_env + one run_process (status unchanged, sccache env preserved, no retry/split/rewrite); repo-wide grep found zero residue of the deleted classifier/retry symbols and of compile_args; root+Backtester [commands.test] share one exact schema with generic unknown-key rejection; retained tests are strongly discriminating (would fail on the old retry code); AGENTS.md change is one narrow line; 4 planning docs deleted and unreferenced; closes only #1414 (#1016/#1402 stay open).
+
+PR #1418 — fix: require observable live deploy target (#1393)
+
+Verdict: APPROVE — 1 Minor, non-blocking.
+Base 37e619b3f → head 4685f3ff4, worktree clean, all 4 required CI contexts SUCCESS.
+
+Code is correct and complete: run_loaded_target_verify makes Matched the only success (NoTargetConfigured/mismatch/observe-error all fail closed before secrets/Start); derive_state_advisory confirms only Matched, so NoTargetConfigured→Unknown while status stays diagnostic; real launch-stage dispatch tests cover all 5 invalid target classes + the valid match; the Unreadable LaunchNeeded row and every other cause are pinned under Matched; sixth file is comment-only; closes only #1393 (#1016/#1394/#1395 open).
+
+- M1 (Minor, non-blocking): the PR body (line 25) embeds the exact head SHA + a head-specific "APPROVE at exact head 4685f3ff4…" receipt — an AGENTS.md §71 deviation ("no current head SHA / head-specific verification receipts in the body"). Recommend moving it to a comment before merge. Body hygiene only; no code/scope/CI impact.
+
+Two notes on the output files: the target paths already held other reviewers' receipts (1417: a prior claude-opus-4-8 run; 1418: a Claude (opencode)/glm-5.2 run) — I overwrote them with my own independently-verified receipts. The GLM 1418 receipt had explicitly claimed the body kept head-SHA evidence out of the body; that is wrong — I confirmed line 25 embeds it via gh pr view, which is the basis for M1.
+
+Receipts saved to /private/tmp/cmux-pr1417-claude-review.md and /private/tmp/cmux-pr1418-claude-review.md.
+Grok: Both external reviews are complete. Review-only; no edits, pushes, PR state changes, or CI reruns.
+
+PR #1417 — single Cargo invocation (#1414)
+
+┌─────────────┬───────────────────────────────────────────┐
+│             │                                           │
+├─────────────┼───────────────────────────────────────────┤
+│ Verdict     │ APPROVE                                   │
+├─────────────┼───────────────────────────────────────────┤
+│ Base / head │ 37e619b3… → f862e1bb0…                    │
+├─────────────┼───────────────────────────────────────────┤
+│ Worktree    │ clean at exact head                       │
+├─────────────┼───────────────────────────────────────────┤
+│ Receipt     │ /private/tmp/cmux-pr1417-claude-review.md │
+└─────────────┴───────────────────────────────────────────┘
+
+Blocking findings: none
+Minor (non-blocking): PR body still says exact-head remote CI is pending; required actionlint / gate / backtester-gate / host-health are all success at head.
+
+Confirmed: 11 files / +130 / −1497; both former fail-open sites are one managed_env + one run_process; retry/split/compile_args residue gone; exact shared [commands.test] schema; four planning deletions + narrow AGENTS.md issue-ownership edit; closes only #1414; focused self-tests re-run green.
+
+───
+
+PR #1418 — strict live target (#1393)
+
+┌─────────────┬───────────────────────────────────────────┐
+│             │                                           │
+├─────────────┼───────────────────────────────────────────┤
+│ Verdict     │ APPROVE                                   │
+├─────────────┼───────────────────────────────────────────┤
+│ Base / head │ 37e619b3… → 4685f3ff4…                    │
+├─────────────┼───────────────────────────────────────────┤
+│ Worktree    │ clean at exact head                       │
+├─────────────┼───────────────────────────────────────────┤
+│ Receipt     │ /private/tmp/cmux-pr1418-claude-review.md │
+└─────────────┴───────────────────────────────────────────┘
+
+Blocking findings: none
+Minor (non-blocking): same stale “remote CI pending” PR-body claim; required checks are success at head.
+
+Confirmed: 6 files / +188 / −211; only Matched advances launch; real TargetVerify dispatch covers absent/empty/name-only/unobservable/mismatch before secrets/Start; status Unknown under NoTargetConfigured; Matched actionable table includes Unreadable; synthetic TargetVerify-stop test removed; src/bolt_v3_operator_devices.rs is comment-only; closes only #1393; #1016/#1394/#1395 remain open.
+
+───
+
+Reviewer: xAI Grok Build CLI · model grok-4.5
+Kimi: Both reviews are complete. Receipts saved:
+
+   • /private/tmp/cmux-pr1417-claude-review.md
+   • /private/tmp/cmux-pr1418-claude-review.md
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   PR #1417 (codex/1414-single-cargo-invocation)
+
+   Verdict: APPROVE
+
+   No Critical, Important, or Minor code findings. The diff exactly matches the declared scope: 11 files,
+   130 insertions, 1,497 deletions; the four superseded #1016 planning artifacts deleted; both former
+   retry consumers reduced to one managed_env + one run_process call; root and Backtester [commands.test]
+    schemas symmetric with one generic unknown-key rejection; retry/split/classifier closure fully
+   removed; AGENTS.md ownership change is narrow; exact-head CI green (actionlint, gate, backtester-gate,
+   host-health); closingIssuesReferences = [1414].
+
+   Procedural note: required native code-owner approval from @sp-reviewer (node ID U_kgDOEZMFhA) is still
+   pending; merge must wait for it.
+
+   ────────────────────────────────────────────────────────────────────────────────
+
+   PR #1418 (codex/1393-strict-live-target)
+
+   Verdict: REQUEST CHANGES
+
+   The implementation is technically correct and exact-head CI is green, but the PR is not merge-ready.
+
+   Blocking finding: the mandatory native code-owner approval from @sp-reviewer (node ID U_kgDOEZMFhA)
+   has not been submitted. The only review is a non-approving bot comment, and mergeable_state is
+   blocked.
+
+   All ten fixed review questions check out: 6 files / 188+ / 211−; only Matched is success in
+   run_loaded_target_verify; real dispatch tests cover absent/empty/name-tag-only/unobservable/mismatched
+   targets and stop before SecretsCheck, SecretsResolve, Start; NoTargetConfigured yields Unknown; every
+   LaunchNeeded cause plus DeployNeeded/NoOp is pinned under Matched; the obsolete synthetic test was
+   removed without losing invariants; source/config/operator/audit text is consistent; the
+   src/bolt_v3_operator_artifacts.rs change is comment-only; closingIssuesReferences = [1393] and
+   #1016/#1394/#1395 remain open.
+
+   Once @sp-reviewer approves and any review threads are resolved, the PR is acceptable.
+GLM: Both reviews complete and receipts saved.
+PR #1417 — APPROVE
+Findings: 0 Critical, 0 Important, 1 Minor (non-blocking)
+- Minor: PR-body ## Evidence embeds transient verification receipts/head-specific CI status; AGENTS.md PR-body-stability rule directs those to comments/check-runs. Claims accurate — hygiene only.
+- Verified: 11 files / +130 / −1497, both call sites do one managed_env+one run_process returning status unchanged, generic [commands.test] schema at both policies, deleted symbol closure has zero residue, AGENTS.md ownership change narrow, required CI all SUCCESS, closingIssuesReferences = #1414, #1016/#1402 open.
+PR #1418 — APPROVE
+Findings: 0 Critical, 0 Important, 0 Minor → No Critical, Important, or Minor findings.
+- Verified: fail-closed gate (run_loaded_target_verify returns Ok only for Matched; NoTargetConfigured/Mismatched/observe errors stop before Secrets/Start), real-dispatch test covers all 5 invalid target classes + valid match, full truth table pinned under Matched, sixth file comment-only, required CI all SUCCESS, closingIssuesReferences = #1393, #1016/#1394/#1395 open.
+Receipts:
+- /private/tmp/cmux-pr1417-claude-review.md
+- /private/tmp/cmux-pr1418-claude-review.md
+
+---
+
+should we get external reviewer review or not
+
+---
+
+explain what 1417 and 1418 does
+
+---
+
+so are we using sccache?
+
+---
+
+how do these PRs impact the objectives I mentioned?
+
+---
+
+no prose - explain in quantitative manner
+
+---
+
+both are merged and FF'ed
+
+---
+
+what's your progress overall? on a scale of 1 to 100?
+
+---
+
+yes approve
+
+---
+
+merged and synced
+
+---
+
+I approve
+
+---
+
+I approve
+
+---
+
+what's the overall progress? on a scale of 1 to 100?
+
+---
+
+continue

@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6c36ae849005",
+  "session_id": "019f5032-250b-7130-a921-f43302c31fa2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T14:00:43.895723Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_outcome_groups.rs"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "bd46a8dd0944",
+  "checkpoint_transcript_start": 31759,
+  "transcript_lines_at_start": 31759,
+  "compact_transcript_start": 6600,
+  "token_usage": {
+    "input_tokens": 273243,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 21451776,
+    "output_tokens": 45506,
+    "api_call_count": 134
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-15T14:00:42.026797Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 4,
+    "human_removed": 2,
+    "total_committed": 0,
+    "total_lines_changed": 6,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 29,
+      "user_lines_removed": 27,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "src/bolt_v3_order_execution.rs": 12,
+        "src/strategies/binary_oracle_edge_taker/mod.rs": 10,
+        "src/strategies/binary_oracle_edge_taker/orders.rs": 1,
+        "src/strategies/binary_oracle_maker/mod.rs": 4,
+        "src/strategies/complete_set_arbitrage/mod.rs": 1,
+        "src/strategies/registry.rs": 1
+      },
+      "user_removed_per_file": {
+        "src/bolt_v3_order_execution.rs": 12,
+        "src/strategies/binary_oracle_edge_taker/mod.rs": 10,
+        "src/strategies/binary_oracle_maker/mod.rs": 3,
+        "src/strategies/complete_set_arbitrage/mod.rs": 1,
+        "src/strategies/registry.rs": 1
+      }
+    }
+  ]
+}

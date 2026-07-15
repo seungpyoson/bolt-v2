@@ -1,0 +1,17 @@
+explain the situation in plain english - make this concise
+
+---
+
+stop the instance, and generate an execution handoff prompt (orchestrator) for gpt 5.6 sol max for the remaining gaps - it should use gpt 5.6 sol medium for implementation, while having the plan be reviewed by claude. but it would be very difficult to have the plan be approved cleanly, so we need to have a clear invariant defined.
+
+---
+
+the goal is to make the infra stable, systematic so that we can reliably put a strategy running autonomously for continuously, without some short time or 24 hour or some bullshit
+
+---
+
+is this the best prompt you can come up with?
+
+---
+
+with this work done, we should be able to have a reliably running strategy instance that doesn't need to be keep monitored?

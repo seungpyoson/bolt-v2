@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6c36ae849005",
+  "session_id": "2448f77a-d1ee-4848-93ba-349bf47f7832",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T14:02:32.028912Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/bolt_v3_outcome_groups.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "523939b8b37c",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 198,
+    "cache_creation_tokens": 390483,
+    "cache_read_tokens": 18758679,
+    "output_tokens": 99320,
+    "api_call_count": 106
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-15T14:02:31.930813Z",
+    "agent_lines": 4,
+    "agent_removed": 6,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 4,
+    "total_lines_changed": 10,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

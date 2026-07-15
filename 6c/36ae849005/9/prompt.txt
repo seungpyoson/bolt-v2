@@ -1,0 +1,320 @@
+Conduct a thorough, read-only adversarial review of:
+
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1380
+  Title: chore: refresh NautilusTrader v1.230 pin
+  Base: 17bdf952f3e9422c6957b88556dbb4f145046754
+  Head: 7549b223ba65c4fb5007ae8ef48d93e0e469a370
+
+  Review only the committed PR range. Do not modify files, update the PR, create comments, change
+  branches, or merge.
+
+  Commands:
+    git diff --stat 17bdf952f3e9422c6957b88556dbb4f145046754..7549b223ba65c4fb5007ae8ef48d93e0e469a370
+    git diff 17bdf952f3e9422c6957b88556dbb4f145046754..7549b223ba65c4fb5007ae8ef48d93e0e469a370
+
+  Review objectives:
+
+  1. Dependency integrity
+     - Both Cargo graphs must pin NautilusTrader 0.60.0 to:
+       d636f17604cdbddc28ad40e0e15720e2d19bf860
+     - Locks and manifests must be coherent.
+     - Confirm the fork is based directly on official v1.230.0 and contains only the declared Bolt-
+     required Binance patches.
+     - Flag unrelated or unpinned dependency changes.
+
+  2. NT 0.60 migration correctness
+     - Review every API adaptation for ownership, borrowing, configuration, catalog, strategy, portfolio,
+     and execution semantics.
+     - Look for compile-success changes that weaken runtime behavior or fail-closed guarantees.
+     - Confirm order-producing maker tests perform full StrategyCore registration, including Portfolio and
+     OrderFactory initialization.
+     - Confirm actor-only registration remains limited to lifecycle/timer tests.
+
+  3. RuntimeStrategy contract
+     - Verify the sealed marker prevents non-Strategy/non-DataActor components from implementing
+     RuntimeStrategy.
+     - Confirm Box<dyn RuntimeStrategy> remains object-safe and usable.
+     - Check that the public API contract was not silently weakened.
+
+  4. Backtesting compatibility
+     - Verify the non-ASCII catalog-instrument-ID rejection is fail-closed and consistent with NT 0.60’s
+     selector requirement.
+     - Confirm the PR body accurately discloses the compatibility and migration impact.
+     - Look for other undisclosed behavior changes.
+
+  5. Repository governance
+     - Apply AGENTS.md, including NO HARDCODES, NO DUAL PATHS, NO DEBTS, strategy-intent boundaries,
+     source-fence evidence, and scope discipline.
+     - Confirm no design document is included in the PR.
+     - Flag out-of-scope changes or accepted scope that lacks tracking.
+
+  6. Evidence and merge readiness
+     - Inspect exact-head CI for the stated head SHA.
+     - Distinguish genuine failures from downstream aggregate failures.
+     - Confirm relevant tests actually execute the changed paths.
+     - Treat pending code-owner approval and governance gates separately from code defects.
+
+  Output requirements:
+
+  - Identify the reviewer source and exact configured model using runtime/config-provided values; do not
+  invent them.
+  - List findings first, ordered Critical, High, Medium, Low.
+  - Every substantive issue must be a finding, with:
+    - file and line
+    - concrete evidence
+    - impact
+    - recommended fix
+  - Do not downgrade genuine issues into “notes.”
+  - Include a concise verification summary.
+  - End with one verdict: APPROVE or REQUEST CHANGES.
+  - If there are no findings, explicitly state that.
+
+---
+
+Perform a read-only adversarial review of:
+
+  PR: #1380 — chore: refresh NautilusTrader v1.230 pin
+  Repository: seungpyoson/bolt-v2
+  Expected exact head: 3585adb2afea035142c95223e215981051167555
+  Original review base: 17bdf952f
+
+  First verify that the PR head still equals the expected SHA. If it differs, stop and report the new SHA
+  rather than reviewing a stale range.
+
+  Do not modify files, push commits, resolve threads, approve, or merge.
+
+  Required review header:
+  - Reviewer source
+  - Exact configured model
+  - Exact range reviewed
+  - Files and line count reviewed
+
+  Review priorities
+
+  1. Dependency and fork integrity
+  - Confirm every nautilus-* dependency in both Cargo graphs and lockfiles resolves to:
+    d636f17604cdbddc28ad40e0e15720e2d19bf860
+  - Confirm no stale NT revision remains in a current authoritative surface.
+  - Verify d636f176 is based on official v1.230.0 and contains only the declared Binance SBE 3:5, symbol-
+  status, and receive-timestamp patch.
+  - Explain any non-NT lockfile changes.
+
+  2. NT 0.60 migration correctness
+  - Review all API adaptations for ownership, cache access, builder Result handling, Portfolio
+  registration, topic renames, parquet borrows, and StrategyNative/DataActorNative usage.
+  - Confirm errors remain fail-closed and are not swallowed.
+  - Confirm order-producing tests use full StrategyCore registration with Portfolio and OrderFactory.
+  - Confirm actor-only registration is limited to lifecycle/timer tests.
+
+  3. RuntimeStrategy contract
+  - Verify the private sealing trait prevents external non-Strategy/DataActor implementations.
+  - Verify Box<dyn RuntimeStrategy> remains object-safe.
+  - Do not recommend restoring Strategy + DataActor as public dyn supertraits unless you demonstrate that
+  NT 0.60 makes that object-safe.
+  - Do not flag StrategyNative imports as unused without checking trait-method resolution and exact-head
+  clippy evidence.
+
+  4. Capability-ledger closure
+  - Reproduce or inspect the prior failing exact-head candidate set:
+    47 occurrences / 40 unique IDs.
+  - Confirm the ledger adds exactly those 40 IDs:
+    - 30 supported
+    - 10 exact not_iv_options
+  - Confirm there is no omission, extra entry, duplicate ID, broad exclusion, scanner weakening, or
+  blanket ignore.
+  - Validate every supported engine mapping against pinned d636 source, especially:
+    - Greeks helpers
+    - BusPayloadType / OptionGreeks
+    - option identifiers and instruments
+    - Cap’n Proto Greeks/IV accessors and convention conversions
+    - option-chain manager additions
+
+  5. Governed pin evidence
+  - Confirm the doctrine compatibility revision is d636 while the older full-doctrine audit revision
+  remains deliberately separate.
+  - Confirm the active schema’s five qsize provenance claims use d636 and that all three pinned defaults
+  remain 100000.
+  - Confirm doctrine, schema, naming audit, runtime contracts, verifier constants, and the Polymarket
+  fixture are enforced by the authoritative pin census.
+  - Verify the census rejects stale, missing, duplicate-decoy, and misplaced claims without rejecting
+  unanchored historical evidence.
+
+  6. Polymarket evidence
+  - Verify the regenerated fixture:
+    tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt
+  - Confirm revision, source path, SHA-256, and extracted ranges match pinned d636 source.
+  - Confirm the Rust test compares the fixture revision with the Cargo.lock-resolved NT revision.
+
+  7. Backtesting compatibility
+  - Verify non-ASCII catalog instrument IDs fail closed under NT 0.60.
+  - Confirm the selector-free fallback was removed without leaving a second path.
+  - Confirm the behavior change is accurately disclosed.
+
+  8. Governance and scope
+  - Confirm the final PR contains no design document.
+  - Flag every out-of-scope change, hidden adjacent work, stale current-authority claim, TODO, unpinned
+  dependency, dual path, or weakened verifier.
+  - Distinguish historical evidence snapshots from claims presented as current authority.
+  - Confirm no production runtime behavior was changed by the review-gap fixes.
+
+  9. Exact-head gates
+  Fetch current checks for exact head 3585adb2afea035142c95223e215981051167555:
+
+  - Primary CI: https://github.com/seungpyoson/bolt-v2/actions/runs/29377958666
+  - Backtester CI: https://github.com/seungpyoson/bolt-v2/actions/runs/29377958647
+  - Coverage: https://github.com/seungpyoson/bolt-v2/actions/runs/29377958692
+
+  Verify the required code-owner approval and review-thread state.
+
+  Treat pending or failed gates separately from code findings. Do not call a stalled or pending check a
+  code defect without failure evidence. Merge readiness still requires exact-head green CI and the
+  required reviewer approval.
+
+  Output format
+
+  Findings
+
+  Critical
+  - ...
+
+  High
+  - ...
+
+  Medium
+  - ...
+
+  Low
+  - ...
+
+  For every finding include:
+  - File and line
+  - Concrete evidence
+  - Impact
+  - Required fix or verification
+
+  Then provide:
+
+  Verification summary
+  - Dependency/fork integrity
+  - NT 0.60 migration
+  - RuntimeStrategy
+  - Capability ledger
+  - Pin census and fixtures
+  - Backtesting behavior
+  - Governance/scope
+  - Exact-head CI and approval state
+
+  Verdict
+  - APPROVE or REQUEST CHANGES
+
+  State code defects and pending merge gates separately. If there are no findings, say so explicitly and
+  summarize the evidence actually inspected.
+
+---
+
+<task-notification>
+<task-id>bz69eghjy</task-id>
+<summary>Monitor event: "PR #1380 exact-head CI runs (build/bvs-test/coverage) completion at 3585adb2"</summary>
+<event>ALL THREE RUNS COMPLETED:
+CI	completed	success
+Backtester CI	completed	success
+Coverage Enforcer	completed	success</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+• Review PR #1380 — “chore: refresh NautilusTrader v1.230 pin”
+
+  Repository: seungpyoson/bolt-v2
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1380
+  Base: 17bdf952f3e9422c6957b88556dbb4f145046754
+  Expected head: 6e7c1fc13d54bd5d91cd25271ea0b2742f4db174
+  Range: 17bdf952f3e9422c6957b88556dbb4f145046754..6e7c1fc13d54bd5d91cd25271ea0b2742f4db174
+
+  This is a read-only adversarial review. Do not edit files, apply fixes, push commits, or merge.
+
+  Before reviewing:
+
+  1. Verify the PR head still equals the expected head.
+  2. Read AGENTS.md and the PR body.
+  3. Review the full range, not only the latest commit.
+  4. Identify your reviewer source and exact configured model.
+
+  Review priorities:
+
+  - Confirm both Cargo graphs and lockfiles consistently resolve all NautilusTrader crates to the intended
+  v1.230-based fork revision.
+  - Verify the fork ancestry and ensure its additional changes are limited to the declared Binance SBE
+  3:5, symbol-status, fixture, and receive-clock patch.
+  - Check every NT 0.60 API migration for semantic correctness, error propagation, and preserved fail-
+  closed behavior.
+  - Verify root Cargo.toml is the canonical NT revision authority. The boundary verifier must derive the
+  revision from it and reject:
+    - ambiguous root revisions;
+    - non-commit revisions;
+    - stale BVS manifests or lockfiles;
+    - stale evidence fixtures or governed evidence claims.
+  - Ensure Python verifier constants and prose documents are not competing pin authorities.
+  - Confirm the contract ledger and status map no longer embed the current NT version/SHA while retaining
+  their contract-index and readiness-tracking roles.
+  - Audit `public_symbols()` longest-prefix behavior. A `pub const fn` line must emit its real symbol
+  exactly once.
+  - Search the complete capability ledger for stale synthetic artifacts from the former double-match bug.
+  Lowercase `symbol = "fn"` is invalid; legitimate Rust identifiers such as `Fn` or raw identifiers must
+  not be rejected merely because normalization ends in `.fn`.
+  - Confirm the three known phantom surfaces are absent:
+    - `nt.crates.data.src.option_chains.manager.fn`
+    - `nt.crates.indicators.src.python.volatility.fuzzy.fn`
+    - `nt.crates.indicators.src.volatility.fuzzy.fn`
+  - Check that capability-ledger validation and regression tests cannot silently retain surplus phantom
+  entries.
+  - Revalidate RuntimeStrategy sealing/object safety and full versus lifecycle-only strategy registration.
+  - Revalidate the non-ASCII backtesting catalog-ID fail-closed behavior.
+  - Verify Polymarket fixture provenance and parity with the Cargo-derived NT revision.
+  - Check scope discipline, PR-body disclosures, and repository governance. There must be no design/plan
+  document in the final PR.
+  - Inspect exact-head CI and required code-owner approval, but report gates separately from code
+  findings. Do not treat pending checks as defects without failure evidence.
+
+  Output findings first, ordered by severity:
+
+  Critical
+  - [finding or “None”]
+
+  High
+  - [finding or “None”]
+
+  Medium
+  - [finding or “None”]
+
+  Low
+  - [finding or “None”]
+
+  For every finding include:
+
+  - File and line
+  - Concrete evidence
+  - Impact
+  - Required fix or verification
+
+  Then provide:
+
+  1. Blocking findings
+  2. Non-blocking findings
+  3. Verification summary
+  4. Exact-head CI and approval state
+  5. Verdict: APPROVE or REQUEST CHANGES
+
+  If no defects exist, state explicitly: “No substantive findings.” Do not hide findings as notes,
+  observations, or follow-ups.
+
+---
+
+<task-notification>
+<task-id>b8vjd8oxi</task-id>
+<tool-use-id>toolu_016ErGMnuQS4PndRvxmEQG7o</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-spson-Projects-Claude-bolt-v2/2448f77a-d1ee-4848-93ba-349bf47f7832/tasks/b8vjd8oxi.output</output-file>
+<status>killed</status>
+<summary>Monitor "PR #1380 exact-head CI at 6e7c1fc13 (CI/Backtester/Coverage) completion" stopped</summary>
+</task-notification>

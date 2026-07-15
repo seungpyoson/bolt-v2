@@ -2,22 +2,33 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use backtesting_vertical_slice::source_universe_batch_execution::{
-    CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
-    SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReport,
-    SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
-    SourceUniverseObjectFetcher, SourceUniverseOperatorRunner,
-    SourceUniverseVerifiedControlArtifacts, execute_source_universe_batch,
-    execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
-    write_source_universe_batch_execution_report,
+use backtesting_vertical_slice::{
+    backfill_accepted_tranche::BackfillAcceptedTrancheManifest,
+    backfill_execution_plan::{
+        BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
+        BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
+    },
+    operator::RunSpec,
+    source_universe_batch_execution::{
+        CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
+        SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReport,
+        SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
+        SourceUniverseObjectFetcher, SourceUniverseOperatorRunner,
+        SourceUniverseVerifiedControlArtifacts, execute_source_universe_batch,
+        execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
+        write_source_universe_batch_execution_report,
+    },
+    source_universe_execution_pack::{
+        SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
+        SourceUniverseExecutionPackStatus,
+    },
 };
-use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord;
 
 #[test]
 fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
@@ -1625,6 +1636,148 @@ fn prepare_batch_rejects_zero_max_concurrent_records() {
     );
 }
 
+#[test]
+fn prepare_batch_rejects_non_strict_full_pack_sequence_outside_selected_window() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"object zero".to_vec()),
+        (2, b"selected object two".to_vec()),
+        (1, b"out-of-order object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let mut fetcher = SequencedFetcher::from_objects(&[(2, objects[1].1.clone())]);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let error = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: Some(2),
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("the complete pack sequence must be strict before window selection");
+
+    assert!(
+        format!("{error:#}").contains("sequence"),
+        "error identifies the non-strict sequence: {error:#}"
+    );
+    assert!(
+        fetch_calls.lock().expect("fetch calls").is_empty(),
+        "global sequence validation happens before selected work is fetched"
+    );
+}
+
+#[test]
+fn resume_reprocesses_when_an_unreported_pack_record_field_drifts() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![(0, b"object zero".to_vec())];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let mut initial_fetcher = SequencedFetcher::from_objects(&objects);
+    let mut initial_runner = RecordingRunner::default();
+    let mut prior_report = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut initial_fetcher,
+        &mut initial_runner,
+    )
+    .expect("initial record completes");
+    let prior_output_dir = prior_report.records[0].output_dir.clone();
+    copy_dir_all(
+        &committed_reference_run_dir().join("nt-catalog"),
+        &prior_output_dir.join("nt-catalog"),
+    );
+    prior_report.records[0].catalog_hash = committed_reference_catalog_hash();
+    let prior_report_artifact =
+        write_source_universe_batch_execution_report(&fixture.output_dir, &prior_report)
+            .expect("write prior report");
+
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        0,
+        "work_item_id",
+        serde_json::Value::String("drifted-work-item-id".to_string()),
+    );
+
+    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
+    let resume_calls = resume_fetcher.calls();
+    let mut resume_runner = RecordingRunner::default();
+    execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic-resume",
+        &fixture.pack_path,
+        &temp_dir.path().join("resume-output"),
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(prior_report_artifact.path),
+        },
+        &mut resume_fetcher,
+        &mut resume_runner,
+    )
+    .expect("record drift triggers fresh execution");
+
+    assert_eq!(
+        resume_calls.lock().expect("resume fetch calls").as_slice(),
+        &[0],
+        "a complete-record fingerprint must prevent carrying drifted pack metadata"
+    );
+    assert_eq!(resume_runner.calls.len(), 1);
+}
+
+#[test]
+fn factory_entry_does_not_construct_dependencies_for_only_preflight_failures() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        0,
+        "run_spec_path",
+        serde_json::Value::String("missing-run-spec.toml".to_string()),
+    );
+    let fetcher_factory_calls = AtomicUsize::new(0);
+    let runner_factory_calls = AtomicUsize::new(0);
+
+    let report = execute_source_universe_batch_with_factories(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: true,
+            max_concurrent_records: Some(4),
+            resume_report: None,
+        },
+        || -> anyhow::Result<NeverFetcher> {
+            fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("fetcher factory must remain inert")
+        },
+        || -> anyhow::Result<RecordingRunner> {
+            runner_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("runner factory must remain inert")
+        },
+    )
+    .expect("inert preflight failure assembles a failure report");
+
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    );
+    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
+}
+
 struct StaticFetcher {
     expected_source_url: String,
     object_bytes: Vec<u8>,
@@ -1742,6 +1895,76 @@ struct ValidSingleRecordPack {
     output_dir: PathBuf,
 }
 
+struct CommittedRecordZeroControls {
+    pack_template: SourceUniverseExecutionPack,
+    record: SourceUniverseExecutionPackRecord,
+    run_spec: RunSpec,
+    accepted_tranche: BackfillAcceptedTrancheManifest,
+    execution_plan: BackfillExecutionPlan,
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root")
+        .to_path_buf()
+}
+
+fn resolve_repo_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo_root().join(path)
+    }
+}
+
+fn committed_record_zero_controls() -> &'static CommittedRecordZeroControls {
+    static CONTROLS: OnceLock<CommittedRecordZeroControls> = OnceLock::new();
+
+    CONTROLS.get_or_init(|| {
+        let pack_path = repo_root().join(
+            "specs/023-nt-research-analytics-platform/reference/\
+             source-universe-execution-packs/\
+             bybit-public-archive-tick-trades-2025-06-01-2026-06-01/\
+             execution-pack/source-universe-execution-pack.json",
+        );
+        let mut pack_template: SourceUniverseExecutionPack = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read committed source-universe execution pack"),
+        )
+        .expect("parse committed source-universe execution pack");
+        let record = pack_template
+            .records
+            .first()
+            .expect("committed execution pack has record zero")
+            .clone();
+        let run_spec: RunSpec = toml::from_str(
+            &fs::read_to_string(resolve_repo_path(&record.run_spec_path))
+                .expect("read committed record-zero run spec"),
+        )
+        .expect("parse committed record-zero run spec");
+        let accepted_tranche: BackfillAcceptedTrancheManifest = serde_json::from_slice(
+            &fs::read(resolve_repo_path(&record.accepted_tranche_path))
+                .expect("read committed record-zero accepted tranche"),
+        )
+        .expect("parse committed record-zero accepted tranche");
+        let execution_plan: BackfillExecutionPlan = serde_json::from_slice(
+            &fs::read(resolve_repo_path(&record.execution_plan_path))
+                .expect("read committed record-zero execution plan"),
+        )
+        .expect("parse committed record-zero execution plan");
+        pack_template.records = Vec::new();
+
+        CommittedRecordZeroControls {
+            pack_template,
+            record,
+            run_spec,
+            accepted_tranche,
+            execution_plan,
+        }
+    })
+}
+
 fn write_valid_single_record_pack(root: &Path) -> ValidSingleRecordPack {
     write_valid_pack(root, &[(0, b"accepted object bytes".to_vec())])
 }
@@ -1751,8 +1974,6 @@ fn write_valid_pack(root: &Path, objects: &[(u64, Vec<u8>)]) -> ValidSingleRecor
     let run_spec_path = root.join("run-spec.toml");
     let accepted_tranche_path = root.join("accepted-tranche.json");
     let execution_plan_path = root.join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
     write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, objects);
     ValidSingleRecordPack {
         pack_path,
@@ -1906,90 +2127,143 @@ fn write_n_record_pack(
     execution_plan_path: &Path,
     objects: &[(u64, Vec<u8>)],
 ) {
-    let accepted_tranche_path = pack_path
-        .parent()
-        .expect("pack path has parent")
-        .join("accepted-tranche.json");
-    fs::write(&accepted_tranche_path, "{}\n").expect("write accepted tranche");
-    let run_spec_sha256 = sha256_hex(&fs::read(run_spec_path).expect("read run spec"));
-    let accepted_tranche_sha256 =
-        sha256_hex(&fs::read(&accepted_tranche_path).expect("read accepted tranche"));
-    let execution_plan_sha256 =
-        sha256_hex(&fs::read(execution_plan_path).expect("read execution plan"));
+    let pack_dir = pack_path.parent().expect("pack path has parent");
+    let committed = committed_record_zero_controls();
+    let mut records = Vec::with_capacity(objects.len());
+
+    for (record_index, (sequence, object_bytes)) in objects.iter().enumerate() {
+        let control_dir = if record_index == 0 {
+            pack_dir.to_path_buf()
+        } else {
+            pack_dir.join(format!("record-{sequence:05}"))
+        };
+        fs::create_dir_all(&control_dir).expect("create per-record control dir");
+        let record_run_spec_path = if record_index == 0 {
+            run_spec_path.to_path_buf()
+        } else {
+            control_dir.join("run-spec.toml")
+        };
+        let accepted_tranche_path = control_dir.join("accepted-tranche.json");
+        let record_execution_plan_path = if record_index == 0 {
+            execution_plan_path.to_path_buf()
+        } else {
+            control_dir.join("execution-plan.json")
+        };
+
+        let object_sha256 = sha256_hex(object_bytes);
+        let operator_run_id = format!("source-universe-operator-run-synthetic-{sequence:05}");
+        let accepted_tranche_id = format!("accepted-tranche-synthetic-{sequence}");
+
+        let mut run_spec = committed.run_spec.clone();
+        run_spec.manifest.run_id.clone_from(&operator_run_id);
+        run_spec.manifest.output_prefix = format!(
+            "{}-synthetic-{sequence}",
+            committed.run_spec.manifest.output_prefix
+        );
+        run_spec.accepted_object.sha256.clone_from(&object_sha256);
+        run_spec.accepted_object.bytes = object_bytes.len() as u64;
+        run_spec.source_proof.raw_sample_hash.clone_from(&object_sha256);
+        run_spec
+            .source_proof
+            .schema_sample_hash
+            .clone_from(&object_sha256);
+        if let Some(scope) = run_spec.source_proof.acceptance_scope.as_mut() {
+            scope.accepted_bytes = object_bytes.len() as u64;
+        }
+        run_spec.converter.raw_payload.max_object_bytes =
+            run_spec.converter.raw_payload.max_object_bytes.max(object_bytes.len() as u64);
+
+        let mut accepted_tranche = committed.accepted_tranche.clone();
+        accepted_tranche.tranche_id.clone_from(&accepted_tranche_id);
+        accepted_tranche.accepted_bytes = object_bytes.len() as u64;
+        let accepted_object = accepted_tranche
+            .objects
+            .first_mut()
+            .expect("committed record-zero tranche has one object");
+        accepted_object.sha256.clone_from(&object_sha256);
+        accepted_object.bytes = object_bytes.len() as u64;
+
+        let run_spec_bytes = toml::to_string_pretty(&run_spec)
+            .expect("serialize typed per-record run spec")
+            .into_bytes();
+        let accepted_tranche_bytes = serde_json::to_vec_pretty(&accepted_tranche)
+            .expect("serialize typed per-record accepted tranche");
+        let execution_plan = evaluate_backfill_execution_plan(
+            format!("backfill-execution-plan-synthetic-{sequence}"),
+            sha256_hex(&accepted_tranche_bytes),
+            &accepted_tranche,
+            sha256_hex(&run_spec_bytes),
+            &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+            BackfillExecutionWorkBudget {
+                max_source_rows: committed.execution_plan.max_source_rows,
+                max_projected_row_groups: committed.execution_plan.max_projected_row_groups,
+                max_wall_seconds: committed.execution_plan.max_wall_seconds,
+                require_object_selection_metadata: committed
+                    .execution_plan
+                    .require_object_selection_metadata,
+            },
+        );
+        assert_eq!(
+            execution_plan.status,
+            BackfillExecutionPlanStatus::Ready,
+            "derived per-record execution plan must be ready"
+        );
+        let execution_plan_bytes = serde_json::to_vec_pretty(&execution_plan)
+            .expect("serialize typed per-record execution plan");
+
+        fs::write(&record_run_spec_path, &run_spec_bytes).expect("write typed run spec");
+        fs::write(&accepted_tranche_path, &accepted_tranche_bytes)
+            .expect("write typed accepted tranche");
+        fs::write(&record_execution_plan_path, &execution_plan_bytes)
+            .expect("write typed execution plan");
+
+        let mut record = committed.record.clone();
+        record.sequence = *sequence;
+        record.work_item_id = format!("synthetic-work-item-{sequence}");
+        record.operator_run_id = operator_run_id;
+        record.selected_object_sha256 = object_sha256;
+        record.selected_object_bytes = object_bytes.len() as u64;
+        record.accepted_tranche_id = accepted_tranche_id;
+        record.output_prefix = run_spec.manifest.output_prefix.clone();
+        record.run_spec_path = record_run_spec_path
+            .strip_prefix(pack_dir)
+            .expect("run spec is pack-relative")
+            .to_path_buf();
+        record.run_spec_sha256 = sha256_hex(&run_spec_bytes);
+        record.accepted_tranche_path = accepted_tranche_path
+            .strip_prefix(pack_dir)
+            .expect("accepted tranche is pack-relative")
+            .to_path_buf();
+        record.accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
+        record.execution_plan_path = record_execution_plan_path
+            .strip_prefix(pack_dir)
+            .expect("execution plan is pack-relative")
+            .to_path_buf();
+        record.execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
+        records.push(record);
+    }
+
     let record_count = objects.len() as u64;
-    let total_object_bytes_len: usize = objects.iter().map(|(_, bytes)| bytes.len()).sum();
-    let records = objects
-        .iter()
-        .map(|(sequence, bytes)| {
-            format!(
-                r#"    {{
-      "sequence": {sequence},
-      "work_item_id": "synthetic-work-item-{sequence}",
-      "operator_run_id": "source-universe-operator-run-synthetic-{sequence:05}",
-      "source_binding": "synthetic-spot-tick-trades",
-      "category": "spot",
-      "symbol": "{symbol}",
-      "archive_date": "2026-03-01",
-      "source_uri": "s3://synthetic-bucket/raw/synthetic-{sequence}.csv.gz",
-      "source_url": "https://public.synthetic.example/object-{sequence}.csv.gz",
-      "selected_object_sha256": "{sha256}",
-      "selected_object_bytes": {bytes_len},
-      "source_proof_id": "source-proof-synthetic",
-      "source_proof_version": 1,
-      "accepted_tranche_id": "accepted-tranche-synthetic-{sequence}",
-      "output_prefix": "s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-{sequence}",
-      "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "{run_spec_sha256}",
-      "accepted_tranche_path": "accepted-tranche.json",
-      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
-      "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "{execution_plan_sha256}"
-    }}"#,
-                symbol = synthetic_symbol(*sequence),
-                sha256 = sha256_hex(bytes),
-                bytes_len = bytes.len(),
-                run_spec_path = run_spec_path.display(),
-                run_spec_sha256 = run_spec_sha256,
-                accepted_tranche_sha256 = accepted_tranche_sha256,
-                execution_plan_path = execution_plan_path.display(),
-                execution_plan_sha256 = execution_plan_sha256,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+    let total_object_bytes_len = objects.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+    let mut pack = committed.pack_template.clone();
+    pack.pack_id = "source-universe-execution-pack-synthetic".to_string();
+    pack.status = SourceUniverseExecutionPackStatus::Ready;
+    pack.planned_object_count = record_count;
+    pack.executable_record_count = record_count;
+    pack.withheld_record_count = 0;
+    pack.selected_record_count = record_count;
+    pack.materialized_record_count = record_count;
+    pack.skipped_executable_record_count = 0;
+    pack.executable_source_bytes = total_object_bytes_len;
+    pack.materialized_source_bytes = total_object_bytes_len;
+    pack.artifact_refs.clear();
+    pack.records = records;
+    pack.blocking_reasons.clear();
     fs::write(
         pack_path,
-        format!(
-            r#"{{
-  "schema_version": "source-universe-execution-pack.v1",
-  "pack_id": "source-universe-execution-pack-synthetic",
-  "status": "ready",
-  "work_order_id": "source-universe-conversion-work-order-synthetic",
-  "input_id": "source-universe-operator-inputs-synthetic",
-  "gate_id": "source-universe-object-gates-synthetic",
-  "conversion_run_plan_id": "source-universe-conversion-run-plan-synthetic",
-  "universe_id": "backfill-source-universe-synthetic",
-  "venue": "synthetic-venue",
-  "source": "public_archive",
-  "family": "tick_trades",
-  "table_family": "trades",
-  "planned_object_count": {record_count},
-  "executable_record_count": {record_count},
-  "withheld_record_count": 0,
-  "selected_record_count": {record_count},
-  "materialized_record_count": {record_count},
-  "skipped_executable_record_count": 0,
-  "executable_source_bytes": {total_object_bytes_len},
-  "materialized_source_bytes": {total_object_bytes_len},
-  "artifact_refs": [],
-  "records": [
-{records}
-  ],
-  "blocking_reasons": []
-}}"#,
-        ),
+        serde_json::to_vec_pretty(&pack).expect("serialize typed execution pack fixture"),
     )
-    .expect("write n-record pack");
+    .expect("write typed n-record pack");
 }
 
 /// Build a synthetic execution-pack record with the pinned sha/length for the

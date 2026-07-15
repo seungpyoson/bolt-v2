@@ -5120,9 +5120,9 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
         ),
         (
             "shared action must keep enablement fail-open",
-            action_text.replace("      id: enable\n      continue-on-error: true\n", "      id: enable\n", 1),
+            action_text.replace("      id: legacy\n      if: inputs.required != 'true'\n      continue-on-error: true\n", "      id: legacy\n      if: inputs.required != 'true'\n", 1),
             config_text,
-            "Resolve sccache enablement must be continue-on-error",
+            "Preserve legacy sccache enablement must be continue-on-error",
         ),
         (
             "shared action must disable vendor stats annotations",
@@ -10810,17 +10810,18 @@ def assert_root_artifact_workflow_contract() -> None:
     required = (
         "  workflow_dispatch:\n",
         "  group: root-artifact-producer\n  cancel-in-progress: false\n",
-        '          if [[ "$OPERATION" != "root-artifact" || "$EVENT_REF" != "refs/heads/main"',
-        'remote_main_sha="$(git ls-remote',
+        "root-artifact-exact-main",
+        "GH_TOKEN: ${{ github.token }}",
         "          required: \"true\"\n",
         "          operation: ${{ inputs.operation }}\n",
         "          expected-sha: ${{ inputs.expected_sha }}\n",
-        "root-artifact-wrapper --repo",
+        "root-artifact-wrapper \\",
+        '--action-wrapper "$SCCACHE_ACTION_WRAPPER"',
         "root-artifact-evidence",
+        "root-artifact-binary-path --repo",
         "--binary \"$binary_path\"",
-        "${{ steps.root-artifact.outputs.binary }}",
-        "${{ steps.root-artifact.outputs.checksum }}",
-        "${{ steps.root-artifact.outputs.evidence }}",
+        "path: ${{ steps.root-artifact.outputs.archive }}",
+        "archive: false",
     )
     missing = [fragment for fragment in required if fragment not in workflow]
     if missing:
@@ -10830,6 +10831,12 @@ def assert_root_artifact_workflow_contract() -> None:
         raise AssertionError("rust-producer must remain workflow_dispatch-only")
     if workflow.count("          just build\n") != 1:
         raise AssertionError("root-artifact must invoke one managed build")
+    if workflow.count("root-artifact-exact-main") != 3:
+        raise AssertionError("root-artifact must reuse exact-main admission at preflight, checkout, and pre-build")
+    if workflow.index("Install cargo-zigbuild") > workflow.index("Setup mandatory sccache"):
+        raise AssertionError("mandatory sccache must be the final installer")
+    if workflow.index("Setup mandatory sccache") > workflow.index("Build exact root executable"):
+        raise AssertionError("mandatory sccache must precede the sole build")
     forbidden = (
         "cargo test",
         "cargo nextest",

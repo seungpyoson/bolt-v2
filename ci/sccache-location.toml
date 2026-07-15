@@ -7,7 +7,7 @@ key_prefix = "sccache/bolt-v2/arm64/root-nextest/"
 
 [installer]
 version = "v0.10.0"
-target = "aarch64-unknown-linux-gnu"
+asset_target = "aarch64-unknown-linux-musl"
 executable = "sccache"
 version_output = "sccache 0.10.0"
-sha256 = "d6a1ce4acd02b937cd61bc675a8be029a60f7bc167594c33d75732bbc0a07400"
+executable_sha256 = "8df5d557b50aa19c1c818b1a6465454a9dd807917af678f3feae11ee5c9dbe27"

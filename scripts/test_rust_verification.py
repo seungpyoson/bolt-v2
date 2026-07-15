@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import argparse
+import copy
 import io
 import os
 import json
@@ -13,6 +14,7 @@ import pathlib
 import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import tomllib
@@ -1971,6 +1973,7 @@ ROOT_ARTIFACT_POLICY_TEXT = textwrap.dedent(
     evidence_schema_version = 1
     evidence_file = "root-artifact.json"
     checksum_file = "bolt-v2.sha256"
+    archive_file = "root-artifact.tar"
     required_wrapper_env = "RUSTC_WRAPPER"
     """
 )
@@ -1985,7 +1988,12 @@ import sys
 
 mode = os.environ.get("FAKE_ROOT_ARTIFACT_MODE", "ok")
 with pathlib.Path(os.environ["FAKE_ROOT_ARTIFACT_LOG"]).open("a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"argv0": sys.argv[0], "args": sys.argv[1:]}) + "\n")
+    handle.write(json.dumps({
+        "argv0": sys.argv[0],
+        "args": sys.argv[1:],
+        "cwd": str(pathlib.Path.cwd()),
+        "workspace_sentinel": pathlib.Path("workspace-only-success").exists(),
+    }) + "\n")
 if mode == "digest-mutation":
     with pathlib.Path(sys.argv[0]).open("a", encoding="utf-8") as handle:
         handle.write("\n# mutated\n")
@@ -2000,6 +2008,32 @@ overlay_text = overlay.read_text(encoding="utf-8")
 invalid = "[malformed" in overlay_text or "root_artifact_unknown_field" in overlay_text
 live = config_root / "live.toml"
 checksum = hashlib.sha256(profile.encode()).hexdigest()
+invariants = {
+    "strategy_files": [f"strategies/{profile}.toml"],
+    "loss_governor_present": True,
+    "loss_governor_enabled": False,
+    "max_per_trade_loss": "1",
+    "max_daily_loss": "2",
+    "max_rolling_loss": "3",
+    "max_drawdown": "4",
+    "live_submit_governance_mode": "supervised",
+    "default_max_notional_per_order": "5",
+}
+if mode == "invariant-empty":
+    invariants = {}
+elif mode == "invariant-missing":
+    invariants.pop("max_drawdown")
+elif mode == "invariant-extra":
+    invariants["extra"] = "not-proven"
+elif mode == "invariant-wrong-type":
+    invariants["loss_governor_enabled"] = "false"
+elif mode == "invariant-empty-strategy":
+    invariants["strategy_files"] = []
+if mode == "post-copy-mutation":
+    source = pathlib.Path(os.environ["FAKE_ROOT_ARTIFACT_REPO"]) / "config" / "root.toml"
+    if "post-copy mutation" not in source.read_text(encoding="utf-8"):
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write("# post-copy mutation\n")
 if command == "generate-live-config":
     if invalid and mode != "negative-success":
         raise SystemExit(2)
@@ -2014,7 +2048,7 @@ if command == "generate-live-config":
             "source_profile": reported_profile,
             "profile_bundle_sha256": checksum,
             "generator_format_version": 1,
-            "invariants": {},
+            "invariants": invariants,
         }))
 elif command == "verify-live-config":
     tampered = "tamper" in live.read_text(encoding="utf-8")
@@ -2027,14 +2061,19 @@ elif command == "verify-live-config":
         "profile_bundle_sha256": checksum,
         "matches_profile": True,
         "loads_against_binary": True,
-        "invariants": {},
+        "invariants": {
+            **invariants,
+            **({"max_drawdown": "different"} if mode == "invariant-mismatch" else {}),
+        },
     }))
 else:
     raise SystemExit(2)
 '''
 
 
-def root_artifact_test_repo(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, dict[str, object]]:
+def root_artifact_test_repo(
+    root: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path, dict[str, object], str]:
     repo = root / "repo"
     repo.mkdir()
     write_policy(repo, policy_text=rust_verification_policy_text() + ROOT_ARTIFACT_POLICY_TEXT)
@@ -2049,34 +2088,52 @@ def root_artifact_test_repo(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.P
         path.write_text(text, encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "config"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Root Artifact Test",
+            "-c",
+            "user.email=root-artifact@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout.strip()
     source_binary = root / "managed" / "bolt-v2"
     source_binary.parent.mkdir()
     write_executable(source_binary, FAKE_ROOT_ARTIFACT_BINARY)
     policy = tomllib.loads((repo / "ci" / "rust-verification.toml").read_text(encoding="utf-8"))
-    return repo, source_binary, policy
+    return repo, source_binary, policy, head_sha
 
 
 def assert_root_artifact_fake_binary_contract() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
-        repo, source_binary, policy = root_artifact_test_repo(root)
-        wrapper = root / "tools" / "sccache"
-        wrapper.parent.mkdir()
-        write_executable(wrapper, "#!/bin/sh\nexit 0\n")
+        repo, source_binary, policy, head_sha = root_artifact_test_repo(root)
+        (repo / "workspace-only-success").write_text("poison\n", encoding="utf-8")
         log = root / "invocations.jsonl"
         env = {
-            "SCCACHE_PATH": str(wrapper),
-            "BOLT_RUST_VERIFICATION_SCCACHE": "1",
-            "GITHUB_ACTIONS": "true",
             "FAKE_ROOT_ARTIFACT_LOG": str(log),
             "FAKE_ROOT_ARTIFACT_MODE": "ok",
+            "FAKE_ROOT_ARTIFACT_REPO": str(repo),
         }
         with _patched_environ(env):
             outputs = owner.create_root_artifact_evidence(
                 repo=repo,
                 source_binary=source_binary,
-                head_sha="a" * 40,
+                head_sha=head_sha,
                 stage_dir=root / "stage-ok",
                 policy=policy,
             )
@@ -2094,6 +2151,56 @@ def assert_root_artifact_fake_binary_contract() -> None:
             raise AssertionError("a root-artifact case invoked bytes outside the staged path")
         if any(call["argv0"] == str(source_binary) for call in calls):
             raise AssertionError("managed output path was invoked instead of staged bytes")
+        if any(call["cwd"] == str(repo.resolve()) or call["workspace_sentinel"] for call in calls):
+            raise AssertionError("a staged-binary case inherited or resolved data from the checkout")
+        for call in calls:
+            args = call["args"]
+            if "--config-root" in args:
+                config_root = pathlib.Path(args[args.index("--config-root") + 1])
+                if not config_root.is_absolute() or config_root == repo or repo in config_root.parents:
+                    raise AssertionError("a staged-binary case used checkout-relative config")
+
+        archive_path = pathlib.Path(outputs["archive"])
+        second_archive = root / "second-root-artifact.tar"
+        owner.create_deterministic_root_artifact_tar(
+            second_archive,
+            tuple(pathlib.Path(outputs[key]) for key in ("binary", "checksum", "evidence")),
+        )
+        if archive_path.read_bytes() != second_archive.read_bytes():
+            raise AssertionError("root-artifact tar bytes are not deterministic")
+        with tarfile.open(archive_path, "r") as archive:
+            members = archive.getmembers()
+            expected_names = [pathlib.Path(outputs[key]).name for key in ("binary", "checksum", "evidence")]
+            if [member.name for member in members] != expected_names:
+                raise AssertionError("root-artifact tar members are not exact or ordered")
+            if [member.mode for member in members] != [0o755, 0o644, 0o644]:
+                raise AssertionError("root-artifact tar modes are not normalized")
+            if any(
+                member.mtime != 0
+                or member.uid != 0
+                or member.gid != 0
+                or member.uname
+                or member.gname
+                for member in members
+            ):
+                raise AssertionError("root-artifact tar metadata is not normalized")
+            for member, key in zip(members, ("binary", "checksum", "evidence"), strict=True):
+                extracted = archive.extractfile(member)
+                if extracted is None or extracted.read() != pathlib.Path(outputs[key]).read_bytes():
+                    raise AssertionError(f"root-artifact tar member differs from staged {key}")
+
+        entries, _overlays = owner.tracked_config_paths(repo, head_sha)
+        committed_copy = root / "commit-copy"
+        owner.copy_tracked_config(repo, entries, committed_copy)
+        for relative, object_id in entries:
+            committed = subprocess.run(
+                ["git", "cat-file", "blob", object_id],
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                check=True,
+            ).stdout
+            if (committed_copy / relative).read_bytes() != committed:
+                raise AssertionError(f"copied config does not equal commit blob {relative}")
 
         for mode, expected in (
             ("omit-duplicate", "did not prove profile"),
@@ -2102,6 +2209,13 @@ def assert_root_artifact_fake_binary_contract() -> None:
             ("verify-deployed-type", "did not prove profile"),
             ("negative-success", "unexpectedly succeeded"),
             ("digest-mutation", "digest changed"),
+            ("invariant-empty", "invariants JSON"),
+            ("invariant-missing", "invariants JSON"),
+            ("invariant-extra", "invariants JSON"),
+            ("invariant-wrong-type", "invariants JSON"),
+            ("invariant-empty-strategy", "invariants JSON"),
+            ("invariant-mismatch", "invariants disagree"),
+            ("post-copy-mutation", "clean tracked worktree"),
         ):
             mode_log = root / f"{mode}.jsonl"
             with _patched_environ(
@@ -2115,7 +2229,7 @@ def assert_root_artifact_fake_binary_contract() -> None:
                     owner.create_root_artifact_evidence(
                         repo=repo,
                         source_binary=source_binary,
-                        head_sha="a" * 40,
+                        head_sha=head_sha,
                         stage_dir=root / f"stage-{mode}",
                         policy=policy,
                     )
@@ -2124,6 +2238,114 @@ def assert_root_artifact_fake_binary_contract() -> None:
                         raise AssertionError((mode, str(exc))) from exc
                 else:
                     raise AssertionError(f"fake-binary {mode} case must fail closed")
+            if mode == "post-copy-mutation":
+                subprocess.run(
+                    ["git", "restore", "--worktree", "config/root.toml"],
+                    cwd=repo,
+                    check=True,
+                )
+
+
+def assert_root_artifact_revision_binding() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo, source_binary, policy, head_sha = root_artifact_test_repo(root)
+        env = {
+            "FAKE_ROOT_ARTIFACT_LOG": str(root / "revision.log"),
+            "FAKE_ROOT_ARTIFACT_MODE": "ok",
+            "FAKE_ROOT_ARTIFACT_REPO": str(repo),
+        }
+
+        def must_fail(label: str, expected: str, *, sha: str = head_sha) -> None:
+            try:
+                with _patched_environ(env):
+                    owner.create_root_artifact_evidence(
+                        repo=repo,
+                        source_binary=source_binary,
+                        head_sha=sha,
+                        stage_dir=root / f"stage-{label}",
+                        policy=policy,
+                    )
+            except owner.RootArtifactError as exc:
+                if expected not in str(exc):
+                    raise AssertionError((label, str(exc))) from exc
+            else:
+                raise AssertionError(f"{label} must fail immutable revision binding")
+
+        must_fail("wrong-sha", "does not match", sha="a" * 40)
+        root_config = repo / "config" / "root.toml"
+        original = root_config.read_text(encoding="utf-8")
+        root_config.write_text(original + "# staged\n", encoding="utf-8")
+        subprocess.run(["git", "add", "config/root.toml"], cwd=repo, check=True)
+        root_config.write_text(original, encoding="utf-8")
+        must_fail("staged-index", "clean index")
+        subprocess.run(["git", "restore", "--staged", "config/root.toml"], cwd=repo, check=True)
+        root_config.write_text(original + "# worktree\n", encoding="utf-8")
+        must_fail("worktree", "clean tracked worktree")
+
+
+def assert_root_artifact_exact_main_gate() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo, _source_binary, _policy, head_sha = root_artifact_test_repo(root)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        gh_log = root / "gh.log"
+        write_executable(
+            fake_bin / "gh",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_GH_LOG\"\nprintf '%s\\n' \"$FAKE_REMOTE_SHA\"\n",
+        )
+        build_log = root / "build.log"
+        base_env = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "GH_TOKEN": "ephemeral-test-token",
+            "FAKE_GH_LOG": str(gh_log),
+            "FAKE_REMOTE_SHA": head_sha,
+        }
+
+        def gate(label: str, *, env: dict[str, str] | None = None, **overrides: str) -> None:
+            values = {
+                "operation": "root-artifact",
+                "expected_sha": head_sha,
+                "event_ref": "refs/heads/main",
+                "event_sha": head_sha,
+                "repository": "owner/private-repo",
+            }
+            values.update(overrides)
+            result = run_owner(
+                [
+                    "root-artifact-exact-main",
+                    "--repo",
+                    str(repo),
+                    "--operation",
+                    values["operation"],
+                    "--expected-sha",
+                    values["expected_sha"],
+                    "--event-ref",
+                    values["event_ref"],
+                    "--event-sha",
+                    values["event_sha"],
+                    "--repository",
+                    values["repository"],
+                ],
+                env=base_env if env is None else env,
+            )
+            if result.returncode == 0:
+                with build_log.open("a", encoding="utf-8") as handle:
+                    handle.write(f"{label}\n")
+
+        gate("valid")
+        gate("missing-token", env={key: value for key, value in base_env.items() if key != "GH_TOKEN"})
+        gate("wrong-ref", event_ref="refs/heads/feature")
+        gate("malformed-sha", expected_sha="not-a-sha", event_sha="not-a-sha")
+        gate("event-mismatch", event_sha="b" * 40)
+        gate("moved-main", env={**base_env, "FAKE_REMOTE_SHA": "b" * 40})
+        if build_log.read_text(encoding="utf-8").splitlines() != ["valid"]:
+            raise AssertionError("exact-main failures reached the build sentinel")
+        if "ephemeral-test-token" in gh_log.read_text(encoding="utf-8"):
+            raise AssertionError("authenticated ref client received the token in process arguments")
 
 
 def assert_root_artifact_config_fails_closed() -> None:
@@ -2151,6 +2373,55 @@ def assert_root_artifact_config_fails_closed() -> None:
         pass
     else:
         raise AssertionError("duplicate root-artifact config must fail TOML parsing")
+
+
+
+def assert_root_artifact_output_safety_precedes_writes() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo, source_binary, policy, head_sha = root_artifact_test_repo(root)
+        mutations: list[tuple[str, dict[str, object]]] = []
+        for label, first, second in (
+            ("binary-checksum-collision", "binary_name", "checksum_file"),
+            ("binary-evidence-collision", "binary_name", "evidence_file"),
+            ("checksum-evidence-collision", "checksum_file", "evidence_file"),
+        ):
+            mutated = copy.deepcopy(policy)
+            artifact = mutated["producer"]["root_artifact"]
+            artifact[second] = artifact[first]
+            mutations.append((label, mutated))
+        producer_boolean = copy.deepcopy(policy)
+        producer_boolean["producer"]["schema_version"] = True
+        mutations.append(("producer-schema-boolean", producer_boolean))
+        evidence_boolean = copy.deepcopy(policy)
+        evidence_boolean["producer"]["root_artifact"]["evidence_schema_version"] = True
+        mutations.append(("evidence-schema-boolean", evidence_boolean))
+
+        source_digest = owner.file_sha256(source_binary)
+        for label, mutated in mutations:
+            stage = root / f"stage-{label}"
+            stage.mkdir()
+            staged_sentinel = stage / "bolt-v2"
+            staged_sentinel.write_bytes(b"preexisting staged sentinel\n")
+            staged_sentinel.chmod(0o755)
+            staged_digest = owner.file_sha256(staged_sentinel)
+            try:
+                owner.create_root_artifact_evidence(
+                    repo=repo,
+                    source_binary=source_binary,
+                    head_sha=head_sha,
+                    stage_dir=stage,
+                    policy=mutated,
+                )
+            except owner.PolicyError:
+                pass
+            else:
+                raise AssertionError(f"{label} must fail before staging or writing")
+            if owner.file_sha256(source_binary) != source_digest:
+                raise AssertionError(f"{label} mutated the managed source binary")
+            if owner.file_sha256(staged_sentinel) != staged_digest or set(stage.iterdir()) != {staged_sentinel}:
+                raise AssertionError(f"{label} mutated staged output before config rejection")
 
 def main() -> int:
     assert_repo_local_owner_contract()
@@ -2199,7 +2470,10 @@ def main() -> int:
     assert_global_cargo_target_dir_config_preserves_symlink()
     assert_setup_recipe_asserts_global_cargo_target_dir()
     assert_root_artifact_fake_binary_contract()
+    assert_root_artifact_revision_binding()
+    assert_root_artifact_exact_main_gate()
     assert_root_artifact_config_fails_closed()
+    assert_root_artifact_output_safety_precedes_writes()
     print("OK: Rust verification owner self-tests passed.")
     return 0
 

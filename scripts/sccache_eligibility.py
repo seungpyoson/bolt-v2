@@ -6,27 +6,36 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+VERSION_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+ASSET_TARGET_RE = re.compile(r"^[a-z0-9_]+(?:-[a-z0-9_]+)+$")
+EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class SccacheConfigError(ValueError):
     """The repository-owned sccache configuration is not exact."""
 
 
+class SccacheStrictError(RuntimeError):
+    """A mandatory producer sccache precondition failed."""
+
+
 @dataclass(frozen=True)
 class SccacheConfig:
     location: Mapping[str, object]
     version: str
-    target: str
+    asset_target: str
     executable: str
     version_output: str
-    sha256: str
+    executable_sha256: str
 
 
 @dataclass(frozen=True)
@@ -132,7 +141,7 @@ def parse_sccache_config(text: str, *, label: str) -> SccacheConfig:
     except tomllib.TOMLDecodeError as exc:
         raise SccacheConfigError(f"{label} is invalid TOML: {exc}") from exc
     _exact_keys(config, {"schema_version", "location", "installer"}, label)
-    if config["schema_version"] != 2:
+    if type(config["schema_version"]) is not int or config["schema_version"] != 2:
         raise SccacheConfigError(f"{label} schema_version must be 2")
     location = config["location"]
     installer = config["installer"]
@@ -143,32 +152,32 @@ def parse_sccache_config(text: str, *, label: str) -> SccacheConfig:
     _exact_keys(location, {"bucket", "region", "key_prefix"}, f"{label}.location")
     _exact_keys(
         installer,
-        {"version", "target", "executable", "version_output", "sha256"},
+        {"version", "asset_target", "executable", "version_output", "executable_sha256"},
         f"{label}.installer",
     )
     location_values = {key: _location_value(location, key) for key in location}
     if not all(location_values.values()) or not location_values["key_prefix"].endswith("/"):
         raise SccacheConfigError(f"{label}.location contains an invalid value")
     installer_values: dict[str, str] = {}
-    for key in ("version", "target", "executable", "version_output", "sha256"):
+    for key in ("version", "asset_target", "executable", "version_output", "executable_sha256"):
         value = installer[key]
         if not isinstance(value, str) or not value or value != value.strip() or "\n" in value or "\r" in value:
             raise SccacheConfigError(f"{label}.installer.{key} must be a non-empty single-line string")
         installer_values[key] = value
-    if installer_values["version"] != "v0.10.0":
-        raise SccacheConfigError(f"{label}.installer.version must be v0.10.0")
-    if installer_values["target"] != "aarch64-unknown-linux-gnu":
-        raise SccacheConfigError(f"{label}.installer.target must be aarch64-unknown-linux-gnu")
-    if installer_values["executable"] != "sccache":
-        raise SccacheConfigError(f"{label}.installer.executable must be sccache")
-    if installer_values["version_output"] != "sccache 0.10.0":
-        raise SccacheConfigError(f"{label}.installer.version_output must identify configured version")
-    if not SHA256_RE.fullmatch(installer_values["sha256"]):
-        raise SccacheConfigError(f"{label}.installer.sha256 must be lowercase SHA-256")
+    if not VERSION_RE.fullmatch(installer_values["version"]):
+        raise SccacheConfigError(f"{label}.installer.version must be a pinned semantic version")
+    if not ASSET_TARGET_RE.fullmatch(installer_values["asset_target"]):
+        raise SccacheConfigError(f"{label}.installer.asset_target must be a safe target triple")
+    if not EXECUTABLE_RE.fullmatch(installer_values["executable"]):
+        raise SccacheConfigError(f"{label}.installer.executable must be a safe executable name")
+    if not SHA256_RE.fullmatch(installer_values["executable_sha256"]):
+        raise SccacheConfigError(
+            f"{label}.installer.executable_sha256 must be lowercase SHA-256"
+        )
     return SccacheConfig(location=location_values, **installer_values)
 
 
-def _load_config(config_path: pathlib.Path) -> SccacheConfig:
+def load_sccache_config(config_path: pathlib.Path) -> SccacheConfig:
     try:
         text = config_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -176,11 +185,106 @@ def _load_config(config_path: pathlib.Path) -> SccacheConfig:
     return parse_sccache_config(text, label=str(config_path))
 
 
-def main() -> int:
+def file_sha256(path: pathlib.Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run_text(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def verify_installed_wrapper(config: SccacheConfig, candidate: str) -> pathlib.Path:
+    if (
+        not candidate
+        or not pathlib.Path(candidate).is_absolute()
+        or candidate.strip() != candidate
+        or any(char.isspace() for char in candidate)
+    ):
+        raise SccacheStrictError("installed sccache path is not an absolute executable file")
+    try:
+        wrapper = pathlib.Path(candidate).resolve(strict=True)
+    except OSError as exc:
+        raise SccacheStrictError("installed sccache path is not an absolute executable file") from exc
+    if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
+        raise SccacheStrictError("installed sccache path is not an absolute executable file")
+    if wrapper.name != config.executable:
+        raise SccacheStrictError("installed sccache path does not identify the configured executable")
+    host = _run_text(["uname", "-m"])
+    expected_machine = config.asset_target.split("-", 1)[0]
+    if host.returncode != 0 or host.stdout.strip() != expected_machine:
+        raise SccacheStrictError("installed sccache target does not match the producer host")
+    version = _run_text([str(wrapper), "--version"])
+    if version.returncode != 0 or version.stdout.strip() != config.version_output:
+        raise SccacheStrictError("installed sccache version does not match repository config")
+    if file_sha256(wrapper) != config.executable_sha256:
+        raise SccacheStrictError("installed sccache executable digest does not match repository config")
+    return wrapper
+
+
+def _required_outcome(name: str) -> None:
+    if os.environ.get(name, "") != "success":
+        raise SccacheStrictError("root-artifact requires successful sccache setup outcomes")
+
+
+def strict_setup_main() -> int:
+    try:
+        _required_outcome("ELIGIBILITY_OUTCOME")
+        _required_outcome("AWS_OUTCOME")
+        _required_outcome("INSTALL_OUTCOME")
+        if os.environ.get("SCCACHE_ELIGIBLE", "") != "true":
+            raise SccacheStrictError("root-artifact is not eligible for mandatory sccache")
+        config = load_sccache_config(pathlib.Path(os.environ["CONFIG_PATH"]))
+        wrapper = verify_installed_wrapper(config, os.environ.get("SCCACHE_PATH", ""))
+        start = _run_text([str(wrapper), "--start-server"])
+        if start.returncode != 0:
+            raise SccacheStrictError("mandatory sccache server failed to start")
+        _run_text([str(wrapper), "--zero-stats"])
+        _write_line(os.environ["GITHUB_OUTPUT"], f"wrapper_path={wrapper}")
+        _write_line(os.environ["GITHUB_OUTPUT"], "enabled=true")
+        _write_line(os.environ["GITHUB_ENV"], f"SCCACHE_PATH={wrapper}")
+        _write_line(os.environ["GITHUB_ENV"], "BOLT_RUST_VERIFICATION_SCCACHE=1")
+    except (KeyError, OSError, SccacheConfigError, SccacheStrictError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def legacy_enable_main() -> int:
+    enabled = False
+    if (
+        os.environ.get("SCCACHE_ELIGIBLE", "") == "true"
+        and os.environ.get("AWS_OUTCOME", "") == "success"
+        and os.environ.get("INSTALL_OUTCOME", "") == "success"
+        and os.environ.get("SCCACHE_PATH", "")
+    ):
+        wrapper = os.environ["SCCACHE_PATH"]
+        if _run_text([wrapper, "--start-server"]).returncode == 0:
+            _run_text([wrapper, "--zero-stats"])
+            enabled = True
+        else:
+            print("sccache server failed to start; building without cache")
+    _write_line(os.environ["GITHUB_OUTPUT"], f"enabled={str(enabled).lower()}")
+    print(f"sccache enabled={str(enabled).lower()}")
+    return 0
+
+
+def eligibility_main() -> int:
     config_path = pathlib.Path(os.environ["CONFIG_PATH"])
     output_path = os.environ["GITHUB_OUTPUT"]
     try:
-        config = _load_config(config_path)
+        config = load_sccache_config(config_path)
     except SccacheConfigError as exc:
         _write_line(output_path, "eligible=false")
         _write_line(output_path, "cache_mode=none")
@@ -205,11 +309,12 @@ def main() -> int:
     _write_line(output_path, f"role_arn={eligibility.role_arn}")
     _write_line(output_path, f"region={eligibility.region}")
     _write_line(output_path, f"cache_mode={eligibility.cache_mode}")
+    _write_line(output_path, f"config_path={config_path.resolve()}")
     _write_line(output_path, f"installer_version={config.version}")
-    _write_line(output_path, f"installer_target={config.target}")
+    _write_line(output_path, f"installer_asset_target={config.asset_target}")
     _write_line(output_path, f"installer_executable={config.executable}")
     _write_line(output_path, f"installer_version_output={config.version_output}")
-    _write_line(output_path, f"installer_sha256={config.sha256}")
+    _write_line(output_path, f"installer_executable_sha256={config.executable_sha256}")
 
     if eligibility.eligible:
         env_path = os.environ["GITHUB_ENV"]
@@ -230,6 +335,18 @@ def main() -> int:
         f" strict_context_valid={str(eligibility.strict_context_valid).lower()}"
     )
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        return eligibility_main()
+    if args == ["strict-setup"]:
+        return strict_setup_main()
+    if args == ["legacy-enable"]:
+        return legacy_enable_main()
+    print("usage: sccache_eligibility.py [strict-setup|legacy-enable]", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

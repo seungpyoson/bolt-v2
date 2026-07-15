@@ -19,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.parse
@@ -290,7 +291,7 @@ def validate_root_artifact_policy(data: dict[str, Any]) -> None:
         raise PolicyError("producer must be a table")
     if set(producer) != {"schema_version", "root_artifact"}:
         raise PolicyError("producer must contain only schema_version and root_artifact")
-    if producer.get("schema_version") != 1:
+    if type(producer.get("schema_version")) is not int or producer.get("schema_version") != 1:
         raise PolicyError("producer.schema_version must be 1")
     root_artifact = producer.get("root_artifact")
     if not isinstance(root_artifact, dict):
@@ -301,6 +302,7 @@ def validate_root_artifact_policy(data: dict[str, Any]) -> None:
         "evidence_schema_version",
         "evidence_file",
         "checksum_file",
+        "archive_file",
         "required_wrapper_env",
     }
     if set(root_artifact) != expected_keys:
@@ -311,12 +313,19 @@ def validate_root_artifact_policy(data: dict[str, Any]) -> None:
         )
     if root_artifact.get("operation") != "root-artifact":
         raise PolicyError("producer.root_artifact.operation must be root-artifact")
-    if root_artifact.get("evidence_schema_version") != 1:
+    if (
+        type(root_artifact.get("evidence_schema_version")) is not int
+        or root_artifact.get("evidence_schema_version") != 1
+    ):
         raise PolicyError("producer.root_artifact.evidence_schema_version must be 1")
-    for key in ("binary_name", "evidence_file", "checksum_file"):
+    output_keys = ("binary_name", "evidence_file", "checksum_file", "archive_file")
+    for key in output_keys:
         value = root_artifact.get(key)
         if not isinstance(value, str) or not SAFE_IDENTIFIER_RE.fullmatch(value):
             raise PolicyError(f"producer.root_artifact.{key} must be a safe identifier")
+    output_names = [str(root_artifact[key]) for key in output_keys]
+    if len(output_names) != len(set(output_names)):
+        raise PolicyError("producer.root_artifact output names must be pairwise distinct")
     wrapper_env = root_artifact.get("required_wrapper_env")
     if not isinstance(wrapper_env, str) or not ENV_NAME_RE.fullmatch(wrapper_env):
         raise PolicyError("producer.root_artifact.required_wrapper_env must be an environment variable")
@@ -4710,6 +4719,20 @@ class RootArtifactError(RuntimeError):
     pass
 
 
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+PRODUCTION_INVARIANT_KEYS = {
+    "strategy_files",
+    "loss_governor_present",
+    "loss_governor_enabled",
+    "max_per_trade_loss",
+    "max_daily_loss",
+    "max_rolling_loss",
+    "max_drawdown",
+    "live_submit_governance_mode",
+    "default_max_notional_per_order",
+}
+
+
 def root_artifact_policy(policy: dict[str, Any]) -> dict[str, Any]:
     validate_root_artifact_policy(policy)
     producer = policy.get("producer")
@@ -4735,9 +4758,98 @@ def file_sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def tracked_config_paths(repo: pathlib.Path) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
+def _run_git(repo: pathlib.Path, args: list[str], *, binary: bool = False) -> subprocess.CompletedProcess[Any]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=not binary,
+        check=False,
+    )
+
+
+def validate_repo_revision(repo: pathlib.Path, head_sha: str) -> None:
+    if not LOWER_FULL_SHA_RE.fullmatch(head_sha):
+        raise RootArtifactError("root-artifact head SHA must be 40 lowercase hexadecimal characters")
+    revision = _run_git(repo, ["rev-parse", "--verify", "HEAD^{commit}"])
+    if revision.returncode != 0 or revision.stdout.strip() != head_sha:
+        raise RootArtifactError("root-artifact head SHA does not match the checked-out commit")
+    for label, args in (
+        ("index", ["diff", "--cached", "--quiet", "--ignore-submodules", "--"]),
+        ("tracked worktree", ["diff", "--quiet", "--ignore-submodules", "--"]),
+    ):
+        result = _run_git(repo, args)
+        if result.returncode != 0:
+            raise RootArtifactError(f"root-artifact requires a clean {label} at the immutable commit")
+
+
+def authenticated_remote_main_sha(repository: str) -> str:
+    token = os.environ.get("GH_TOKEN", "")
+    if not token or token.strip() != token or "\n" in token or "\r" in token:
+        raise RootArtifactError("root-artifact exact-main check requires the ephemeral GitHub token")
+    if not REPOSITORY_RE.fullmatch(repository):
+        raise RootArtifactError("root-artifact repository identity is malformed")
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--", "config"],
+        ["gh", "api", f"repos/{repository}/git/ref/heads/main", "--jq", ".object.sha"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    remote_sha = result.stdout.strip()
+    if result.returncode != 0 or not LOWER_FULL_SHA_RE.fullmatch(remote_sha):
+        raise RootArtifactError("authenticated remote-main query failed")
+    return remote_sha
+
+
+def validate_exact_main(
+    *,
+    repo: pathlib.Path,
+    operation: str,
+    expected_sha: str,
+    event_ref: str,
+    event_sha: str,
+    repository: str,
+) -> dict[str, str]:
+    if (
+        operation != "root-artifact"
+        or event_ref != "refs/heads/main"
+        or not LOWER_FULL_SHA_RE.fullmatch(expected_sha)
+        or event_sha != expected_sha
+    ):
+        raise RootArtifactError("root-artifact accepts only an exact refs/heads/main dispatch")
+    validate_repo_revision(repo, expected_sha)
+    remote_sha = authenticated_remote_main_sha(repository)
+    if remote_sha != expected_sha:
+        raise RootArtifactError("requested SHA is not exact current remote main")
+    return {"checked_out_sha": expected_sha, "remote_main_sha": remote_sha}
+
+
+def cmd_root_artifact_exact_main(args: argparse.Namespace) -> int:
+    try:
+        outputs = validate_exact_main(
+            repo=repo_path(args.repo),
+            operation=args.operation,
+            expected_sha=args.expected_sha,
+            event_ref=args.event_ref,
+            event_sha=args.event_sha,
+            repository=args.repository,
+        )
+        if args.github_output:
+            append_github_outputs(pathlib.Path(args.github_output), outputs)
+        print(json.dumps(outputs, sort_keys=True))
+    except (OSError, RootArtifactError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def tracked_config_paths(
+    repo: pathlib.Path, head_sha: str
+) -> tuple[list[tuple[pathlib.Path, str]], list[pathlib.Path]]:
+    result = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", head_sha, "--", "config"],
         cwd=repo,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -4745,21 +4857,28 @@ def tracked_config_paths(repo: pathlib.Path) -> tuple[list[pathlib.Path], list[p
     )
     if result.returncode != 0:
         raise RootArtifactError(f"could not enumerate tracked config files: {result.stderr.decode(errors='replace').strip()}")
+    entries: list[tuple[pathlib.Path, str]] = []
     try:
-        names = [pathlib.Path(item.decode("utf-8")) for item in result.stdout.split(b"\0") if item]
-    except UnicodeDecodeError as exc:
-        raise RootArtifactError(f"tracked config path is not UTF-8: {exc}") from exc
-    if not names or names != sorted(names, key=lambda path: path.as_posix()):
-        names = sorted(names, key=lambda path: path.as_posix())
-    for relative in names:
+        for item in result.stdout.split(b"\0"):
+            if not item:
+                continue
+            metadata, raw_name = item.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("ascii").split()
+            relative = pathlib.Path(raw_name.decode("utf-8"))
+            if mode not in {"100644", "100755"} or object_type != "blob" or not LOWER_FULL_SHA_RE.fullmatch(object_id):
+                raise RootArtifactError(f"tracked config path is not a regular commit blob: {relative}")
+            entries.append((relative, object_id))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RootArtifactError(f"tracked config tree is malformed: {exc}") from exc
+    entries.sort(key=lambda entry: entry[0].as_posix())
+    if not entries:
+        raise RootArtifactError("no tracked config files found in the immutable commit")
+    for relative, _object_id in entries:
         if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "config":
             raise RootArtifactError(f"tracked config path escapes config/: {relative}")
-        source = repo / relative
-        if source.is_symlink() or not source.is_file():
-            raise RootArtifactError(f"tracked config path is not a regular file: {relative}")
     overlays = [
         relative
-        for relative in names
+        for relative, _object_id in entries
         if relative.parent == pathlib.Path("config/profiles") and relative.name.endswith(".overlay.toml")
     ]
     if not overlays:
@@ -4767,19 +4886,33 @@ def tracked_config_paths(repo: pathlib.Path) -> tuple[list[pathlib.Path], list[p
     profiles = [relative.name.removesuffix(".overlay.toml") for relative in overlays]
     if len(profiles) != len(set(profiles)):
         raise RootArtifactError("tracked production overlays contain duplicate profile identities")
-    return names, overlays
+    return entries, overlays
 
 
-def copy_tracked_config(repo: pathlib.Path, paths: list[pathlib.Path], destination: pathlib.Path) -> None:
-    for relative in paths:
+def copy_tracked_config(
+    repo: pathlib.Path,
+    entries: list[tuple[pathlib.Path, str]],
+    destination: pathlib.Path,
+) -> None:
+    for relative, object_id in entries:
+        blob = _run_git(repo, ["cat-file", "blob", object_id], binary=True)
+        if blob.returncode != 0:
+            detail = blob.stderr.decode(errors="replace").strip()
+            raise RootArtifactError(f"could not read immutable config blob {relative}: {detail}")
         output = destination / relative
         output.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(repo / relative, output)
+        output.write_bytes(blob.stdout)
 
 
-def run_staged_binary(binary: pathlib.Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+def run_staged_binary(
+    binary: pathlib.Path,
+    args: list[str],
+    *,
+    cwd: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(binary), *args],
+        cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -4811,7 +4944,15 @@ def require_failure(result: subprocess.CompletedProcess[str], *, label: str) -> 
         raise RootArtifactError(f"{label} unexpectedly succeeded")
 
 
-def validate_required_wrapper(policy: dict[str, Any], artifact: dict[str, Any]) -> None:
+def validate_required_wrapper(
+    policy: dict[str, Any],
+    artifact: dict[str, Any],
+    *,
+    action_wrapper: str,
+    sccache_config: pathlib.Path,
+) -> None:
+    import sccache_eligibility as sccache_owner
+
     cache = policy.get("remote_compile_cache")
     if not isinstance(cache, dict):
         raise RootArtifactError("remote_compile_cache table is required for root-artifact")
@@ -4819,13 +4960,24 @@ def validate_required_wrapper(policy: dict[str, Any], artifact: dict[str, Any]) 
     configured = os.environ.get(str(cache["wrapper_env"]), "")
     injected = managed_remote_compile_cache_env(policy)
     wrapper = injected.get(required_env, "")
-    if not wrapper or not configured:
+    if not wrapper or not configured or not action_wrapper:
         raise RootArtifactError("root-artifact requires the verified sccache wrapper environment")
     wrapper_path = pathlib.Path(wrapper)
     configured_path = pathlib.Path(configured)
-    if not wrapper_path.is_absolute() or wrapper_path.resolve() != configured_path.resolve():
+    action_path = pathlib.Path(action_wrapper)
+    if (
+        not wrapper_path.is_absolute()
+        or not action_path.is_absolute()
+        or wrapper_path.resolve() != configured_path.resolve()
+        or wrapper_path.resolve() != action_path.resolve()
+    ):
         raise RootArtifactError("root-artifact wrapper identity does not match the verified sccache path")
-    if wrapper_path.name != cache["wrapper_program"]:
+    try:
+        config = sccache_owner.load_sccache_config(sccache_config)
+        verified = sccache_owner.verify_installed_wrapper(config, action_wrapper)
+    except (sccache_owner.SccacheConfigError, sccache_owner.SccacheStrictError) as exc:
+        raise RootArtifactError(str(exc)) from exc
+    if verified != wrapper_path.resolve() or cache["wrapper_program"] != config.executable:
         raise RootArtifactError("root-artifact wrapper path does not identify configured sccache")
 
 
@@ -4833,14 +4985,42 @@ def cmd_root_artifact_wrapper(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     try:
         policy = load_policy(repo)
-        validate_required_wrapper(policy, root_artifact_policy(policy))
+        validate_required_wrapper(
+            policy,
+            root_artifact_policy(policy),
+            action_wrapper=args.action_wrapper,
+            sccache_config=pathlib.Path(args.sccache_config),
+        )
     except (OSError, PolicyError, RootArtifactError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     return 0
 
 
-def validate_generate_payload(payload: dict[str, Any], *, profile: str, live_path: pathlib.Path) -> str:
+def validate_production_invariants(value: object, *, profile: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != PRODUCTION_INVARIANT_KEYS:
+        raise RootArtifactError(f"invariants JSON did not prove profile {profile}")
+    strategies = value["strategy_files"]
+    string_keys = PRODUCTION_INVARIANT_KEYS - {
+        "strategy_files",
+        "loss_governor_present",
+        "loss_governor_enabled",
+    }
+    if (
+        not isinstance(strategies, list)
+        or not strategies
+        or not all(isinstance(item, str) and item.strip() for item in strategies)
+        or value["loss_governor_present"] is not True
+        or type(value["loss_governor_enabled"]) is not bool
+        or not all(isinstance(value[key], str) and value[key].strip() for key in string_keys)
+    ):
+        raise RootArtifactError(f"invariants JSON did not prove profile {profile}")
+    return value
+
+
+def validate_generate_payload(
+    payload: dict[str, Any], *, profile: str, live_path: pathlib.Path
+) -> tuple[str, dict[str, Any]]:
     checksum = payload["profile_bundle_sha256"]
     output = payload["output"]
     if (
@@ -4853,10 +5033,9 @@ def validate_generate_payload(payload: dict[str, Any], *, profile: str, live_pat
         or not isinstance(payload["generator_format_version"], int)
         or isinstance(payload["generator_format_version"], bool)
         or payload["generator_format_version"] <= 0
-        or not isinstance(payload["invariants"], dict)
     ):
         raise RootArtifactError(f"generate JSON did not prove profile {profile}")
-    return checksum
+    return checksum, validate_production_invariants(payload["invariants"], profile=profile)
 
 
 def validate_verify_payload(
@@ -4865,6 +5044,7 @@ def validate_verify_payload(
     profile: str,
     live_path: pathlib.Path,
     checksum: str,
+    expected_invariants: dict[str, Any],
 ) -> None:
     deployed = payload["deployed"]
     if (
@@ -4875,9 +5055,29 @@ def validate_verify_payload(
         or payload["profile_bundle_sha256"] != checksum
         or payload["matches_profile"] is not True
         or payload["loads_against_binary"] is not True
-        or not isinstance(payload["invariants"], dict)
     ):
         raise RootArtifactError(f"verify JSON did not prove profile {profile}")
+    invariants = validate_production_invariants(payload["invariants"], profile=profile)
+    if invariants != expected_invariants:
+        raise RootArtifactError(f"generate and verify invariants disagree for profile {profile}")
+
+
+def create_deterministic_root_artifact_tar(
+    archive_path: pathlib.Path,
+    members: tuple[pathlib.Path, pathlib.Path, pathlib.Path],
+) -> None:
+    with tarfile.open(archive_path, "w", format=tarfile.USTAR_FORMAT) as archive:
+        for index, member in enumerate(members):
+            info = tarfile.TarInfo(member.name)
+            info.size = member.stat().st_size
+            info.mode = 0o755 if index == 0 else 0o644
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            with member.open("rb") as handle:
+                archive.addfile(info, handle)
 
 
 def create_root_artifact_evidence(
@@ -4889,9 +5089,7 @@ def create_root_artifact_evidence(
     policy: dict[str, Any],
 ) -> dict[str, str]:
     artifact = root_artifact_policy(policy)
-    if not LOWER_FULL_SHA_RE.fullmatch(head_sha):
-        raise RootArtifactError("root-artifact head SHA must be 40 lowercase hexadecimal characters")
-    validate_required_wrapper(policy, artifact)
+    validate_repo_revision(repo, head_sha)
     if source_binary.is_symlink() or not source_binary.is_file() or not os.access(source_binary, os.X_OK):
         raise RootArtifactError("managed build binary is not a regular executable file")
     if stage_dir.exists() and any(stage_dir.iterdir()):
@@ -4902,7 +5100,7 @@ def create_root_artifact_evidence(
         raise RootArtifactError("root-artifact source and staged binary paths must differ")
     shutil.copy2(source_binary, staged_binary)
     initial_digest = file_sha256(staged_binary)
-    tracked_paths, overlays = tracked_config_paths(repo)
+    tracked_paths, overlays = tracked_config_paths(repo, head_sha)
     executed_overlays: list[str] = []
     generate_keys = {
         "generated_live_config",
@@ -4921,8 +5119,13 @@ def create_root_artifact_evidence(
         "loads_against_binary",
         "invariants",
     }
-    with tempfile.TemporaryDirectory(prefix="root-artifact-cases-", dir=stage_dir.parent) as raw_cases:
+    with tempfile.TemporaryDirectory(prefix="root-artifact-cases-") as raw_cases, tempfile.TemporaryDirectory(
+        prefix="root-artifact-cwd-"
+    ) as raw_cwd:
         cases = pathlib.Path(raw_cases)
+        execution_cwd = pathlib.Path(raw_cwd).resolve()
+        if execution_cwd == repo.resolve() or repo.resolve() in execution_cwd.parents:
+            raise RootArtifactError("root-artifact execution cwd must be isolated from the checkout")
         for index, overlay in enumerate(overlays):
             profile = overlay.name.removesuffix(".overlay.toml")
             positive = cases / f"{index:04d}-positive"
@@ -4933,20 +5136,30 @@ def create_root_artifact_evidence(
                 run_staged_binary(
                     staged_binary,
                     ["ops", "generate-live-config", "--profile", profile, "--config-root", str(config_root)],
+                    cwd=execution_cwd,
                 ),
                 label=f"generate {profile}",
                 expected_keys=generate_keys,
             )
-            checksum = validate_generate_payload(generated, profile=profile, live_path=live_path)
+            checksum, generated_invariants = validate_generate_payload(
+                generated, profile=profile, live_path=live_path
+            )
             verified = require_success_json(
                 run_staged_binary(
                     staged_binary,
                     ["ops", "verify-live-config", "--profile", profile, "--config-root", str(config_root)],
+                    cwd=execution_cwd,
                 ),
                 label=f"verify {profile}",
                 expected_keys=verify_keys,
             )
-            validate_verify_payload(verified, profile=profile, live_path=live_path, checksum=checksum)
+            validate_verify_payload(
+                verified,
+                profile=profile,
+                live_path=live_path,
+                checksum=checksum,
+                expected_invariants=generated_invariants,
+            )
             executed_overlays.append(overlay.as_posix())
 
             with live_path.open("a", encoding="utf-8") as handle:
@@ -4955,6 +5168,7 @@ def create_root_artifact_evidence(
                 run_staged_binary(
                     staged_binary,
                     ["ops", "verify-live-config", "--profile", profile, "--config-root", str(config_root)],
+                    cwd=execution_cwd,
                 ),
                 label=f"tampered verify {profile}",
             )
@@ -4979,17 +5193,22 @@ def create_root_artifact_evidence(
                             "--config-root",
                             str((negative_root / "config").resolve()),
                         ],
+                        cwd=execution_cwd,
                     ),
                     label=f"{negative} generate {profile}",
                 )
 
-    require_failure(run_staged_binary(staged_binary, []), label="plain staged-binary run")
+        require_failure(
+            run_staged_binary(staged_binary, [], cwd=execution_cwd),
+            label="plain staged-binary run",
+        )
     expected_overlays = [path.as_posix() for path in overlays]
     if executed_overlays != expected_overlays or len(executed_overlays) != len(set(executed_overlays)):
         raise RootArtifactError("root-artifact overlay execution was omitted or duplicated")
     final_digest = file_sha256(staged_binary)
     if final_digest != initial_digest:
         raise RootArtifactError("staged binary digest changed during root-artifact execution")
+    validate_repo_revision(repo, head_sha)
     checksum_path = stage_dir / str(artifact["checksum_file"])
     checksum_path.write_text(f"{initial_digest}  {staged_binary.name}\n", encoding="utf-8")
     evidence_path = stage_dir / str(artifact["evidence_file"])
@@ -5001,11 +5220,17 @@ def create_root_artifact_evidence(
         "overlays": expected_overlays,
     }
     evidence_path.write_text(json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    archive_path = stage_dir / str(artifact["archive_file"])
+    create_deterministic_root_artifact_tar(
+        archive_path,
+        (staged_binary, checksum_path, evidence_path),
+    )
     return {
         "stage_dir": str(stage_dir),
         "binary": str(staged_binary),
         "checksum": str(checksum_path),
         "evidence": str(evidence_path),
+        "archive": str(archive_path),
     }
 
 
@@ -5022,7 +5247,7 @@ def cmd_root_artifact_evidence(args: argparse.Namespace) -> int:
         if args.github_output:
             append_github_outputs(
                 pathlib.Path(args.github_output),
-                {key: outputs[key] for key in ("stage_dir", "binary", "checksum", "evidence")},
+                {key: outputs[key] for key in ("stage_dir", "binary", "checksum", "evidence", "archive")},
             )
         print(json.dumps(outputs, sort_keys=True))
     except (OSError, PolicyError, RootArtifactError) as exc:
@@ -5038,9 +5263,24 @@ def cmd_binary_path(args: argparse.Namespace) -> int:
     except (OSError, PolicyError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    print(managed_binary_path(repo, policy, args.bin))
+    return 0
+
+
+def managed_binary_path(repo: pathlib.Path, policy: dict[str, Any], binary_name: str) -> pathlib.Path:
     build = policy["commands"]["build"]
-    binary = target_dir(repo, policy) / build["target"] / build["profile"] / args.bin
-    print(binary)
+    return target_dir(repo, policy) / build["target"] / build["profile"] / binary_name
+
+
+def cmd_root_artifact_binary_path(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        artifact = root_artifact_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(managed_binary_path(repo, policy, str(artifact["binary_name"])))
     return 0
 
 
@@ -5307,6 +5547,20 @@ def build_parser() -> argparse.ArgumentParser:
     binary.add_argument("--bin", required=True)
     binary.set_defaults(func=cmd_binary_path)
 
+    root_artifact_binary = subparsers.add_parser("root-artifact-binary-path")
+    root_artifact_binary.add_argument("--repo", required=True)
+    root_artifact_binary.set_defaults(func=cmd_root_artifact_binary_path)
+
+    exact_main = subparsers.add_parser("root-artifact-exact-main")
+    exact_main.add_argument("--repo", required=True)
+    exact_main.add_argument("--operation", required=True)
+    exact_main.add_argument("--expected-sha", required=True)
+    exact_main.add_argument("--event-ref", required=True)
+    exact_main.add_argument("--event-sha", required=True)
+    exact_main.add_argument("--repository", required=True)
+    exact_main.add_argument("--github-output")
+    exact_main.set_defaults(func=cmd_root_artifact_exact_main)
+
     root_artifact = subparsers.add_parser("root-artifact-evidence")
     root_artifact.add_argument("--repo", required=True)
     root_artifact.add_argument("--binary", required=True)
@@ -5317,6 +5571,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     root_artifact_wrapper = subparsers.add_parser("root-artifact-wrapper")
     root_artifact_wrapper.add_argument("--repo", required=True)
+    root_artifact_wrapper.add_argument("--action-wrapper", required=True)
+    root_artifact_wrapper.add_argument("--sccache-config", required=True)
     root_artifact_wrapper.set_defaults(func=cmd_root_artifact_wrapper)
 
     fast_linker_programs = subparsers.add_parser("fast-linker-programs")

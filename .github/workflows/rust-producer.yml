@@ -34,10 +34,17 @@ jobs:
     outputs:
       remote_main_sha: ${{ steps.exact-main.outputs.remote_main_sha }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: refs/heads/main
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Require exact current main
         id: exact-main
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           EVENT_REF: ${{ github.ref }}
@@ -45,16 +52,14 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [[ "$OPERATION" != "root-artifact" || "$EVENT_REF" != "refs/heads/main" || ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ || "$EVENT_SHA" != "$EXPECTED_SHA" ]]; then
-            echo "root-artifact accepts only an exact refs/heads/main dispatch" >&2
-            exit 1
-          fi
-          remote_main_sha="$(git ls-remote "https://github.com/${REPOSITORY}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
-          if [[ ! "$remote_main_sha" =~ ^[0-9a-f]{40}$ || "$remote_main_sha" != "$EXPECTED_SHA" ]]; then
-            echo "requested SHA is not exact current remote main" >&2
-            exit 1
-          fi
-          echo "remote_main_sha=$remote_main_sha" >> "$GITHUB_OUTPUT"
+          python3 scripts/rust_verification.py root-artifact-exact-main \
+            --repo "$GITHUB_WORKSPACE" \
+            --operation "$OPERATION" \
+            --expected-sha "$EXPECTED_SHA" \
+            --event-ref "$EVENT_REF" \
+            --event-sha "$EVENT_SHA" \
+            --repository "$REPOSITORY" \
+            --github-output "$GITHUB_OUTPUT"
 
   root-artifact:
     name: root-artifact
@@ -68,28 +73,28 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.remote_main_sha }}
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Revalidate exact current main checkout
         id: exact-main
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-          PREFLIGHT_SHA: ${{ needs.preflight.outputs.remote_main_sha }}
           EVENT_REF: ${{ github.ref }}
           EVENT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          checked_out_sha="$(git rev-parse HEAD)"
-          remote_main_sha="$(git ls-remote origin refs/heads/main | awk 'NR == 1 { print $1 }')"
-          if [[ "$OPERATION" != "root-artifact" || "$EVENT_REF" != "refs/heads/main" || "$EXPECTED_SHA" != "$EVENT_SHA" || "$EXPECTED_SHA" != "$PREFLIGHT_SHA" || "$EXPECTED_SHA" != "$checked_out_sha" || "$EXPECTED_SHA" != "$remote_main_sha" ]]; then
-            echo "managed root-artifact checkout is not exact current remote main" >&2
-            exit 1
-          fi
-          git diff --exit-code
-          git diff --cached --exit-code
-          echo "checked_out_sha=$checked_out_sha" >> "$GITHUB_OUTPUT"
-          echo "remote_main_sha=$remote_main_sha" >> "$GITHUB_OUTPUT"
+          python3 scripts/rust_verification.py root-artifact-exact-main \
+            --repo "$GITHUB_WORKSPACE" \
+            --operation "$OPERATION" \
+            --expected-sha "$EXPECTED_SHA" \
+            --event-ref "$EVENT_REF" \
+            --event-sha "$EVENT_SHA" \
+            --repository "$REPOSITORY" \
+            --github-output "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -112,17 +117,6 @@ jobs:
           install-rust-linker: "true"
           build-jobs-key: rust_producer.root-artifact
 
-      - name: Setup mandatory sccache
-        id: sccache
-        uses: ./.github/actions/sccache-setup
-        with:
-          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
-          required: "true"
-          operation: ${{ inputs.operation }}
-          expected-sha: ${{ inputs.expected_sha }}
-          checked-out-sha: ${{ steps.exact-main.outputs.checked_out_sha }}
-          remote-main-sha: ${{ steps.exact-main.outputs.remote_main_sha }}
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: false
@@ -141,21 +135,54 @@ jobs:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none
 
+      - name: Setup mandatory sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          required: "true"
+          operation: ${{ inputs.operation }}
+          expected-sha: ${{ inputs.expected_sha }}
+          checked-out-sha: ${{ steps.exact-main.outputs.checked_out_sha }}
+          remote-main-sha: ${{ steps.exact-main.outputs.remote_main_sha }}
+
       - name: Build exact root executable
+        id: build
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          SCCACHE_PATH: ${{ steps.sccache.outputs.wrapper-path }}
+          SCCACHE_ACTION_WRAPPER: ${{ steps.sccache.outputs.wrapper-path }}
+          SCCACHE_CONFIG_PATH: ${{ steps.sccache.outputs.config-path }}
         run: |
           set -euo pipefail
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-wrapper --repo "$GITHUB_WORKSPACE"
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-exact-main \
+            --repo "$GITHUB_WORKSPACE" \
+            --operation "$OPERATION" \
+            --expected-sha "$EXPECTED_SHA" \
+            --event-ref "$EVENT_REF" \
+            --event-sha "$EVENT_SHA" \
+            --repository "$REPOSITORY" \
+            --github-output "$GITHUB_OUTPUT"
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-wrapper \
+            --repo "$GITHUB_WORKSPACE" \
+            --action-wrapper "$SCCACHE_ACTION_WRAPPER" \
+            --sccache-config "$SCCACHE_CONFIG_PATH"
           just build
 
       - name: Prove staged root executable
         id: root-artifact
         shell: bash
         env:
-          HEAD_SHA: ${{ steps.exact-main.outputs.checked_out_sha }}
+          HEAD_SHA: ${{ steps.build.outputs.checked_out_sha }}
         run: |
           set -euo pipefail
-          binary_path="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"
+          binary_path="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-binary-path --repo "$GITHUB_WORKSPACE")"
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-evidence \
             --repo "$GITHUB_WORKSPACE" \
             --binary "$binary_path" \
@@ -174,9 +201,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: root-artifact
-          path: |
-            ${{ steps.root-artifact.outputs.binary }}
-            ${{ steps.root-artifact.outputs.checksum }}
-            ${{ steps.root-artifact.outputs.evidence }}
+          path: ${{ steps.root-artifact.outputs.archive }}
+          archive: false
           if-no-files-found: error
           retention-days: 3

@@ -7934,6 +7934,10 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     aws_text = uncommented_text(aws_block) if aws_block is not None else ""
     install_block = named_step_block(action_lines, "Install sccache")
     install_text = uncommented_text(install_block) if install_block is not None else ""
+    strict_block = named_step_block(action_lines, "Require verified producer sccache")
+    strict_text = uncommented_text(strict_block) if strict_block is not None else ""
+    legacy_block = named_step_block(action_lines, "Preserve legacy sccache enablement")
+    legacy_text = uncommented_text(legacy_block) if legacy_block is not None else ""
     enable_block = named_step_block(action_lines, "Resolve sccache enablement")
     enable_text = uncommented_text(enable_block) if enable_block is not None else ""
     summary_block = named_step_block(action_lines, "Summarize sccache state")
@@ -7943,7 +7947,7 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         (eligibility_block, eligibility_text, "Resolve sccache eligibility"),
         (aws_block, aws_text, "Configure AWS credentials for sccache"),
         (install_block, install_text, "Install sccache"),
-        (enable_block, enable_text, "Resolve sccache enablement"),
+        (legacy_block, legacy_text, "Preserve legacy sccache enablement"),
     ):
         if block is None:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include step {step_name!r}")
@@ -7979,13 +7983,16 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned aws credentials action")
     if "uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696" not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned sccache action")
-    if 'version: "v0.10.0"' not in install_text:
-        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pin sccache v0.10.0")
+    if "version: ${{ steps.eligibility.outputs.installer_version }}" not in install_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must consume the TOML-owned sccache version")
     if 'disable_annotations: "true"' not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must disable vendor sccache stats annotations")
-    for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
-        if fragment not in enable_text:
-            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
+    if strict_block is None or not step_block_has_field(strict_block, "if", "inputs.required == 'true'"):
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must reserve strict setup for required callers")
+    elif "python3.12 scripts/sccache_eligibility.py strict-setup" not in strict_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must delegate strict setup to its executable owner")
+    if legacy_block is not None and "python3.12 scripts/sccache_eligibility.py legacy-enable" not in legacy_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must delegate legacy enablement to its executable owner")
     if not step_block_has_field(enable_block, "if", "always()"):
         errors.append("Resolve sccache enablement must run under always()")
     if (

@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -23,13 +23,21 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let accepted_tranche_path = temp_dir.path().join("accepted-tranche.json");
     let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
     let object_bytes = b"accepted object bytes";
     let object_sha256 = sha256_hex(object_bytes);
 
     fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&accepted_tranche_path, "{}\n").expect("write accepted tranche");
     fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    let run_spec_sha256 = sha256_hex(&fs::read(&run_spec_path).expect("read run spec"));
+    let accepted_tranche_sha256 = sha256_hex(
+        &fs::read(&accepted_tranche_path).expect("read accepted tranche"),
+    );
+    let execution_plan_sha256 =
+        sha256_hex(&fs::read(&execution_plan_path).expect("read execution plan"));
     fs::write(
         &pack_path,
         format!(
@@ -73,11 +81,11 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
       "accepted_tranche_id": "accepted-tranche-synthetic",
       "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/synthetic",
       "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "run-spec-sha",
-      "accepted_tranche_path": "accepted-tranche.json",
-      "accepted_tranche_sha256": "accepted-tranche-sha",
+      "run_spec_sha256": "{run_spec_sha256}",
+      "accepted_tranche_path": "{accepted_tranche_path}",
+      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
       "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "execution-plan-sha"
+      "execution_plan_sha256": "{execution_plan_sha256}"
     }}
   ],
   "blocking_reasons": []
@@ -85,7 +93,11 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
             object_bytes_len = object_bytes.len(),
             object_sha256 = object_sha256,
             run_spec_path = run_spec_path.display(),
+            run_spec_sha256 = run_spec_sha256,
+            accepted_tranche_path = accepted_tranche_path.display(),
+            accepted_tranche_sha256 = accepted_tranche_sha256,
             execution_plan_path = execution_plan_path.display(),
+            execution_plan_sha256 = execution_plan_sha256,
         ),
     )
     .expect("write pack");
@@ -1050,6 +1062,97 @@ fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
     );
 }
 
+// ── Pack-pinned control artifacts fail closed before external work ──
+
+#[test]
+fn prepare_batch_rejects_tampered_run_spec_before_external_work() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let expected_sha256 = sha256_hex(&fs::read(&fixture.run_spec_path).expect("read run spec"));
+    fs::write(&fixture.run_spec_path, "run_id = \"tampered\"\n").expect("tamper run spec");
+    let actual_sha256 = sha256_hex(&fs::read(&fixture.run_spec_path).expect("read tampered run spec"));
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert_control_artifact_mismatch(
+        &error,
+        "run_spec",
+        &fixture.run_spec_path,
+        &expected_sha256,
+        &actual_sha256,
+    );
+}
+
+#[test]
+fn prepare_batch_rejects_tampered_accepted_tranche_before_external_work() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let expected_sha256 = sha256_hex(
+        &fs::read(&fixture.accepted_tranche_path).expect("read accepted tranche"),
+    );
+    fs::write(&fixture.accepted_tranche_path, "{\"tampered\":true}\n")
+        .expect("tamper accepted tranche");
+    let actual_sha256 = sha256_hex(
+        &fs::read(&fixture.accepted_tranche_path).expect("read tampered accepted tranche"),
+    );
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert_control_artifact_mismatch(
+        &error,
+        "accepted_tranche",
+        &fixture.accepted_tranche_path,
+        &expected_sha256,
+        &actual_sha256,
+    );
+}
+
+#[test]
+fn prepare_batch_rejects_tampered_execution_plan_before_external_work() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let expected_sha256 =
+        sha256_hex(&fs::read(&fixture.execution_plan_path).expect("read execution plan"));
+    fs::write(&fixture.execution_plan_path, "{\"tampered\":true}\n")
+        .expect("tamper execution plan");
+    let actual_sha256 = sha256_hex(
+        &fs::read(&fixture.execution_plan_path).expect("read tampered execution plan"),
+    );
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert_control_artifact_mismatch(
+        &error,
+        "execution_plan",
+        &fixture.execution_plan_path,
+        &expected_sha256,
+        &actual_sha256,
+    );
+}
+
+#[test]
+fn prepare_batch_rejects_missing_control_artifact_before_external_work() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    fs::remove_file(&fixture.accepted_tranche_path).expect("remove accepted tranche");
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert!(error.contains("pack record 0"), "error names record: {error}");
+    assert!(
+        error.contains("source-universe-operator-run-synthetic-00000"),
+        "error names operator run: {error}"
+    );
+    assert!(
+        error.contains("accepted_tranche"),
+        "error names artifact role: {error}"
+    );
+    assert!(
+        error.contains(&fixture.accepted_tranche_path.display().to_string()),
+        "error names artifact path: {error}"
+    );
+}
+
 // ── Fix 1: path-traversal class — sha256 validation at the consume boundary ──
 
 /// A pack record with a `../`-prefixed sha256 field must be rejected at pack
@@ -1415,6 +1518,85 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+struct ValidSingleRecordPack {
+    pack_path: PathBuf,
+    run_spec_path: PathBuf,
+    accepted_tranche_path: PathBuf,
+    execution_plan_path: PathBuf,
+    output_dir: PathBuf,
+}
+
+fn write_valid_single_record_pack(root: &Path) -> ValidSingleRecordPack {
+    let pack_path = root.join("source-universe-execution-pack.json");
+    let run_spec_path = root.join("run-spec.toml");
+    let accepted_tranche_path = root.join("accepted-tranche.json");
+    let execution_plan_path = root.join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    write_n_record_pack(
+        &pack_path,
+        &run_spec_path,
+        &execution_plan_path,
+        &[(0, b"accepted object bytes".to_vec())],
+    );
+    ValidSingleRecordPack {
+        pack_path,
+        run_spec_path,
+        accepted_tranche_path,
+        execution_plan_path,
+        output_dir: root.join("batch-output"),
+    }
+}
+
+fn pack_preflight_error_before_external_work(fixture: &ValidSingleRecordPack) -> String {
+    let mut fetcher = NeverFetcher;
+    let mut runner = RecordingRunner::default();
+    let error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("drifted pack-pinned artifact must be rejected");
+    assert!(
+        runner.calls.is_empty(),
+        "pack preflight rejection must happen before operator execution"
+    );
+    format!("{error:#}")
+}
+
+fn assert_control_artifact_mismatch(
+    error: &str,
+    artifact_role: &str,
+    artifact_path: &Path,
+    expected_sha256: &str,
+    actual_sha256: &str,
+) {
+    assert!(error.contains("pack record 0"), "error names record: {error}");
+    assert!(
+        error.contains("source-universe-operator-run-synthetic-00000"),
+        "error names operator run: {error}"
+    );
+    assert!(
+        error.contains(artifact_role),
+        "error names artifact role: {error}"
+    );
+    assert!(
+        error.contains(&artifact_path.display().to_string()),
+        "error names artifact path: {error}"
+    );
+    assert!(
+        error.contains(expected_sha256),
+        "error names expected digest: {error}"
+    );
+    assert!(
+        error.contains(actual_sha256),
+        "error names actual digest: {error}"
+    );
+}
+
 /// Repo-relative path to the committed PMXT reference NT catalog run, whose
 /// `catalog-metadata.json` records the real `logical_catalog_hash`. Mirrors the
 /// src-side `committed_reference_run_dir` so the resume carry-forward gate can be
@@ -1490,6 +1672,17 @@ fn write_n_record_pack(
     execution_plan_path: &Path,
     objects: &[(u64, Vec<u8>)],
 ) {
+    let accepted_tranche_path = pack_path
+        .parent()
+        .expect("pack path has parent")
+        .join("accepted-tranche.json");
+    fs::write(&accepted_tranche_path, "{}\n").expect("write accepted tranche");
+    let run_spec_sha256 = sha256_hex(&fs::read(run_spec_path).expect("read run spec"));
+    let accepted_tranche_sha256 = sha256_hex(
+        &fs::read(&accepted_tranche_path).expect("read accepted tranche"),
+    );
+    let execution_plan_sha256 =
+        sha256_hex(&fs::read(execution_plan_path).expect("read execution plan"));
     let record_count = objects.len() as u64;
     let total_object_bytes_len: usize = objects.iter().map(|(_, bytes)| bytes.len()).sum();
     let records = objects
@@ -1513,17 +1706,21 @@ fn write_n_record_pack(
       "accepted_tranche_id": "accepted-tranche-synthetic-{sequence}",
       "output_prefix": "s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-{sequence}",
       "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "run-spec-sha",
-      "accepted_tranche_path": "accepted-tranche.json",
-      "accepted_tranche_sha256": "accepted-tranche-sha",
+      "run_spec_sha256": "{run_spec_sha256}",
+      "accepted_tranche_path": "{accepted_tranche_path}",
+      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
       "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "execution-plan-sha"
+      "execution_plan_sha256": "{execution_plan_sha256}"
     }}"#,
                 symbol = synthetic_symbol(*sequence),
                 sha256 = sha256_hex(bytes),
                 bytes_len = bytes.len(),
                 run_spec_path = run_spec_path.display(),
+                run_spec_sha256 = run_spec_sha256,
+                accepted_tranche_path = accepted_tranche_path.display(),
+                accepted_tranche_sha256 = accepted_tranche_sha256,
                 execution_plan_path = execution_plan_path.display(),
+                execution_plan_sha256 = execution_plan_sha256,
             )
         })
         .collect::<Vec<_>>()

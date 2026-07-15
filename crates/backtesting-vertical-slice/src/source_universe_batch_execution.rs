@@ -32,7 +32,7 @@ use crate::{
 };
 
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION: &str =
-    "source-universe-batch-execution-report.v1";
+    "source-universe-batch-execution-report.v2";
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE: &str =
     "source-universe-batch-execution-report.json";
 
@@ -120,6 +120,9 @@ pub struct SourceUniverseBatchExecutionRecord {
     pub symbol: String,
     pub archive_date: String,
     pub selected_object_sha256: String,
+    pub run_spec_sha256: String,
+    pub accepted_tranche_sha256: String,
+    pub execution_plan_sha256: String,
     pub selected_object_bytes: u64,
     pub canonical_rows: u64,
     pub nt_catalog_rows: u64,
@@ -504,13 +507,18 @@ where
     assemble_report(batch_id, &owned_plan, slots, &config)
 }
 
-/// A single unit of batch work after selection and resume filtering: either a
-/// record carried forward from a prior report (only after its input sha matches
-/// AND its prior output catalog re-verifies — see
-/// [`carried_output_still_verifies`]), or a pack record that still needs
-/// fetch + verify + run. The carried record is boxed to keep the two variants
-/// similarly sized.
+/// A single unit of batch work after selection and resume filtering: a control
+/// artifact preflight failure collected under `continue_on_error`, a record
+/// carried forward from a prior report (only after every pinned input hash
+/// matches AND its prior output catalog re-verifies — see
+/// [`carried_output_still_verifies`]), or a pack record that still needs fetch
+/// + verify + run. The carried record is boxed to keep the variants similarly
+/// sized.
 enum BatchWorkItem<'pack> {
+    PreflightFailed {
+        record: &'pack SourceUniverseExecutionPackRecord,
+        error: &'pack str,
+    },
     Carried(Box<SourceUniverseBatchExecutionRecord>),
     NeedsWork {
         record: &'pack SourceUniverseExecutionPackRecord,
@@ -625,6 +633,7 @@ fn prepare_batch(
     // read once, while every selected record's expected digest is still checked.
     let mut verified_artifact_cache = BTreeMap::new();
     let mut verified_control_artifacts = BTreeMap::new();
+    let mut control_artifact_failures = BTreeMap::new();
     for record in pack
         .records
         .iter()
@@ -635,16 +644,22 @@ fn prepare_batch(
         })
         .take(record_limit)
     {
-        let verified =
-            verify_pack_control_artifacts(&pack_base_dir, record, &mut verified_artifact_cache)?;
         ensure!(
-            verified_control_artifacts
-                .insert(record.sequence, verified)
-                .is_none(),
+            !verified_control_artifacts.contains_key(&record.sequence)
+                && !control_artifact_failures.contains_key(&record.sequence),
             "execution pack {} has duplicate selected sequence {}",
             pack.pack_id,
             record.sequence,
         );
+        match verify_pack_control_artifacts(&pack_base_dir, record, &mut verified_artifact_cache) {
+            Ok(verified) => {
+                verified_control_artifacts.insert(record.sequence, verified);
+            }
+            Err(error) if config.continue_on_error => {
+                control_artifact_failures.insert(record.sequence, format!("{error:#}"));
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
@@ -652,6 +667,7 @@ fn prepare_batch(
     Ok(OwnedBatchPlan {
         pack,
         verified_control_artifacts,
+        control_artifact_failures,
         resume_records,
         start_sequence: config.start_sequence,
         record_limit,
@@ -784,6 +800,7 @@ fn verify_pack_control_artifact(
 struct OwnedBatchPlan {
     pack: SourceUniverseExecutionPack,
     verified_control_artifacts: BTreeMap<u64, SourceUniverseVerifiedControlArtifacts>,
+    control_artifact_failures: BTreeMap<u64, String>,
     resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
     start_sequence: Option<u64>,
     record_limit: usize,
@@ -800,34 +817,47 @@ impl OwnedBatchPlan {
                     .is_none_or(|start_sequence| record.sequence >= start_sequence)
             })
             .take(self.record_limit)
-            .map(|record| match self.resume_records.get(&record.sequence) {
-                // Pack-regeneration guard: carry forward only when the prior
-                // record's pinned sha still matches the current pack record AND
-                // the prior output catalog still exists and re-hashes to the
-                // carried `catalog_hash`. A bare sha match only proves the INPUT
-                // is unchanged; it never re-checks that the prior OUTPUT survived.
-                // Re-verifying through the same `logical_catalog_hash` the
-                // operator's completed-output reuse path uses means a deleted or
-                // corrupted prior catalog re-executes the record (downgraded to
-                // `NeedsWork`) instead of being marked completed off a stale
-                // marker — fail safe, never carry a phantom output forward.
-                Some(prior)
-                    if prior.selected_object_sha256 == record.selected_object_sha256
-                        && carried_output_still_verifies(prior) =>
-                {
-                    BatchWorkItem::Carried(Box::new(prior.clone()))
+            .map(|record| {
+                if let Some(error) = self.control_artifact_failures.get(&record.sequence) {
+                    return BatchWorkItem::PreflightFailed { record, error };
                 }
-                _ => BatchWorkItem::NeedsWork {
-                    record,
-                    control_artifacts: self
-                        .verified_control_artifacts
-                        .get(&record.sequence)
-                        .expect("selected record control artifacts were verified"),
-                },
+
+                match self.resume_records.get(&record.sequence) {
+                    // Pack-regeneration guard: carry forward only when every
+                    // pinned input hash still matches the current pack record
+                    // AND the prior output catalog still exists and re-hashes
+                    // to the carried `catalog_hash`. Re-verifying through the
+                    // same `logical_catalog_hash` the operator's completed-output
+                    // reuse path uses means a deleted or corrupted prior catalog
+                    // re-executes the record instead of carrying stale output.
+                    Some(prior)
+                        if carried_record_inputs_match_pack(prior, record)
+                            && carried_output_still_verifies(prior) =>
+                    {
+                        BatchWorkItem::Carried(Box::new(prior.clone()))
+                    }
+                    _ => BatchWorkItem::NeedsWork {
+                        record,
+                        control_artifacts: self
+                            .verified_control_artifacts
+                            .get(&record.sequence)
+                            .expect("selected record control artifacts were verified"),
+                    },
+                }
             })
             .collect();
         BatchPlan { work_items }
     }
+}
+
+fn carried_record_inputs_match_pack(
+    prior: &SourceUniverseBatchExecutionRecord,
+    record: &SourceUniverseExecutionPackRecord,
+) -> bool {
+    prior.selected_object_sha256 == record.selected_object_sha256
+        && prior.run_spec_sha256 == record.run_spec_sha256
+        && prior.accepted_tranche_sha256 == record.accepted_tranche_sha256
+        && prior.execution_plan_sha256 == record.execution_plan_sha256
 }
 
 /// Re-prove a carried record's prior OUTPUT before it is reused on resume.
@@ -901,6 +931,14 @@ where
     R: SourceUniverseOperatorRunner,
 {
     let (record, control_artifacts) = match work_item {
+        BatchWorkItem::PreflightFailed { record, error } => {
+            return record_error_slot(
+                record,
+                "verify_control_artifacts",
+                anyhow::anyhow!(error.to_string()),
+                config,
+            );
+        }
         // Carried records are pushed verbatim, skipping fetch + verify + run.
         // Verbatim includes the prior run's output_dir (provenance is kept,
         // not rewritten), so a resumed report can reference artifacts outside
@@ -944,6 +982,9 @@ where
         symbol: record.symbol.clone(),
         archive_date: record.archive_date.clone(),
         selected_object_sha256: record.selected_object_sha256.clone(),
+        run_spec_sha256: record.run_spec_sha256.clone(),
+        accepted_tranche_sha256: record.accepted_tranche_sha256.clone(),
+        execution_plan_sha256: record.execution_plan_sha256.clone(),
         selected_object_bytes: record.selected_object_bytes,
         canonical_rows: run_output.canonical_rows,
         nt_catalog_rows: run_output.nt_catalog_rows,
@@ -1222,6 +1263,9 @@ mod tests {
             symbol: "SYMBOL".to_string(),
             archive_date: "2026-03-01".to_string(),
             selected_object_sha256: "a".repeat(64),
+            run_spec_sha256: "b".repeat(64),
+            accepted_tranche_sha256: "c".repeat(64),
+            execution_plan_sha256: "d".repeat(64),
             selected_object_bytes: 0,
             canonical_rows: 7,
             nt_catalog_rows: 7,
@@ -1251,11 +1295,11 @@ mod tests {
             accepted_tranche_id: "tranche".to_string(),
             output_prefix: "s3://bucket/out".to_string(),
             run_spec_path: PathBuf::from("run-spec.toml"),
-            run_spec_sha256: "run-spec-sha".to_string(),
+            run_spec_sha256: prior.run_spec_sha256.clone(),
             accepted_tranche_path: PathBuf::from("tranche.json"),
-            accepted_tranche_sha256: "tranche-sha".to_string(),
+            accepted_tranche_sha256: prior.accepted_tranche_sha256.clone(),
             execution_plan_path: PathBuf::from("execution-plan.json"),
-            execution_plan_sha256: "execution-plan-sha".to_string(),
+            execution_plan_sha256: prior.execution_plan_sha256.clone(),
         };
         let pack = SourceUniverseExecutionPack {
             schema_version: SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION.to_string(),
@@ -1299,6 +1343,7 @@ mod tests {
         OwnedBatchPlan {
             pack,
             verified_control_artifacts,
+            control_artifact_failures: BTreeMap::new(),
             resume_records,
             start_sequence: None,
             record_limit: usize::MAX,
@@ -1394,6 +1439,65 @@ mod tests {
         assert!(
             matches!(plan.work_items.as_slice(), [BatchWorkItem::Carried(_)]),
             "an intact, hash-matching prior catalog must still carry forward"
+        );
+    }
+
+    #[test]
+    fn plan_reexecutes_carried_record_when_any_control_artifact_hash_changes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        for field in ["run_spec", "accepted_tranche", "execution_plan"] {
+            let mut owned_plan = owned_plan_with_carry(&record);
+            match field {
+                "run_spec" => owned_plan.pack.records[0].run_spec_sha256 = "e".repeat(64),
+                "accepted_tranche" => {
+                    owned_plan.pack.records[0].accepted_tranche_sha256 = "e".repeat(64);
+                }
+                "execution_plan" => {
+                    owned_plan.pack.records[0].execution_plan_sha256 = "e".repeat(64);
+                }
+                _ => unreachable!("test enumerates every control artifact"),
+            }
+
+            let plan = owned_plan.plan();
+
+            assert!(
+                matches!(
+                    plan.work_items.as_slice(),
+                    [BatchWorkItem::NeedsWork { .. }]
+                ),
+                "a changed {field} hash must re-execute even when source and output still match"
+            );
+        }
+    }
+
+    #[test]
+    fn control_preflight_failure_takes_precedence_over_resume_carry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let mut owned_plan = owned_plan_with_carry(&record);
+        owned_plan
+            .control_artifact_failures
+            .insert(record.sequence, "pinned run spec is missing".to_string());
+
+        let plan = owned_plan.plan();
+
+        assert!(
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::PreflightFailed { .. }]
+            ),
+            "an invalid current control artifact must fail its record instead of carrying prior output"
         );
     }
 }

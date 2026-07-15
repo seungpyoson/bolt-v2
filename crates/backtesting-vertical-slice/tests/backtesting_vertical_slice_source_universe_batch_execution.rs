@@ -129,6 +129,15 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(report.failed_record_count, 0);
     assert_eq!(report.total_canonical_rows, 7);
     assert_eq!(report.total_nt_catalog_rows, 7);
+    assert_eq!(report.records[0].run_spec_sha256, run_spec_sha256);
+    assert_eq!(
+        report.records[0].accepted_tranche_sha256,
+        accepted_tranche_sha256
+    );
+    assert_eq!(
+        report.records[0].execution_plan_sha256,
+        execution_plan_sha256
+    );
     assert_eq!(fetcher.calls, 1);
     assert_eq!(runner.calls.len(), 1);
     assert_eq!(
@@ -273,6 +282,68 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
     assert_eq!(report.records[0].sequence, 1);
     assert_eq!(report.failures[0].sequence, 0);
     assert_eq!(report.failures[0].failure_stage, "verify_object");
+    assert_eq!(runner.calls.len(), 1);
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00001"
+    );
+}
+
+#[test]
+fn continue_on_error_records_control_preflight_failure_and_runs_later_record() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0u64, b"synthetic object zero".to_vec()),
+        (1u64, b"synthetic object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    rewrite_pack_record_field(
+        &fixture.pack_path,
+        0,
+        "accepted_tranche_path",
+        serde_json::Value::String("missing-record-zero-tranche.json".to_string()),
+    );
+
+    let mut fetcher = SequencedFetcher::from_objects(&[(1, objects[1].1.clone())]);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: true,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("bad control artifact is isolated to its record");
+
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    );
+    assert_eq!(report.selected_record_count, 2);
+    assert_eq!(report.completed_record_count, 1);
+    assert_eq!(report.failed_record_count, 1);
+    assert_eq!(report.failures[0].sequence, 0);
+    assert_eq!(report.failures[0].failure_stage, "verify_control_artifacts");
+    assert!(
+        report.failures[0]
+            .error
+            .contains("missing-record-zero-tranche.json"),
+        "failure retains the rejected control path: {}",
+        report.failures[0].error
+    );
+    assert_eq!(
+        fetch_calls.lock().expect("fetch log").as_slice(),
+        &[1u64],
+        "the bad record is not fetched and the later valid record still runs"
+    );
     assert_eq!(runner.calls.len(), 1);
     assert_eq!(
         runner.calls[0].operator_run_id,
@@ -1971,6 +2042,9 @@ fn carried_record_fixture(
         symbol: synthetic_symbol(sequence),
         archive_date: "2026-03-01".to_string(),
         selected_object_sha256: selected_object_sha256.to_string(),
+        run_spec_sha256: sha256_hex(b"run_id = \"synthetic-run\"\n"),
+        accepted_tranche_sha256: sha256_hex(b"{}\n"),
+        execution_plan_sha256: sha256_hex(b"{}\n"),
         selected_object_bytes: 0,
         canonical_rows: 7,
         nt_catalog_rows: 7,

@@ -6,8 +6,10 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from typing import Mapping, Sequence
@@ -50,6 +52,14 @@ class SccacheEligibility:
     vars_present: bool
     location_valid: bool
     strict_context_valid: bool
+
+
+@dataclass(frozen=True)
+class SccacheWrapperIdentity:
+    path: pathlib.Path
+    device: int
+    inode: int
+    digest: str
 
 
 def _location_value(location: Mapping[str, object], key: str) -> str:
@@ -185,13 +195,13 @@ def load_sccache_config(config_path: pathlib.Path) -> SccacheConfig:
     return parse_sccache_config(text, label=str(config_path))
 
 
-def file_sha256(path: pathlib.Path) -> str:
+def _fd_sha256(fd: int) -> str:
     import hashlib
 
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
+    while chunk := os.read(fd, 1024 * 1024):
+        digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -205,7 +215,7 @@ def _run_text(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def verify_installed_wrapper(config: SccacheConfig, candidate: str) -> pathlib.Path:
+def _candidate_path(config: SccacheConfig, candidate: str) -> pathlib.Path:
     if (
         not candidate
         or not pathlib.Path(candidate).is_absolute()
@@ -213,24 +223,88 @@ def verify_installed_wrapper(config: SccacheConfig, candidate: str) -> pathlib.P
         or any(char.isspace() for char in candidate)
     ):
         raise SccacheStrictError("installed sccache path is not an absolute executable file")
-    try:
-        wrapper = pathlib.Path(candidate).resolve(strict=True)
-    except OSError as exc:
-        raise SccacheStrictError("installed sccache path is not an absolute executable file") from exc
-    if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
-        raise SccacheStrictError("installed sccache path is not an absolute executable file")
+    wrapper = pathlib.Path(candidate)
     if wrapper.name != config.executable:
         raise SccacheStrictError("installed sccache path does not identify the configured executable")
+    return wrapper
+
+
+def _open_wrapper(wrapper: pathlib.Path) -> tuple[int, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(wrapper, flags)
+    except OSError as exc:
+        raise SccacheStrictError("installed sccache path is not an absolute executable file") from exc
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o111 == 0:
+        os.close(fd)
+        raise SccacheStrictError("installed sccache path is not an absolute executable file")
+    return fd, metadata
+
+
+def validate_wrapper_identity(
+    config: SccacheConfig,
+    path: pathlib.Path,
+    *,
+    device: int,
+    inode: int,
+    digest: str,
+) -> SccacheWrapperIdentity:
+    if digest != config.executable_sha256 or path.name != config.executable:
+        raise SccacheStrictError("installed sccache identity does not match repository config")
+    fd, metadata = _open_wrapper(path)
+    try:
+        actual_digest = _fd_sha256(fd)
+    finally:
+        os.close(fd)
+    if (metadata.st_dev, metadata.st_ino, actual_digest) != (device, inode, digest):
+        raise SccacheStrictError("installed sccache device, inode, or digest changed")
+    return SccacheWrapperIdentity(path=path, device=device, inode=inode, digest=digest)
+
+
+def promote_installed_wrapper(config: SccacheConfig, candidate: str) -> SccacheWrapperIdentity:
+    wrapper = _candidate_path(config, candidate)
+    fd, metadata = _open_wrapper(wrapper)
+    try:
+        digest = _fd_sha256(fd)
+    finally:
+        os.close(fd)
+    if digest != config.executable_sha256:
+        raise SccacheStrictError("installed sccache executable digest does not match repository config")
     host = _run_text(["uname", "-m"])
     expected_machine = config.asset_target.split("-", 1)[0]
     if host.returncode != 0 or host.stdout.strip() != expected_machine:
         raise SccacheStrictError("installed sccache target does not match the producer host")
-    version = _run_text([str(wrapper), "--version"])
+
+    private_root = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{config.executable}-live-", dir=wrapper.parent)
+    )
+    content_root = private_root / digest
+    content_root.mkdir(mode=0o700)
+    live_wrapper = content_root / config.executable
+    try:
+        os.rename(wrapper, live_wrapper)
+    except OSError as exc:
+        raise SccacheStrictError("approved sccache inode could not be atomically promoted") from exc
+    identity = validate_wrapper_identity(
+        config,
+        live_wrapper,
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        digest=digest,
+    )
+    if os.path.lexists(wrapper):
+        raise SccacheStrictError("installed sccache path remained after promotion")
+    version = _run_text([str(live_wrapper), "--version"])
     if version.returncode != 0 or version.stdout.strip() != config.version_output:
         raise SccacheStrictError("installed sccache version does not match repository config")
-    if file_sha256(wrapper) != config.executable_sha256:
-        raise SccacheStrictError("installed sccache executable digest does not match repository config")
-    return wrapper
+    return validate_wrapper_identity(
+        config,
+        identity.path,
+        device=identity.device,
+        inode=identity.inode,
+        digest=identity.digest,
+    )
 
 
 def _required_outcome(name: str) -> None:
@@ -246,14 +320,24 @@ def strict_setup_main() -> int:
         if os.environ.get("SCCACHE_ELIGIBLE", "") != "true":
             raise SccacheStrictError("root-artifact is not eligible for mandatory sccache")
         config = load_sccache_config(pathlib.Path(os.environ["CONFIG_PATH"]))
-        wrapper = verify_installed_wrapper(config, os.environ.get("SCCACHE_PATH", ""))
-        start = _run_text([str(wrapper), "--start-server"])
+        identity = promote_installed_wrapper(config, os.environ.get("SCCACHE_PATH", ""))
+        start = _run_text([str(identity.path), "--start-server"])
         if start.returncode != 0:
             raise SccacheStrictError("mandatory sccache server failed to start")
-        _run_text([str(wrapper), "--zero-stats"])
-        _write_line(os.environ["GITHUB_OUTPUT"], f"wrapper_path={wrapper}")
+        identity = validate_wrapper_identity(
+            config,
+            identity.path,
+            device=identity.device,
+            inode=identity.inode,
+            digest=identity.digest,
+        )
+        _run_text([str(identity.path), "--zero-stats"])
+        _write_line(os.environ["GITHUB_OUTPUT"], f"wrapper_path={identity.path}")
+        _write_line(os.environ["GITHUB_OUTPUT"], f"wrapper_device={identity.device}")
+        _write_line(os.environ["GITHUB_OUTPUT"], f"wrapper_inode={identity.inode}")
+        _write_line(os.environ["GITHUB_OUTPUT"], f"wrapper_digest={identity.digest}")
         _write_line(os.environ["GITHUB_OUTPUT"], "enabled=true")
-        _write_line(os.environ["GITHUB_ENV"], f"SCCACHE_PATH={wrapper}")
+        _write_line(os.environ["GITHUB_ENV"], f"SCCACHE_PATH={identity.path}")
         _write_line(os.environ["GITHUB_ENV"], "BOLT_RUST_VERIFICATION_SCCACHE=1")
     except (KeyError, OSError, SccacheConfigError, SccacheStrictError) as exc:
         print(str(exc), file=sys.stderr)

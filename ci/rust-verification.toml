@@ -26,7 +26,6 @@ evidence_schema_version = 1
 evidence_file = "root-artifact.json"
 checksum_file = "bolt-v2.sha256"
 archive_file = "root-artifact.tar"
-required_wrapper_env = "RUSTC_WRAPPER"
 
 [local_compile_policy]
 enabled = true

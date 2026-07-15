@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import argparse
 import copy
+import hashlib
 import io
 import os
 import json
@@ -1340,6 +1341,55 @@ def assert_managed_env_scrubs_then_reinjects_wrapper() -> None:
         raise AssertionError("managed_env must not inject a wrapper outside CI (GITHUB_ACTIONS unset)")
 
 
+def assert_managed_build_process_receives_no_repository_boundary() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        home = root / "home"
+        fake_bin = root / "bin"
+        home.mkdir()
+        fake_bin.mkdir()
+        write_executable(
+            fake_bin / "just",
+            f"#!{sys.executable}\n"
+            "import json, os, pathlib\n"
+            "pathlib.Path(os.environ['HOME'], 'build-env.json').write_text("
+            "json.dumps(dict(os.environ), sort_keys=True), encoding='utf-8')\n",
+        )
+        result = run_owner(
+            ["run", "--repo", str(REPO_ROOT), "build"],
+            env={
+                **os.environ,
+                "HOME": str(home),
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+                "GITHUB_ACTIONS": "true",
+                "RUST_VERIFICATION_ROOT_BASE": str(root / "rust-root"),
+                "GH_TOKEN": "repository-token",
+                "GITHUB_TOKEN": "repository-token-alias",
+                "GITHUB_WORKSPACE": str(REPO_ROOT),
+                "GITHUB_REPOSITORY": "owner/private-repo",
+                "GITHUB_EVENT_PATH": str(REPO_ROOT / "event.json"),
+                "GITHUB_ENV": str(REPO_ROOT / "github-env"),
+                "GITHUB_OUTPUT": str(REPO_ROOT / "github-output"),
+                "PWD": str(REPO_ROOT),
+            },
+        )
+        if result.returncode != 0:
+            raise AssertionError((result.stdout, result.stderr))
+        received = json.loads((home / "build-env.json").read_text(encoding="utf-8"))
+        forbidden = {
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GITHUB_WORKSPACE",
+            "GITHUB_REPOSITORY",
+            "GITHUB_EVENT_PATH",
+            "GITHUB_ENV",
+            "GITHUB_OUTPUT",
+            "PWD",
+        }
+        if forbidden & received.keys():
+            raise AssertionError(f"managed build sentinel received repository boundary: {forbidden & received.keys()}")
+
+
 def remote_compile_policy_text() -> str:
     return (
         rust_verification_policy_text(target_namespace="rust-verification-remote-cache-test")
@@ -1974,24 +2024,40 @@ ROOT_ARTIFACT_POLICY_TEXT = textwrap.dedent(
     evidence_file = "root-artifact.json"
     checksum_file = "bolt-v2.sha256"
     archive_file = "root-artifact.tar"
-    required_wrapper_env = "RUSTC_WRAPPER"
     """
 )
 
 
-FAKE_ROOT_ARTIFACT_BINARY = r'''#!/usr/bin/env python3
+FAKE_ROOT_ARTIFACT_BINARY = r'''#!__FAKE_PYTHON__
 import hashlib
 import json
 import os
 import pathlib
 import sys
 
-mode = os.environ.get("FAKE_ROOT_ARTIFACT_MODE", "ok")
-with pathlib.Path(os.environ["FAKE_ROOT_ARTIFACT_LOG"]).open("a", encoding="utf-8") as handle:
+mode = __FAKE_MODE__
+log_path = pathlib.Path(__FAKE_LOG__)
+repo_path = pathlib.Path(__FAKE_REPO__)
+forbidden_env = {
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_WORKSPACE",
+    "GITHUB_REPOSITORY",
+    "GITHUB_EVENT_PATH",
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+}
+if forbidden_env & os.environ.keys():
+    raise SystemExit(91)
+for pointer in (os.environ.get("PWD", ""), os.environ.get("GITHUB_WORKSPACE", "")):
+    if pointer and (pathlib.Path(pointer) / "workspace-only-success").exists():
+        raise SystemExit(92)
+with log_path.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps({
         "argv0": sys.argv[0],
         "args": sys.argv[1:],
         "cwd": str(pathlib.Path.cwd()),
+        "env": sorted(os.environ),
         "workspace_sentinel": pathlib.Path("workspace-only-success").exists(),
     }) + "\n")
 if mode == "digest-mutation":
@@ -2030,7 +2096,7 @@ elif mode == "invariant-wrong-type":
 elif mode == "invariant-empty-strategy":
     invariants["strategy_files"] = []
 if mode == "post-copy-mutation":
-    source = pathlib.Path(os.environ["FAKE_ROOT_ARTIFACT_REPO"]) / "config" / "root.toml"
+    source = repo_path / "config" / "root.toml"
     if "post-copy mutation" not in source.read_text(encoding="utf-8"):
         with source.open("a", encoding="utf-8") as handle:
             handle.write("# post-copy mutation\n")
@@ -2069,6 +2135,22 @@ elif command == "verify-live-config":
 else:
     raise SystemExit(2)
 '''
+
+
+def write_fake_root_artifact_binary(
+    path: pathlib.Path,
+    *,
+    mode: str,
+    log: pathlib.Path,
+    repo: pathlib.Path,
+) -> None:
+    text = (
+        FAKE_ROOT_ARTIFACT_BINARY.replace("__FAKE_PYTHON__", sys.executable)
+        .replace("__FAKE_MODE__", repr(mode))
+        .replace("__FAKE_LOG__", repr(str(log)))
+        .replace("__FAKE_REPO__", repr(str(repo)))
+    )
+    write_executable(path, text)
 
 
 def root_artifact_test_repo(
@@ -2112,7 +2194,12 @@ def root_artifact_test_repo(
     ).stdout.strip()
     source_binary = root / "managed" / "bolt-v2"
     source_binary.parent.mkdir()
-    write_executable(source_binary, FAKE_ROOT_ARTIFACT_BINARY)
+    write_fake_root_artifact_binary(
+        source_binary,
+        mode="ok",
+        log=root / "invocations.jsonl",
+        repo=repo,
+    )
     policy = tomllib.loads((repo / "ci" / "rust-verification.toml").read_text(encoding="utf-8"))
     return repo, source_binary, policy, head_sha
 
@@ -2125,9 +2212,14 @@ def assert_root_artifact_fake_binary_contract() -> None:
         (repo / "workspace-only-success").write_text("poison\n", encoding="utf-8")
         log = root / "invocations.jsonl"
         env = {
-            "FAKE_ROOT_ARTIFACT_LOG": str(log),
-            "FAKE_ROOT_ARTIFACT_MODE": "ok",
-            "FAKE_ROOT_ARTIFACT_REPO": str(repo),
+            "GH_TOKEN": "repository-token",
+            "GITHUB_TOKEN": "repository-token-alias",
+            "GITHUB_WORKSPACE": str(repo),
+            "GITHUB_REPOSITORY": "owner/private-repo",
+            "GITHUB_EVENT_PATH": str(repo / "event.json"),
+            "GITHUB_ENV": str(repo / "github-env"),
+            "GITHUB_OUTPUT": str(repo / "github-output"),
+            "PWD": str(repo),
         }
         with _patched_environ(env):
             outputs = owner.create_root_artifact_evidence(
@@ -2153,6 +2245,14 @@ def assert_root_artifact_fake_binary_contract() -> None:
             raise AssertionError("managed output path was invoked instead of staged bytes")
         if any(call["cwd"] == str(repo.resolve()) or call["workspace_sentinel"] for call in calls):
             raise AssertionError("a staged-binary case inherited or resolved data from the checkout")
+        required_env = {"HOME", "LANG", "LC_ALL", "PATH", "PWD", "TEMP", "TMP", "TMPDIR", "TZ"}
+        allowed_env = required_env | {"__CF_USER_TEXT_ENCODING"}
+        actual_envs = {frozenset(call["env"]) for call in calls}
+        if any(
+            not required_env <= actual or not actual <= allowed_env
+            for actual in actual_envs
+        ):
+            raise AssertionError(f"a staged-binary case received variables outside the minimal allowlist: {actual_envs!r}")
         for call in calls:
             args = call["args"]
             if "--config-root" in args:
@@ -2164,7 +2264,14 @@ def assert_root_artifact_fake_binary_contract() -> None:
         second_archive = root / "second-root-artifact.tar"
         owner.create_deterministic_root_artifact_tar(
             second_archive,
-            tuple(pathlib.Path(outputs[key]) for key in ("binary", "checksum", "evidence")),
+            tuple(
+                (
+                    pathlib.Path(outputs[key]).name,
+                    pathlib.Path(outputs[key]).read_bytes(),
+                    0o755 if key == "binary" else 0o644,
+                )
+                for key in ("binary", "checksum", "evidence")
+            ),
         )
         if archive_path.read_bytes() != second_archive.read_bytes():
             raise AssertionError("root-artifact tar bytes are not deterministic")
@@ -2218,12 +2325,14 @@ def assert_root_artifact_fake_binary_contract() -> None:
             ("post-copy-mutation", "clean tracked worktree"),
         ):
             mode_log = root / f"{mode}.jsonl"
+            write_fake_root_artifact_binary(
+                source_binary,
+                mode=mode,
+                log=mode_log,
+                repo=repo,
+            )
             with _patched_environ(
-                {
-                    **env,
-                    "FAKE_ROOT_ARTIFACT_LOG": str(mode_log),
-                    "FAKE_ROOT_ARTIFACT_MODE": mode,
-                }
+                env
             ):
                 try:
                     owner.create_root_artifact_evidence(
@@ -2283,6 +2392,46 @@ def assert_root_artifact_revision_binding() -> None:
         subprocess.run(["git", "restore", "--staged", "config/root.toml"], cwd=repo, check=True)
         root_config.write_text(original + "# worktree\n", encoding="utf-8")
         must_fail("worktree", "clean tracked worktree")
+
+
+def assert_root_artifact_snapshot_binds_every_output() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo, source_binary, policy, head_sha = root_artifact_test_repo(root)
+        source_bytes = source_binary.read_bytes()
+        original_tar = owner.create_deterministic_root_artifact_tar
+
+        def mutate_after_snapshot(archive_path: pathlib.Path, members: object) -> bytes:
+            staged = root / "stage" / "bolt-v2"
+            staged.write_bytes(b"mutated after snapshot\n")
+            staged.chmod(0o755)
+            return original_tar(archive_path, members)
+
+        owner.create_deterministic_root_artifact_tar = mutate_after_snapshot
+        try:
+            outputs = owner.create_root_artifact_evidence(
+                repo=repo,
+                source_binary=source_binary,
+                head_sha=head_sha,
+                stage_dir=root / "stage",
+                policy=policy,
+            )
+        finally:
+            owner.create_deterministic_root_artifact_tar = original_tar
+
+        expected_digest = hashlib.sha256(source_bytes).hexdigest()
+        checksum = pathlib.Path(outputs["checksum"]).read_text(encoding="utf-8")
+        evidence = json.loads(pathlib.Path(outputs["evidence"]).read_text(encoding="utf-8"))
+        archive_bytes = pathlib.Path(outputs["archive"]).read_bytes()
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as archive:
+            archived_binary = archive.extractfile("bolt-v2")
+            if archived_binary is None or archived_binary.read() != source_bytes:
+                raise AssertionError("post-snapshot mutation changed the archived executable bytes")
+        if checksum != f"{expected_digest}  bolt-v2\n" or evidence["binary_sha256"] != expected_digest:
+            raise AssertionError("checksum or manifest did not derive from the executable snapshot")
+        if outputs.get("archive_sha256") != hashlib.sha256(archive_bytes).hexdigest():
+            raise AssertionError("raw upload digest did not derive from the emitted tar bytes")
 
 
 def assert_root_artifact_exact_main_gate() -> None:
@@ -2382,15 +2531,15 @@ def assert_root_artifact_output_safety_precedes_writes() -> None:
         root = pathlib.Path(tmp)
         repo, source_binary, policy, head_sha = root_artifact_test_repo(root)
         mutations: list[tuple[str, dict[str, object]]] = []
-        for label, first, second in (
-            ("binary-checksum-collision", "binary_name", "checksum_file"),
-            ("binary-evidence-collision", "binary_name", "evidence_file"),
-            ("checksum-evidence-collision", "checksum_file", "evidence_file"),
-        ):
-            mutated = copy.deepcopy(policy)
-            artifact = mutated["producer"]["root_artifact"]
-            artifact[second] = artifact[first]
-            mutations.append((label, mutated))
+        output_keys = ("binary_name", "checksum_file", "evidence_file", "archive_file")
+        for index, first in enumerate(output_keys):
+            for second in output_keys[index + 1 :]:
+                mutated = copy.deepcopy(policy)
+                artifact = mutated["producer"]["root_artifact"]
+                artifact[second] = artifact[first]
+                mutations.append((f"{first}-{second}-collision", mutated))
+        if len(mutations) != 6:
+            raise AssertionError("root-artifact output collision matrix must contain all six pairs")
         producer_boolean = copy.deepcopy(policy)
         producer_boolean["producer"]["schema_version"] = True
         mutations.append(("producer-schema-boolean", producer_boolean))
@@ -2428,6 +2577,7 @@ def main() -> int:
     assert_validate_remote_compile_cache_policy_contract()
     assert_managed_remote_compile_cache_env_fails_open()
     assert_managed_env_scrubs_then_reinjects_wrapper()
+    assert_managed_build_process_receives_no_repository_boundary()
     assert_commands_test_schema_is_exact()
     assert_managed_test_runs_one_configured_command_for_root_and_backtester()
     assert_direct_managed_nextest_runs_once_and_returns_first_status()
@@ -2470,6 +2620,7 @@ def main() -> int:
     assert_global_cargo_target_dir_config_preserves_symlink()
     assert_setup_recipe_asserts_global_cargo_target_dir()
     assert_root_artifact_fake_binary_contract()
+    assert_root_artifact_snapshot_binds_every_output()
     assert_root_artifact_revision_binding()
     assert_root_artifact_exact_main_gate()
     assert_root_artifact_config_fails_closed()

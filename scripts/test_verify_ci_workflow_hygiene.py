@@ -10807,36 +10807,72 @@ def assert_root_artifact_workflow_contract() -> None:
     workflow = path.read_text(encoding="utf-8")
     if verifier.WORKFLOW_RUNNER_CONFIG_KEYS.get(path.name) != "rust_producer":
         raise AssertionError("rust-producer workflow must have one existing runner-config registration")
-    required = (
-        "  workflow_dispatch:\n",
-        "  group: root-artifact-producer\n  cancel-in-progress: false\n",
-        "root-artifact-exact-main",
-        "GH_TOKEN: ${{ github.token }}",
-        "          required: \"true\"\n",
-        "          operation: ${{ inputs.operation }}\n",
-        "          expected-sha: ${{ inputs.expected_sha }}\n",
-        "root-artifact-wrapper \\",
-        '--action-wrapper "$SCCACHE_ACTION_WRAPPER"',
-        "root-artifact-evidence",
-        "root-artifact-binary-path --repo",
-        "--binary \"$binary_path\"",
-        "path: ${{ steps.root-artifact.outputs.archive }}",
-        "archive: false",
-    )
-    missing = [fragment for fragment in required if fragment not in workflow]
-    if missing:
-        raise AssertionError(f"rust-producer root-artifact contract is missing {missing!r}")
     on_block = workflow.split("on:\n", 1)[1].split("\nconcurrency:\n", 1)[0]
     if any(f"  {trigger}:" in on_block for trigger in ("push", "pull_request", "merge_group", "schedule")):
         raise AssertionError("rust-producer must remain workflow_dispatch-only")
-    if workflow.count("          just build\n") != 1:
-        raise AssertionError("root-artifact must invoke one managed build")
-    if workflow.count("root-artifact-exact-main") != 3:
-        raise AssertionError("root-artifact must reuse exact-main admission at preflight, checkout, and pre-build")
-    if workflow.index("Install cargo-zigbuild") > workflow.index("Setup mandatory sccache"):
-        raise AssertionError("mandatory sccache must be the final installer")
-    if workflow.index("Setup mandatory sccache") > workflow.index("Build exact root executable"):
-        raise AssertionError("mandatory sccache must precede the sole build")
+    jobs = verifier.parse_jobs(workflow)
+    if set(jobs) != {"preflight", "root-artifact"}:
+        raise AssertionError(f"rust-producer topology changed: {sorted(jobs)!r}")
+    preflight = jobs["preflight"]
+    root_job = jobs["root-artifact"]
+
+    def named_step(job: list[str], name: str) -> list[str]:
+        block = verifier.named_step_block(job, name)
+        if block is None:
+            raise AssertionError(f"rust-producer is missing step {name!r}")
+        return block
+
+    exact_steps = (
+        named_step(preflight, "Require exact current main"),
+        named_step(root_job, "Revalidate exact current main checkout"),
+        named_step(root_job, "Revalidate exact current main before build"),
+    )
+    for block in exact_steps:
+        command = verifier.step_run_command(block) or ""
+        if "root-artifact-exact-main" not in command or not any(
+            "GH_TOKEN: ${{ github.token }}" in line for line in block
+        ):
+            raise AssertionError("each exact-main query must be authenticated in its own step")
+        if "just build" in command:
+            raise AssertionError("a token-bearing exact-main step must not build product bytes")
+
+    build = named_step(root_job, "Build exact root executable")
+    build_command = verifier.step_run_command(build) or ""
+    if build_command.count("just build") != 1 or "root-artifact-exact-main" in build_command:
+        raise AssertionError("the build step must contain the sole managed build and no ref query")
+    if any("GH_TOKEN:" in line or "GITHUB_TOKEN:" in line for line in build):
+        raise AssertionError("the build step must not receive a repository token")
+    for identity_arg in ("--wrapper-device", "--wrapper-inode", "--wrapper-digest"):
+        if identity_arg not in build_command:
+            raise AssertionError(f"pre-build wrapper identity is missing {identity_arg}")
+
+    step_names = [
+        (verifier.block_top_level_items(block) or {}).get("name", "")
+        for block in verifier.step_blocks(root_job)
+    ]
+    required_order = (
+        "Install cargo-zigbuild",
+        "Setup mandatory sccache",
+        "Revalidate exact current main before build",
+        "Build exact root executable",
+        "Print sccache stats",
+        "Prove staged root executable",
+        "Upload root artifact",
+        "Bind uploaded root artifact bytes",
+    )
+    indices = [step_names.index(name) for name in required_order]
+    if indices != sorted(indices):
+        raise AssertionError("root-artifact installer/build/stats/snapshot/upload order changed")
+
+    upload_blocks = verifier.action_blocks(root_job, "actions/upload-artifact@")
+    if len(upload_blocks) != 1:
+        raise AssertionError("root-artifact must have exactly one evidence upload")
+    upload_inputs = dict(verifier.block_input_items(upload_blocks[0]))
+    if upload_inputs.get("archive") != "false" or upload_inputs.get("path") != "${{ steps.root-artifact.outputs.archive }}":
+        raise AssertionError(f"root-artifact upload is not direct staged-archive transport: {upload_inputs!r}")
+    if "name" in upload_inputs:
+        raise AssertionError("direct upload must not carry the ignored name input")
+
     forbidden = (
         "cargo test",
         "cargo nextest",
@@ -10849,8 +10885,49 @@ def assert_root_artifact_workflow_contract() -> None:
     present = [fragment for fragment in forbidden if fragment in workflow]
     if present:
         raise AssertionError(f"rust-producer contains forbidden test/seed/consumer edges: {present!r}")
-    if workflow.count("actions/upload-artifact@") != 1:
-        raise AssertionError("root-artifact must have exactly one evidence upload")
+
+    config, config_errors = verifier.load_required_github_actions_runners_config()
+    if config_errors or config is None:
+        raise AssertionError(config_errors)
+    policy = config["artifact_retention"]
+    job = verifier.parse_jobs(workflow)["root-artifact"]
+    retention_errors = verifier.upload_artifact_retention_errors(
+        policy,
+        ".github/workflows/rust-producer.yml",
+        "root-artifact",
+        job,
+    )
+    if retention_errors:
+        raise AssertionError(f"root-artifact direct-upload semantics are invalid: {retention_errors!r}")
+    upload_key = ".github/workflows/rust-producer.yml::root-artifact::upload-root-artifact"
+    archive_file = verifier.tomllib.loads(
+        (REPO_ROOT / "ci" / "rust-verification.toml").read_text(encoding="utf-8")
+    )["producer"]["root_artifact"]["archive_file"]
+    if policy.uploads[upload_key].artifact_name != archive_file:
+        raise AssertionError("direct-upload filename and retention registration diverged")
+    ignored_name_workflow = workflow.replace(
+        "        with:\n          path: ${{ steps.root-artifact.outputs.archive }}",
+        "        with:\n          name: ignored-by-direct-mode\n          path: ${{ steps.root-artifact.outputs.archive }}",
+        1,
+    )
+    ignored_name_errors = verifier.upload_artifact_retention_errors(
+        policy,
+        ".github/workflows/rust-producer.yml",
+        "root-artifact",
+        verifier.parse_jobs(ignored_name_workflow)["root-artifact"],
+    )
+    if not any("must not set the ignored name input" in error for error in ignored_name_errors):
+        raise AssertionError("direct upload accepted an ineffective artifact name")
+
+    bind = named_step(root_job, "Bind uploaded root artifact bytes")
+    bind_command = verifier.step_run_command(bind) or ""
+    bind_step = "\n".join(bind)
+    if (
+        "artifact-digest" not in bind_step
+        or "archive_sha256" not in bind_step
+        or 'test "$UPLOADED_ARCHIVE_SHA256" = "$LOCAL_ARCHIVE_SHA256"' not in bind_command
+    ):
+        raise AssertionError("upload raw digest is not bound to the local archive digest")
 
 
 def main() -> int:

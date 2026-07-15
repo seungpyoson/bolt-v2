@@ -10,6 +10,7 @@ import errno
 import fcntl
 import functools
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -122,6 +123,14 @@ SCRUB_ENV_KEYS = (
     "CARGO_INSTALL_ROOT",
     "CARGO_TARGET_DIR",
     "CARGO_TARGET_TMPDIR",
+    "GH_TOKEN",
+    "GITHUB_ENV",
+    "GITHUB_EVENT_PATH",
+    "GITHUB_OUTPUT",
+    "GITHUB_REPOSITORY",
+    "GITHUB_TOKEN",
+    "GITHUB_WORKSPACE",
+    "PWD",
     "RUSTC_WORKSPACE_WRAPPER",
     "RUSTC_WRAPPER",
     "RUSTFLAGS",
@@ -303,7 +312,6 @@ def validate_root_artifact_policy(data: dict[str, Any]) -> None:
         "evidence_file",
         "checksum_file",
         "archive_file",
-        "required_wrapper_env",
     }
     if set(root_artifact) != expected_keys:
         missing = sorted(expected_keys - set(root_artifact))
@@ -326,11 +334,6 @@ def validate_root_artifact_policy(data: dict[str, Any]) -> None:
     output_names = [str(root_artifact[key]) for key in output_keys]
     if len(output_names) != len(set(output_names)):
         raise PolicyError("producer.root_artifact output names must be pairwise distinct")
-    wrapper_env = root_artifact.get("required_wrapper_env")
-    if not isinstance(wrapper_env, str) or not ENV_NAME_RE.fullmatch(wrapper_env):
-        raise PolicyError("producer.root_artifact.required_wrapper_env must be an environment variable")
-    if wrapper_env != "RUSTC_WRAPPER":
-        raise PolicyError("producer.root_artifact.required_wrapper_env must be RUSTC_WRAPPER")
 
 
 def string_array_policy_value(table: dict[str, Any], key: str) -> list[str]:
@@ -4910,9 +4913,25 @@ def run_staged_binary(
     *,
     cwd: pathlib.Path,
 ) -> subprocess.CompletedProcess[str]:
+    home = cwd / "home"
+    temp = cwd / "tmp"
+    home.mkdir(mode=0o700, exist_ok=True)
+    temp.mkdir(mode=0o700, exist_ok=True)
+    env = {
+        "HOME": str(home),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": os.defpath,
+        "PWD": str(cwd),
+        "TEMP": str(temp),
+        "TMP": str(temp),
+        "TMPDIR": str(temp),
+        "TZ": "UTC",
+    }
     return subprocess.run(
         [str(binary), *args],
         cwd=cwd,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -4946,20 +4965,21 @@ def require_failure(result: subprocess.CompletedProcess[str], *, label: str) -> 
 
 def validate_required_wrapper(
     policy: dict[str, Any],
-    artifact: dict[str, Any],
     *,
     action_wrapper: str,
     sccache_config: pathlib.Path,
+    wrapper_device: int,
+    wrapper_inode: int,
+    wrapper_digest: str,
 ) -> None:
     import sccache_eligibility as sccache_owner
 
     cache = policy.get("remote_compile_cache")
     if not isinstance(cache, dict):
         raise RootArtifactError("remote_compile_cache table is required for root-artifact")
-    required_env = str(artifact["required_wrapper_env"])
     configured = os.environ.get(str(cache["wrapper_env"]), "")
     injected = managed_remote_compile_cache_env(policy)
-    wrapper = injected.get(required_env, "")
+    wrapper = injected.get("RUSTC_WRAPPER", "")
     if not wrapper or not configured or not action_wrapper:
         raise RootArtifactError("root-artifact requires the verified sccache wrapper environment")
     wrapper_path = pathlib.Path(wrapper)
@@ -4968,16 +4988,22 @@ def validate_required_wrapper(
     if (
         not wrapper_path.is_absolute()
         or not action_path.is_absolute()
-        or wrapper_path.resolve() != configured_path.resolve()
-        or wrapper_path.resolve() != action_path.resolve()
+        or wrapper_path != configured_path
+        or wrapper_path != action_path
     ):
         raise RootArtifactError("root-artifact wrapper identity does not match the verified sccache path")
     try:
         config = sccache_owner.load_sccache_config(sccache_config)
-        verified = sccache_owner.verify_installed_wrapper(config, action_wrapper)
+        verified = sccache_owner.validate_wrapper_identity(
+            config,
+            action_path,
+            device=wrapper_device,
+            inode=wrapper_inode,
+            digest=wrapper_digest,
+        )
     except (sccache_owner.SccacheConfigError, sccache_owner.SccacheStrictError) as exc:
         raise RootArtifactError(str(exc)) from exc
-    if verified != wrapper_path.resolve() or cache["wrapper_program"] != config.executable:
+    if verified.path != wrapper_path or cache["wrapper_program"] != config.executable:
         raise RootArtifactError("root-artifact wrapper path does not identify configured sccache")
 
 
@@ -4987,9 +5013,11 @@ def cmd_root_artifact_wrapper(args: argparse.Namespace) -> int:
         policy = load_policy(repo)
         validate_required_wrapper(
             policy,
-            root_artifact_policy(policy),
             action_wrapper=args.action_wrapper,
             sccache_config=pathlib.Path(args.sccache_config),
+            wrapper_device=args.wrapper_device,
+            wrapper_inode=args.wrapper_inode,
+            wrapper_digest=args.wrapper_digest,
         )
     except (OSError, PolicyError, RootArtifactError) as exc:
         print(str(exc), file=sys.stderr)
@@ -5064,20 +5092,71 @@ def validate_verify_payload(
 
 def create_deterministic_root_artifact_tar(
     archive_path: pathlib.Path,
-    members: tuple[pathlib.Path, pathlib.Path, pathlib.Path],
-) -> None:
-    with tarfile.open(archive_path, "w", format=tarfile.USTAR_FORMAT) as archive:
-        for index, member in enumerate(members):
-            info = tarfile.TarInfo(member.name)
-            info.size = member.stat().st_size
-            info.mode = 0o755 if index == 0 else 0o644
+    members: tuple[tuple[str, bytes, int], ...],
+) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for name, content, mode in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mode = mode
             info.mtime = 0
             info.uid = 0
             info.gid = 0
             info.uname = ""
             info.gname = ""
-            with member.open("rb") as handle:
-                archive.addfile(info, handle)
+            archive.addfile(info, io.BytesIO(content))
+    archive_bytes = buffer.getvalue()
+    archive_path.write_bytes(archive_bytes)
+    return archive_bytes
+
+
+def snapshot_regular_executable(
+    path: pathlib.Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RootArtifactError("root-artifact executable is not a regular no-follow file") from exc
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o111 == 0:
+            raise RootArtifactError("root-artifact executable is not a regular executable file")
+        chunks: list[bytes] = []
+        while chunk := os.read(fd, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise RootArtifactError("root-artifact executable path changed during snapshot") from exc
+    identity = (before.st_dev, before.st_ino)
+    stable_metadata = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    if stable_metadata != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ) or identity != (current.st_dev, current.st_ino):
+        raise RootArtifactError("root-artifact executable changed during snapshot")
+    if expected_identity is not None and identity != expected_identity:
+        raise RootArtifactError("root-artifact staged executable inode changed during execution")
+    content = b"".join(chunks)
+    if len(content) != before.st_size:
+        raise RootArtifactError("root-artifact executable size changed during snapshot")
+    return content
 
 
 def create_root_artifact_evidence(
@@ -5090,16 +5169,27 @@ def create_root_artifact_evidence(
 ) -> dict[str, str]:
     artifact = root_artifact_policy(policy)
     validate_repo_revision(repo, head_sha)
-    if source_binary.is_symlink() or not source_binary.is_file() or not os.access(source_binary, os.X_OK):
-        raise RootArtifactError("managed build binary is not a regular executable file")
+    source_bytes = snapshot_regular_executable(source_binary)
     if stage_dir.exists() and any(stage_dir.iterdir()):
         raise RootArtifactError("root-artifact stage directory must be empty")
     stage_dir.mkdir(parents=True, exist_ok=True)
     staged_binary = stage_dir / str(artifact["binary_name"])
     if source_binary.resolve() == staged_binary.resolve():
         raise RootArtifactError("root-artifact source and staged binary paths must differ")
-    shutil.copy2(source_binary, staged_binary)
-    initial_digest = file_sha256(staged_binary)
+    try:
+        staged_fd = os.open(
+            staged_binary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o755,
+        )
+        with os.fdopen(staged_fd, "wb") as handle:
+            handle.write(source_bytes)
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o755)
+            staged_stat = os.fstat(handle.fileno())
+            staged_identity = (staged_stat.st_dev, staged_stat.st_ino)
+    except OSError as exc:
+        raise RootArtifactError("root-artifact could not stage the managed executable bytes") from exc
     tracked_paths, overlays = tracked_config_paths(repo, head_sha)
     executed_overlays: list[str] = []
     generate_keys = {
@@ -5205,25 +5295,35 @@ def create_root_artifact_evidence(
     expected_overlays = [path.as_posix() for path in overlays]
     if executed_overlays != expected_overlays or len(executed_overlays) != len(set(executed_overlays)):
         raise RootArtifactError("root-artifact overlay execution was omitted or duplicated")
-    final_digest = file_sha256(staged_binary)
-    if final_digest != initial_digest:
+    binary_bytes = snapshot_regular_executable(
+        staged_binary,
+        expected_identity=staged_identity,
+    )
+    if binary_bytes != source_bytes:
         raise RootArtifactError("staged binary digest changed during root-artifact execution")
+    binary_digest = hashlib.sha256(binary_bytes).hexdigest()
     validate_repo_revision(repo, head_sha)
     checksum_path = stage_dir / str(artifact["checksum_file"])
-    checksum_path.write_text(f"{initial_digest}  {staged_binary.name}\n", encoding="utf-8")
+    checksum_bytes = f"{binary_digest}  {staged_binary.name}\n".encode()
+    checksum_path.write_bytes(checksum_bytes)
     evidence_path = stage_dir / str(artifact["evidence_file"])
     evidence = {
         "schema_version": artifact["evidence_schema_version"],
         "operation": artifact["operation"],
         "head_sha": head_sha,
-        "binary_sha256": initial_digest,
+        "binary_sha256": binary_digest,
         "overlays": expected_overlays,
     }
-    evidence_path.write_text(json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    evidence_bytes = (json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    evidence_path.write_bytes(evidence_bytes)
     archive_path = stage_dir / str(artifact["archive_file"])
-    create_deterministic_root_artifact_tar(
+    archive_bytes = create_deterministic_root_artifact_tar(
         archive_path,
-        (staged_binary, checksum_path, evidence_path),
+        (
+            (staged_binary.name, binary_bytes, 0o755),
+            (checksum_path.name, checksum_bytes, 0o644),
+            (evidence_path.name, evidence_bytes, 0o644),
+        ),
     )
     return {
         "stage_dir": str(stage_dir),
@@ -5231,6 +5331,7 @@ def create_root_artifact_evidence(
         "checksum": str(checksum_path),
         "evidence": str(evidence_path),
         "archive": str(archive_path),
+        "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
     }
 
 
@@ -5247,7 +5348,17 @@ def cmd_root_artifact_evidence(args: argparse.Namespace) -> int:
         if args.github_output:
             append_github_outputs(
                 pathlib.Path(args.github_output),
-                {key: outputs[key] for key in ("stage_dir", "binary", "checksum", "evidence", "archive")},
+                {
+                    key: outputs[key]
+                    for key in (
+                        "stage_dir",
+                        "binary",
+                        "checksum",
+                        "evidence",
+                        "archive",
+                        "archive_sha256",
+                    )
+                },
             )
         print(json.dumps(outputs, sort_keys=True))
     except (OSError, PolicyError, RootArtifactError) as exc:
@@ -5573,6 +5684,9 @@ def build_parser() -> argparse.ArgumentParser:
     root_artifact_wrapper.add_argument("--repo", required=True)
     root_artifact_wrapper.add_argument("--action-wrapper", required=True)
     root_artifact_wrapper.add_argument("--sccache-config", required=True)
+    root_artifact_wrapper.add_argument("--wrapper-device", required=True, type=int)
+    root_artifact_wrapper.add_argument("--wrapper-inode", required=True, type=int)
+    root_artifact_wrapper.add_argument("--wrapper-digest", required=True)
     root_artifact_wrapper.set_defaults(func=cmd_root_artifact_wrapper)
 
     fast_linker_programs = subparsers.add_parser("fast-linker-programs")

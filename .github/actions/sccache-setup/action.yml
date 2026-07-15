@@ -52,6 +52,15 @@ outputs:
   wrapper-path:
     description: Checksum-verified sccache path, empty when unavailable.
     value: ${{ steps.strict.outputs.wrapper_path }}
+  wrapper-device:
+    description: Device number bound to the promoted strict wrapper.
+    value: ${{ steps.strict.outputs.wrapper_device }}
+  wrapper-inode:
+    description: Inode number bound to the promoted strict wrapper.
+    value: ${{ steps.strict.outputs.wrapper_inode }}
+  wrapper-digest:
+    description: SHA-256 bound to the promoted strict wrapper.
+    value: ${{ steps.strict.outputs.wrapper_digest }}
   config-path:
     description: Resolved repository-owned sccache identity configuration.
     value: ${{ steps.eligibility.outputs.config_path }}

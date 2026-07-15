@@ -146,8 +146,8 @@ jobs:
           checked-out-sha: ${{ steps.exact-main.outputs.checked_out_sha }}
           remote-main-sha: ${{ steps.exact-main.outputs.remote_main_sha }}
 
-      - name: Build exact root executable
-        id: build
+      - name: Revalidate exact current main before build
+        id: pre-build-main
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -156,9 +156,6 @@ jobs:
           EVENT_REF: ${{ github.ref }}
           EVENT_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
-          SCCACHE_PATH: ${{ steps.sccache.outputs.wrapper-path }}
-          SCCACHE_ACTION_WRAPPER: ${{ steps.sccache.outputs.wrapper-path }}
-          SCCACHE_CONFIG_PATH: ${{ steps.sccache.outputs.config-path }}
         run: |
           set -euo pipefail
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-exact-main \
@@ -169,17 +166,39 @@ jobs:
             --event-sha "$EVENT_SHA" \
             --repository "$REPOSITORY" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Build exact root executable
+        id: build
+        shell: bash
+        env:
+          SCCACHE_PATH: ${{ steps.sccache.outputs.wrapper-path }}
+          SCCACHE_ACTION_WRAPPER: ${{ steps.sccache.outputs.wrapper-path }}
+          SCCACHE_CONFIG_PATH: ${{ steps.sccache.outputs.config-path }}
+          SCCACHE_WRAPPER_DEVICE: ${{ steps.sccache.outputs.wrapper-device }}
+          SCCACHE_WRAPPER_INODE: ${{ steps.sccache.outputs.wrapper-inode }}
+          SCCACHE_WRAPPER_DIGEST: ${{ steps.sccache.outputs.wrapper-digest }}
+        run: |
+          set -euo pipefail
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-wrapper \
             --repo "$GITHUB_WORKSPACE" \
             --action-wrapper "$SCCACHE_ACTION_WRAPPER" \
-            --sccache-config "$SCCACHE_CONFIG_PATH"
+            --sccache-config "$SCCACHE_CONFIG_PATH" \
+            --wrapper-device "$SCCACHE_WRAPPER_DEVICE" \
+            --wrapper-inode "$SCCACHE_WRAPPER_INODE" \
+            --wrapper-digest "$SCCACHE_WRAPPER_DIGEST"
           just build
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
       - name: Prove staged root executable
         id: root-artifact
         shell: bash
         env:
-          HEAD_SHA: ${{ steps.build.outputs.checked_out_sha }}
+          HEAD_SHA: ${{ steps.pre-build-main.outputs.checked_out_sha }}
         run: |
           set -euo pipefail
           binary_path="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" root-artifact-binary-path --repo "$GITHUB_WORKSPACE")"
@@ -190,18 +209,21 @@ jobs:
             --stage-dir "$RUNNER_TEMP/root-artifact" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Print sccache stats
-        if: always()
-        uses: ./.github/actions/sccache-stats
-        with:
-          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
-
       - name: Upload root artifact
         id: upload-root-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: root-artifact
           path: ${{ steps.root-artifact.outputs.archive }}
           archive: false
           if-no-files-found: error
           retention-days: 3
+
+      - name: Bind uploaded root artifact bytes
+        shell: bash
+        env:
+          LOCAL_ARCHIVE_SHA256: ${{ steps.root-artifact.outputs.archive_sha256 }}
+          UPLOADED_ARCHIVE_SHA256: ${{ steps.upload-root-artifact.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          test -n "$LOCAL_ARCHIVE_SHA256"
+          test "$UPLOADED_ARCHIVE_SHA256" = "$LOCAL_ARCHIVE_SHA256"

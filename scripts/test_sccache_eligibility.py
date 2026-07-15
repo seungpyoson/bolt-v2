@@ -67,6 +67,61 @@ def parse_outputs(path: pathlib.Path) -> dict[str, str]:
     return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
 
 
+def assert_unapproved_wrapper_is_never_executed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        wrapper = bin_dir / "sccache"
+        approved = root / "approved-sccache"
+        invocation_log = root / "unapproved-invocation.log"
+        write_executable(
+            approved,
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  --version) printf '%s\\n' 'sccache 0.10.0' ;;\n"
+            "  --start-server|--zero-stats) exit 0 ;;\n"
+            "  *) exit 7 ;;\n"
+            "esac\n",
+        )
+        write_executable(
+            wrapper,
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$1\" >> \"$UNAPPROVED_INVOCATION_LOG\"\n"
+            "cp \"$APPROVED_SCCACHE\" \"$0\"\n"
+            "printf '%s\\n' 'sccache 0.10.0'\n",
+        )
+        write_executable(bin_dir / "uname", "#!/bin/sh\nprintf '%s\\n' aarch64\n")
+        config = root / "sccache.toml"
+        config.write_text(
+            installer_config(digest=hashlib.sha256(approved.read_bytes()).hexdigest()),
+            encoding="utf-8",
+        )
+        output = root / "output"
+        github_env = root / "env"
+        output.touch()
+        github_env.touch()
+        result = run_owner(
+            "strict-setup",
+            {
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "CONFIG_PATH": str(config),
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_ENV": str(github_env),
+                "ELIGIBILITY_OUTCOME": "success",
+                "SCCACHE_ELIGIBLE": "true",
+                "AWS_OUTCOME": "success",
+                "INSTALL_OUTCOME": "success",
+                "SCCACHE_PATH": str(wrapper),
+                "UNAPPROVED_INVOCATION_LOG": str(invocation_log),
+                "APPROVED_SCCACHE": str(approved),
+            },
+        )
+        if result.returncode == 0 or invocation_log.exists():
+            raise AssertionError("checksum-unapproved sccache executed before admission")
+
+
 def assert_strict_and_legacy_behavior() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -91,6 +146,7 @@ esac
             "#!/bin/sh\nprintf '%s\\n' \"${FAKE_UNAME_MACHINE:-aarch64}\"\n",
         )
         digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
+        original_wrapper = wrapper.read_bytes()
         config = root / "sccache.toml"
         config.write_text(installer_config(digest=digest), encoding="utf-8")
 
@@ -122,10 +178,27 @@ esac
             raise AssertionError((success.stdout, success.stderr))
         build_sentinel.write_text("build\n", encoding="utf-8")
         outputs = parse_outputs(output)
-        if outputs != {"wrapper_path": str(wrapper.resolve()), "enabled": "true"}:
+        if set(outputs) != {
+            "wrapper_path",
+            "wrapper_device",
+            "wrapper_inode",
+            "wrapper_digest",
+            "enabled",
+        }:
+            raise AssertionError(outputs)
+        live_wrapper = pathlib.Path(outputs["wrapper_path"])
+        live_stat = live_wrapper.stat()
+        if (
+            outputs["enabled"] != "true"
+            or outputs["wrapper_digest"] != digest
+            or int(outputs["wrapper_device"]) != live_stat.st_dev
+            or int(outputs["wrapper_inode"]) != live_stat.st_ino
+            or live_wrapper.parent.name != digest
+            or wrapper.exists()
+        ):
             raise AssertionError(outputs)
         exported = parse_outputs(github_env)
-        if exported.get("SCCACHE_PATH") != str(wrapper.resolve()) or exported.get(
+        if exported.get("SCCACHE_PATH") != str(live_wrapper) or exported.get(
             "BOLT_RUST_VERIFICATION_SCCACHE"
         ) != "1":
             raise AssertionError(exported)
@@ -146,6 +219,12 @@ esac
                     str(action_wrapper),
                     "--sccache-config",
                     str(config),
+                    "--wrapper-device",
+                    outputs["wrapper_device"],
+                    "--wrapper-inode",
+                    outputs["wrapper_inode"],
+                    "--wrapper-digest",
+                    outputs["wrapper_digest"],
                 ],
                 cwd=REPO_ROOT,
                 env={
@@ -164,31 +243,36 @@ esac
                     handle.write("build\n")
             return result
 
-        prebuild_success = prebuild(wrapper, wrapper)
+        prebuild_success = prebuild(live_wrapper, live_wrapper)
         if prebuild_success.returncode != 0:
             raise AssertionError((prebuild_success.stdout, prebuild_success.stderr))
         other_dir = root / "other"
         other_dir.mkdir()
         other_wrapper = other_dir / "sccache"
-        other_wrapper.write_bytes(wrapper.read_bytes())
+        other_wrapper.write_bytes(live_wrapper.read_bytes())
         other_wrapper.chmod(0o755)
-        if prebuild(other_wrapper, wrapper).returncode == 0:
+        if prebuild(other_wrapper, live_wrapper).returncode == 0:
             raise AssertionError("action-output/ambient wrapper mismatch reached the build sentinel")
-        original_wrapper = wrapper.read_bytes()
-        wrapper.write_bytes(original_wrapper + b"\n# mutated after setup\n")
-        wrapper.chmod(0o755)
-        if prebuild(wrapper, wrapper).returncode == 0:
+        live_wrapper.write_bytes(original_wrapper + b"\n# mutated after setup\n")
+        live_wrapper.chmod(0o755)
+        if prebuild(live_wrapper, live_wrapper).returncode == 0:
             raise AssertionError("wrapper mutation after strict setup reached the build sentinel")
-        wrapper.write_bytes(original_wrapper)
-        wrapper.chmod(0o755)
+        live_wrapper.write_bytes(original_wrapper)
+        live_wrapper.chmod(0o755)
+        replacement = live_wrapper.with_name("replacement-sccache")
+        replacement.write_bytes(original_wrapper)
+        replacement.chmod(0o755)
+        os.replace(replacement, live_wrapper)
+        if prebuild(live_wrapper, live_wrapper).returncode == 0:
+            raise AssertionError("wrapper inode replacement after strict setup reached the build sentinel")
         if prebuild_log.read_text(encoding="utf-8").splitlines() != ["build"]:
             raise AssertionError("pre-build wrapper binding did not reach the build sentinel exactly once")
 
         wrong_name = bin_dir / "wrong-name"
-        wrong_name.write_bytes(wrapper.read_bytes())
+        wrong_name.write_bytes(original_wrapper)
         wrong_name.chmod(0o755)
         non_executable = root / "sccache"
-        non_executable.write_bytes(wrapper.read_bytes())
+        non_executable.write_bytes(original_wrapper)
         non_executable.chmod(0o644)
         wrong_digest_config = root / "wrong-digest.toml"
         wrong_digest_config.write_text(installer_config(digest="0" * 64), encoding="utf-8")
@@ -210,6 +294,8 @@ esac
             ("server start failure", {"FAKE_SCCACHE_START_STATUS": "9"}),
         )
         for label, overrides in failures:
+            wrapper.write_bytes(original_wrapper)
+            wrapper.chmod(0o755)
             case_env, _, _ = strict_env(**overrides)
             result = run_owner("strict-setup", case_env)
             if result.returncode == 0:
@@ -217,6 +303,8 @@ esac
 
         legacy_log = root / "legacy.log"
         legacy_output = root / "legacy-output"
+        wrapper.write_bytes(original_wrapper)
+        wrapper.chmod(0o755)
         legacy_env = {
             **os.environ,
             "GITHUB_OUTPUT": str(legacy_output),
@@ -415,6 +503,7 @@ def main() -> int:
             pass
         else:
             raise AssertionError(f"{label} must fail strict sccache config parsing")
+    assert_unapproved_wrapper_is_never_executed()
     assert_strict_and_legacy_behavior()
     print("OK: sccache eligibility self-tests passed.")
     return 0

@@ -440,7 +440,8 @@ artifact_class = "transient"
 retention_days = 7
 
 [artifact_retention.uploads.".github/workflows/rust-producer.yml::root-artifact::upload-root-artifact"]
-artifact_name = "root-artifact"
+artifact_name_config_file = "ci/rust-verification.toml"
+artifact_name_config_ref = "producer.root_artifact.archive_file"
 artifact_class = "transient"
 retention_days = 3
 

@@ -2998,11 +2998,33 @@ def upload_artifact_retention_errors(
         if site is None:
             errors.append(f"{upload_key} missing from artifact retention policy")
             continue
-        artifact_names = block_input_values(block, "name")
-        if len(artifact_names) != 1:
-            errors.append(f"{upload_key} upload-artifact step must set exactly one name")
+        archive_values = block_input_values(block, "archive")
+        if len(archive_values) > 1:
+            errors.append(f"{upload_key} upload-artifact step must set at most one archive mode")
             continue
-        artifact_name = artifact_names[0]
+        direct_upload = archive_values == ["false"]
+        artifact_names = block_input_values(block, "name")
+        if direct_upload:
+            if artifact_names:
+                errors.append(f"{upload_key} direct upload must not set the ignored name input")
+                continue
+            paths = block_input_values(block, "path")
+            if len(paths) != 1 or not paths[0]:
+                errors.append(f"{upload_key} direct upload must set exactly one path")
+                continue
+            literal_path = paths[0]
+            if "${{" not in literal_path and pathlib.PurePosixPath(literal_path).name != site.artifact_name:
+                errors.append(
+                    f"{upload_key} direct-upload filename {pathlib.PurePosixPath(literal_path).name} "
+                    f"does not match configured name {site.artifact_name}"
+                )
+                continue
+            artifact_name = site.artifact_name
+        else:
+            if len(artifact_names) != 1:
+                errors.append(f"{upload_key} upload-artifact step must set exactly one name")
+                continue
+            artifact_name = artifact_names[0]
         label = f"{source_name} {job_id} {step_id} artifact {artifact_name}"
         if not artifact_retention_upload_matches(site, artifact_name):
             errors.append(

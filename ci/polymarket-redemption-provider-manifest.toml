@@ -1,0 +1,84 @@
+schema_version = 1
+manifest_id = "polymarket-redemption-v2-2026-07-15"
+
+[adapter]
+reviewed_repository = "https://github.com/Polymarket/ctf-exchange-v2"
+reviewed_revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
+standard_source = "src/adapters/CtfCollateralAdapter.sol"
+standard_blob = "4af744d991e0eb4fbf93e72aba051788edb81688"
+negative_risk_source = "src/adapters/NegRiskCtfCollateralAdapter.sol"
+negative_risk_blob = "698691ab6134ab31fbebb0fa62ffdb7a0395bcb8"
+negative_risk_interface_source = "src/adapters/interfaces/INegRiskAdapter.sol"
+negative_risk_interface_blob = "9e03079796543609cb8c25292bc42872f3029a3d"
+deployment_table_blob = "78aeefbb48439460ccb2c4e7de04d0aff619b0dd"
+external_abi = "redeemPositions(address,bytes32,bytes32,uint256[])"
+external_selector = "0x01b7037c"
+ignored_argument_indices = [0, 1, 3]
+standard_internal_path = "current CTF balances -> legacy CTF redeem -> USDC.e -> PMCT"
+negative_risk_internal_path = "current wrapped-collateral balances -> INegRiskAdapter.redeemPositions(bytes32,uint256[]) -> USDC.e -> PMCT"
+
+[adapter_arguments]
+dummy_account = "0x0000000000000000000000000000000000000000"
+dummy_parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+dummy_index_sets = [1, 2]
+
+[deployment]
+chain_id = 137
+wallet_type = "SAFE"
+safe_address = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
+safe_factory = "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b"
+standard_target = "0xADa100874d00e3331D00F2007a9c336a65009718"
+negative_risk_target = "0xAdA200001000ef00D07553cEE7006808F895c6F1"
+collateral = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+
+[safe_boundary]
+verification = "exact-query-required"
+implementation = "0x3E5c63644E683549055b9Be8653de26E0B4CD36E"
+fallback_handler = "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99"
+guard = "0x0000000000000000000000000000000000000000"
+modules = []
+
+[safe]
+nonce_abi = "nonce()"
+nonce_selector = "0xaffed0e0"
+operation = "call"
+value = "0"
+safe_tx_gas = "0"
+base_gas = "0"
+gas_price = "0"
+gas_token = "0x0000000000000000000000000000000000000000"
+refund_receiver = "0x0000000000000000000000000000000000000000"
+signature_bytes = 65
+
+[relayer]
+reviewed_repository = "https://github.com/Polymarket/builder-relayer-client"
+reviewed_revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"
+safe_builder_blob = "3a05ac53d005d92822582a2a87d6bdbb13827187"
+types_blob = "daa09af14528ba5be49a0063b359fbc17dc5e505"
+client_blob = "2ca627dc7f853d03c9bd7dbbec505e86a944d101"
+endpoints_blob = "b33dfe0d1062e7db2615f1b155f11caf0c31a5d7"
+safe_abi_blob = "5bbd1622d5d561fbe7ec472532deb25ef4f21687"
+config_blob = "18ebf7fe942fddde28bbf717fa15669b631d5cfb"
+explicit_nonce = "source-proven"
+competing_same_nonce = "unproven"
+submit_path = "/submit"
+transaction_path = "/transaction"
+nonce_path = "/nonce"
+
+[independent_fixture]
+reviewed_repository = "https://github.com/Polymarket/py-builder-relayer-client"
+reviewed_revision = "267a36d84d7839b6e4ac134297d9230fc224cf8f"
+safe_builder_blob = "c9e8cacbe2f0e55c6e8bba230a5e072628136b4f"
+client_blob = "6fcf7915301ac0ac0542e9fb1de25e0fd8118af5"
+
+[source_snapshots]
+standard_sha256 = "b6fcc6b83bc665b716b6b8022a9dc7b73916674385e8b85673b7f084fc1def3e"
+negative_risk_sha256 = "fcdd887f55d6768b2046c63d6e06c6cb4853380bb24e5d02a58dbac6db0cd808"
+relayer_sha256 = "8953e051ee37e72e16dd786a79c302f970e7839bc8ac111d3f666e32d674c1a8"
+
+[activation]
+primitive_enabled = false
+requires_competing_same_nonce_conformance = true
+has_active_caller = false
+has_durable_state = false

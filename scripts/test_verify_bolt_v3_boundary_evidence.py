@@ -248,6 +248,8 @@ def clean_files(root: Path) -> None:
         """
 pub const AWS_SSM_SECRET_SOURCE_ADAPTER_ID: &str = stringify!(AwsSsmSecretSource);
 pub const IMDS_METADATA_ADAPTER_ID: &str = stringify!(Imdsv2HostFactsSource);
+pub const POLYMARKET_RELAYER_ADAPTER_ID: &str = stringify!(PolymarketSafeRelayer);
+pub const POLYGON_REDEMPTION_RPC_ADAPTER_ID: &str = stringify!(PolygonRedemptionRpc);
 pub enum BoundaryEvidenceClass {
     WebSocketFrame,
     ImdsMetadata,
@@ -262,6 +264,7 @@ pub enum BoundaryFeeder {
     DeployTargetHostFacts,
     SecretResolution,
     PolymarketVenueTruthRuntime,
+    PolymarketRedemptionPrimitive,
 }
 pub struct BoundaryRegistryEntry {
     pub adapter_id: &'static str,
@@ -278,6 +281,8 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry { adapter_id: IMDS_METADATA_ADAPTER_ID, class: BoundaryEvidenceClass::ImdsMetadata, feeder: BoundaryFeeder::DeployTargetHostFacts },
     BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },
     BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketVenueTruthRuntime },
+    BoundaryRegistryEntry { adapter_id: POLYMARKET_RELAYER_ADAPTER_ID, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketRedemptionPrimitive },
+    BoundaryRegistryEntry { adapter_id: POLYGON_REDEMPTION_RPC_ADAPTER_ID, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketRedemptionPrimitive },
 ];
 """,
     )

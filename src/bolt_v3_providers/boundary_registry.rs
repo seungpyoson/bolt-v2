@@ -1,5 +1,8 @@
 //! Boundary evidence registry for deploy/readiness feeder surfaces.
 
+use super::polymarket::redemption::{
+    POLYGON_REDEMPTION_RPC_ADAPTER_ID, POLYMARKET_RELAYER_ADAPTER_ID,
+};
 use super::{chainlink_reference, polymarket, polyresearch};
 
 pub const AWS_SSM_SECRET_SOURCE_ADAPTER_ID: &str = stringify!(AwsSsmSecretSource);
@@ -23,6 +26,7 @@ pub enum BoundaryFeeder {
     DeployTargetHostFacts,
     SecretResolution,
     PolymarketVenueTruthRuntime,
+    PolymarketRedemptionPrimitive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,5 +81,15 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
         adapter_id: polymarket::KEY,
         class: BoundaryEvidenceClass::HttpResponseBody,
         feeder: BoundaryFeeder::PolymarketVenueTruthRuntime,
+    },
+    BoundaryRegistryEntry {
+        adapter_id: POLYMARKET_RELAYER_ADAPTER_ID,
+        class: BoundaryEvidenceClass::HttpResponseBody,
+        feeder: BoundaryFeeder::PolymarketRedemptionPrimitive,
+    },
+    BoundaryRegistryEntry {
+        adapter_id: POLYGON_REDEMPTION_RPC_ADAPTER_ID,
+        class: BoundaryEvidenceClass::HttpResponseBody,
+        feeder: BoundaryFeeder::PolymarketRedemptionPrimitive,
     },
 ];

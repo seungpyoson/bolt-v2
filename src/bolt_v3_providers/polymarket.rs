@@ -29,6 +29,7 @@ mod balance_allowance_cache;
 mod collateral_accounting_source;
 mod fee_behavior_source;
 mod fees;
+pub mod redemption;
 mod venue_account_state_source;
 mod venue_truth_runtime_source;
 

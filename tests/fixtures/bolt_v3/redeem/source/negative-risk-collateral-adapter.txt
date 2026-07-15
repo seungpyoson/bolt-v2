@@ -1,0 +1,4 @@
+function _redeemPositions(bytes32 _conditionId, uint256[] memory) internal virtual override
+amounts[0] = CONDITIONAL_TOKENS.balanceOf(address(this), positionIds[0]);
+amounts[1] = CONDITIONAL_TOKENS.balanceOf(address(this), positionIds[1]);
+INegRiskAdapter(NEG_RISK_ADAPTER).redeemPositions(_conditionId, amounts);

@@ -1,0 +1,46 @@
+schema_version = 1
+enabled = false
+provider_manifest_id = "polymarket-redemption-v2-2026-07-15"
+
+[wallet]
+chain_id = 137
+wallet_type = "SAFE"
+safe_address = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
+safe_factory = "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b"
+safe_implementation = "0x3E5c63644E683549055b9Be8653de26E0B4CD36E"
+fallback_handler = "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99"
+guard = "0x0000000000000000000000000000000000000000"
+modules = []
+
+[adapter]
+standard_target = "0xADa100874d00e3331D00F2007a9c336a65009718"
+negative_risk_target = "0xAdA200001000ef00D07553cEE7006808F895c6F1"
+collateral = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+dummy_account = "0x0000000000000000000000000000000000000000"
+dummy_parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+dummy_index_sets = [1, 2]
+
+[relayer]
+origin = "https://relayer-v2.polymarket.com"
+submit_path = "/submit"
+transaction_path = "/transaction"
+nonce_path = "/nonce"
+max_request_bytes = 4096
+max_response_bytes = 2097152
+max_transaction_items = 1
+max_transaction_id_bytes = 256
+max_metadata_bytes = 256
+competing_same_nonce_conformance = false
+
+[rpc]
+max_response_bytes = 2097152
+max_receipt_logs = 4096
+finality_confirmations = 128
+
+[credentials]
+signer_private_key_ssm_path = "/bolt/polymarket/private-key"
+builder_api_key_ssm_path = "/bolt/polymarket/relayer-builder-api-key"
+builder_api_secret_ssm_path = "/bolt/polymarket/relayer-builder-api-secret"
+builder_passphrase_ssm_path = "/bolt/polymarket/relayer-builder-passphrase"
+max_value_bytes = 4096

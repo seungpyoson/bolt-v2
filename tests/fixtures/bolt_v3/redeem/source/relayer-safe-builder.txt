@@ -1,0 +1,11 @@
+export interface SafeTransactionArgs {
+    from: string;
+    nonce: string;
+    chainId: number;
+    transactions: SafeTransaction[];
+}
+nonce: args.nonce,
+export const GET_NONCE = "/nonce";
+export const GET_TRANSACTION = "/transaction"
+export const SUBMIT_TRANSACTION = "/submit";
+competing_same_nonce_hosted_acceptance = unproven

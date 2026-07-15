@@ -21080,3 +21080,651 @@ literal = '''"exit evaluation evidence rv_as_of_minus_now_ms exceeds i64 range: 
 context = '''"exit evaluation evidence rv_as_of_minus_now_ms exceeds i64 range: {delta_ms}"'''
 classification = "exit_evidence_conversion_diagnostic_template"
 reason = "Fail-loud diagnostic for a checked durable-evidence projection; it reports the captured delta and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"redeemPositions(address,bytes32,bytes32,uint256[])\""
+context = "if manifest.adapter.external_abi != \"redeemPositions(address,bytes32,bytes32,uint256[])\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"SAFE\""
+context = "|| config.wallet.wallet_type != \"SAFE\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced Safe protocol identity required to validate the disabled redemption profile."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| manifest.safe.safe_tx_gas != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced zero-gas Safe transaction semantics required for deterministic request bytes."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| manifest.safe.base_gas != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced zero-gas Safe transaction semantics required for deterministic request bytes."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| manifest.safe.gas_price != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Source-fenced zero-gas Safe transaction semantics required for deterministic request bytes."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "65"
+context = "|| manifest.safe.signature_bytes != 65"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Exact packed ECDSA signature width required by the reviewed relayer Safe request schema."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"redemption adapter arguments or Safe modules drifted from provider manifest\""
+context = "\"redemption adapter arguments or Safe modules drifted from provider manifest\""
+classification = "ao_redeem_redacted_diagnostic"
+reason = "Static non-secret validation diagnostic for a mechanically disabled profile."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"https://\""
+context = "if !config.relayer.origin.starts_with(\"https://\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Transport scheme constraint; the actual relayer origin remains grouped TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"/submit\""
+context = "|| config.relayer.submit_path != \"/submit\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Reviewed relayer route validated against the source-fenced manifest."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"/transaction\""
+context = "|| config.relayer.transaction_path != \"/transaction\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Reviewed exact-id relayer query route validated against the source-fenced manifest."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"/nonce\""
+context = "|| config.relayer.nonce_path != \"/nonce\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Reviewed exact Safe nonce route validated against the source-fenced manifest."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0x\""
+context = ".strip_prefix(\"0x\")"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Ethereum hexadecimal encoding prefix used only for structural address validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "is_hex(value, 40) && value[2..].bytes().all(|byte| byte == b'0')"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Ethereum address hexadecimal width."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "is_hex(value, 40) && value[2..].bytes().all(|byte| byte == b'0')"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Ethereum hexadecimal prefix width."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "40"
+context = "is_hex(value, 40) && !is_zero_address(value)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Ethereum address hexadecimal width."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "64"
+context = "is_hex(value, 64) && value[2..].bytes().all(|byte| byte == b'0')"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "EVM bytes32 hexadecimal width."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "2"
+context = "is_hex(value, 64) && value[2..].bytes().all(|byte| byte == b'0')"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Ethereum hexadecimal prefix width."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| manifest.adapter.ignored_argument_indices != [0, 1, 3]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| manifest.adapter.ignored_argument_indices != [0, 1, 3]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "3"
+context = "|| manifest.adapter.ignored_argument_indices != [0, 1, 3]"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"nonce()\""
+context = "|| manifest.safe.nonce_abi != \"nonce()\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"call\""
+context = "|| manifest.safe.operation != \"call\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"0\""
+context = "|| manifest.safe.value != \"0\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"provider manifest ABI or Safe fence semantics drifted\""
+context = "\"provider manifest ABI or Safe fence semantics drifted\".to_string(),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"source-proven\""
+context = "if manifest.relayer.explicit_nonce != \"source-proven\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"unproven\""
+context = "|| manifest.relayer.competing_same_nonce != \"unproven\""
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_response_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "1"
+context = "|| config.relayer.max_transaction_items != 1"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.relayer.max_transaction_id_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.credentials.max_value_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.rpc.max_response_bytes == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.rpc.max_receipt_logs == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "0"
+context = "|| config.rpc.finality_confirmations == 0"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"/bolt/\""
+context = "if !path.starts_with(\"/bolt/\") || path.chars().any(char::is_whitespace) {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "number"
+literal = "4"
+context = "pub fn redaction_values(&self) -> [&str; 4] {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
+literal = "\"SSM credential value violates the configured bound\""
+context = "\"SSM credential value violates the configured bound\".to_string(),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "safe_transaction_hash: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "chain_transaction_hash: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "condition_id: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "expected_pre_balances: [[u8; 32]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "2"
+context = "expected_pre_balances: [[u8; 32]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "6"
+context = "let mut queries = Vec::with_capacity(6);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "pub safe_transaction_hash: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "pub original_safe_transaction_hash: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "pub fence_safe_transaction_hash: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "1"
+context = "let Some(expected_next_nonce) = observation.prepared_nonce.checked_add(1) else {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/query.rs"
+kind = "number"
+literal = "32"
+context = "fn proof_matches(proof: &ExecutionProof, expected_hash: [u8; 32]) -> bool {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "20"
+context = "const ADDRESS_BYTES: usize = 20;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "32"
+context = "const WORD_BYTES: usize = 32;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "4"
+context = "const SELECTOR_BYTES: usize = 4;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "\"SAFE\""
+context = "transaction_type: \"SAFE\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "\"0\""
+context = "operation: \"0\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "5"
+context = "SELECTOR_BYTES + WORD_BYTES * (5 + profile.config.adapter.dummy_index_sets.len()),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "4"
+context = "calldata.extend_from_slice(&u64_word((WORD_BYTES * 4) as u64));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let calldata_hash = keccak256(calldata).0;"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "\"SAFE\""
+context = "wallet_type: \"SAFE\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "b\"EIP712Domain(uint256 chainId,address verifyingContract)\""
+context = "let domain_type_hash = keccak256(b\"EIP712Domain(uint256 chainId,address verifyingContract)\");"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "b\"SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)\""
+context = "b\"SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "3"
+context = "let mut domain = Vec::with_capacity(WORD_BYTES * 3);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "11"
+context = "let mut structure = Vec::with_capacity(WORD_BYTES * 11);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "structure.extend_from_slice(&u64_word(0));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "structure.extend_from_slice(&address_word([0; ADDRESS_BYTES]));"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "let mut digest_input = Vec::with_capacity(2 + WORD_BYTES * 2);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0x19"
+context = "digest_input.extend_from_slice(&[0x19, 0x01]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0x01"
+context = "digest_input.extend_from_slice(&[0x19, 0x01]);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "Ok(keccak256(digest_input).0)"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "string"
+literal = "\"0x\""
+context = "let encoded = value.strip_prefix(\"0x\").unwrap_or(value);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "0"
+context = "let mut word = [0; WORD_BYTES];"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "32"
+context = "pub transaction_hash: Option<[u8; 32]>,"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "32"
+context = "pub body_sha256: [u8; 32],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"redacted relayer wire failure: {:?}\""
+context = "\"redacted relayer wire failure: {:?}\","
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_NEW\""
+context = "\"STATE_NEW\" => Ok(RelayerState::New),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_EXECUTED\""
+context = "\"STATE_EXECUTED\" => Ok(RelayerState::Executed),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_MINED\""
+context = "\"STATE_MINED\" => Ok(RelayerState::Mined),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_INVALID\""
+context = "\"STATE_INVALID\" => Ok(RelayerState::Invalid),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_CONFIRMED\""
+context = "\"STATE_CONFIRMED\" => Ok(RelayerState::Confirmed),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"STATE_FAILED\""
+context = "\"STATE_FAILED\" => Ok(RelayerState::Failed),"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "number"
+literal = "32"
+context = "fn parse_optional_hash(value: &str, bytes: &[u8]) -> Result<Option<[u8; 32]>, WireParseError> {"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/wire.rs"
+kind = "string"
+literal = "\"0x\""
+context = "let encoded = value.strip_prefix(\"0x\").unwrap_or(value);"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "pub pre_balances: [[u8; WORD_BYTES]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
+kind = "number"
+literal = "2"
+context = "current_balances: [[u8; WORD_BYTES]; 2],"
+classification = "ao_redeem_source_fenced_protocol_constant"
+reason = "Closed ABI, wire-schema, cryptographic, or fixed-width structural identity required by the source-fenced disabled redemption primitive; runtime addresses, limits, routes, and policy remain grouped TOML values."

@@ -310,6 +310,16 @@ REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
     ("polymarket::KEY", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
+    (
+        "POLYMARKET_RELAYER_ADAPTER_ID",
+        "HttpResponseBody",
+        "PolymarketRedemptionPrimitive",
+    ),
+    (
+        "POLYGON_REDEMPTION_RPC_ADAPTER_ID",
+        "HttpResponseBody",
+        "PolymarketRedemptionPrimitive",
+    ),
 }
 REQUIRED_NON_WS_EXEMPTIONS = {
     ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),

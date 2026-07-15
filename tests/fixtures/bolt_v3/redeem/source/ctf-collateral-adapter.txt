@@ -1,0 +1,5 @@
+function redeemPositions(address, bytes32, bytes32 _conditionId, uint256[] calldata) external onlyUnpaused(USDCE)
+amounts[0] = CONDITIONAL_TOKENS.balanceOf(msg.sender, positionIds[0]);
+amounts[1] = CONDITIONAL_TOKENS.balanceOf(msg.sender, positionIds[1]);
+_redeemPositions(_conditionId, CTFHelpers.partition());
+CollateralToken(COLLATERAL_TOKEN).wrap

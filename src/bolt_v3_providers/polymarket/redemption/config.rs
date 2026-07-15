@@ -19,6 +19,8 @@ const EMBEDDED_MANIFEST: &[u8] =
     include_bytes!("../../../../ci/polymarket-redemption-provider-manifest.toml");
 const REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_750;
 const REVIEWED_MANIFEST_SOURCE_BYTES: usize = 7_342;
+const GENERATED_STARTUP_WORKING_SET_BYTES: usize =
+    include!("../../../../ci/generated/polymarket-redemption-bootstrap.rs");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -723,6 +725,7 @@ pub fn validate_profile(
         EMBEDDED_MANIFEST,
         REVIEWED_CONFIG_SOURCE_BYTES,
         REVIEWED_MANIFEST_SOURCE_BYTES,
+        GENERATED_STARTUP_WORKING_SET_BYTES,
         working_set,
     )
 }
@@ -732,6 +735,7 @@ fn validate_profile_bytes(
     manifest_bytes: &[u8],
     reviewed_config_bytes: usize,
     reviewed_manifest_bytes: usize,
+    reviewed_startup_working_set_bytes: usize,
     working_set: WholeWorkingSetReservation,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
     if config_bytes.len() > reviewed_config_bytes || manifest_bytes.len() > reviewed_manifest_bytes
@@ -742,7 +746,7 @@ fn validate_profile_bytes(
         .len()
         .checked_add(manifest_bytes.len())
         .ok_or(RedemptionConfigError::InvalidBounds)?;
-    if !working_set.covers(source_bytes, 0) {
+    if !working_set.covers(reviewed_startup_working_set_bytes, 0) {
         return Err(RedemptionConfigError::Capacity);
     }
     let config_toml =
@@ -768,9 +772,12 @@ fn validate_profile_bytes(
     let operational_required =
         closed_form_operational_bytes(&config, &manifest.allocation_boundary)?;
     if startup_required != config.working_set.max_startup_working_set_bytes
+        || startup_required != reviewed_startup_working_set_bytes
         || operational_required != config.working_set.max_operational_working_set_bytes
-        || !working_set.covers(startup_required, operational_required)
     {
+        return Err(RedemptionConfigError::ManifestDrift);
+    }
+    if !working_set.covers(startup_required, operational_required) {
         return Err(RedemptionConfigError::Capacity);
     }
     let deployment = &manifest.deployment;
@@ -961,6 +968,7 @@ pub(super) fn validate_profile_hermetic(
     manifest_toml: &str,
     reviewed_config_bytes: usize,
     reviewed_manifest_bytes: usize,
+    reviewed_startup_working_set_bytes: usize,
     working_set: WholeWorkingSetReservation,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
     validate_profile_bytes(
@@ -968,8 +976,64 @@ pub(super) fn validate_profile_hermetic(
         manifest_toml.as_bytes(),
         reviewed_config_bytes,
         reviewed_manifest_bytes,
+        reviewed_startup_working_set_bytes,
         working_set,
     )
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(super) enum HermeticTransactionPolicyMutation {
+    HttpMethod,
+    Operation,
+    Value,
+    SafeTxGas,
+    BaseGas,
+    GasPrice,
+    GasToken,
+    RefundReceiver,
+}
+
+#[cfg(test)]
+pub(super) fn apply_nonproduction_transaction_policy_hermetic(
+    profile: &mut ValidatedRedemptionProfile,
+    mutation: HermeticTransactionPolicyMutation,
+) {
+    let word = |value: u8| {
+        let mut output = [0; WORD_BYTES];
+        output[WORD_BYTES - 1] = value;
+        output
+    };
+    match mutation {
+        HermeticTransactionPolicyMutation::HttpMethod => {
+            profile.transaction_policy.http_method = Box::from(&b"HEAD"[..]);
+        }
+        HermeticTransactionPolicyMutation::Operation => {
+            profile.transaction_policy.operation = 1;
+        }
+        HermeticTransactionPolicyMutation::Value => {
+            profile.transaction_policy.value_decimal = Box::from("7");
+            profile.transaction_policy.value_word = word(7);
+        }
+        HermeticTransactionPolicyMutation::SafeTxGas => {
+            profile.transaction_policy.safe_tx_gas_decimal = Box::from("8");
+            profile.transaction_policy.safe_tx_gas_word = word(8);
+        }
+        HermeticTransactionPolicyMutation::BaseGas => {
+            profile.transaction_policy.base_gas_decimal = Box::from("9");
+            profile.transaction_policy.base_gas_word = word(9);
+        }
+        HermeticTransactionPolicyMutation::GasPrice => {
+            profile.transaction_policy.gas_price_decimal = Box::from("10");
+            profile.transaction_policy.gas_price_word = word(10);
+        }
+        HermeticTransactionPolicyMutation::GasToken => {
+            profile.transaction_policy.gas_token = [0x11; ADDRESS_BYTES];
+        }
+        HermeticTransactionPolicyMutation::RefundReceiver => {
+            profile.transaction_policy.refund_receiver = [0x22; ADDRESS_BYTES];
+        }
+    }
 }
 
 fn validate_manifest(

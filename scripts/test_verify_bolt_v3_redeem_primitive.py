@@ -356,6 +356,24 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         )
         self.assert_rejected(root, "typed transaction policy")
 
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/config.rs",
+            'safe.http_method != "POST"',
+            "!valid_http_method(&safe.http_method)",
+        )
+        self.assert_rejected(root, "exact production transaction policy boundary")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/config.rs",
+            "#[cfg(test)]\npub(super) fn apply_nonproduction_transaction_policy_hermetic",
+            "pub(super) fn apply_nonproduction_transaction_policy_hermetic",
+        )
+        self.assert_rejected(root, "not test-only")
+
     def test_whole_working_set_reservation_and_mechanical_layout_are_required(self) -> None:
         root = self.fixture()
         path = root / verifier.REDEMPTION_ROOT / "capability.rs"
@@ -378,6 +396,52 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assert_rejected(root, "mechanical working-set layout")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            str(verifier.BOOTSTRAP_BOUND_PATH),
+            "75628_usize",
+            "75627_usize",
+        )
+        self.assert_rejected(root, "generated pre-parse full bootstrap bound")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/config.rs",
+            "working_set.covers(reviewed_startup_working_set_bytes, 0)",
+            "working_set.covers(source_bytes, 0)",
+        )
+        self.assert_rejected(root, "reserved before parsing")
+
+    def test_json_shape_vectors_and_test_owner_rebinding_are_required(self) -> None:
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/request.rs",
+            'br#"","operation":""#',
+            'br#"","operation":"#',
+        )
+        self.assert_rejected(root, "JSON string shape")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/tests.rs",
+            "569a20af93270aa74f99ce9b0b25b89a4f73330d033b3bd51a5ceeac6560bd1c",
+            "069a20af93270aa74f99ce9b0b25b89a4f73330d033b3bd51a5ceeac6560bd1c",
+        )
+        self.assert_rejected(root, "fixed EIP-712 vectors")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/tests.rs",
+            ".replace(CONFIGURED_OWNER, OWNER)",
+            ".to_owned()",
+        )
+        self.assert_rejected(root, "hermetic owner binding")
 
     def test_signer_and_safe_owner_authority_cannot_return_to_the_caller(self) -> None:
         root = self.fixture()

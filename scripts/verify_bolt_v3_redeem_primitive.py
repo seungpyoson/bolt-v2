@@ -12,11 +12,13 @@ import tomllib
 
 MANIFEST_PATH = pathlib.Path("ci/polymarket-redemption-provider-manifest.toml")
 CONFIG_PATH = pathlib.Path("config/polymarket-redemption.toml")
+BOOTSTRAP_BOUND_PATH = pathlib.Path("ci/generated/polymarket-redemption-bootstrap.rs")
 MODULE_PATH = pathlib.Path("src/bolt_v3_providers/polymarket/redemption.rs")
 REDEMPTION_ROOT = pathlib.Path("src/bolt_v3_providers/polymarket/redemption")
 REQUIRED_PATHS = (
     MANIFEST_PATH,
     CONFIG_PATH,
+    BOOTSTRAP_BOUND_PATH,
     MODULE_PATH,
     *(REDEMPTION_ROOT / name for name in (
         "bounded.rs", "capability.rs", "config.rs", "nonce.rs", "query.rs",
@@ -72,6 +74,14 @@ FORBIDDEN_PROVIDER_AUTHORITY = {
 def _load_toml(path: pathlib.Path) -> dict:
     with path.open("rb") as handle:
         return tomllib.load(handle)
+
+
+def render_bootstrap_bound(value: int) -> str:
+    return (
+        "// @generated from config/polymarket-redemption.toml by "
+        "scripts/verify_bolt_v3_redeem_primitive.py; do not edit.\n"
+        f"{value}_usize\n"
+    )
 
 
 def rust_tokens(source: str) -> list[str]:
@@ -383,16 +393,22 @@ def verify(root: pathlib.Path) -> list[str]:
     if safe.get("nonce_abi") != "nonce()" or safe.get("nonce_selector") != "0xaffed0e0" or safe.get("operation") != "call" or safe.get("value") != "0":
         errors.append("AO-REDEEM same-nonce fence ABI drifted")
     transaction_policy = config.get("transaction_policy", {})
-    expected_policy_fields = {
-        "http_method", "operation", "value", "safe_tx_gas", "base_gas", "gas_price",
-        "gas_token", "refund_receiver",
+    expected_policy = {
+        "http_method": "POST",
+        "operation": 0,
+        "value": "0",
+        "safe_tx_gas": "0",
+        "base_gas": "0",
+        "gas_price": "0",
+        "gas_token": "0x0000000000000000000000000000000000000000",
+        "refund_receiver": "0x0000000000000000000000000000000000000000",
     }
     if (
-        set(transaction_policy) != expected_policy_fields
-        or transaction_policy.get("http_method") != safe.get("http_method")
-        or transaction_policy.get("operation") != 0
-        or any(transaction_policy.get(field) != safe.get(field) for field in (
-            "value", "safe_tx_gas", "base_gas", "gas_price", "gas_token", "refund_receiver",
+        transaction_policy != expected_policy
+        or safe.get("http_method") != expected_policy["http_method"]
+        or safe.get("operation") != "call"
+        or any(safe.get(field) != expected_policy[field] for field in (
+            "value", "safe_tx_gas", "base_gas", "gas_price", "gas_token", "refund_receiver"
         ))
     ):
         errors.append("AO-REDEEM typed transaction policy is not uniquely TOML-owned and source-fenced")
@@ -518,6 +534,19 @@ def verify(root: pathlib.Path) -> list[str]:
         match = re.search(rf"const\s+{name}:\s*usize\s*=\s*([\d_]+);", config_source)
         if not match or int(match.group(1).replace("_", "")) != expected:
             errors.append("AO-REDEEM pre-parse reviewed source bound drifted")
+    expected_bootstrap = config.get("working_set", {}).get("max_startup_working_set_bytes")
+    generated_bootstrap = (root / BOOTSTRAP_BOUND_PATH).read_text(encoding="utf-8")
+    expected_generated_bootstrap = render_bootstrap_bound(expected_bootstrap)
+    if generated_bootstrap != expected_generated_bootstrap:
+        errors.append("AO-REDEEM generated pre-parse full bootstrap bound drifted from TOML")
+    preparse_guard = "working_set.covers(reviewed_startup_working_set_bytes, 0)"
+    utf8_parse = "std::str::from_utf8(config_bytes)"
+    if (
+        "GENERATED_STARTUP_WORKING_SET_BYTES" not in config_source
+        or preparse_guard not in config_source
+        or config_source.find(preparse_guard) > config_source.find(utf8_parse)
+    ):
+        errors.append("AO-REDEEM full bootstrap capacity is not reserved before parsing")
     allocation_sources = "\n".join(
         (root / REDEMPTION_ROOT / name).read_text(encoding="utf-8")
         for name in ("bounded.rs", "config.rs", "query.rs", "request.rs", "wire.rs")
@@ -539,6 +568,32 @@ def verify(root: pathlib.Path) -> list[str]:
         or "TypedSafeTransactionPolicy::hardcoded" in request_source
     ):
         errors.append("AO-REDEEM request construction bypasses the typed transaction policy")
+    required_string_fragments = (
+        'br#"","signatureParams":{"gasPrice":""#',
+        'br#"","operation":""#',
+        'br#"","safeTxGas":""#',
+        'br#"","baseGas":""#',
+    )
+    if not all(fragment in request_source for fragment in required_string_fragments):
+        errors.append("AO-REDEEM typed relayer JSON string shape is invalid")
+    exact_policy_boundary = (
+        'safe.http_method != "POST"',
+        'safe.operation != "call"',
+        "config.transaction_policy.operation != 0",
+        'safe.value != "0"',
+        'safe.safe_tx_gas != "0"',
+        'safe.base_gas != "0"',
+        'safe.gas_price != "0"',
+        "!is_zero_address(&safe.gas_token)",
+        "!is_zero_address(&safe.refund_receiver)",
+    )
+    if not all(guard in config_source for guard in exact_policy_boundary):
+        errors.append("AO-REDEEM exact production transaction policy boundary is weakened")
+    if (
+        "#[cfg(test)]\npub(super) fn apply_nonproduction_transaction_policy_hermetic"
+        not in config_source
+    ):
+        errors.append("AO-REDEEM nonproduction policy proof is not test-only")
     build_input = _struct_fields(request_source, "RedemptionBuildInput")
     if (
         "owner_address" in build_input
@@ -703,10 +758,28 @@ def verify(root: pathlib.Path) -> list[str]:
         "original_and_fence_worst_case_builder_limits_are_exact",
         "signer_and_finalized_safe_owner_set_are_exact",
         "duplicate_and_out_of_order_log_indices_fail_closed",
+        "startup_capacity_precedes_malformed_profile_parsing",
+        "typed_policy_json_shape_and_fixed_eip712_vectors",
+        "typed_policy_drift_fails_closed_and_test_only_values_drive_construction",
     )
     for name in required_tests:
         if f"fn {name}" not in tests:
             errors.append(f"AO-REDEEM required behavior test missing: {name}")
+    expected_vectors = {
+        "ORIGINAL_SAFE_HASH_VECTOR": "569a20af93270aa74f99ce9b0b25b89a4f73330d033b3bd51a5ceeac6560bd1c",
+        "ORIGINAL_SIGNATURE_VECTOR": "d5d9e0e8480e5bd8e0e398ebecce2b4b876971feed078384147c631932b561c55004bbfce3df3afa61acbc57e7be15d8ac23336ed2a1b1b29fe97f27688c82d61b",
+        "FENCE_SAFE_HASH_VECTOR": "e51a2aeaa7520167d421a00b47a8a36504a53756de97e89b871ff5e6a1075624",
+        "FENCE_SIGNATURE_VECTOR": "d3ca315a57c30521d3712bd147e32fb389d214be0b0ec87c114d11dcdf1ef32b3520e7c0dc3e67368351efa5131cc8b1fcec648f47fd10b77ca0a0e7de8539c91c",
+    }
+    vectors_match = all(
+        re.search(rf'const\s+{name}:\s*&str\s*=\s*"{value}";', tests)
+        for name, value in expected_vectors.items()
+    )
+    if not vectors_match or not all(needle in tests for needle in (
+        "recover_from_prehash", "CONFIG.replace(CONFIGURED_OWNER, OWNER)",
+        "MANIFEST.replace(CONFIGURED_OWNER, OWNER)",
+    )):
+        errors.append("AO-REDEEM fixed EIP-712 vectors, recovery, or hermetic owner binding are incomplete")
     if 'name = "bolt_v3_redeem_primitive"' not in (root / "Cargo.toml").read_text(encoding="utf-8"):
         errors.append("AO-REDEEM behavior harness is not registered")
     return errors
@@ -714,6 +787,18 @@ def verify(root: pathlib.Path) -> list[str]:
 
 def main() -> int:
     root = pathlib.Path(__file__).resolve().parents[1]
+    if sys.argv[1:] == ["--write-bootstrap-bound"]:
+        config = _load_toml(root / CONFIG_PATH)
+        value = config["working_set"]["max_startup_working_set_bytes"]
+        (root / BOOTSTRAP_BOUND_PATH).parent.mkdir(parents=True, exist_ok=True)
+        (root / BOOTSTRAP_BOUND_PATH).write_text(
+            render_bootstrap_bound(value),
+            encoding="utf-8",
+        )
+        return 0
+    if sys.argv[1:]:
+        print("usage: verify_bolt_v3_redeem_primitive.py [--write-bootstrap-bound]", file=sys.stderr)
+        return 2
     errors = verify(root)
     if errors:
         print("\n".join(errors), file=sys.stderr)

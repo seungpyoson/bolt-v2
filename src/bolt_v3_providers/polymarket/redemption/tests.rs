@@ -6,11 +6,12 @@ use std::io::Cursor;
 use alloy_primitives::keccak256;
 use base64::{Engine, engine::general_purpose};
 use hmac::{Hmac, Mac};
+use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
 use super::capability::hermetic;
-use super::config::HermeticCredentialSource;
+use super::config::{HermeticCredentialSource, HermeticTransactionPolicyMutation};
 use super::*;
 
 const CONFIG: &str = include_str!("../../../../config/polymarket-redemption.toml");
@@ -18,6 +19,14 @@ const MANIFEST: &str = include_str!("../../../../ci/polymarket-redemption-provid
 const CONFIGURED_OWNER: &str = "0x13c81bfb4db09c99553572402310b67429c19a53";
 const OWNER: &str = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
 const PRIVATE_KEY: &[u8] = b"0000000000000000000000000000000000000000000000000000000000000001";
+// Independently derived from the reviewed fields with OpenSSL Keccak-256 and
+// RFC6979 secp256k1 arithmetic; these are not produced by request.rs.
+const ORIGINAL_SAFE_HASH_VECTOR: &str =
+    "569a20af93270aa74f99ce9b0b25b89a4f73330d033b3bd51a5ceeac6560bd1c";
+const ORIGINAL_SIGNATURE_VECTOR: &str = "d5d9e0e8480e5bd8e0e398ebecce2b4b876971feed078384147c631932b561c55004bbfce3df3afa61acbc57e7be15d8ac23336ed2a1b1b29fe97f27688c82d61b";
+const FENCE_SAFE_HASH_VECTOR: &str =
+    "e51a2aeaa7520167d421a00b47a8a36504a53756de97e89b871ff5e6a1075624";
+const FENCE_SIGNATURE_VECTOR: &str = "d3ca315a57c30521d3712bd147e32fb389d214be0b0ec87c114d11dcdf1ef32b3520e7c0dc3e67368351efa5131cc8b1fcec648f47fd10b77ca0a0e7de8539c91c";
 
 fn working_set() -> WholeWorkingSetReservation {
     hermetic::working_set(usize::MAX, usize::MAX, 1)
@@ -53,13 +62,21 @@ fn hermetic_profile(
     config: &str,
     manifest: &str,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
+    let startup_bound = declared_startup_bound(config);
     super::config::validate_profile_hermetic(
         config,
         manifest,
         config.len(),
         manifest.len(),
+        startup_bound,
         working_set(),
     )
+}
+
+fn declared_startup_bound(config: &str) -> usize {
+    toml::from_str::<toml::Value>(config).unwrap()["working_set"]["max_startup_working_set_bytes"]
+        .as_integer()
+        .unwrap() as usize
 }
 
 fn credentials(profile: &ValidatedRedemptionProfile) -> ResolvedRedemptionCredentials {
@@ -93,6 +110,7 @@ fn profile_with_request_limits(
     header_limit: usize,
 ) -> ValidatedRedemptionProfile {
     let mut config = CONFIG
+        .replace(CONFIGURED_OWNER, OWNER)
         .replacen(
             "max_original_request_bytes = 4096",
             &format!("max_original_request_bytes = {original_limit}"),
@@ -115,6 +133,7 @@ fn profile_with_request_limits(
             1,
         );
     let mut manifest = MANIFEST
+        .replace(CONFIGURED_OWNER, OWNER)
         .replacen(
             "max_original_request_bytes = 4096",
             &format!("max_original_request_bytes = {original_limit}"),
@@ -141,6 +160,10 @@ fn profile_with_request_limits(
             "max_credential_acquisition_bytes = 64",
             1,
         );
+    rebound_profile(config, manifest)
+}
+
+fn rebound_profile(mut config: String, mut manifest: String) -> ValidatedRedemptionProfile {
     let parsed_config: toml::Value = toml::from_str(&config).unwrap();
     let parsed_manifest: toml::Value = toml::from_str(&manifest).unwrap();
     let relayer = &parsed_config["relayer"];
@@ -206,6 +229,7 @@ fn profile_with_request_limits(
         &manifest,
         config.len(),
         manifest.len(),
+        startup,
         hermetic::working_set(startup, operational, 1),
     )
     .unwrap()
@@ -2242,6 +2266,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len() - 1,
             MANIFEST.len(),
+            declared_startup_bound(CONFIG),
             working_set(),
         )
         .is_err()
@@ -2252,6 +2277,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len(),
             MANIFEST.len() - 1,
+            declared_startup_bound(CONFIG),
             working_set(),
         )
         .is_err()
@@ -2262,6 +2288,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len(),
             MANIFEST.len(),
+            declared_startup_bound(CONFIG),
             working_set(),
         )
         .is_ok()
@@ -2272,6 +2299,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len() + 1,
             MANIFEST.len() + 1,
+            declared_startup_bound(CONFIG),
             working_set(),
         )
         .is_ok()
@@ -2283,6 +2311,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             MANIFEST,
             CONFIG.len(),
             MANIFEST.len(),
+            declared_startup_bound(CONFIG),
             working_set(),
         )
         .is_err()
@@ -2294,6 +2323,7 @@ fn profile_source_limits_and_closed_form_peak_are_exact() {
             &oversized_manifest,
             CONFIG.len(),
             MANIFEST.len(),
+            declared_startup_bound(CONFIG),
             working_set(),
         )
         .is_err()
@@ -2591,6 +2621,234 @@ fn typed_policy_drives_json_eip712_and_http_method() {
     );
 }
 
+fn request_signature(prepared: &PreparedRequestPair, kind: RequestKind) -> [u8; 65] {
+    let body: Value = serde_json::from_slice(prepared.hermetic_body(kind)).unwrap();
+    let encoded = body["signature"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("0x")
+        .unwrap();
+    let mut signature = [0; 65];
+    hex::decode_to_slice(encoded, &mut signature).unwrap();
+    signature
+}
+
+#[test]
+fn typed_policy_json_shape_and_fixed_eip712_vectors() {
+    let profile = profile();
+    let credentials = credentials(&profile);
+    let prepared = prepared(
+        &profile,
+        &credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    );
+    let exact_shape = br#""signatureParams":{"gasPrice":"0","operation":"0","safeTxGas":"0","baseGas":"0","gasToken":"0x0000000000000000000000000000000000000000","refundReceiver":"0x0000000000000000000000000000000000000000"}"#;
+    assert!(
+        prepared
+            .hermetic_body(RequestKind::Original)
+            .windows(exact_shape.len())
+            .any(|window| window == exact_shape)
+    );
+
+    for (kind, expected_hash, expected_signature) in [
+        (
+            RequestKind::Original,
+            ORIGINAL_SAFE_HASH_VECTOR,
+            ORIGINAL_SIGNATURE_VECTOR,
+        ),
+        (
+            RequestKind::Fence,
+            FENCE_SAFE_HASH_VECTOR,
+            FENCE_SIGNATURE_VECTOR,
+        ),
+    ] {
+        let hash = prepared.request(kind).identity().safe_transaction_hash();
+        assert_eq!(hex::encode(hash), expected_hash);
+        let packed = request_signature(&prepared, kind);
+        assert_eq!(hex::encode(packed), expected_signature);
+        let signature = Signature::from_slice(&packed[..64]).unwrap();
+        let recovery_id = RecoveryId::from_byte(packed[64] - 27).unwrap();
+        let recovered = VerifyingKey::recover_from_prehash(&hash, &signature, recovery_id).unwrap();
+        let public = recovered.to_encoded_point(false);
+        let derived = keccak256(&public.as_bytes()[1..]);
+        let mut recovered_address = [0; 20];
+        recovered_address.copy_from_slice(&derived[12..]);
+        assert_eq!(recovered_address, credentials.signer_address());
+    }
+}
+
+#[test]
+fn typed_policy_drift_fails_closed_and_test_only_values_drive_construction() {
+    let baseline = profile();
+    let baseline_credentials = credentials(&baseline);
+    let baseline_prepared = prepared(
+        &baseline,
+        &baseline_credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    );
+    for (config_old, config_new, manifest_old, manifest_new) in [
+        (
+            "http_method = \"POST\"",
+            "http_method = \"HEAD\"",
+            "http_method = \"POST\"",
+            "http_method = \"HEAD\"",
+        ),
+        (
+            "operation = 0",
+            "operation = 1",
+            "operation = \"call\"",
+            "operation = \"delegatecall\"",
+        ),
+        (
+            "value = \"0\"",
+            "value = \"7\"",
+            "value = \"0\"",
+            "value = \"7\"",
+        ),
+        (
+            "safe_tx_gas = \"0\"",
+            "safe_tx_gas = \"8\"",
+            "safe_tx_gas = \"0\"",
+            "safe_tx_gas = \"8\"",
+        ),
+        (
+            "base_gas = \"0\"",
+            "base_gas = \"9\"",
+            "base_gas = \"0\"",
+            "base_gas = \"9\"",
+        ),
+        (
+            "gas_price = \"0\"",
+            "gas_price = \"7\"",
+            "gas_price = \"0\"",
+            "gas_price = \"7\"",
+        ),
+        (
+            "gas_token = \"0x0000000000000000000000000000000000000000\"",
+            "gas_token = \"0x1111111111111111111111111111111111111111\"",
+            "gas_token = \"0x0000000000000000000000000000000000000000\"",
+            "gas_token = \"0x1111111111111111111111111111111111111111\"",
+        ),
+        (
+            "refund_receiver = \"0x0000000000000000000000000000000000000000\"",
+            "refund_receiver = \"0x2222222222222222222222222222222222222222\"",
+            "refund_receiver = \"0x0000000000000000000000000000000000000000\"",
+            "refund_receiver = \"0x2222222222222222222222222222222222222222\"",
+        ),
+    ] {
+        assert!(
+            hermetic_profile(
+                &CONFIG.replace(config_old, config_new),
+                &MANIFEST.replace(manifest_old, manifest_new),
+            )
+            .is_err()
+        );
+    }
+
+    for (mutation, field, expected) in [
+        (
+            HermeticTransactionPolicyMutation::Operation,
+            "operation",
+            "1",
+        ),
+        (HermeticTransactionPolicyMutation::Value, "", ""),
+        (
+            HermeticTransactionPolicyMutation::SafeTxGas,
+            "safeTxGas",
+            "8",
+        ),
+        (HermeticTransactionPolicyMutation::BaseGas, "baseGas", "9"),
+        (
+            HermeticTransactionPolicyMutation::GasPrice,
+            "gasPrice",
+            "10",
+        ),
+        (
+            HermeticTransactionPolicyMutation::GasToken,
+            "gasToken",
+            "0x1111111111111111111111111111111111111111",
+        ),
+        (
+            HermeticTransactionPolicyMutation::RefundReceiver,
+            "refundReceiver",
+            "0x2222222222222222222222222222222222222222",
+        ),
+    ] {
+        let mut mutated = profile();
+        super::config::apply_nonproduction_transaction_policy_hermetic(&mut mutated, mutation);
+        let mutated_credentials = credentials(&mutated);
+        let mutated_prepared = prepared(
+            &mutated,
+            &mutated_credentials,
+            MarketMode::Standard,
+            1,
+            SafeNonce::ZERO,
+        );
+        if !field.is_empty() {
+            let body: Value =
+                serde_json::from_slice(mutated_prepared.hermetic_body(RequestKind::Original))
+                    .unwrap();
+            assert_eq!(body["signatureParams"][field], expected);
+        }
+        for kind in [RequestKind::Original, RequestKind::Fence] {
+            assert_ne!(
+                baseline_prepared
+                    .request(kind)
+                    .identity()
+                    .safe_transaction_hash(),
+                mutated_prepared
+                    .request(kind)
+                    .identity()
+                    .safe_transaction_hash()
+            );
+        }
+    }
+
+    let mut mutated = profile();
+    super::config::apply_nonproduction_transaction_policy_hermetic(
+        &mut mutated,
+        HermeticTransactionPolicyMutation::HttpMethod,
+    );
+    let mutated_credentials = credentials(&mutated);
+    let mutated_prepared = prepared(
+        &mutated,
+        &mutated_credentials,
+        MarketMode::Standard,
+        1,
+        SafeNonce::ZERO,
+    );
+    for kind in [RequestKind::Original, RequestKind::Fence] {
+        assert_eq!(
+            baseline_prepared
+                .request(kind)
+                .identity()
+                .safe_transaction_hash(),
+            mutated_prepared
+                .request(kind)
+                .identity()
+                .safe_transaction_hash()
+        );
+    }
+    let headers: Value =
+        serde_json::from_slice(mutated_prepared.hermetic_headers(RequestKind::Original)).unwrap();
+    let decoded_secret = general_purpose::STANDARD
+        .decode(mutated_credentials.builder_api_secret())
+        .unwrap();
+    let mut hmac = Hmac::<Sha256>::new_from_slice(&decoded_secret).unwrap();
+    hmac.update(b"1700000000");
+    hmac.update(b"HEAD");
+    hmac.update(mutated.submit_path().as_bytes());
+    hmac.update(mutated_prepared.hermetic_body(RequestKind::Original));
+    assert_eq!(
+        headers["POLY_BUILDER_SIGNATURE"],
+        general_purpose::URL_SAFE.encode(hmac.finalize().into_bytes())
+    );
+}
+
 #[test]
 fn whole_working_set_reservation_and_capacity_failures_are_exact() {
     let config: toml::Value = toml::from_str(CONFIG).unwrap();
@@ -2614,6 +2872,38 @@ fn whole_working_set_reservation_and_capacity_failures_are_exact() {
         Err(super::bounded::CappedIoError::Allocation)
     ));
     assert_eq!(super::query::query_offset_layout_bytes(), 128);
+}
+
+#[test]
+fn startup_capacity_precedes_malformed_profile_parsing() {
+    let malformed = "not valid = [";
+    let startup = declared_startup_bound(CONFIG);
+    let operational = toml::from_str::<toml::Value>(CONFIG).unwrap()["working_set"]
+        ["max_operational_working_set_bytes"]
+        .as_integer()
+        .unwrap() as usize;
+    assert!(matches!(
+        super::config::validate_profile_hermetic(
+            malformed,
+            MANIFEST,
+            malformed.len(),
+            MANIFEST.len(),
+            startup,
+            hermetic::working_set(startup - 1, operational, 1),
+        ),
+        Err(RedemptionConfigError::Capacity)
+    ));
+    assert!(matches!(
+        super::config::validate_profile_hermetic(
+            malformed,
+            MANIFEST,
+            malformed.len(),
+            MANIFEST.len(),
+            startup,
+            hermetic::working_set(startup, operational, 1),
+        ),
+        Err(RedemptionConfigError::InvalidToml)
+    ));
 }
 
 #[test]

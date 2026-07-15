@@ -24660,6 +24660,14 @@ reason = "Non-self-referential reviewed pre-parse byte bound for the exact embed
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
 kind = "string"
+literal = '''"../../../../ci/generated/polymarket-redemption-bootstrap.rs"'''
+context = '''include!("../../../../ci/generated/polymarket-redemption-bootstrap.rs");'''
+classification = "ao_redeem_generated_bootstrap_include"
+reason = "Compile-time include of the source-fenced bootstrap reservation generated from the sole AO-REDEEM TOML contract; not an operator runtime value or alternate configuration source."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/redemption/config.rs"
+kind = "string"
 literal = '''"POST"'''
 context = '''|| safe.http_method != "POST"'''
 classification = "ao_redeem_source_fenced_protocol_constant"
@@ -24724,8 +24732,8 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant, structural sentinel,
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "string"
-literal = '''br#"","operation":"#'''
-context = '''body.extend(br#"","operation":"#)'''
+literal = '''br#"","operation":""#'''
+context = '''body.extend(br#"","operation":""#)'''
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant, structural sentinel, fixed-width encoding fact, or exact wire grammar; every operational capacity and provider value remains TOML-owned."
 
@@ -24740,16 +24748,16 @@ reason = "Source-fenced AO-REDEEM protocol/schema constant, structural sentinel,
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "string"
-literal = '''br#"","safeTxGas":"#'''
-context = '''body.extend(br#"","safeTxGas":"#)'''
+literal = '''br#"","safeTxGas":""#'''
+context = '''body.extend(br#"","safeTxGas":""#)'''
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant, structural sentinel, fixed-width encoding fact, or exact wire grammar; every operational capacity and provider value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/redemption/request.rs"
 kind = "string"
-literal = '''br#"","signatureParams":{"gasPrice":"#'''
-context = '''body.extend(br#"","signatureParams":{"gasPrice":"#)'''
+literal = '''br#"","signatureParams":{"gasPrice":""#'''
+context = '''body.extend(br#"","signatureParams":{"gasPrice":""#)'''
 classification = "ao_redeem_source_fenced_protocol_constant"
 reason = "Source-fenced AO-REDEEM protocol/schema constant, structural sentinel, fixed-width encoding fact, or exact wire grammar; every operational capacity and provider value remains TOML-owned."
 

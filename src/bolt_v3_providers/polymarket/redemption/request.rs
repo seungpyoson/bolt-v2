@@ -643,19 +643,19 @@ fn request_body(
     let policy = profile.transaction_policy();
     let mut operation_decimal = [0; MAX_U64_DECIMAL_BYTES];
     let operation_len = write_u64_decimal(u64::from(policy.operation()), &mut operation_decimal);
-    body.extend(br#"","signatureParams":{"gasPrice":"#)
+    body.extend(br#"","signatureParams":{"gasPrice":""#)
         .map_err(map_capped_error)?;
     body.extend(policy.gas_price_decimal().as_bytes())
         .map_err(map_capped_error)?;
-    body.extend(br#"","operation":"#)
+    body.extend(br#"","operation":""#)
         .map_err(map_capped_error)?;
     body.extend(&operation_decimal[..operation_len])
         .map_err(map_capped_error)?;
-    body.extend(br#"","safeTxGas":"#)
+    body.extend(br#"","safeTxGas":""#)
         .map_err(map_capped_error)?;
     body.extend(policy.safe_tx_gas_decimal().as_bytes())
         .map_err(map_capped_error)?;
-    body.extend(br#"","baseGas":"#).map_err(map_capped_error)?;
+    body.extend(br#"","baseGas":""#).map_err(map_capped_error)?;
     body.extend(policy.base_gas_decimal().as_bytes())
         .map_err(map_capped_error)?;
     body.extend(br#"","gasToken":"0x"#)

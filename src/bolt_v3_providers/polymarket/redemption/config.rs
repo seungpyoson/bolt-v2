@@ -1,5 +1,6 @@
 use std::fmt;
 
+use alloy_primitives::keccak256;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -10,6 +11,11 @@ use super::bounded::{ProjectionClass, RedactedProjection};
 const ADDRESS_BYTES: usize = 20;
 const WORD_BYTES: usize = 32;
 const SELECTOR_BYTES: usize = 4;
+const EMBEDDED_CONFIG: &[u8] = include_bytes!("../../../../config/polymarket-redemption.toml");
+const EMBEDDED_MANIFEST: &[u8] =
+    include_bytes!("../../../../ci/polymarket-redemption-provider-manifest.toml");
+const REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_234;
+const REVIEWED_MANIFEST_SOURCE_BYTES: usize = 7_030;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,7 +41,7 @@ struct RawWallet {
     safe_implementation: String,
     fallback_handler: String,
     guard: String,
-    modules: Vec<String>,
+    modules: [String; 0],
 }
 
 #[derive(Deserialize)]
@@ -45,9 +51,12 @@ struct RawAdapter {
     negative_risk_target: String,
     collateral: String,
     output_asset: String,
+    conditional_tokens: String,
+    negative_risk_adapter: String,
+    underlying_collateral: String,
     dummy_account: String,
     dummy_parent_collection_id: String,
-    dummy_index_sets: Vec<u64>,
+    dummy_index_sets: [u64; 2],
 }
 
 #[derive(Deserialize)]
@@ -119,6 +128,8 @@ struct RawManifest {
     source_snapshots: RawManifestSourceSnapshots,
     wire: RawManifestWire,
     credential_boundary: RawManifestCredentialBoundary,
+    allocation_boundary: RawManifestAllocationBoundary,
+    terminal_events: RawManifestTerminalEvents,
     activation: RawManifestActivation,
 }
 
@@ -136,7 +147,7 @@ struct RawManifestAdapter {
     deployment_table_blob: String,
     external_abi: String,
     external_selector: String,
-    ignored_argument_indices: Vec<usize>,
+    ignored_argument_indices: [usize; 3],
     standard_internal_path: String,
     negative_risk_internal_path: String,
 }
@@ -146,7 +157,7 @@ struct RawManifestAdapter {
 struct RawManifestAdapterArguments {
     dummy_account: String,
     dummy_parent_collection_id: String,
-    dummy_index_sets: Vec<u64>,
+    dummy_index_sets: [u64; 2],
 }
 
 #[derive(Deserialize)]
@@ -160,6 +171,9 @@ struct RawManifestDeployment {
     negative_risk_target: String,
     collateral: String,
     output_asset: String,
+    conditional_tokens: String,
+    negative_risk_adapter: String,
+    underlying_collateral: String,
 }
 
 #[derive(Deserialize)]
@@ -169,7 +183,7 @@ struct RawManifestSafeBoundary {
     implementation: String,
     fallback_handler: String,
     guard: String,
-    modules: Vec<String>,
+    modules: [String; 0],
 }
 
 #[derive(Deserialize)]
@@ -253,6 +267,59 @@ struct RawManifestCredentialBoundary {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawManifestAllocationBoundary {
+    max_relayer_origin_bytes: usize,
+    max_chain_origin_bytes: usize,
+    max_path_bytes: usize,
+    max_request_bytes: usize,
+    max_relayer_response_bytes: usize,
+    max_chain_response_bytes: usize,
+    max_transaction_id_bytes: usize,
+    max_timestamp_bytes: usize,
+    max_metadata_bytes: usize,
+    max_header_bytes: usize,
+    max_receipt_logs: usize,
+    max_query_items: usize,
+    max_query_bytes: usize,
+    max_credential_value_bytes: usize,
+    max_credential_acquisition_bytes: usize,
+    max_credential_path_bytes: usize,
+    query_binding_bytes_per_item: usize,
+    max_peak_payload_bytes: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManifestTerminalEvents {
+    safe_execution_success_signature: String,
+    standard_payout_redemption_signature: String,
+    negative_risk_payout_redemption_signature: String,
+    standard_emitter: String,
+    negative_risk_emitter: String,
+    underlying_collateral: String,
+    standard_indexed_fields: [String; 3],
+    negative_risk_indexed_fields: [String; 2],
+    standard_redeemer_semantics: String,
+    standard_condition_semantics: String,
+    standard_amount_semantics: String,
+    standard_index_set_semantics: String,
+    negative_risk_redeemer_semantics: String,
+    negative_risk_condition_semantics: String,
+    negative_risk_amount_semantics: String,
+    standard_repository: String,
+    standard_revision: String,
+    standard_source: String,
+    standard_blob: String,
+    negative_risk_repository: String,
+    negative_risk_revision: String,
+    negative_risk_source: String,
+    negative_risk_blob: String,
+    deployment_source: String,
+    deployment_blob: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawManifestActivation {
     primitive_enabled: bool,
     requires_competing_same_nonce_conformance: bool,
@@ -275,11 +342,17 @@ pub struct ValidatedRedemptionProfile {
     negative_risk_target: [u8; ADDRESS_BYTES],
     collateral: [u8; ADDRESS_BYTES],
     output_asset: [u8; ADDRESS_BYTES],
+    conditional_tokens: [u8; ADDRESS_BYTES],
+    negative_risk_adapter: [u8; ADDRESS_BYTES],
+    underlying_collateral: [u8; ADDRESS_BYTES],
     dummy_account: [u8; ADDRESS_BYTES],
     dummy_parent: [u8; WORD_BYTES],
     dummy_index_sets: [u64; 2],
     redemption_selector: [u8; SELECTOR_BYTES],
     nonce_selector: [u8; SELECTOR_BYTES],
+    safe_execution_success_topic: [u8; WORD_BYTES],
+    standard_payout_redemption_topic: [u8; WORD_BYTES],
+    negative_risk_payout_redemption_topic: [u8; WORD_BYTES],
     relayer_origin: Box<str>,
     chain_origin: Box<str>,
     chain_path: Box<str>,
@@ -367,6 +440,26 @@ impl ValidatedRedemptionProfile {
 
     pub(super) fn post_state_assets(&self) -> ([u8; ADDRESS_BYTES], [u8; ADDRESS_BYTES]) {
         (self.collateral, self.output_asset)
+    }
+
+    pub(super) fn terminal_event_contract(
+        &self,
+    ) -> (
+        [u8; ADDRESS_BYTES],
+        [u8; ADDRESS_BYTES],
+        [u8; ADDRESS_BYTES],
+        [u8; WORD_BYTES],
+        [u8; WORD_BYTES],
+        [u8; WORD_BYTES],
+    ) {
+        (
+            self.conditional_tokens,
+            self.negative_risk_adapter,
+            self.underlying_collateral,
+            self.safe_execution_success_topic,
+            self.standard_payout_redemption_topic,
+            self.negative_risk_payout_redemption_topic,
+        )
     }
 
     pub(super) fn redemption_selector(&self) -> [u8; SELECTOR_BYTES] {
@@ -488,10 +581,29 @@ impl fmt::Display for RedemptionConfigError {
 
 impl std::error::Error for RedemptionConfigError {}
 
-pub fn validate_profile(
-    config_toml: &str,
-    manifest_toml: &str,
+pub fn validate_profile() -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
+    validate_profile_bytes(
+        EMBEDDED_CONFIG,
+        EMBEDDED_MANIFEST,
+        REVIEWED_CONFIG_SOURCE_BYTES,
+        REVIEWED_MANIFEST_SOURCE_BYTES,
+    )
+}
+
+fn validate_profile_bytes(
+    config_bytes: &[u8],
+    manifest_bytes: &[u8],
+    reviewed_config_bytes: usize,
+    reviewed_manifest_bytes: usize,
 ) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
+    if config_bytes.len() > reviewed_config_bytes || manifest_bytes.len() > reviewed_manifest_bytes
+    {
+        return Err(RedemptionConfigError::InvalidBounds);
+    }
+    let config_toml =
+        std::str::from_utf8(config_bytes).map_err(|_| RedemptionConfigError::InvalidToml)?;
+    let manifest_toml =
+        std::str::from_utf8(manifest_bytes).map_err(|_| RedemptionConfigError::InvalidToml)?;
     let config: RawConfig =
         toml::from_str(config_toml).map_err(|_| RedemptionConfigError::InvalidToml)?;
     let manifest: RawManifest =
@@ -526,6 +638,18 @@ pub fn validate_profile(
         (&config.adapter.collateral, &deployment.collateral),
         (&config.adapter.output_asset, &deployment.output_asset),
         (
+            &config.adapter.conditional_tokens,
+            &deployment.conditional_tokens,
+        ),
+        (
+            &config.adapter.negative_risk_adapter,
+            &deployment.negative_risk_adapter,
+        ),
+        (
+            &config.adapter.underlying_collateral,
+            &deployment.underlying_collateral,
+        ),
+        (
             &config.adapter.dummy_account,
             &manifest.adapter_arguments.dummy_account,
         ),
@@ -544,12 +668,7 @@ pub fn validate_profile(
     {
         return Err(RedemptionConfigError::DeploymentMismatch);
     }
-    let dummy_index_sets: [u64; 2] = config
-        .adapter
-        .dummy_index_sets
-        .as_slice()
-        .try_into()
-        .map_err(|_| RedemptionConfigError::DeploymentMismatch)?;
+    let dummy_index_sets = config.adapter.dummy_index_sets;
     let credential_paths = [
         config.credentials.signer_private_key_ssm_path,
         config.credentials.builder_api_key_ssm_path,
@@ -565,12 +684,12 @@ pub fn validate_profile(
             return Err(RedemptionConfigError::InvalidSsmPath);
         }
     }
-    let config_digest: [u8; WORD_BYTES] = Sha256::digest(config_toml.as_bytes()).into();
+    let config_digest: [u8; WORD_BYTES] = Sha256::digest(config_bytes).into();
     let mut profile_hasher = Sha256::new();
     profile_hasher.update((config_toml.len() as u64).to_be_bytes());
-    profile_hasher.update(config_toml.as_bytes());
+    profile_hasher.update(config_bytes);
     profile_hasher.update((manifest_toml.len() as u64).to_be_bytes());
-    profile_hasher.update(manifest_toml.as_bytes());
+    profile_hasher.update(manifest_bytes);
     let profile_digest: [u8; WORD_BYTES] = profile_hasher.finalize().into();
     let relayer_source_identity: [u8; WORD_BYTES] =
         Sha256::digest(config.relayer.origin.as_bytes()).into();
@@ -591,11 +710,35 @@ pub fn validate_profile(
         negative_risk_target: parse_address(&config.adapter.negative_risk_target, false)?,
         collateral: parse_address(&config.adapter.collateral, false)?,
         output_asset: parse_address(&config.adapter.output_asset, false)?,
+        conditional_tokens: parse_address(&config.adapter.conditional_tokens, false)?,
+        negative_risk_adapter: parse_address(&config.adapter.negative_risk_adapter, false)?,
+        underlying_collateral: parse_address(&config.adapter.underlying_collateral, false)?,
         dummy_account: parse_address(&config.adapter.dummy_account, true)?,
         dummy_parent: parse_fixed(&config.adapter.dummy_parent_collection_id)?,
         dummy_index_sets,
         redemption_selector: parse_fixed(&manifest.adapter.external_selector)?,
         nonce_selector: parse_fixed(&manifest.safe.nonce_selector)?,
+        safe_execution_success_topic: keccak256(
+            manifest
+                .terminal_events
+                .safe_execution_success_signature
+                .as_bytes(),
+        )
+        .0,
+        standard_payout_redemption_topic: keccak256(
+            manifest
+                .terminal_events
+                .standard_payout_redemption_signature
+                .as_bytes(),
+        )
+        .0,
+        negative_risk_payout_redemption_topic: keccak256(
+            manifest
+                .terminal_events
+                .negative_risk_payout_redemption_signature
+                .as_bytes(),
+        )
+        .0,
         relayer_origin: config.relayer.origin.into_boxed_str(),
         chain_origin: config.rpc.origin.into_boxed_str(),
         chain_path: config.rpc.path.into_boxed_str(),
@@ -622,6 +765,21 @@ pub fn validate_profile(
     Ok(profile)
 }
 
+#[cfg(test)]
+pub(super) fn validate_profile_hermetic(
+    config_toml: &str,
+    manifest_toml: &str,
+    reviewed_config_bytes: usize,
+    reviewed_manifest_bytes: usize,
+) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
+    validate_profile_bytes(
+        config_toml.as_bytes(),
+        manifest_toml.as_bytes(),
+        reviewed_config_bytes,
+        reviewed_manifest_bytes,
+    )
+}
+
 fn validate_manifest(
     manifest: &RawManifest,
     config: &RawConfig,
@@ -630,6 +788,9 @@ fn validate_manifest(
     let safe = &manifest.safe;
     let relayer = &manifest.relayer;
     let wire = &manifest.wire;
+    let allocation = &manifest.allocation_boundary;
+    let terminal = &manifest.terminal_events;
+    let peak_payload_bytes = closed_form_peak_payload_bytes(config, allocation)?;
     if adapter.reviewed_repository.is_empty()
         || adapter.reviewed_revision.len() != 40
         || adapter.standard_source.is_empty()
@@ -689,7 +850,7 @@ fn validate_manifest(
         || wire.max_query_items == 0
         || wire.max_transaction_items != 1
         || wire.max_header_items != 4
-        || wire.max_execution_logs != 1
+        || wire.max_execution_logs < 2
         || wire.overflow_probe_bytes != 1
         || wire.receipt_schema_repository.is_empty()
         || wire.receipt_schema_revision.len() != 40
@@ -713,7 +874,7 @@ fn validate_manifest(
         || config.rpc.max_response_bytes == 0
         || config.rpc.max_origin_bytes == 0
         || config.rpc.max_path_bytes == 0
-        || config.rpc.max_receipt_logs == 0
+        || config.rpc.max_receipt_logs < 2
         || config.rpc.finality_confirmations == 0
         || config.credentials.max_value_bytes == 0
         || config.credentials.max_acquisition_bytes < config.credentials.max_value_bytes
@@ -736,10 +897,119 @@ fn validate_manifest(
             != true
         || manifest.activation.has_active_caller
         || manifest.activation.has_durable_state
+        || !terminal
+            .standard_emitter
+            .eq_ignore_ascii_case(&config.adapter.conditional_tokens)
+        || !terminal
+            .negative_risk_emitter
+            .eq_ignore_ascii_case(&config.adapter.negative_risk_adapter)
+        || !terminal
+            .underlying_collateral
+            .eq_ignore_ascii_case(&config.adapter.underlying_collateral)
+        || terminal.safe_execution_success_signature != "ExecutionSuccess(bytes32,uint256)"
+        || terminal.standard_payout_redemption_signature
+            != "PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)"
+        || terminal.negative_risk_payout_redemption_signature
+            != "PayoutRedemption(address,bytes32,uint256[],uint256)"
+        || terminal.standard_indexed_fields != ["redeemer", "collateralToken", "parentCollectionId"]
+        || terminal.negative_risk_indexed_fields != ["redeemer", "conditionId"]
+        || terminal.standard_redeemer_semantics != "indexed-redeemer-equals-v2-standard-target"
+        || terminal.standard_condition_semantics
+            != "data-condition-id-equals-exact-action-condition"
+        || terminal.standard_amount_semantics != "payout-equals-expected-output-minus-pre-output"
+        || terminal.standard_index_set_semantics != "data-index-sets-equal-toml-dummy-index-sets"
+        || terminal.negative_risk_redeemer_semantics
+            != "indexed-redeemer-equals-v2-negative-risk-target"
+        || terminal.negative_risk_condition_semantics
+            != "indexed-condition-id-equals-exact-action-condition"
+        || terminal.negative_risk_amount_semantics
+            != "data-amounts-equal-exact-pre-claims-and-payout-equals-expected-output-minus-pre-output"
+        || terminal.standard_repository.is_empty()
+        || terminal.standard_revision.len() != 40
+        || terminal.standard_source.is_empty()
+        || terminal.standard_blob.len() != 40
+        || terminal.negative_risk_repository.is_empty()
+        || terminal.negative_risk_revision.len() != 40
+        || terminal.negative_risk_source.is_empty()
+        || terminal.negative_risk_blob.len() != 40
+        || terminal.deployment_source.is_empty()
+        || terminal.deployment_blob.len() != 40
+        || config.relayer.max_origin_bytes > allocation.max_relayer_origin_bytes
+        || config.rpc.max_origin_bytes > allocation.max_chain_origin_bytes
+        || config.relayer.max_path_bytes > allocation.max_path_bytes
+        || config.rpc.max_path_bytes > allocation.max_path_bytes
+        || config.relayer.max_request_bytes > allocation.max_request_bytes
+        || config.relayer.max_response_bytes > allocation.max_relayer_response_bytes
+        || config.rpc.max_response_bytes > allocation.max_chain_response_bytes
+        || config.relayer.max_transaction_id_bytes > allocation.max_transaction_id_bytes
+        || config.relayer.max_timestamp_bytes > allocation.max_timestamp_bytes
+        || config.relayer.max_metadata_bytes > allocation.max_metadata_bytes
+        || config.relayer.max_header_bytes > allocation.max_header_bytes
+        || config.rpc.max_receipt_logs > allocation.max_receipt_logs
+        || config.query.max_items > allocation.max_query_items
+        || config.query.max_bytes > allocation.max_query_bytes
+        || config.credentials.max_value_bytes > allocation.max_credential_value_bytes
+        || config.credentials.max_acquisition_bytes > allocation.max_credential_acquisition_bytes
+        || config.credentials.max_path_bytes > allocation.max_credential_path_bytes
+        || allocation.query_binding_bytes_per_item == 0
+        || peak_payload_bytes != allocation.max_peak_payload_bytes
     {
         return Err(RedemptionConfigError::ManifestDrift);
     }
     Ok(())
+}
+
+fn closed_form_peak_payload_bytes(
+    config: &RawConfig,
+    allocation: &RawManifestAllocationBoundary,
+) -> Result<usize, RedemptionConfigError> {
+    let checked_add = |left: usize, right: usize| {
+        left.checked_add(right)
+            .ok_or(RedemptionConfigError::InvalidBounds)
+    };
+    let checked_mul = |left: usize, right: usize| {
+        left.checked_mul(right)
+            .ok_or(RedemptionConfigError::InvalidBounds)
+    };
+    let request_pair = checked_mul(
+        2,
+        checked_add(
+            checked_add(
+                config.relayer.max_request_bytes,
+                config.relayer.max_header_bytes,
+            )?,
+            config.relayer.max_metadata_bytes,
+        )?,
+    )?;
+    let query = checked_add(
+        config.query.max_bytes,
+        checked_mul(
+            config.query.max_items,
+            allocation.query_binding_bytes_per_item,
+        )?,
+    )?;
+    let relayer_response = checked_add(
+        checked_add(
+            config.relayer.max_response_bytes,
+            config.relayer.overflow_probe_bytes,
+        )?,
+        config.relayer.max_transaction_id_bytes,
+    )?;
+    let chain_responses = checked_mul(
+        config.query.max_items.saturating_sub(1),
+        checked_add(
+            config.rpc.max_response_bytes,
+            config.rpc.overflow_probe_bytes,
+        )?,
+    )?;
+    let credentials = checked_add(
+        config.credentials.max_acquisition_bytes,
+        checked_mul(6, config.credentials.max_value_bytes)?,
+    )?;
+    checked_add(
+        checked_add(request_pair, query)?,
+        checked_add(checked_add(relayer_response, chain_responses)?, credentials)?,
+    )
 }
 
 fn parse_address(
@@ -801,11 +1071,11 @@ impl CredentialSink<'_> {
 }
 
 pub struct ResolvedRedemptionCredentials {
-    signer_private_key: Zeroizing<Box<[u8]>>,
-    builder_api_key: Zeroizing<Box<[u8]>>,
-    builder_api_secret: Zeroizing<Box<[u8]>>,
-    builder_passphrase: Zeroizing<Box<[u8]>>,
-    redaction_hmac_key: Zeroizing<Box<[u8]>>,
+    signer_private_key: Zeroizing<Vec<u8>>,
+    builder_api_key: Zeroizing<Vec<u8>>,
+    builder_api_secret: Zeroizing<Vec<u8>>,
+    builder_passphrase: Zeroizing<Vec<u8>>,
+    redaction_hmac_key: Zeroizing<Vec<u8>>,
     key_version: u32,
 }
 
@@ -869,8 +1139,13 @@ pub fn resolve_credentials(
         max_bytes: usize,
         max_acquisition_bytes: usize,
         source: &mut impl CappedSsmCredentialSource,
-    ) -> Result<Zeroizing<Box<[u8]>>, RedemptionConfigError> {
-        let mut acquisition = Zeroizing::new(vec![0; max_acquisition_bytes].into_boxed_slice());
+    ) -> Result<Zeroizing<Vec<u8>>, RedemptionConfigError> {
+        let mut acquisition_storage = Vec::new();
+        acquisition_storage
+            .try_reserve_exact(max_acquisition_bytes)
+            .map_err(|_| RedemptionConfigError::InvalidBounds)?;
+        acquisition_storage.resize(max_acquisition_bytes, 0);
+        let mut acquisition = Zeroizing::new(acquisition_storage);
         let mut sink = CredentialSink {
             storage: &mut acquisition,
             len: 0,
@@ -879,7 +1154,12 @@ pub fn resolve_credentials(
         if sink.len == 0 || sink.len > max_bytes {
             return Err(RedemptionConfigError::SecretBound);
         }
-        let mut exact = Zeroizing::new(vec![0; sink.len].into_boxed_slice());
+        let mut exact_storage = Vec::new();
+        exact_storage
+            .try_reserve_exact(sink.len)
+            .map_err(|_| RedemptionConfigError::InvalidBounds)?;
+        exact_storage.resize(sink.len, 0);
+        let mut exact = Zeroizing::new(exact_storage);
         exact.copy_from_slice(&sink.storage[..sink.len]);
         Ok(exact)
     }

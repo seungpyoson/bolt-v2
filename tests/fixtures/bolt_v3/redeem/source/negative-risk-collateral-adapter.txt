@@ -2,3 +2,6 @@ function _redeemPositions(bytes32 _conditionId, uint256[] memory) internal virtu
 amounts[0] = CONDITIONAL_TOKENS.balanceOf(address(this), positionIds[0]);
 amounts[1] = CONDITIONAL_TOKENS.balanceOf(address(this), positionIds[1]);
 INegRiskAdapter(NEG_RISK_ADAPTER).redeemPositions(_conditionId, amounts);
+event PayoutRedemption(address indexed redeemer, bytes32 indexed conditionId, uint256[] amounts, uint256 payout);
+emit PayoutRedemption(msg.sender, _conditionId, _amounts, payout);
+NEG_RISK_ADAPTER = 0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296

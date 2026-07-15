@@ -81,7 +81,7 @@ const EMPTY_OFFSET: QueryOffset = QueryOffset {
 
 pub struct ExactQuerySet {
     bytes: CappedBytes,
-    offsets: Box<[QueryOffset]>,
+    offsets: Vec<QueryOffset>,
     len: usize,
 }
 
@@ -110,7 +110,7 @@ impl ExactQuerySet {
         if !prepared.matches_profile(profile) {
             return Err(QueryError::IntegrityFailure);
         }
-        let mut result = Self::empty(profile);
+        let mut result = Self::empty(profile)?;
         if let Some(observation) = relayer {
             let transaction_id = observation.transaction_id();
             result.append(
@@ -264,12 +264,18 @@ impl ExactQuerySet {
         Ok(binding)
     }
 
-    fn empty(profile: &ValidatedRedemptionProfile) -> Self {
-        Self {
-            bytes: CappedBytes::with_capacity(profile.max_query_bytes()),
-            offsets: vec![EMPTY_OFFSET; profile.max_query_items()].into_boxed_slice(),
+    fn empty(profile: &ValidatedRedemptionProfile) -> Result<Self, QueryError> {
+        let mut offsets = Vec::new();
+        offsets
+            .try_reserve_exact(profile.max_query_items())
+            .map_err(|_| QueryError::Allocation)?;
+        offsets.resize(profile.max_query_items(), EMPTY_OFFSET);
+        Ok(Self {
+            bytes: CappedBytes::try_with_capacity(profile.max_query_bytes())
+                .map_err(|_| QueryError::Allocation)?,
+            offsets,
             len: 0,
-        }
+        })
     }
 
     fn append(
@@ -325,6 +331,7 @@ fn append_decimal(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryError {
+    Allocation,
     Capacity,
     Index,
     BindingMismatch,

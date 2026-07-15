@@ -3,3 +3,6 @@ amounts[0] = CONDITIONAL_TOKENS.balanceOf(msg.sender, positionIds[0]);
 amounts[1] = CONDITIONAL_TOKENS.balanceOf(msg.sender, positionIds[1]);
 _redeemPositions(_conditionId, CTFHelpers.partition());
 CollateralToken(COLLATERAL_TOKEN).wrap
+event PayoutRedemption(address indexed redeemer, address indexed collateralToken, bytes32 indexed parentCollectionId, bytes32 conditionId, uint256[] indexSets, uint256 payout);
+CONDITIONAL_TOKENS = 0x4d97dcd97ec945f40cf65f87097ace5ea0476045
+USDCE = 0x2791bca1f2de4661ed88a30c99a7a9449aa84174

@@ -1,8 +1,5 @@
 use bolt_v2::bolt_v3_providers::polymarket::redemption::{MECHANICALLY_ENABLED, validate_profile};
 
-const CONFIG: &str = include_str!("../config/polymarket-redemption.toml");
-const MANIFEST: &str = include_str!("../ci/polymarket-redemption-provider-manifest.toml");
-
 #[test]
 fn standard_and_negative_risk_fixtures() {
     let standard: toml::Value =
@@ -24,13 +21,6 @@ fn standard_and_negative_risk_fixtures() {
 
 #[test]
 fn primitive_is_mechanically_disabled() {
-    validate_profile(CONFIG, MANIFEST).unwrap();
+    validate_profile().unwrap();
     assert!(!MECHANICALLY_ENABLED);
-    assert!(
-        validate_profile(
-            &CONFIG.replacen("enabled = false", "enabled = true", 1),
-            MANIFEST,
-        )
-        .is_err()
-    );
 }

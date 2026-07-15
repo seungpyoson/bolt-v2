@@ -17,6 +17,9 @@ standard_target = "0xADa100874d00e3331D00F2007a9c336a65009718"
 negative_risk_target = "0xAdA200001000ef00D07553cEE7006808F895c6F1"
 collateral = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+conditional_tokens = "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
+negative_risk_adapter = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+underlying_collateral = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"
 dummy_account = "0x0000000000000000000000000000000000000000"
 dummy_parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 dummy_index_sets = [1, 2]
@@ -45,7 +48,7 @@ max_origin_bytes = 256
 max_path_bytes = 64
 max_response_bytes = 2097152
 overflow_probe_bytes = 1
-max_receipt_logs = 1
+max_receipt_logs = 16
 finality_confirmations = 128
 
 [query]

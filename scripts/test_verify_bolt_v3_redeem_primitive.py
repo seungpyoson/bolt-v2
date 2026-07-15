@@ -167,6 +167,76 @@ class RedeemPrimitiveFenceTests(unittest.TestCase):
         )
         self.assert_rejected(root, "response set is partial")
 
+    def test_public_toml_and_infallible_capacity_boundaries_fail(self) -> None:
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "config.rs"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace(
+                "pub fn validate_profile()",
+                "pub fn validate_profile(config_toml: &str)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "arbitrary TOML")
+
+        root = self.fixture()
+        path = root / verifier.REDEMPTION_ROOT / "bounded.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nfn bad(capacity: usize) { let _ = vec![0; capacity]; }\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected(root, "fallible reservation")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/config.rs",
+            "REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_234",
+            "REVIEWED_CONFIG_SOURCE_BYTES: usize = 2_235",
+        )
+        self.assert_rejected(root, "pre-parse reviewed source bound")
+
+    def test_allocation_peak_and_terminal_event_contract_fail_closed(self) -> None:
+        root = self.fixture()
+        self.mutate(
+            root,
+            str(verifier.MANIFEST_PATH),
+            "max_peak_payload_bytes = 14725191",
+            "max_peak_payload_bytes = 14725190",
+        )
+        self.assert_rejected(root, "closed-form peak")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            str(verifier.MANIFEST_PATH),
+            "standard_emitter = \"0x4d97dcd97ec945f40cf65f87097ace5ea0476045\"",
+            "standard_emitter = \"0x0000000000000000000000000000000000000001\"",
+        )
+        self.assert_rejected(root, "terminal event")
+
+    def test_receipt_tristate_and_adapter_log_proof_cannot_be_removed(self) -> None:
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/wire.rs",
+            "enum ReceiptCompatibility",
+            "enum BooleanReceiptPresence",
+        )
+        self.assert_rejected(root, "receipt presence")
+
+        root = self.fixture()
+        self.mutate(
+            root,
+            "src/bolt_v3_providers/polymarket/redemption/wire.rs",
+            "fn standard_payout_matches",
+            "fn removed_standard_payout_matches",
+        )
+        self.assert_rejected(root, "mode-specific payout logs")
+
     def test_raw_getter_and_public_payload_field_fail(self) -> None:
         root = self.fixture()
         path = root / verifier.REDEMPTION_ROOT / "request.rs"

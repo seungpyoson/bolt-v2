@@ -395,6 +395,44 @@ def verify(root: pathlib.Path) -> list[str]:
         }
     ):
         errors.append("AO-REDEEM configured source identities are not exact and source-fenced")
+    allocation = manifest.get("allocation_boundary", {})
+    allocation_pairs = (
+        (config.get("relayer", {}).get("max_origin_bytes"), allocation.get("max_relayer_origin_bytes")),
+        (rpc.get("max_origin_bytes"), allocation.get("max_chain_origin_bytes")),
+        (config.get("relayer", {}).get("max_path_bytes"), allocation.get("max_path_bytes")),
+        (rpc.get("max_path_bytes"), allocation.get("max_path_bytes")),
+        (config.get("relayer", {}).get("max_request_bytes"), allocation.get("max_request_bytes")),
+        (config.get("relayer", {}).get("max_response_bytes"), allocation.get("max_relayer_response_bytes")),
+        (rpc.get("max_response_bytes"), allocation.get("max_chain_response_bytes")),
+        (config.get("relayer", {}).get("max_transaction_id_bytes"), allocation.get("max_transaction_id_bytes")),
+        (config.get("relayer", {}).get("max_timestamp_bytes"), allocation.get("max_timestamp_bytes")),
+        (config.get("relayer", {}).get("max_metadata_bytes"), allocation.get("max_metadata_bytes")),
+        (config.get("relayer", {}).get("max_header_bytes"), allocation.get("max_header_bytes")),
+        (rpc.get("max_receipt_logs"), allocation.get("max_receipt_logs")),
+        (config.get("query", {}).get("max_items"), allocation.get("max_query_items")),
+        (config.get("query", {}).get("max_bytes"), allocation.get("max_query_bytes")),
+        (config.get("credentials", {}).get("max_value_bytes"), allocation.get("max_credential_value_bytes")),
+        (config.get("credentials", {}).get("max_acquisition_bytes"), allocation.get("max_credential_acquisition_bytes")),
+        (config.get("credentials", {}).get("max_path_bytes"), allocation.get("max_credential_path_bytes")),
+    )
+    if any(not isinstance(value, int) or not isinstance(limit, int) or value <= 0 or value > limit for value, limit in allocation_pairs):
+        errors.append("AO-REDEEM allocation-driving maximum exceeds its reviewed manifest bound")
+    try:
+        peak = (
+            2 * (config["relayer"]["max_request_bytes"] + config["relayer"]["max_header_bytes"] + config["relayer"]["max_metadata_bytes"])
+            + config["query"]["max_bytes"]
+            + config["query"]["max_items"] * allocation["query_binding_bytes_per_item"]
+            + config["relayer"]["max_response_bytes"] + config["relayer"]["overflow_probe_bytes"]
+            + config["relayer"]["max_transaction_id_bytes"]
+            + (config["query"]["max_items"] - 1)
+            * (config["rpc"]["max_response_bytes"] + config["rpc"]["overflow_probe_bytes"])
+            + config["credentials"]["max_acquisition_bytes"]
+            + 6 * config["credentials"]["max_value_bytes"]
+        )
+    except (KeyError, TypeError):
+        peak = None
+    if peak != allocation.get("max_peak_payload_bytes"):
+        errors.append("AO-REDEEM closed-form peak payload bound drifted")
     if manifest.get("activation") != {"primitive_enabled": False, "requires_competing_same_nonce_conformance": True, "has_active_caller": False, "has_durable_state": False}:
         errors.append("AO-REDEEM manifest is not mechanically disabled and pure")
     if config.get("enabled") is not False or config.get("provider_manifest_id") != manifest.get("manifest_id"):
@@ -416,10 +454,64 @@ def verify(root: pathlib.Path) -> list[str]:
     config_source = (root / REDEMPTION_ROOT / "config.rs").read_text(encoding="utf-8")
     if "CappedSsmCredentialSource" not in config_source or "CredentialSink" not in config_source or "SsmSecretResolver" in config_source or "Zeroizing<String>" in config_source:
         errors.append("AO-REDEEM credential acquisition is not sealed, source-owned, capped, and zeroizing")
+    config_tokens = rust_tokens(config_source)
+    signatures = _function_signatures(config_tokens)
+    if any("str" in signature or "String" in signature or "[" in signature and "u8" in signature for signature in signatures.get("validate_profile", [])):
+        errors.append("AO-REDEEM arbitrary TOML is exposed as a production profile boundary")
+    if "EMBEDDED_CONFIG" not in config_source or "EMBEDDED_MANIFEST" not in config_source:
+        errors.append("AO-REDEEM production profile is not exact embedded reviewed bytes")
+    reviewed_source_bounds = {
+        "REVIEWED_CONFIG_SOURCE_BYTES": (root / CONFIG_PATH).stat().st_size,
+        "REVIEWED_MANIFEST_SOURCE_BYTES": (root / MANIFEST_PATH).stat().st_size,
+    }
+    for name, expected in reviewed_source_bounds.items():
+        match = re.search(rf"const\s+{name}:\s*usize\s*=\s*([\d_]+);", config_source)
+        if not match or int(match.group(1).replace("_", "")) != expected:
+            errors.append("AO-REDEEM pre-parse reviewed source bound drifted")
+    allocation_sources = "\n".join(
+        (root / REDEMPTION_ROOT / name).read_text(encoding="utf-8")
+        for name in ("bounded.rs", "config.rs", "query.rs", "request.rs", "wire.rs")
+    )
+    if re.search(r"vec!\s*\[\s*0\s*;", allocation_sources) or "CappedBytes::with_capacity" in allocation_sources:
+        errors.append("AO-REDEEM production allocation bypasses fallible reservation")
+
+    terminal = manifest.get("terminal_events", {})
+    expected_terminal = {
+        "safe_execution_success_signature": "ExecutionSuccess(bytes32,uint256)",
+        "standard_payout_redemption_signature": "PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)",
+        "negative_risk_payout_redemption_signature": "PayoutRedemption(address,bytes32,uint256[],uint256)",
+        "standard_emitter": "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
+        "negative_risk_emitter": "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+        "underlying_collateral": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+        "standard_indexed_fields": ["redeemer", "collateralToken", "parentCollectionId"],
+        "negative_risk_indexed_fields": ["redeemer", "conditionId"],
+        "standard_redeemer_semantics": "indexed-redeemer-equals-v2-standard-target",
+        "standard_condition_semantics": "data-condition-id-equals-exact-action-condition",
+        "standard_amount_semantics": "payout-equals-expected-output-minus-pre-output",
+        "standard_index_set_semantics": "data-index-sets-equal-toml-dummy-index-sets",
+        "negative_risk_redeemer_semantics": "indexed-redeemer-equals-v2-negative-risk-target",
+        "negative_risk_condition_semantics": "indexed-condition-id-equals-exact-action-condition",
+        "negative_risk_amount_semantics": "data-amounts-equal-exact-pre-claims-and-payout-equals-expected-output-minus-pre-output",
+        "standard_repository": "https://github.com/Polymarket/ctf-exchange-v2",
+        "standard_revision": "ccc0596074f4dfd62c944fbca4de252893b82b4b",
+        "standard_source": "src/adapters/interfaces/IConditionalTokens.sol",
+        "standard_blob": "dcd4713932ff7c54fdb50956e8be2a1bd3cc1680",
+        "negative_risk_repository": "https://github.com/Polymarket/neg-risk-ctf-adapter",
+        "negative_risk_revision": "f78b35b0863b4308a431ca307d06f49b2ea65e78",
+        "negative_risk_source": "src/NegRiskAdapter.sol",
+        "negative_risk_blob": "cef36a7bdbdd8f08f883262e7ab7a833f80fa2b9",
+        "deployment_source": "addresses.json",
+        "deployment_blob": "154a5a0892b9369c96e968e958e76541857aea4e",
+    }
+    if any(terminal.get(field) != value for field, value in expected_terminal.items()):
+        errors.append("AO-REDEEM terminal event source contract drifted")
+    adapter_config = config.get("adapter", {})
+    if terminal.get("standard_emitter", "").lower() != str(adapter_config.get("conditional_tokens", "")).lower() or terminal.get("negative_risk_emitter", "").lower() != str(adapter_config.get("negative_risk_adapter", "")).lower():
+        errors.append("AO-REDEEM terminal event emitters are not TOML-owned and manifest-fenced")
 
     fixtures = {
-        "ctf-collateral-adapter.txt": ("function redeemPositions(address, bytes32, bytes32 _conditionId, uint256[] calldata)", "CTFHelpers.partition()"),
-        "negative-risk-collateral-adapter.txt": ("function _redeemPositions(bytes32 _conditionId, uint256[] memory)", "INegRiskAdapter(NEG_RISK_ADAPTER).redeemPositions(_conditionId, amounts)"),
+        "ctf-collateral-adapter.txt": ("function redeemPositions(address, bytes32, bytes32 _conditionId, uint256[] calldata)", "CTFHelpers.partition()", "event PayoutRedemption(address indexed redeemer, address indexed collateralToken, bytes32 indexed parentCollectionId"),
+        "negative-risk-collateral-adapter.txt": ("function _redeemPositions(bytes32 _conditionId, uint256[] memory)", "INegRiskAdapter(NEG_RISK_ADAPTER).redeemPositions(_conditionId, amounts)", "emit PayoutRedemption(msg.sender, _conditionId, _amounts, payout)"),
         "relayer-safe-builder.txt": ("nonce: string", "nonce: args.nonce", "STATE_CONFIRMED", "transactionID", "proxyAddress"),
     }
     digest_fields = {"ctf-collateral-adapter.txt": "standard_sha256", "negative-risk-collateral-adapter.txt": "negative_risk_sha256", "relayer-safe-builder.txt": "relayer_sha256"}
@@ -450,6 +542,17 @@ def verify(root: pathlib.Path) -> list[str]:
         errors.append("AO-REDEEM exact raw response set is partial or open")
     if "required_confirmations" not in wire_source or "confirmed_at" not in wire_source:
         errors.append("AO-REDEEM terminal outcomes omit configured finality")
+    if "enum ReceiptCompatibility" not in wire_source or not all(name in wire_source for name in ("Absent", "Compatible", "Invalid")):
+        errors.append("AO-REDEEM receipt presence is not explicit fail-closed compatibility")
+    if not all(
+        re.search(pattern, wire_source)
+        for pattern in (
+            r"fn\s+standard_payout_matches\b",
+            r"fn\s+negative_risk_payout_matches\b",
+            r"struct\s+ExecutionLogsSeed\b",
+        )
+    ):
+        errors.append("AO-REDEEM terminal proof omits bounded mode-specific payout logs")
     post_state = re.search(r"struct PostStateWire<'a>\s*{([^}]*)}", wire_source, re.S)
     required_post_fields = {
         "query_id", "target", "condition_id", "collateral", "output_asset", "account",
@@ -487,6 +590,11 @@ def verify(root: pathlib.Path) -> list[str]:
         "consistent_dummy_index_set_mutation_is_not_replaced",
         "old_prepared_new_profile_key_and_source_fail_closed",
         "swapped_query_capabilities_are_rejected_before_parsing",
+        "profile_source_limits_and_closed_form_peak_are_exact",
+        "oversized_profile_elements_and_maxima_fail_closed",
+        "standard_and_negative_risk_adapter_log_failures_are_integrity_failures",
+        "present_invalid_losing_and_winning_receipts_fail_closed",
+        "receipt_log_limit_minus_one_limit_and_limit_plus_one_are_exact",
     )
     for name in required_tests:
         if f"fn {name}" not in tests:

@@ -25,16 +25,21 @@ pub struct RedactedProjection {
 }
 
 pub(super) struct CappedBytes {
-    storage: Zeroizing<Box<[u8]>>,
+    storage: Zeroizing<Vec<u8>>,
     len: usize,
 }
 
 impl CappedBytes {
-    pub(super) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            storage: Zeroizing::new(vec![0; capacity].into_boxed_slice()),
+    pub(super) fn try_with_capacity(capacity: usize) -> Result<Self, CappedIoError> {
+        let mut storage = Vec::new();
+        storage
+            .try_reserve_exact(capacity)
+            .map_err(|_| CappedIoError::Allocation)?;
+        storage.resize(capacity, 0);
+        Ok(Self {
+            storage: Zeroizing::new(storage),
             len: 0,
-        }
+        })
     }
 
     pub(super) fn read_with_probe(
@@ -48,7 +53,7 @@ impl CappedBytes {
         let charged = limit
             .checked_add(probe_bytes)
             .ok_or(CappedIoError::InvalidLimit)?;
-        let mut value = Self::with_capacity(charged);
+        let mut value = Self::try_with_capacity(charged)?;
         while value.len < charged {
             let read = reader
                 .read(&mut value.storage[value.len..])
@@ -160,6 +165,7 @@ pub(super) fn keyed_digest(key: &[u8], value: &[u8]) -> [u8; 32] {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CappedIoError {
+    Allocation,
     InvalidLimit,
     Read,
     Capacity,

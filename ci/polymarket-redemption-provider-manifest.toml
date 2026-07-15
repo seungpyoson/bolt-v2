@@ -31,6 +31,9 @@ standard_target = "0xADa100874d00e3331D00F2007a9c336a65009718"
 negative_risk_target = "0xAdA200001000ef00D07553cEE7006808F895c6F1"
 collateral = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+conditional_tokens = "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
+negative_risk_adapter = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+underlying_collateral = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"
 
 [safe_boundary]
 verification = "exact-query-required"
@@ -79,8 +82,8 @@ safe_builder_blob = "c9e8cacbe2f0e55c6e8bba230a5e072628136b4f"
 client_blob = "6fcf7915301ac0ac0542e9fb1de25e0fd8118af5"
 
 [source_snapshots]
-standard_sha256 = "b6fcc6b83bc665b716b6b8022a9dc7b73916674385e8b85673b7f084fc1def3e"
-negative_risk_sha256 = "fcdd887f55d6768b2046c63d6e06c6cb4853380bb24e5d02a58dbac6db0cd808"
+standard_sha256 = "db4a76f241304322c904a909458b4e771cd3d33b95e961ca29f90a5c43c890fd"
+negative_risk_sha256 = "e16cc38c6c63ffc0e6f9502ba7d4d9d95ffc9c1358b5bcec42bc773f84ec7036"
 relayer_sha256 = "2eca6f416f90d17aa6719254e3970573b395efea5159ccdc5eed67bd6e84a32c"
 
 [wire]
@@ -90,7 +93,7 @@ max_query_items = 7
 max_query_bytes = 4096
 max_transaction_items = 1
 max_header_items = 4
-max_execution_logs = 1
+max_execution_logs = 16
 overflow_probe_bytes = 1
 receipt_schema_repository = "https://github.com/ethereum/execution-apis"
 receipt_schema_revision = "60dbef739bde0db7ac30b6075439e192bfbd087e"
@@ -99,6 +102,53 @@ receipt_schema_blob = "ab67b3a1356ca693e89fa088be2179353654ca3d"
 [credential_boundary]
 source = "aws-ssm-capped-sink"
 max_acquisition_bytes = 4096
+
+[allocation_boundary]
+max_relayer_origin_bytes = 256
+max_chain_origin_bytes = 256
+max_path_bytes = 64
+max_request_bytes = 4096
+max_relayer_response_bytes = 2097152
+max_chain_response_bytes = 2097152
+max_transaction_id_bytes = 256
+max_timestamp_bytes = 64
+max_metadata_bytes = 256
+max_header_bytes = 1024
+max_receipt_logs = 16
+max_query_items = 7
+max_query_bytes = 4096
+max_credential_value_bytes = 4096
+max_credential_acquisition_bytes = 4096
+max_credential_path_bytes = 256
+query_binding_bytes_per_item = 192
+max_peak_payload_bytes = 14725191
+
+[terminal_events]
+safe_execution_success_signature = "ExecutionSuccess(bytes32,uint256)"
+standard_payout_redemption_signature = "PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)"
+negative_risk_payout_redemption_signature = "PayoutRedemption(address,bytes32,uint256[],uint256)"
+standard_emitter = "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
+negative_risk_emitter = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+underlying_collateral = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"
+standard_indexed_fields = ["redeemer", "collateralToken", "parentCollectionId"]
+negative_risk_indexed_fields = ["redeemer", "conditionId"]
+standard_redeemer_semantics = "indexed-redeemer-equals-v2-standard-target"
+standard_condition_semantics = "data-condition-id-equals-exact-action-condition"
+standard_amount_semantics = "payout-equals-expected-output-minus-pre-output"
+standard_index_set_semantics = "data-index-sets-equal-toml-dummy-index-sets"
+negative_risk_redeemer_semantics = "indexed-redeemer-equals-v2-negative-risk-target"
+negative_risk_condition_semantics = "indexed-condition-id-equals-exact-action-condition"
+negative_risk_amount_semantics = "data-amounts-equal-exact-pre-claims-and-payout-equals-expected-output-minus-pre-output"
+standard_repository = "https://github.com/Polymarket/ctf-exchange-v2"
+standard_revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
+standard_source = "src/adapters/interfaces/IConditionalTokens.sol"
+standard_blob = "dcd4713932ff7c54fdb50956e8be2a1bd3cc1680"
+negative_risk_repository = "https://github.com/Polymarket/neg-risk-ctf-adapter"
+negative_risk_revision = "f78b35b0863b4308a431ca307d06f49b2ea65e78"
+negative_risk_source = "src/NegRiskAdapter.sol"
+negative_risk_blob = "cef36a7bdbdd8f08f883262e7ab7a833f80fa2b9"
+deployment_source = "addresses.json"
+deployment_blob = "154a5a0892b9369c96e968e958e76541857aea4e"
 
 [activation]
 primitive_enabled = false

@@ -96,7 +96,7 @@ pub(super) struct SignedRequest {
     owner: [u8; ADDRESS_BYTES],
     calldata: [u8; CALLDATA_BYTES],
     calldata_len: usize,
-    metadata: Zeroizing<Box<[u8]>>,
+    metadata: Zeroizing<Vec<u8>>,
     body: CappedBytes,
     headers: CappedBytes,
 }
@@ -148,6 +148,7 @@ pub struct PreparedRequestPair {
     relayer_source_identity: [u8; WORD_BYTES],
     chain_source_identity: [u8; WORD_BYTES],
     credential_key_version: u32,
+    mode: MarketMode,
     condition_id: [u8; WORD_BYTES],
     pre_claim_balances: [[u8; WORD_BYTES]; 2],
     pre_collateral_balance: [u8; WORD_BYTES],
@@ -197,6 +198,10 @@ impl PreparedRequestPair {
 
     pub(super) fn condition_id(&self) -> [u8; WORD_BYTES] {
         self.condition_id
+    }
+
+    pub(super) fn mode(&self) -> MarketMode {
+        self.mode
     }
 
     pub(super) fn pre_claim_balances(&self) -> [[u8; WORD_BYTES]; 2] {
@@ -451,6 +456,7 @@ pub fn build_request_pair(
     let action_digest = action_digest(
         profile,
         credentials.key_version(),
+        input.mode,
         &original,
         &fence,
         condition_id,
@@ -466,6 +472,7 @@ pub fn build_request_pair(
         relayer_source_identity: profile.relayer_source_identity(),
         chain_source_identity: profile.chain_source_identity(),
         credential_key_version: credentials.key_version(),
+        mode: input.mode,
         condition_id,
         pre_claim_balances,
         pre_collateral_balance,
@@ -558,7 +565,7 @@ fn signed_request(
         owner,
         calldata: stored_calldata,
         calldata_len: calldata.len(),
-        metadata: zeroizing_box_from_slice(metadata),
+        metadata: zeroizing_vec_from_slice(metadata)?,
         body,
         headers,
     })
@@ -601,7 +608,8 @@ fn request_body(
 ) -> Result<CappedBytes, RedemptionRequestError> {
     let mut nonce_decimal = [0; MAX_NONCE_DECIMAL_BYTES];
     let nonce_len = identity.nonce.write_decimal(&mut nonce_decimal);
-    let mut body = CappedBytes::with_capacity(profile.max_request_bytes());
+    let mut body =
+        CappedBytes::try_with_capacity(profile.max_request_bytes()).map_err(map_capped_error)?;
     body.extend(br#"{"type":"SAFE","from":"0x"#)
         .map_err(map_capped_error)?;
     body.append_hex(&owner).map_err(map_capped_error)?;
@@ -642,7 +650,12 @@ fn authorization_headers(
         .and_then(|value| value.checked_add(1))
         .and_then(|value| value.checked_mul(3))
         .ok_or(RedemptionRequestError::Authorization)?;
-    let mut decoded_secret = Zeroizing::new(vec![0; decoded_capacity].into_boxed_slice());
+    let mut decoded = Vec::new();
+    decoded
+        .try_reserve_exact(decoded_capacity)
+        .map_err(|_| RedemptionRequestError::Authorization)?;
+    decoded.resize(decoded_capacity, 0);
+    let mut decoded_secret = Zeroizing::new(decoded);
     let decoded_len = general_purpose::STANDARD
         .decode_slice(credentials.builder_api_secret(), &mut *decoded_secret)
         .map_err(|_| RedemptionRequestError::Authorization)?;
@@ -657,7 +670,8 @@ fn authorization_headers(
     let signature_len = general_purpose::URL_SAFE
         .encode_slice(signature, &mut encoded_signature)
         .map_err(|_| RedemptionRequestError::Authorization)?;
-    let mut headers = CappedBytes::with_capacity(profile.max_header_bytes());
+    let mut headers =
+        CappedBytes::try_with_capacity(profile.max_header_bytes()).map_err(map_capped_error)?;
     headers
         .extend(br#"{"POLY_BUILDER_API_KEY":"#)
         .map_err(map_capped_error)?;
@@ -750,6 +764,7 @@ fn safe_transaction_hash(
 fn action_digest(
     profile: &ValidatedRedemptionProfile,
     credential_key_version: u32,
+    mode: MarketMode,
     original: &SignedRequest,
     fence: &SignedRequest,
     condition_id: [u8; WORD_BYTES],
@@ -765,6 +780,10 @@ fn action_digest(
     digest.update(credential_key_version.to_be_bytes());
     digest.update(profile.chain_id().to_be_bytes());
     digest.update(profile.safe_address());
+    digest.update([match mode {
+        MarketMode::Standard => 0,
+        MarketMode::NegativeRisk => 1,
+    }]);
     digest.update(condition_id);
     digest.update(pre_claim_balances[0]);
     digest.update(pre_claim_balances[1]);
@@ -829,14 +848,20 @@ fn write_u64_decimal(mut value: u64, output: &mut [u8; MAX_U64_DECIMAL_BYTES]) -
 fn map_capped_error(error: CappedIoError) -> RedemptionRequestError {
     match error {
         CappedIoError::Read => RedemptionRequestError::Read,
+        CappedIoError::Allocation => RedemptionRequestError::RequestTooLarge,
         CappedIoError::Capacity | CappedIoError::InvalidLimit | CappedIoError::Oversize(_) => {
             RedemptionRequestError::RequestTooLarge
         }
     }
 }
 
-fn zeroizing_box_from_slice(value: &[u8]) -> Zeroizing<Box<[u8]>> {
-    let mut output = Zeroizing::new(vec![0; value.len()].into_boxed_slice());
+fn zeroizing_vec_from_slice(value: &[u8]) -> Result<Zeroizing<Vec<u8>>, RedemptionRequestError> {
+    let mut storage = Vec::new();
+    storage
+        .try_reserve_exact(value.len())
+        .map_err(|_| RedemptionRequestError::RequestTooLarge)?;
+    storage.resize(value.len(), 0);
+    let mut output = Zeroizing::new(storage);
     output.copy_from_slice(value);
-    output
+    Ok(output)
 }

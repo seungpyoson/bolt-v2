@@ -34,7 +34,14 @@ fn credential_value(
 }
 
 fn profile() -> ValidatedRedemptionProfile {
-    validate_profile(CONFIG, MANIFEST).unwrap()
+    validate_profile().unwrap()
+}
+
+fn hermetic_profile(
+    config: &str,
+    manifest: &str,
+) -> Result<ValidatedRedemptionProfile, RedemptionConfigError> {
+    super::config::validate_profile_hermetic(config, manifest, config.len(), manifest.len())
 }
 
 fn credentials(profile: &ValidatedRedemptionProfile) -> ResolvedRedemptionCredentials {
@@ -185,6 +192,23 @@ enum QueryBindingSwap {
     PostBoundary,
 }
 
+#[derive(Clone, Copy)]
+enum ReceiptMutation {
+    None,
+    MissingPayout,
+    DuplicatePayout,
+    CorruptPayout,
+    WrongEmitter,
+    WrongField,
+    WrongAmount,
+    ReorgedPayout,
+    Invalid(RequestKind),
+    CorruptSafe(RequestKind),
+    Malformed(RequestKind),
+    AlsoCompatible(RequestKind),
+    ExtraLogs(usize),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn raw_responses(
     authority: &impl ExactActionBinding,
@@ -230,6 +254,39 @@ fn raw_responses_with_mutation(
     post_mutation: PostMutation,
     query_binding_swap: QueryBindingSwap,
 ) -> Result<ExactQueryResponses, WireParseError> {
+    raw_responses_with_receipt_mutation(
+        authority,
+        profile,
+        credentials,
+        queries,
+        winner,
+        reorged,
+        wrong_query_id,
+        observed_nonce,
+        post_claim_balances,
+        post_collateral_balance,
+        post_mutation,
+        query_binding_swap,
+        ReceiptMutation::None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raw_responses_with_receipt_mutation(
+    authority: &impl ExactActionBinding,
+    profile: &ValidatedRedemptionProfile,
+    credentials: &ResolvedRedemptionCredentials,
+    queries: &ExactQuerySet,
+    winner: Option<RequestKind>,
+    reorged: Option<RequestKind>,
+    wrong_query_id: Option<RequestKind>,
+    observed_nonce: SafeNonce,
+    post_claim_balances: [[u8; 32]; 2],
+    post_collateral_balance: [u8; 32],
+    post_mutation: PostMutation,
+    query_binding_swap: QueryBindingSwap,
+    receipt_mutation: ReceiptMutation,
+) -> Result<ExactQueryResponses, WireParseError> {
     let values = query_values(queries);
     let nonce_query = values
         .iter()
@@ -249,34 +306,167 @@ fn raw_responses_with_mutation(
         .unwrap();
     let head_number = "0x81";
     let head_hash = format!("0x{}", "a5".repeat(32));
-    let event_topic = format!(
+    let safe_event_topic = format!(
         "0x{}",
         hex::encode(keccak256(b"ExecutionSuccess(bytes32,uint256)"))
     );
+    let prepared = authority.prepared_request_pair();
+    let address_topic = |address: [u8; 20]| {
+        let mut word = [0; 32];
+        word[12..].copy_from_slice(&address);
+        format!("0x{}", hex::encode(word))
+    };
+    let payout = super::wire::subtract_word(
+        prepared.expected_redeemed_collateral_balance(),
+        prepared.pre_collateral_balance(),
+    )
+    .unwrap();
+    let payout_log = |transaction_hash: &str, block_hash: &str| {
+        let target = prepared.request(RequestKind::Original).identity().target();
+        let (standard_emitter, negative_emitter, underlying, _, standard_topic, negative_topic) =
+            profile.terminal_event_contract();
+        match prepared.mode() {
+            MarketMode::Standard => {
+                let index_sets = profile.adapter_arguments().2;
+                let data = [
+                    prepared.condition_id(),
+                    super::wire::small_word(96),
+                    payout,
+                    super::wire::small_word(2),
+                    super::wire::small_word(index_sets[0]),
+                    super::wire::small_word(index_sets[1]),
+                ];
+                json!({
+                    "address": format!("0x{}", hex::encode(standard_emitter)),
+                    "topics": [
+                        format!("0x{}", hex::encode(standard_topic)),
+                        address_topic(target),
+                        address_topic(underlying),
+                        format!("0x{}", "00".repeat(32))
+                    ],
+                    "data": format!("0x{}", data.map(hex::encode).concat()),
+                    "blockNumber": "0x2", "blockHash": block_hash,
+                    "transactionHash": transaction_hash, "transactionIndex": "0x0",
+                    "logIndex": "0x1", "removed": false
+                })
+            }
+            MarketMode::NegativeRisk => {
+                let data = [
+                    super::wire::small_word(64),
+                    payout,
+                    super::wire::small_word(2),
+                    prepared.pre_claim_balances()[0],
+                    prepared.pre_claim_balances()[1],
+                ];
+                json!({
+                    "address": format!("0x{}", hex::encode(negative_emitter)),
+                    "topics": [
+                        format!("0x{}", hex::encode(negative_topic)),
+                        address_topic(target),
+                        format!("0x{}", hex::encode(prepared.condition_id()))
+                    ],
+                    "data": format!("0x{}", data.map(hex::encode).concat()),
+                    "blockNumber": "0x2", "blockHash": block_hash,
+                    "transactionHash": transaction_hash, "transactionIndex": "0x0",
+                    "logIndex": "0x1", "removed": false
+                })
+            }
+        }
+    };
     let execution = |index: usize, kind: RequestKind| {
-        let present = winner == Some(kind);
+        let present = winner == Some(kind)
+            || matches!(receipt_mutation, ReceiptMutation::Invalid(value) | ReceiptMutation::CorruptSafe(value) | ReceiptMutation::Malformed(value) | ReceiptMutation::AlsoCompatible(value) if value == kind);
         let safe_hash = executions[index]["safe_transaction_hash"].as_str().unwrap();
         let transaction_hash = format!("0x{}", if index == 0 { "31" } else { "32" }.repeat(32));
         let block_hash = format!("0x{}", if index == 0 { "41" } else { "42" }.repeat(32));
         let receipts = if present {
-            json!([{
+            let safe_log = json!({
+                    "address": executions[index]["safe"],
+                    "topics": [safe_event_topic.clone()],
+                    "data": format!("{}{}", safe_hash, "00".repeat(32)),
+                    "blockNumber": "0x2",
+                    "blockHash": block_hash.clone(),
+                    "transactionHash": transaction_hash.clone(),
+                    "transactionIndex": "0x0",
+                    "logIndex": "0x0",
+                    "removed": false
+            });
+            let mut logs = if kind == RequestKind::Original {
+                vec![safe_log, payout_log(&transaction_hash, &block_hash)]
+            } else {
+                vec![safe_log]
+            };
+            if kind == RequestKind::Original {
+                match receipt_mutation {
+                    ReceiptMutation::MissingPayout => {
+                        logs.pop();
+                    }
+                    ReceiptMutation::DuplicatePayout => logs.push(logs[1].clone()),
+                    ReceiptMutation::CorruptPayout => logs[1]["data"] = json!("0x00"),
+                    ReceiptMutation::WrongEmitter => {
+                        logs[1]["address"] = json!(format!("0x{}", "ee".repeat(20)));
+                    }
+                    ReceiptMutation::WrongField => {
+                        logs[1]["topics"][1] = json!(format!("0x{}", "00".repeat(32)));
+                    }
+                    ReceiptMutation::WrongAmount => {
+                        let payout_word = match prepared.mode() {
+                            MarketMode::Standard => 2,
+                            MarketMode::NegativeRisk => 1,
+                        };
+                        let mut data = logs[1]["data"].as_str().unwrap().as_bytes().to_vec();
+                        let start = 2 + payout_word * 64;
+                        data[start..start + 64].fill(b'f');
+                        logs[1]["data"] = json!(String::from_utf8(data).unwrap());
+                    }
+                    ReceiptMutation::ReorgedPayout => logs[1]["removed"] = json!(true),
+                    ReceiptMutation::None
+                    | ReceiptMutation::Invalid(_)
+                    | ReceiptMutation::CorruptSafe(_)
+                    | ReceiptMutation::Malformed(_)
+                    | ReceiptMutation::AlsoCompatible(_)
+                    | ReceiptMutation::ExtraLogs(_) => {}
+                }
+            }
+            if let ReceiptMutation::ExtraLogs(count) = receipt_mutation {
+                for log_index in 0..count {
+                    logs.push(json!({
+                        "address": format!("0x{}", "aa".repeat(20)),
+                        "topics": [format!("0x{}", "77".repeat(32))],
+                        "data": "0x",
+                        "blockNumber": "0x2",
+                        "blockHash": block_hash.clone(),
+                        "transactionHash": transaction_hash.clone(),
+                        "transactionIndex": "0x0",
+                        "logIndex": format!("0x{:x}", log_index + 2),
+                        "removed": false
+                    }));
+                }
+            }
+            if matches!(receipt_mutation, ReceiptMutation::CorruptSafe(value) if value == kind) {
+                logs[0]["data"] = json!("0x00");
+            }
+            let mut receipt = json!({
                 "transactionHash": transaction_hash.clone(),
                 "blockNumber": "0x2",
                 "blockHash": block_hash.clone(),
                 "transactionIndex": "0x0",
                 "status": "0x1",
-                "logs": [{
-                    "address": executions[index]["safe"],
-                    "topics": [event_topic.clone()],
-                    "data": format!("{}{}", safe_hash, "00".repeat(32)),
-                    "blockNumber": "0x2",
-                    "blockHash": block_hash.clone(),
-                    "transactionHash": transaction_hash,
-                    "transactionIndex": "0x0",
-                    "logIndex": "0x0",
-                    "removed": false
-                }]
-            }])
+                "logs": logs
+            });
+            if matches!(receipt_mutation, ReceiptMutation::Invalid(value) if value == kind) {
+                receipt["status"] = json!("0x2");
+            }
+            if matches!(receipt_mutation, ReceiptMutation::Malformed(value) if value == kind) {
+                receipt = json!({"status": "0x1"});
+            }
+            if matches!(receipt_mutation, ReceiptMutation::AlsoCompatible(value) if value == kind)
+                && winner == Some(kind)
+            {
+                json!([receipt.clone(), receipt])
+            } else {
+                json!([receipt])
+            }
         } else {
             json!([])
         };
@@ -667,7 +857,7 @@ fn consistent_dummy_index_set_mutation_is_not_replaced() {
     let changed_config = CONFIG.replace("dummy_index_sets = [1, 2]", "dummy_index_sets = [3, 4]");
     let changed_manifest =
         MANIFEST.replace("dummy_index_sets = [1, 2]", "dummy_index_sets = [3, 4]");
-    let changed = validate_profile(&changed_config, &changed_manifest).unwrap();
+    let changed = hermetic_profile(&changed_config, &changed_manifest).unwrap();
     assert_eq!(changed.adapter_arguments().2, [3, 4]);
 }
 
@@ -820,7 +1010,7 @@ fn old_prepared_new_profile_key_and_source_fail_closed() {
         .unwrap();
 
     let key_config = CONFIG.replace("key_version = 1", "key_version = 2");
-    let key_profile = validate_profile(&key_config, MANIFEST).unwrap();
+    let key_profile = hermetic_profile(&key_config, MANIFEST).unwrap();
     let key_credentials = credentials(&key_profile);
     assert!(matches!(
         ExactQuerySet::after_original_response_loss(&key_profile, &original, None),
@@ -900,7 +1090,7 @@ fn old_prepared_new_profile_key_and_source_fail_closed() {
             MANIFEST.replace("https://polygon-rpc.com", "https://rpc-review.invalid"),
         ),
     ] {
-        let changed_profile = validate_profile(&changed_config, &changed_manifest).unwrap();
+        let changed_profile = hermetic_profile(&changed_config, &changed_manifest).unwrap();
         let changed_credentials = credentials(&changed_profile);
         assert!(matches!(
             ExactQuerySet::after_original_response_loss(&changed_profile, &original, None),
@@ -975,12 +1165,12 @@ fn original_and_fence_body_boundaries() {
         assert_eq!(pair.hermetic_headers(kind), repeated.hermetic_headers(kind));
         assert!(body.len() <= profile.max_request_bytes());
         assert!(body.starts_with(b"{\"type\":\"SAFE\""));
-        let mut too_small = super::bounded::CappedBytes::with_capacity(body.len() - 1);
+        let mut too_small = super::bounded::CappedBytes::try_with_capacity(body.len() - 1).unwrap();
         assert!(too_small.extend(body).is_err());
-        let mut exact = super::bounded::CappedBytes::with_capacity(body.len());
+        let mut exact = super::bounded::CappedBytes::try_with_capacity(body.len()).unwrap();
         assert!(exact.extend(body).is_ok());
         assert_eq!(exact.len(), body.len());
-        let mut spare = super::bounded::CappedBytes::with_capacity(body.len() + 1);
+        let mut spare = super::bounded::CappedBytes::try_with_capacity(body.len() + 1).unwrap();
         assert!(spare.extend(body).is_ok());
         assert_eq!(spare.len(), body.len());
     }
@@ -1670,7 +1860,7 @@ fn profile_key_source_and_finalized_bindings_fail_closed() {
         .verify_after_original(&profile, &credentials, &original)
         .unwrap();
     let changed_config = CONFIG.replace("key_version = 1", "key_version = 2");
-    let changed_profile = validate_profile(&changed_config, MANIFEST).unwrap();
+    let changed_profile = hermetic_profile(&changed_config, MANIFEST).unwrap();
     let changed_credentials = credentials(&changed_profile);
     assert_eq!(
         outcome.consume_after_original(
@@ -1764,7 +1954,7 @@ fn sentinels_do_not_reach_redacted_diagnostics() {
 fn primitive_is_mechanically_disabled() {
     assert!(!MECHANICALLY_ENABLED);
     assert!(
-        validate_profile(
+        hermetic_profile(
             &CONFIG.replacen(
                 "competing_same_nonce_conformance = false",
                 "competing_same_nonce_conformance = true",
@@ -1774,4 +1964,273 @@ fn primitive_is_mechanically_disabled() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn profile_source_limits_and_closed_form_peak_are_exact() {
+    assert!(
+        super::config::validate_profile_hermetic(
+            CONFIG,
+            MANIFEST,
+            CONFIG.len() - 1,
+            MANIFEST.len(),
+        )
+        .is_err()
+    );
+    assert!(
+        super::config::validate_profile_hermetic(
+            CONFIG,
+            MANIFEST,
+            CONFIG.len(),
+            MANIFEST.len() - 1,
+        )
+        .is_err()
+    );
+    assert!(
+        super::config::validate_profile_hermetic(CONFIG, MANIFEST, CONFIG.len(), MANIFEST.len(),)
+            .is_ok()
+    );
+    assert!(
+        super::config::validate_profile_hermetic(
+            CONFIG,
+            MANIFEST,
+            CONFIG.len() + 1,
+            MANIFEST.len() + 1,
+        )
+        .is_ok()
+    );
+    let oversized = format!("{CONFIG}\n");
+    assert!(
+        super::config::validate_profile_hermetic(
+            &oversized,
+            MANIFEST,
+            CONFIG.len(),
+            MANIFEST.len(),
+        )
+        .is_err()
+    );
+    let oversized_manifest = format!("{MANIFEST}\n");
+    assert!(
+        super::config::validate_profile_hermetic(
+            CONFIG,
+            &oversized_manifest,
+            CONFIG.len(),
+            MANIFEST.len(),
+        )
+        .is_err()
+    );
+
+    let config: toml::Value = toml::from_str(CONFIG).unwrap();
+    let manifest: toml::Value = toml::from_str(MANIFEST).unwrap();
+    let relayer = &config["relayer"];
+    let rpc = &config["rpc"];
+    let query = &config["query"];
+    let credentials = &config["credentials"];
+    let allocation = &manifest["allocation_boundary"];
+    let peak = 2
+        * (relayer["max_request_bytes"].as_integer().unwrap()
+            + relayer["max_header_bytes"].as_integer().unwrap()
+            + relayer["max_metadata_bytes"].as_integer().unwrap())
+        + query["max_bytes"].as_integer().unwrap()
+        + query["max_items"].as_integer().unwrap()
+            * allocation["query_binding_bytes_per_item"]
+                .as_integer()
+                .unwrap()
+        + relayer["max_response_bytes"].as_integer().unwrap()
+        + relayer["overflow_probe_bytes"].as_integer().unwrap()
+        + relayer["max_transaction_id_bytes"].as_integer().unwrap()
+        + (query["max_items"].as_integer().unwrap() - 1)
+            * (rpc["max_response_bytes"].as_integer().unwrap()
+                + rpc["overflow_probe_bytes"].as_integer().unwrap())
+        + credentials["max_acquisition_bytes"].as_integer().unwrap()
+        + 6 * credentials["max_value_bytes"].as_integer().unwrap();
+    assert_eq!(
+        peak,
+        allocation["max_peak_payload_bytes"].as_integer().unwrap()
+    );
+}
+
+#[test]
+fn oversized_profile_elements_and_maxima_fail_closed() {
+    let oversized_elements =
+        CONFIG.replace("dummy_index_sets = [1, 2]", "dummy_index_sets = [1, 2, 3]");
+    assert!(hermetic_profile(&oversized_elements, MANIFEST).is_err());
+
+    let oversized_maximum = CONFIG.replace("max_request_bytes = 4096", "max_request_bytes = 8192");
+    assert!(hermetic_profile(&oversized_maximum, MANIFEST).is_err());
+
+    let oversized_manifest_elements = MANIFEST.replace(
+        "ignored_argument_indices = [0, 1, 3]",
+        "ignored_argument_indices = [0, 1, 2, 3]",
+    );
+    assert!(hermetic_profile(CONFIG, &oversized_manifest_elements).is_err());
+}
+
+#[test]
+fn standard_and_negative_risk_adapter_log_failures_are_integrity_failures() {
+    for mode in [MarketMode::Standard, MarketMode::NegativeRisk] {
+        for mutation in [
+            ReceiptMutation::MissingPayout,
+            ReceiptMutation::DuplicatePayout,
+            ReceiptMutation::CorruptPayout,
+            ReceiptMutation::WrongEmitter,
+            ReceiptMutation::WrongField,
+            ReceiptMutation::WrongAmount,
+            ReceiptMutation::ReorgedPayout,
+        ] {
+            let profile = profile();
+            let credentials = credentials(&profile);
+            let original =
+                authorize_original(prepared(&profile, &credentials, mode, 1, SafeNonce::ZERO));
+            let queries =
+                ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+            let responses = raw_responses_with_receipt_mutation(
+                &original,
+                &profile,
+                &credentials,
+                &queries,
+                Some(RequestKind::Original),
+                None,
+                None,
+                SafeNonce::from_decimal("1").unwrap(),
+                [[0; 32]; 2],
+                [4; 32],
+                PostMutation::None,
+                QueryBindingSwap::None,
+                mutation,
+            )
+            .unwrap();
+            assert_eq!(
+                responses
+                    .verify_after_original(&profile, &credentials, &original)
+                    .unwrap()
+                    .consume_after_original(&responses, &profile, &credentials, &original)
+                    .unwrap(),
+                RedemptionResolution::IntegrityFailure
+            );
+        }
+    }
+}
+
+#[test]
+fn receipt_log_limit_minus_one_limit_and_limit_plus_one_are_exact() {
+    let limit = profile().max_receipt_logs();
+    for (total_logs, expected) in [
+        (limit - 1, RedemptionResolution::RedemptionFinalized),
+        (limit, RedemptionResolution::RedemptionFinalized),
+        (limit + 1, RedemptionResolution::IntegrityFailure),
+    ] {
+        let profile = profile();
+        let credentials = credentials(&profile);
+        let original = authorize_original(prepared(
+            &profile,
+            &credentials,
+            MarketMode::Standard,
+            1,
+            SafeNonce::ZERO,
+        ));
+        let queries =
+            ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+        let responses = raw_responses_with_receipt_mutation(
+            &original,
+            &profile,
+            &credentials,
+            &queries,
+            Some(RequestKind::Original),
+            None,
+            None,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[0; 32]; 2],
+            [4; 32],
+            PostMutation::None,
+            QueryBindingSwap::None,
+            ReceiptMutation::ExtraLogs(total_logs - 2),
+        )
+        .unwrap();
+        assert_eq!(
+            responses
+                .verify_after_original(&profile, &credentials, &original)
+                .unwrap()
+                .consume_after_original(&responses, &profile, &credentials, &original)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn present_invalid_losing_and_winning_receipts_fail_closed() {
+    for (winner, invalid, nonce, claims, collateral) in [
+        (
+            None,
+            RequestKind::Original,
+            SafeNonce::ZERO,
+            [[1; 32], [2; 32]],
+            [3; 32],
+        ),
+        (
+            Some(RequestKind::Original),
+            RequestKind::Original,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[0; 32]; 2],
+            [4; 32],
+        ),
+        (
+            Some(RequestKind::Original),
+            RequestKind::Fence,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[0; 32]; 2],
+            [4; 32],
+        ),
+        (
+            Some(RequestKind::Fence),
+            RequestKind::Original,
+            SafeNonce::from_decimal("1").unwrap(),
+            [[1; 32], [2; 32]],
+            [3; 32],
+        ),
+    ] {
+        for mutation in [
+            ReceiptMutation::Invalid(invalid),
+            ReceiptMutation::CorruptSafe(invalid),
+            ReceiptMutation::Malformed(invalid),
+            ReceiptMutation::AlsoCompatible(invalid),
+        ] {
+            let profile = profile();
+            let credentials = credentials(&profile);
+            let original = authorize_original(prepared(
+                &profile,
+                &credentials,
+                MarketMode::Standard,
+                1,
+                SafeNonce::ZERO,
+            ));
+            let queries =
+                ExactQuerySet::after_original_response_loss(&profile, &original, None).unwrap();
+            let responses = raw_responses_with_receipt_mutation(
+                &original,
+                &profile,
+                &credentials,
+                &queries,
+                winner,
+                None,
+                None,
+                nonce,
+                claims,
+                collateral,
+                PostMutation::None,
+                QueryBindingSwap::None,
+                mutation,
+            )
+            .unwrap();
+            assert_eq!(
+                responses
+                    .verify_after_original(&profile, &credentials, &original)
+                    .unwrap()
+                    .consume_after_original(&responses, &profile, &credentials, &original)
+                    .unwrap(),
+                RedemptionResolution::IntegrityFailure
+            );
+        }
+    }
 }

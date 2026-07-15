@@ -2,9 +2,9 @@ use std::fmt;
 #[cfg(test)]
 use std::io::Cursor;
 
-use alloy_primitives::keccak256;
-use serde::de::{self, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -19,7 +19,8 @@ use super::query::{
     classify_nonce_successor,
 };
 use super::request::{
-    FenceMayHaveStartedRequest, OriginalMayHaveStartedRequest, PreparedRequestPair, RequestKind,
+    FenceMayHaveStartedRequest, MarketMode, OriginalMayHaveStartedRequest, PreparedRequestPair,
+    RequestKind,
 };
 
 const ADDRESS_BYTES: usize = 20;
@@ -373,7 +374,10 @@ impl RelayerSourceResponse {
                 .failure(WireFailureClass::Malformed, credentials)
         })?;
         Ok(RelayerObservation {
-            transaction_id: zeroizing_box(parsed.transaction_id.as_bytes()),
+            transaction_id: zeroizing_vec(parsed.transaction_id.as_bytes()).map_err(|_| {
+                self.response
+                    .failure(WireFailureClass::Capacity, credentials)
+            })?,
             transaction_id_digest: keyed_digest(
                 credentials.redaction_hmac_key(),
                 parsed.transaction_id.as_bytes(),
@@ -476,7 +480,10 @@ impl RelayerSourceResponse {
                 .failure(WireFailureClass::IdentityMismatch, credentials));
         }
         Ok(RelayerObservation {
-            transaction_id: zeroizing_box(transaction.transaction_id.as_bytes()),
+            transaction_id: zeroizing_vec(transaction.transaction_id.as_bytes()).map_err(|_| {
+                self.response
+                    .failure(WireFailureClass::Capacity, credentials)
+            })?,
             transaction_id_digest: expected.transaction_id_digest,
             state,
             transaction_hash,
@@ -743,8 +750,29 @@ impl ExactQueryResponses {
             }
         }
         let nonce: NonceCallWire<'_> = self.parse(&self.nonce, credentials)?;
-        let original: ExecutionQueryWire<'_> = self.parse(&self.original_execution, credentials)?;
-        let fence: ExecutionQueryWire<'_> = self.parse(&self.fence_execution, credentials)?;
+        let original: ExecutionQueryWire<'_> =
+            match self.parse(&self.original_execution, credentials) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok(integrity_outcome(
+                        profile,
+                        prepared,
+                        self,
+                        fence_durably_authorized,
+                    ));
+                }
+            };
+        let fence: ExecutionQueryWire<'_> = match self.parse(&self.fence_execution, credentials) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(integrity_outcome(
+                    profile,
+                    prepared,
+                    self,
+                    fence_durably_authorized,
+                ));
+            }
+        };
         let post: PostStateWire<'_> = self.parse(&self.post_state, credentials)?;
         let boundary: SafeBoundaryWire<'_> = self.parse(&self.safe_boundary, credentials)?;
         let finalized: FinalizedHeadWire<'_> = self.parse(&self.finalized_head, credentials)?;
@@ -806,11 +834,9 @@ impl ExactQueryResponses {
         let original_receipt = validate_execution_query(
             &original,
             "original_finalized_receipt_logs",
-            profile.safe_address(),
-            prepared
-                .request(RequestKind::Original)
-                .identity()
-                .safe_transaction_hash(),
+            profile,
+            prepared,
+            RequestKind::Original,
             finalized_number,
             finalized_hash,
             profile.finality_confirmations(),
@@ -819,19 +845,18 @@ impl ExactQueryResponses {
         let fence_receipt = validate_execution_query(
             &fence,
             "fence_finalized_receipt_logs",
-            profile.safe_address(),
-            prepared
-                .request(RequestKind::Fence)
-                .identity()
-                .safe_transaction_hash(),
+            profile,
+            prepared,
+            RequestKind::Fence,
             finalized_number,
             finalized_hash,
             profile.finality_confirmations(),
             profile.max_receipt_logs(),
         );
-        let execution_identities_match = original_receipt.is_some() && fence_receipt.is_some();
-        let original_present = original_receipt.flatten();
-        let fence_present = fence_receipt.flatten();
+        let execution_identities_match = original_receipt != ReceiptCompatibility::Invalid
+            && fence_receipt != ReceiptCompatibility::Invalid;
+        let original_present = original_receipt == ReceiptCompatibility::Compatible;
+        let fence_present = fence_receipt == ReceiptCompatibility::Compatible;
         let post_state = match (post_claim_balances, post_collateral_balance) {
             ([Some(first), Some(second)], Some(collateral_balance))
                 if [first, second] == [[0; WORD_BYTES]; 2]
@@ -913,38 +938,74 @@ impl ExactQueryResponses {
     }
 }
 
+fn integrity_outcome(
+    profile: &ValidatedRedemptionProfile,
+    prepared: &PreparedRequestPair,
+    responses: &ExactQueryResponses,
+    fence_authorized: bool,
+) -> SourceBoundVerifiedOutcome {
+    SourceBoundVerifiedOutcome::from_raw_verifier(
+        RedemptionResolution::IntegrityFailure,
+        profile,
+        prepared,
+        VerifiedOutcomeBinding {
+            finalized_block_number: responses.finalized_head.finalized_block_number,
+            finalized_block_hash: responses.finalized_head.finalized_block_hash,
+            fence_authorized,
+        },
+    )
+}
+
 fn validate_execution_query(
     query: &ExecutionQueryWire<'_>,
     expected_query_id: &str,
-    safe_address: [u8; ADDRESS_BYTES],
-    safe_transaction_hash: [u8; WORD_BYTES],
+    profile: &ValidatedRedemptionProfile,
+    prepared: &PreparedRequestPair,
+    request_kind: RequestKind,
     finalized_number: Option<[u8; WORD_BYTES]>,
     finalized_hash: Option<[u8; WORD_BYTES]>,
     required_confirmations: u64,
     max_execution_logs: usize,
-) -> Option<bool> {
+) -> ReceiptCompatibility {
+    let safe_address = profile.safe_address();
+    let request = prepared.request(request_kind);
+    let safe_transaction_hash = request.identity().safe_transaction_hash();
     if query.query_id != expected_query_id
         || decode_address(query.safe_address) != Some(safe_address)
         || parse_word(query.safe_transaction_hash) != Some(safe_transaction_hash)
         || parse_quantity_word(query.observed_at_block_number) != finalized_number
         || parse_word(query.observed_at_block_hash) != finalized_hash
     {
-        return None;
+        return ReceiptCompatibility::Invalid;
     }
     let Some(receipt) = query.receipts.0.as_ref() else {
-        return query.canonical_block.0.is_none().then_some(false);
+        return if query.canonical_block.0.is_none() {
+            ReceiptCompatibility::Absent
+        } else {
+            ReceiptCompatibility::Invalid
+        };
     };
-    let canonical = query.canonical_block.0.as_ref()?;
+    let Some(canonical) = query.canonical_block.0.as_ref() else {
+        return ReceiptCompatibility::Invalid;
+    };
     if max_execution_logs == 0 {
-        return None;
+        return ReceiptCompatibility::Invalid;
     }
-    let receipt_block_number = parse_quantity_word(receipt.block_number)?;
-    let receipt_block_hash = parse_word(receipt.block_hash)?;
-    let receipt_transaction_hash = parse_word(receipt.transaction_hash)?;
-    let receipt_transaction_index = parse_quantity_word(receipt.transaction_index)?;
-    let finalized_number = finalized_number?;
-    let log = &receipt.logs.0;
-    let expected_topic = keccak256(b"ExecutionSuccess(bytes32,uint256)").0;
+    let Some(receipt_block_number) = parse_quantity_word(receipt.block_number) else {
+        return ReceiptCompatibility::Invalid;
+    };
+    let Some(receipt_block_hash) = parse_word(receipt.block_hash) else {
+        return ReceiptCompatibility::Invalid;
+    };
+    let Some(receipt_transaction_hash) = parse_word(receipt.transaction_hash) else {
+        return ReceiptCompatibility::Invalid;
+    };
+    let Some(receipt_transaction_index) = parse_quantity_word(receipt.transaction_index) else {
+        return ReceiptCompatibility::Invalid;
+    };
+    let Some(finalized_number) = finalized_number else {
+        return ReceiptCompatibility::Invalid;
+    };
     let coordinates_match = receipt.status == "0x1"
         && receipt_block_number != [0; WORD_BYTES]
         && confirmed_at(
@@ -956,17 +1017,301 @@ fn validate_execution_query(
         && parse_quantity_word(canonical.block_number) == Some(receipt_block_number)
         && parse_word(canonical.block_hash) == Some(receipt_block_hash)
         && receipt_transaction_hash != [0; WORD_BYTES]
-        && receipt_transaction_index != [u8::MAX; WORD_BYTES]
-        && !log.removed
-        && decode_address(log.address) == Some(safe_address)
-        && parse_word(log.topics[0]) == Some(expected_topic)
-        && execution_data_matches(log.data, safe_transaction_hash)
-        && parse_quantity_word(log.block_number) == Some(receipt_block_number)
-        && parse_word(log.block_hash) == Some(receipt_block_hash)
-        && parse_word(log.transaction_hash) == Some(receipt_transaction_hash)
-        && parse_quantity_word(log.transaction_index) == Some(receipt_transaction_index)
+        && receipt_transaction_index != [u8::MAX; WORD_BYTES];
+    if !coordinates_match {
+        return ReceiptCompatibility::Invalid;
+    }
+    let expected = ExpectedExecutionLogs {
+        profile,
+        prepared,
+        request_kind,
+        safe_transaction_hash,
+        receipt_block_number,
+        receipt_block_hash,
+        receipt_transaction_hash,
+        receipt_transaction_index,
+        max_execution_logs,
+    };
+    let mut deserializer = serde_json::Deserializer::from_str(receipt.logs.get());
+    let summary = ExecutionLogsSeed { expected }
+        .deserialize(&mut deserializer)
+        .ok()
+        .filter(|_| deserializer.end().is_ok());
+    match summary {
+        Some(summary)
+            if !summary.invalid
+                && summary.safe_successes == 1
+                && ((request_kind == RequestKind::Original && summary.payouts == 1)
+                    || (request_kind == RequestKind::Fence && summary.payouts == 0)) =>
+        {
+            ReceiptCompatibility::Compatible
+        }
+        _ => ReceiptCompatibility::Invalid,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptCompatibility {
+    Absent,
+    Compatible,
+    Invalid,
+}
+
+#[derive(Clone, Copy)]
+struct ExpectedExecutionLogs<'a> {
+    profile: &'a ValidatedRedemptionProfile,
+    prepared: &'a PreparedRequestPair,
+    request_kind: RequestKind,
+    safe_transaction_hash: [u8; WORD_BYTES],
+    receipt_block_number: [u8; WORD_BYTES],
+    receipt_block_hash: [u8; WORD_BYTES],
+    receipt_transaction_hash: [u8; WORD_BYTES],
+    receipt_transaction_index: [u8; WORD_BYTES],
+    max_execution_logs: usize,
+}
+
+struct ExecutionLogsSeed<'a> {
+    expected: ExpectedExecutionLogs<'a>,
+}
+
+struct ExecutionLogsVisitor<'a> {
+    expected: ExpectedExecutionLogs<'a>,
+}
+
+#[derive(Default)]
+struct ExecutionLogSummary {
+    safe_successes: usize,
+    payouts: usize,
+    invalid: bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ExecutionLogsSeed<'_> {
+    type Value = ExecutionLogSummary;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ExecutionLogsVisitor {
+            expected: self.expected,
+        })
+    }
+}
+
+impl<'de> Visitor<'de> for ExecutionLogsVisitor<'_> {
+    type Value = ExecutionLogSummary;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded complete execution-log set")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut summary = ExecutionLogSummary::default();
+        let mut count = 0usize;
+        while let Some(log) = sequence.next_element::<ExecutionLogWire<'de>>()? {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| de::Error::custom("execution log count overflow"))?;
+            if count > self.expected.max_execution_logs {
+                return Err(de::Error::invalid_length(count, &self));
+            }
+            classify_execution_log(&log, self.expected, &mut summary);
+        }
+        Ok(summary)
+    }
+}
+
+fn classify_execution_log(
+    log: &ExecutionLogWire<'_>,
+    expected: ExpectedExecutionLogs<'_>,
+    summary: &mut ExecutionLogSummary,
+) {
+    let coordinates_match = !log.removed
+        && parse_quantity_word(log.block_number) == Some(expected.receipt_block_number)
+        && parse_word(log.block_hash) == Some(expected.receipt_block_hash)
+        && parse_word(log.transaction_hash) == Some(expected.receipt_transaction_hash)
+        && parse_quantity_word(log.transaction_index) == Some(expected.receipt_transaction_index)
         && parse_quantity_word(log.log_index).is_some_and(|value| value != [u8::MAX; WORD_BYTES]);
-    Some(coordinates_match)
+    let structurally_valid = decode_address(log.address).is_some()
+        && log.topics.len > 0
+        && log.topics.words[..log.topics.len]
+            .iter()
+            .all(|topic| topic.is_some_and(|value| parse_word(value).is_some()))
+        && valid_hex_data(log.data);
+    if !coordinates_match || !structurally_valid {
+        summary.invalid = true;
+        return;
+    }
+    let Some(topic0) = log.topics.words[0].and_then(parse_word) else {
+        summary.invalid = true;
+        return;
+    };
+    let (
+        standard_emitter,
+        negative_emitter,
+        underlying_collateral,
+        safe_topic,
+        standard_topic,
+        negative_topic,
+    ) = expected.profile.terminal_event_contract();
+    if topic0 == safe_topic {
+        if decode_address(log.address) != Some(expected.profile.safe_address())
+            || log.topics.len != 1
+            || !execution_data_matches(log.data, expected.safe_transaction_hash)
+        {
+            summary.invalid = true;
+        } else {
+            summary.safe_successes += 1;
+            if summary.safe_successes > 1 {
+                summary.invalid = true;
+            }
+        }
+        return;
+    }
+    if topic0 != standard_topic && topic0 != negative_topic {
+        return;
+    }
+    if expected.request_kind == RequestKind::Fence {
+        summary.invalid = true;
+        return;
+    }
+    let request = expected.prepared.request(RequestKind::Original);
+    let valid = match expected.prepared.mode() {
+        MarketMode::Standard => {
+            topic0 == standard_topic
+                && decode_address(log.address) == Some(standard_emitter)
+                && standard_payout_matches(
+                    log,
+                    request.identity().target(),
+                    underlying_collateral,
+                    expected.prepared,
+                    expected.profile.adapter_arguments().2,
+                )
+        }
+        MarketMode::NegativeRisk => {
+            topic0 == negative_topic
+                && decode_address(log.address) == Some(negative_emitter)
+                && negative_risk_payout_matches(log, request.identity().target(), expected.prepared)
+        }
+    };
+    if valid {
+        summary.payouts += 1;
+        if summary.payouts > 1 {
+            summary.invalid = true;
+        }
+    } else {
+        summary.invalid = true;
+    }
+}
+
+fn standard_payout_matches(
+    log: &ExecutionLogWire<'_>,
+    redeemer: [u8; ADDRESS_BYTES],
+    collateral: [u8; ADDRESS_BYTES],
+    prepared: &PreparedRequestPair,
+    index_sets: [u64; 2],
+) -> bool {
+    event_data_has_words(log.data, 6)
+        && log.topics.len == 4
+        && log.topics.words[1].and_then(parse_topic_address) == Some(redeemer)
+        && log.topics.words[2].and_then(parse_topic_address) == Some(collateral)
+        && log.topics.words[3].and_then(parse_word) == Some([0; WORD_BYTES])
+        && event_data_word(log.data, 0) == Some(prepared.condition_id())
+        && event_data_word(log.data, 1) == Some(small_word(96))
+        && event_data_word(log.data, 2) == redeemed_amount(prepared)
+        && event_data_word(log.data, 3) == Some(small_word(2))
+        && event_data_word(log.data, 4) == Some(small_word(index_sets[0]))
+        && event_data_word(log.data, 5) == Some(small_word(index_sets[1]))
+}
+
+fn negative_risk_payout_matches(
+    log: &ExecutionLogWire<'_>,
+    redeemer: [u8; ADDRESS_BYTES],
+    prepared: &PreparedRequestPair,
+) -> bool {
+    event_data_has_words(log.data, 5)
+        && log.topics.len == 3
+        && log.topics.words[1].and_then(parse_topic_address) == Some(redeemer)
+        && log.topics.words[2].and_then(parse_word) == Some(prepared.condition_id())
+        && event_data_word(log.data, 0) == Some(small_word(64))
+        && event_data_word(log.data, 1) == redeemed_amount(prepared)
+        && event_data_word(log.data, 2) == Some(small_word(2))
+        && event_data_word(log.data, 3) == Some(prepared.pre_claim_balances()[0])
+        && event_data_word(log.data, 4) == Some(prepared.pre_claim_balances()[1])
+}
+
+fn redeemed_amount(prepared: &PreparedRequestPair) -> Option<[u8; WORD_BYTES]> {
+    subtract_word(
+        prepared.expected_redeemed_collateral_balance(),
+        prepared.pre_collateral_balance(),
+    )
+}
+
+pub(super) fn subtract_word(
+    mut minuend: [u8; WORD_BYTES],
+    subtrahend: [u8; WORD_BYTES],
+) -> Option<[u8; WORD_BYTES]> {
+    let mut borrow = 0u16;
+    for index in (0..WORD_BYTES).rev() {
+        let left = u16::from(minuend[index]);
+        let right = u16::from(subtrahend[index]) + borrow;
+        if left >= right {
+            minuend[index] = (left - right) as u8;
+            borrow = 0;
+        } else {
+            minuend[index] = (left + 256 - right) as u8;
+            borrow = 1;
+        }
+    }
+    (borrow == 0).then_some(minuend)
+}
+
+pub(super) fn small_word(value: u64) -> [u8; WORD_BYTES] {
+    let mut word = [0; WORD_BYTES];
+    word[WORD_BYTES - 8..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn parse_topic_address(value: &str) -> Option<[u8; ADDRESS_BYTES]> {
+    let word = parse_word(value)?;
+    if word[..WORD_BYTES - ADDRESS_BYTES] != [0; WORD_BYTES - ADDRESS_BYTES] {
+        return None;
+    }
+    word[WORD_BYTES - ADDRESS_BYTES..].try_into().ok()
+}
+
+fn event_data_word(value: &str, index: usize) -> Option<[u8; WORD_BYTES]> {
+    let encoded = value.strip_prefix("0x")?;
+    let start = index.checked_mul(WORD_BYTES * 2)?;
+    let end = start.checked_add(WORD_BYTES * 2)?;
+    let word = encoded.get(start..end)?;
+    let mut output = [0; WORD_BYTES];
+    for (slot, pair) in output.iter_mut().zip(word.as_bytes().chunks_exact(2)) {
+        *slot = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
+    }
+    Some(output)
+}
+
+fn event_data_has_words(value: &str, words: usize) -> bool {
+    value.strip_prefix("0x").and_then(|encoded| {
+        words
+            .checked_mul(WORD_BYTES * 2)
+            .map(|len| encoded.len() == len)
+    }) == Some(true)
+}
+
+fn valid_hex_data(value: &str) -> bool {
+    let Some(encoded) = value.strip_prefix("0x") else {
+        return false;
+    };
+    encoded.len() % 2 == 0
+        && encoded
+            .as_bytes()
+            .iter()
+            .all(|byte| hex_nibble(*byte).is_some())
 }
 
 fn execution_data_matches(value: &str, safe_transaction_hash: [u8; WORD_BYTES]) -> bool {
@@ -1025,7 +1370,7 @@ impl RelayerState {
 }
 
 pub struct RelayerObservation {
-    transaction_id: Zeroizing<Box<[u8]>>,
+    transaction_id: Zeroizing<Vec<u8>>,
     transaction_id_digest: [u8; WORD_BYTES],
     state: RelayerState,
     transaction_hash: Option<[u8; WORD_BYTES]>,
@@ -1064,6 +1409,7 @@ pub enum WireFailureClass {
     Transport,
     Http,
     Oversize,
+    Capacity,
     Malformed,
     WrongItemCount,
     IdentityMismatch,
@@ -1087,6 +1433,19 @@ pub struct WireParseError {
 impl WireParseError {
     fn from_capped(error: CappedIoError, class: ProjectionClass) -> Self {
         match error {
+            CappedIoError::Allocation => Self {
+                diagnostic: WireDiagnostic {
+                    class: WireFailureClass::Capacity,
+                    http_status: None,
+                    projection: RedactedProjection {
+                        class,
+                        item_count: 0,
+                        byte_len: 0,
+                        keyed_digest: [0; WORD_BYTES],
+                        key_version: 0,
+                    },
+                },
+            },
             CappedIoError::Oversize(projection) => Self {
                 diagnostic: WireDiagnostic {
                     class: WireFailureClass::Oversize,
@@ -1334,41 +1693,7 @@ struct ReceiptWire<'a> {
     #[serde(borrow)]
     status: &'a str,
     #[serde(borrow)]
-    logs: ExactOneExecutionLog<'a>,
-}
-
-struct ExactOneExecutionLog<'a>(ExecutionLogWire<'a>);
-
-struct ExactOneExecutionLogVisitor;
-
-impl<'de> Visitor<'de> for ExactOneExecutionLogVisitor {
-    type Value = ExactOneExecutionLog<'de>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("exactly one Safe execution log")
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let first = sequence
-            .next_element::<ExecutionLogWire<'de>>()?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-        if sequence.next_element::<de::IgnoredAny>()?.is_some() {
-            return Err(de::Error::invalid_length(2, &self));
-        }
-        Ok(ExactOneExecutionLog(first))
-    }
-}
-
-impl<'de> Deserialize<'de> for ExactOneExecutionLog<'de> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(ExactOneExecutionLogVisitor)
-    }
+    logs: &'a RawValue,
 }
 
 #[derive(Deserialize)]
@@ -1377,7 +1702,7 @@ struct ExecutionLogWire<'a> {
     #[serde(borrow)]
     address: &'a str,
     #[serde(borrow)]
-    topics: [&'a str; 1],
+    topics: TopicSet<'a>,
     #[serde(borrow)]
     data: &'a str,
     #[serde(rename = "blockNumber", borrow)]
@@ -1391,6 +1716,46 @@ struct ExecutionLogWire<'a> {
     #[serde(rename = "logIndex", borrow)]
     log_index: &'a str,
     removed: bool,
+}
+
+struct TopicSet<'a> {
+    words: [Option<&'a str>; 4],
+    len: usize,
+}
+
+struct TopicSetVisitor;
+
+impl<'de> Visitor<'de> for TopicSetVisitor {
+    type Value = TopicSet<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an EVM event topic set")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut words = [None; 4];
+        let mut len = 0;
+        while let Some(word) = sequence.next_element::<&'de str>()? {
+            if len == words.len() {
+                return Err(de::Error::invalid_length(len + 1, &self));
+            }
+            words[len] = Some(word);
+            len += 1;
+        }
+        Ok(TopicSet { words, len })
+    }
+}
+
+impl<'de> Deserialize<'de> for TopicSet<'de> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(TopicSetVisitor)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1555,8 +1920,11 @@ fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-fn zeroizing_box(value: &[u8]) -> Zeroizing<Box<[u8]>> {
-    let mut output = Zeroizing::new(vec![0; value.len()].into_boxed_slice());
+fn zeroizing_vec(value: &[u8]) -> Result<Zeroizing<Vec<u8>>, ()> {
+    let mut storage = Vec::new();
+    storage.try_reserve_exact(value.len()).map_err(|_| ())?;
+    storage.resize(value.len(), 0);
+    let mut output = Zeroizing::new(storage);
     output.copy_from_slice(value);
-    output
+    Ok(output)
 }

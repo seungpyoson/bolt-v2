@@ -107,30 +107,36 @@ fn replay_reference_update_at(
 }
 
 const LOG_CAPTURE_CHILD_ENV: &str = "BOLT_TAKER_SOURCE_EVIDENCE_LOG_CAPTURE";
+const EXIT_EVALUATION_NOVELTY_CHILD_ENV: &str =
+    "BOLT_TAKER_SOURCE_EVIDENCE_EXIT_EVALUATION_NOVELTY";
 
-fn run_log_capture_test_in_subprocess(test_filter: &str, mode: &str) {
+fn run_test_in_subprocess(test_filter: &str, child_env: &str, mode: &str) {
     let output = std::process::Command::new(
         std::env::current_exe().expect("current test binary should be available"),
     )
     .arg(test_filter)
     .arg("--nocapture")
     .arg("--test-threads=1")
-    .env(LOG_CAPTURE_CHILD_ENV, mode)
+    .env(child_env, mode)
     .output()
-    .expect("log-capture child test should launch");
+    .expect("isolated child test should launch");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "log-capture child test failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        "isolated child test failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
         output.status.code(),
         stdout,
         stderr
     );
     assert!(
         stdout.contains("running 1 test"),
-        "log-capture child filter `{test_filter}` must run exactly one test\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "isolated child filter `{test_filter}` must run exactly one test\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+}
+
+fn run_log_capture_test_in_subprocess(test_filter: &str, mode: &str) {
+    run_test_in_subprocess(test_filter, LOG_CAPTURE_CHILD_ENV, mode);
 }
 
 fn with_captured_error_log<R>(
@@ -3376,7 +3382,27 @@ fn diagnostic_exit_evaluation_holds_when_receive_time_is_structurally_absent() {
 
 #[test]
 fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
-    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    const FILTER: &str =
+        "source_evidence::exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources";
+    const MODE: &str = "trigger-sources";
+    if std::env::var(EXIT_EVALUATION_NOVELTY_CHILD_ENV)
+        .ok()
+        .as_deref()
+        != Some(MODE)
+    {
+        run_test_in_subprocess(FILTER, EXIT_EVALUATION_NOVELTY_CHILD_ENV, MODE);
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("exit-evaluation evidence tempdir should create");
+    let evidence_path = temp.path().join("exit-evaluation-trigger-sources.jsonl");
+    let evidence = Arc::new(
+        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(
+            &evidence_path,
+        )
+        .expect("exit-evaluation evidence writer should open"),
+    );
+    let mut strategy = exit_evidence_strategy_with_open_position_using_writer(evidence.clone());
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -3407,7 +3433,12 @@ fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
         strategy.record_exit_evaluation_evidence(1_240, &decision, trigger_context, false);
     }
 
-    let records = recorded_exit_evaluations(&evidence);
+    evidence
+        .drain_shutdown()
+        .expect("exit-evaluation evidence should drain");
+    let records =
+        crate::bolt_v3_decision_evidence::read_exit_evaluation_evidence(&evidence_path, 1_000_000)
+            .expect("exit-evaluation evidence should read");
     assert_eq!(
         records.len(),
         1,
@@ -3417,7 +3448,27 @@ fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
 
 #[test]
 fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
-    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    const FILTER: &str =
+        "source_evidence::exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead";
+    const MODE: &str = "venue-clock-lead";
+    if std::env::var(EXIT_EVALUATION_NOVELTY_CHILD_ENV)
+        .ok()
+        .as_deref()
+        != Some(MODE)
+    {
+        run_test_in_subprocess(FILTER, EXIT_EVALUATION_NOVELTY_CHILD_ENV, MODE);
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("exit-evaluation evidence tempdir should create");
+    let evidence_path = temp.path().join("exit-evaluation-venue-clock-lead.jsonl");
+    let evidence = Arc::new(
+        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(
+            &evidence_path,
+        )
+        .expect("exit-evaluation evidence writer should open"),
+    );
+    let mut strategy = exit_evidence_strategy_with_open_position_using_writer(evidence.clone());
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -3439,7 +3490,12 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
         );
     }
 
-    let records = recorded_exit_evaluations(&evidence);
+    evidence
+        .drain_shutdown()
+        .expect("exit-evaluation evidence should drain");
+    let records =
+        crate::bolt_v3_decision_evidence::read_exit_evaluation_evidence(&evidence_path, 1_000_000)
+            .expect("exit-evaluation evidence should read");
     assert_eq!(
         records.len(),
         1,
@@ -3449,7 +3505,26 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
 
 #[test]
 fn autonomous_amendment_exit_evaluation_retains_one_current_state_under_large_oscillation() {
-    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    const FILTER: &str = "source_evidence::autonomous_amendment_exit_evaluation_retains_one_current_state_under_large_oscillation";
+    const MODE: &str = "large-oscillation";
+    if std::env::var(EXIT_EVALUATION_NOVELTY_CHILD_ENV)
+        .ok()
+        .as_deref()
+        != Some(MODE)
+    {
+        run_test_in_subprocess(FILTER, EXIT_EVALUATION_NOVELTY_CHILD_ENV, MODE);
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("exit-evaluation evidence tempdir should create");
+    let evidence_path = temp.path().join("exit-evaluation-large-oscillation.jsonl");
+    let evidence = Arc::new(
+        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(
+            &evidence_path,
+        )
+        .expect("exit-evaluation evidence writer should open"),
+    );
+    let mut strategy = exit_evidence_strategy_with_open_position_using_writer(evidence.clone());
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -3478,7 +3553,93 @@ fn autonomous_amendment_exit_evaluation_retains_one_current_state_under_large_os
         );
     }
 
-    assert_eq!(recorded_exit_evaluations(&evidence).len(), 10_000);
+    evidence
+        .drain_shutdown()
+        .expect("exit-evaluation evidence should drain");
+    let records =
+        crate::bolt_v3_decision_evidence::read_exit_evaluation_evidence(&evidence_path, 1_000_000)
+            .expect("exit-evaluation evidence should read");
+    assert_eq!(
+        records.len(),
+        2,
+        "10,000 A-B oscillations must emit exactly the two canonical outcome/RV states"
+    );
+}
+
+#[test]
+fn exit_evaluation_novelty_claim_is_consumed_before_append_failure() {
+    const FILTER: &str =
+        "source_evidence::exit_evaluation_novelty_claim_is_consumed_before_append_failure";
+    const MODE: &str = "append-failure";
+    if std::env::var(EXIT_EVALUATION_NOVELTY_CHILD_ENV)
+        .ok()
+        .as_deref()
+        != Some(MODE)
+    {
+        run_test_in_subprocess(FILTER, EXIT_EVALUATION_NOVELTY_CHILD_ENV, MODE);
+        return;
+    }
+
+    let (mut strategy, raw_evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    strategy.record_exit_evaluation_evidence(
+        1_200,
+        &minimal_exit_submission_decision(),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            1_200,
+            Some(1_220),
+        ),
+        false,
+    );
+    let records = recorded_exit_evaluations(&raw_evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "the raw fixture must expose one producer call"
+    );
+    let record = &records[0];
+
+    let temp = tempfile::tempdir().expect("exit-evaluation evidence tempdir should create");
+    let evidence_path = temp.path().join("exit-evaluation-append-failure.jsonl");
+    let writer =
+        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path_with_append_failure(
+            &evidence_path,
+        )
+        .expect("failing exit-evaluation evidence writer should open");
+
+    let first =
+        crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter::record_exit_evaluation(
+            &writer, record,
+        );
+    assert!(
+        first.is_err(),
+        "the first claimed append must surface the injected failure"
+    );
+    let second =
+        crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter::record_exit_evaluation(
+            &writer, record,
+        );
+    assert!(
+        second.is_ok(),
+        "the identical second call must be suppressed after the production claim is consumed"
+    );
+    assert_eq!(
+        writer.append_attempts(),
+        1,
+        "the suppressed second call must not retry the append"
+    );
+    writer
+        .drain_shutdown()
+        .expect("empty exit-evaluation evidence should drain");
+    assert!(
+        std::fs::read(&evidence_path)
+            .expect("exit-evaluation evidence file should read")
+            .is_empty(),
+        "the failed append must leave the evidence file empty"
+    );
 }
 
 #[test]
@@ -4210,9 +4371,10 @@ fn rv_clock_domain_amendment_valid_surface_without_snapshot_keeps_forced_flat_ex
     );
 }
 
-fn rv_clock_domain_amendment_assert_one_field_error(
+fn rv_clock_domain_amendment_assert_field_errors(
     strategy_id: &str,
     field: &str,
+    expected_count: usize,
     action: impl FnOnce(),
 ) {
     let ((), logs) = with_captured_strategy_logs(strategy_id, action);
@@ -4222,14 +4384,15 @@ fn rv_clock_domain_amendment_assert_one_field_error(
         .collect::<Vec<_>>();
     assert_eq!(
         errors.len(),
-        1,
-        "conversion/build failure must log exactly one exit-evidence error for `{field}`: {errors:?}"
+        expected_count,
+        "exit-evidence failure must log exactly {expected_count} errors for `{field}`: {errors:?}"
     );
-    assert!(
-        errors[0].1.contains(field),
-        "field-specific exit-evidence error must name `{field}` exactly: {:?}",
-        errors[0]
-    );
+    for error in errors {
+        assert!(
+            error.1.contains(field),
+            "field-specific exit-evidence error must name `{field}` exactly: {error:?}"
+        );
+    }
 }
 
 #[test]
@@ -4293,7 +4456,7 @@ fn rv_clock_domain_amendment_exit_evaluation_conversion_failure_skips_record() {
     let decision_before = decision.clone();
     let exposure_before = strategy.exposure.clone();
 
-    rv_clock_domain_amendment_assert_one_field_error(&strategy_id, field, || {
+    rv_clock_domain_amendment_assert_field_errors(&strategy_id, field, 1, || {
         strategy.record_exit_evaluation_evidence(now_ms, &decision, trigger, false);
     });
 
@@ -4337,11 +4500,11 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
         );
         let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
         let exposure_before = strategy.exposure.clone();
-        rv_clock_domain_amendment_assert_one_field_error(
+        rv_clock_domain_amendment_assert_field_errors(
             &strategy_id,
             "trigger_ts_event_ms",
+            1,
             || {
-                strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
                 strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
             },
         );
@@ -4362,15 +4525,15 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
     );
     let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
     let exposure_before = strategy.exposure.clone();
-    rv_clock_domain_amendment_assert_one_field_error(&strategy_id, "write failed", || {
+    rv_clock_domain_amendment_assert_field_errors(&strategy_id, "write failed", 2, || {
         strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
         strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
     });
     assert_eq!(strategy.exposure, exposure_before);
     assert_eq!(
         writer.exit_evaluation_attempts(),
-        1,
-        "writer failure must remain mark-before-failure and non-retrying"
+        2,
+        "the raw failing writer must expose both producer calls"
     );
 }
 

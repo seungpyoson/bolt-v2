@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::{self, Display, Formatter, Write as FmtWrite},
-    fs::File,
     io::Write,
     path::Path,
 };

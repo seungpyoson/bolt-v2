@@ -11,7 +11,7 @@ use crate::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
         BoltV3EntryRealizedVolatilitySnapshotEvidence, BoltV3EntrySkipEvidence,
         BoltV3EntrySkipReasonCategory, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3RvGateResult,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,

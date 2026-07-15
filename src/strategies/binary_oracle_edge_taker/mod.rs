@@ -1391,18 +1391,17 @@ impl BinaryOracleEdgeTaker {
             booking_error,
             lifecycle,
         };
-        if evidence_state == TerminalEvidenceState::PersistCanonical {
-            if let Err(error) = self
+        if evidence_state == TerminalEvidenceState::PersistCanonical
+            && let Err(error) = self
                 .context
                 .decision_evidence()
                 .record_terminal_settlement(&terminal_evidence)
-            {
-                log::error!(
-                    "binary_oracle_edge_taker terminal settlement evidence write failed without blocking settlement: strategy_id={} settlement_key={} error={error:#}",
-                    self.config.strategy_id,
-                    settlement_key,
-                );
-            }
+        {
+            log::error!(
+                "binary_oracle_edge_taker terminal settlement evidence write failed without blocking settlement: strategy_id={} settlement_key={} error={error:#}",
+                self.config.strategy_id,
+                settlement_key,
+            );
         }
         self.terminal_settlement_keys.insert(settlement_key.clone());
         self.settlement_booking_error_keys

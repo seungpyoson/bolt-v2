@@ -2036,8 +2036,17 @@ pub struct BoltV3OrderLifecycleEvidence {
 }
 
 #[derive(Debug)]
+#[cfg(not(test))]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
     file: Mutex<std::fs::File>,
+}
+
+#[derive(Debug)]
+#[cfg(test)]
+pub struct JsonlBoltV3DecisionEvidenceWriter {
+    file: Mutex<std::fs::File>,
+    fail_append: bool,
+    append_attempts: std::sync::atomic::AtomicUsize,
 }
 
 impl JsonlBoltV3DecisionEvidenceWriter {
@@ -2056,6 +2065,10 @@ impl JsonlBoltV3DecisionEvidenceWriter {
         })?;
         Ok(Self {
             file: Mutex::new(file),
+            #[cfg(test)]
+            fail_append: false,
+            #[cfg(test)]
+            append_attempts: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -2069,7 +2082,21 @@ impl JsonlBoltV3DecisionEvidenceWriter {
         })?;
         Ok(Self {
             file: Mutex::new(file),
+            fail_append: false,
+            append_attempts: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_path_with_append_failure(path: &Path) -> Result<Self> {
+        let mut writer = Self::from_test_path(path)?;
+        writer.fail_append = true;
+        Ok(writer)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_attempts(&self) -> usize {
+        self.append_attempts.load(Ordering::Relaxed)
     }
 
     fn append_line(&self, line: &[u8]) -> Result<()> {
@@ -2365,6 +2392,13 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
             return Ok(());
         }
         let line = encode_exit_evaluation_line(evidence)?;
+        #[cfg(test)]
+        {
+            self.append_attempts.fetch_add(1, Ordering::Relaxed);
+            if self.fail_append {
+                anyhow::bail!("injected decision evidence append failure");
+            }
+        }
         self.append_line(&line)
     }
 

@@ -16,6 +16,17 @@ artifact_layout = "cargo"
 profile = "release"
 target = "aarch64-unknown-linux-gnu"
 
+[producer]
+schema_version = 1
+
+[producer.root_artifact]
+operation = "root-artifact"
+binary_name = "bolt-v2"
+evidence_schema_version = 1
+evidence_file = "root-artifact.json"
+checksum_file = "bolt-v2.sha256"
+required_wrapper_env = "RUSTC_WRAPPER"
+
 [local_compile_policy]
 enabled = true
 allowed_ci_env = "GITHUB_ACTIONS"

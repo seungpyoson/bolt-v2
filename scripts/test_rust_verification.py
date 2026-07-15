@@ -1952,6 +1952,206 @@ def assert_setup_recipe_asserts_global_cargo_target_dir() -> None:
         raise AssertionError("just setup must assert the machine-global Cargo target-dir")
 
 
+ROOT_ARTIFACT_POLICY_TEXT = textwrap.dedent(
+    """\
+
+    [remote_compile_cache]
+    enabled = true
+    enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+    ci_env = "GITHUB_ACTIONS"
+    wrapper_env = "SCCACHE_PATH"
+    wrapper_program = "sccache"
+
+    [producer]
+    schema_version = 1
+
+    [producer.root_artifact]
+    operation = "root-artifact"
+    binary_name = "bolt-v2"
+    evidence_schema_version = 1
+    evidence_file = "root-artifact.json"
+    checksum_file = "bolt-v2.sha256"
+    required_wrapper_env = "RUSTC_WRAPPER"
+    """
+)
+
+
+FAKE_ROOT_ARTIFACT_BINARY = r'''#!/usr/bin/env python3
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+mode = os.environ.get("FAKE_ROOT_ARTIFACT_MODE", "ok")
+with pathlib.Path(os.environ["FAKE_ROOT_ARTIFACT_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv0": sys.argv[0], "args": sys.argv[1:]}) + "\n")
+if mode == "digest-mutation":
+    with pathlib.Path(sys.argv[0]).open("a", encoding="utf-8") as handle:
+        handle.write("\n# mutated\n")
+if not sys.argv[1:]:
+    raise SystemExit(0 if mode == "negative-success" else 2)
+args = sys.argv[1:]
+command = args[1]
+profile = args[args.index("--profile") + 1]
+config_root = pathlib.Path(args[args.index("--config-root") + 1]).resolve()
+overlay = config_root / "profiles" / f"{profile}.overlay.toml"
+overlay_text = overlay.read_text(encoding="utf-8")
+invalid = "[malformed" in overlay_text or "root_artifact_unknown_field" in overlay_text
+live = config_root / "live.toml"
+checksum = hashlib.sha256(profile.encode()).hexdigest()
+if command == "generate-live-config":
+    if invalid and mode != "negative-success":
+        raise SystemExit(2)
+    live.write_text(f"profile={profile}\n", encoding="utf-8")
+    if mode == "json-mismatch":
+        print("{}")
+    else:
+        reported_profile = "duplicate" if mode == "omit-duplicate" else profile
+        print(json.dumps({
+            "generated_live_config": True,
+            "output": 7 if mode == "generate-output-type" else str(live),
+            "source_profile": reported_profile,
+            "profile_bundle_sha256": checksum,
+            "generator_format_version": 1,
+            "invariants": {},
+        }))
+elif command == "verify-live-config":
+    tampered = "tamper" in live.read_text(encoding="utf-8")
+    if tampered and mode != "negative-success":
+        raise SystemExit(2)
+    print(json.dumps({
+        "verified_live_config": True,
+        "profile": profile,
+        "deployed": 7 if mode == "verify-deployed-type" else str(live),
+        "profile_bundle_sha256": checksum,
+        "matches_profile": True,
+        "loads_against_binary": True,
+        "invariants": {},
+    }))
+else:
+    raise SystemExit(2)
+'''
+
+
+def root_artifact_test_repo(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, dict[str, object]]:
+    repo = root / "repo"
+    repo.mkdir()
+    write_policy(repo, policy_text=rust_verification_policy_text() + ROOT_ARTIFACT_POLICY_TEXT)
+    for relative, text in (
+        ("config/root.toml", "schema = 1\n"),
+        ("config/profiles/alpha.overlay.toml", "profile = \"alpha\"\n"),
+        ("config/profiles/beta.overlay.toml", "profile = \"beta\"\n"),
+        ("config/strategies/example.toml", "strategy = \"example\"\n"),
+    ):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "config"], cwd=repo, check=True)
+    source_binary = root / "managed" / "bolt-v2"
+    source_binary.parent.mkdir()
+    write_executable(source_binary, FAKE_ROOT_ARTIFACT_BINARY)
+    policy = tomllib.loads((repo / "ci" / "rust-verification.toml").read_text(encoding="utf-8"))
+    return repo, source_binary, policy
+
+
+def assert_root_artifact_fake_binary_contract() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo, source_binary, policy = root_artifact_test_repo(root)
+        wrapper = root / "tools" / "sccache"
+        wrapper.parent.mkdir()
+        write_executable(wrapper, "#!/bin/sh\nexit 0\n")
+        log = root / "invocations.jsonl"
+        env = {
+            "SCCACHE_PATH": str(wrapper),
+            "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+            "GITHUB_ACTIONS": "true",
+            "FAKE_ROOT_ARTIFACT_LOG": str(log),
+            "FAKE_ROOT_ARTIFACT_MODE": "ok",
+        }
+        with _patched_environ(env):
+            outputs = owner.create_root_artifact_evidence(
+                repo=repo,
+                source_binary=source_binary,
+                head_sha="a" * 40,
+                stage_dir=root / "stage-ok",
+                policy=policy,
+            )
+        evidence = json.loads(pathlib.Path(outputs["evidence"]).read_text(encoding="utf-8"))
+        if set(evidence) != {"schema_version", "operation", "head_sha", "binary_sha256", "overlays"}:
+            raise AssertionError(evidence)
+        if evidence["overlays"] != [
+            "config/profiles/alpha.overlay.toml",
+            "config/profiles/beta.overlay.toml",
+        ]:
+            raise AssertionError("tracked overlays were omitted, duplicated, or not deterministic")
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        staged = str(pathlib.Path(outputs["binary"]))
+        if not calls or any(call["argv0"] != staged for call in calls):
+            raise AssertionError("a root-artifact case invoked bytes outside the staged path")
+        if any(call["argv0"] == str(source_binary) for call in calls):
+            raise AssertionError("managed output path was invoked instead of staged bytes")
+
+        for mode, expected in (
+            ("omit-duplicate", "did not prove profile"),
+            ("json-mismatch", "mismatched JSON keys"),
+            ("generate-output-type", "did not prove profile"),
+            ("verify-deployed-type", "did not prove profile"),
+            ("negative-success", "unexpectedly succeeded"),
+            ("digest-mutation", "digest changed"),
+        ):
+            mode_log = root / f"{mode}.jsonl"
+            with _patched_environ(
+                {
+                    **env,
+                    "FAKE_ROOT_ARTIFACT_LOG": str(mode_log),
+                    "FAKE_ROOT_ARTIFACT_MODE": mode,
+                }
+            ):
+                try:
+                    owner.create_root_artifact_evidence(
+                        repo=repo,
+                        source_binary=source_binary,
+                        head_sha="a" * 40,
+                        stage_dir=root / f"stage-{mode}",
+                        policy=policy,
+                    )
+                except owner.RootArtifactError as exc:
+                    if expected not in str(exc):
+                        raise AssertionError((mode, str(exc))) from exc
+                else:
+                    raise AssertionError(f"fake-binary {mode} case must fail closed")
+
+
+def assert_root_artifact_config_fails_closed() -> None:
+    owner = load_owner_module()
+    base = rust_verification_policy_text()
+    missing = tomllib.loads(base)
+    try:
+        owner.root_artifact_policy(missing)
+    except owner.PolicyError:
+        pass
+    else:
+        raise AssertionError("missing root-artifact policy must fail")
+    unknown = tomllib.loads(base + ROOT_ARTIFACT_POLICY_TEXT)
+    unknown["producer"]["root_artifact"]["unknown"] = True
+    try:
+        owner.validate_policy_data(unknown)
+    except owner.PolicyError:
+        pass
+    else:
+        raise AssertionError("unknown root-artifact policy key must fail")
+    duplicate = base + ROOT_ARTIFACT_POLICY_TEXT + "\n[producer.root_artifact]\noperation = \"root-artifact\"\n"
+    try:
+        tomllib.loads(duplicate)
+    except tomllib.TOMLDecodeError:
+        pass
+    else:
+        raise AssertionError("duplicate root-artifact config must fail TOML parsing")
+
 def main() -> int:
     assert_repo_local_owner_contract()
     assert_validate_remote_compile_cache_policy_contract()
@@ -1998,6 +2198,8 @@ def main() -> int:
     assert_global_cargo_target_dir_config_reports_non_utf8_without_traceback()
     assert_global_cargo_target_dir_config_preserves_symlink()
     assert_setup_recipe_asserts_global_cargo_target_dir()
+    assert_root_artifact_fake_binary_contract()
+    assert_root_artifact_config_fails_closed()
     print("OK: Rust verification owner self-tests passed.")
     return 0
 

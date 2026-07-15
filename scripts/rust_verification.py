@@ -9,6 +9,7 @@ import copy
 import errno
 import fcntl
 import functools
+import hashlib
 import json
 import os
 import pathlib
@@ -18,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -65,6 +67,8 @@ JUST_RECIPE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 LANE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+LOWER_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+LOWER_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RUST_PROBE_MODES = (
     "check-lib",
     "check-test-target",
@@ -268,6 +272,7 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     validate_local_compile_policy(data)
     validate_remote_compile_cache_policy(data)
     validate_remote_fast_linker_policy(data)
+    validate_root_artifact_policy(data)
     validate_local_lane_policy(data)
     if "remote_verification" in data:
         validate_remote_verification_policy(data)
@@ -275,6 +280,48 @@ def validate_policy_data(data: dict[str, Any]) -> None:
         validate_remote_probe_policy(data)
     if "cache" in data:
         validate_cache_policy(data)
+
+
+def validate_root_artifact_policy(data: dict[str, Any]) -> None:
+    producer = data.get("producer")
+    if producer is None:
+        return
+    if not isinstance(producer, dict):
+        raise PolicyError("producer must be a table")
+    if set(producer) != {"schema_version", "root_artifact"}:
+        raise PolicyError("producer must contain only schema_version and root_artifact")
+    if producer.get("schema_version") != 1:
+        raise PolicyError("producer.schema_version must be 1")
+    root_artifact = producer.get("root_artifact")
+    if not isinstance(root_artifact, dict):
+        raise PolicyError("producer.root_artifact must be a table")
+    expected_keys = {
+        "operation",
+        "binary_name",
+        "evidence_schema_version",
+        "evidence_file",
+        "checksum_file",
+        "required_wrapper_env",
+    }
+    if set(root_artifact) != expected_keys:
+        missing = sorted(expected_keys - set(root_artifact))
+        unknown = sorted(set(root_artifact) - expected_keys)
+        raise PolicyError(
+            f"producer.root_artifact keys are invalid: missing={missing!r} unknown={unknown!r}"
+        )
+    if root_artifact.get("operation") != "root-artifact":
+        raise PolicyError("producer.root_artifact.operation must be root-artifact")
+    if root_artifact.get("evidence_schema_version") != 1:
+        raise PolicyError("producer.root_artifact.evidence_schema_version must be 1")
+    for key in ("binary_name", "evidence_file", "checksum_file"):
+        value = root_artifact.get(key)
+        if not isinstance(value, str) or not SAFE_IDENTIFIER_RE.fullmatch(value):
+            raise PolicyError(f"producer.root_artifact.{key} must be a safe identifier")
+    wrapper_env = root_artifact.get("required_wrapper_env")
+    if not isinstance(wrapper_env, str) or not ENV_NAME_RE.fullmatch(wrapper_env):
+        raise PolicyError("producer.root_artifact.required_wrapper_env must be an environment variable")
+    if wrapper_env != "RUSTC_WRAPPER":
+        raise PolicyError("producer.root_artifact.required_wrapper_env must be RUSTC_WRAPPER")
 
 
 def string_array_policy_value(table: dict[str, Any], key: str) -> list[str]:
@@ -4659,6 +4706,331 @@ def cmd_target_dir(args: argparse.Namespace) -> int:
     return 0
 
 
+class RootArtifactError(RuntimeError):
+    pass
+
+
+def root_artifact_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    validate_root_artifact_policy(policy)
+    producer = policy.get("producer")
+    if not isinstance(producer, dict) or not isinstance(producer.get("root_artifact"), dict):
+        raise PolicyError("producer.root_artifact table is required")
+    return producer["root_artifact"]
+
+
+def append_github_outputs(path: pathlib.Path, outputs: dict[str, object]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        for key, raw_value in outputs.items():
+            value = str(raw_value)
+            if "\n" in value or "\r" in value:
+                raise RootArtifactError(f"root-artifact output {key} is not single-line")
+            handle.write(f"{key}={value}\n")
+
+
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tracked_config_paths(repo: pathlib.Path) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", "config"],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RootArtifactError(f"could not enumerate tracked config files: {result.stderr.decode(errors='replace').strip()}")
+    try:
+        names = [pathlib.Path(item.decode("utf-8")) for item in result.stdout.split(b"\0") if item]
+    except UnicodeDecodeError as exc:
+        raise RootArtifactError(f"tracked config path is not UTF-8: {exc}") from exc
+    if not names or names != sorted(names, key=lambda path: path.as_posix()):
+        names = sorted(names, key=lambda path: path.as_posix())
+    for relative in names:
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "config":
+            raise RootArtifactError(f"tracked config path escapes config/: {relative}")
+        source = repo / relative
+        if source.is_symlink() or not source.is_file():
+            raise RootArtifactError(f"tracked config path is not a regular file: {relative}")
+    overlays = [
+        relative
+        for relative in names
+        if relative.parent == pathlib.Path("config/profiles") and relative.name.endswith(".overlay.toml")
+    ]
+    if not overlays:
+        raise RootArtifactError("no tracked production overlays found")
+    profiles = [relative.name.removesuffix(".overlay.toml") for relative in overlays]
+    if len(profiles) != len(set(profiles)):
+        raise RootArtifactError("tracked production overlays contain duplicate profile identities")
+    return names, overlays
+
+
+def copy_tracked_config(repo: pathlib.Path, paths: list[pathlib.Path], destination: pathlib.Path) -> None:
+    for relative in paths:
+        output = destination / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo / relative, output)
+
+
+def run_staged_binary(binary: pathlib.Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(binary), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def require_success_json(
+    result: subprocess.CompletedProcess[str],
+    *,
+    label: str,
+    expected_keys: set[str],
+) -> dict[str, Any]:
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[-1000:]
+        raise RootArtifactError(f"{label} failed with exit {result.returncode}: {detail}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RootArtifactError(f"{label} returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        actual = sorted(payload) if isinstance(payload, dict) else type(payload).__name__
+        raise RootArtifactError(f"{label} returned mismatched JSON keys: {actual!r}")
+    return payload
+
+
+def require_failure(result: subprocess.CompletedProcess[str], *, label: str) -> None:
+    if result.returncode == 0:
+        raise RootArtifactError(f"{label} unexpectedly succeeded")
+
+
+def validate_required_wrapper(policy: dict[str, Any], artifact: dict[str, Any]) -> None:
+    cache = policy.get("remote_compile_cache")
+    if not isinstance(cache, dict):
+        raise RootArtifactError("remote_compile_cache table is required for root-artifact")
+    required_env = str(artifact["required_wrapper_env"])
+    configured = os.environ.get(str(cache["wrapper_env"]), "")
+    injected = managed_remote_compile_cache_env(policy)
+    wrapper = injected.get(required_env, "")
+    if not wrapper or not configured:
+        raise RootArtifactError("root-artifact requires the verified sccache wrapper environment")
+    wrapper_path = pathlib.Path(wrapper)
+    configured_path = pathlib.Path(configured)
+    if not wrapper_path.is_absolute() or wrapper_path.resolve() != configured_path.resolve():
+        raise RootArtifactError("root-artifact wrapper identity does not match the verified sccache path")
+    if wrapper_path.name != cache["wrapper_program"]:
+        raise RootArtifactError("root-artifact wrapper path does not identify configured sccache")
+
+
+def cmd_root_artifact_wrapper(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        validate_required_wrapper(policy, root_artifact_policy(policy))
+    except (OSError, PolicyError, RootArtifactError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def validate_generate_payload(payload: dict[str, Any], *, profile: str, live_path: pathlib.Path) -> str:
+    checksum = payload["profile_bundle_sha256"]
+    output = payload["output"]
+    if (
+        payload["generated_live_config"] is not True
+        or payload["source_profile"] != profile
+        or not isinstance(output, str)
+        or pathlib.Path(output).resolve() != live_path.resolve()
+        or not isinstance(checksum, str)
+        or not LOWER_SHA256_RE.fullmatch(checksum)
+        or not isinstance(payload["generator_format_version"], int)
+        or isinstance(payload["generator_format_version"], bool)
+        or payload["generator_format_version"] <= 0
+        or not isinstance(payload["invariants"], dict)
+    ):
+        raise RootArtifactError(f"generate JSON did not prove profile {profile}")
+    return checksum
+
+
+def validate_verify_payload(
+    payload: dict[str, Any],
+    *,
+    profile: str,
+    live_path: pathlib.Path,
+    checksum: str,
+) -> None:
+    deployed = payload["deployed"]
+    if (
+        payload["verified_live_config"] is not True
+        or payload["profile"] != profile
+        or not isinstance(deployed, str)
+        or pathlib.Path(deployed).resolve() != live_path.resolve()
+        or payload["profile_bundle_sha256"] != checksum
+        or payload["matches_profile"] is not True
+        or payload["loads_against_binary"] is not True
+        or not isinstance(payload["invariants"], dict)
+    ):
+        raise RootArtifactError(f"verify JSON did not prove profile {profile}")
+
+
+def create_root_artifact_evidence(
+    *,
+    repo: pathlib.Path,
+    source_binary: pathlib.Path,
+    head_sha: str,
+    stage_dir: pathlib.Path,
+    policy: dict[str, Any],
+) -> dict[str, str]:
+    artifact = root_artifact_policy(policy)
+    if not LOWER_FULL_SHA_RE.fullmatch(head_sha):
+        raise RootArtifactError("root-artifact head SHA must be 40 lowercase hexadecimal characters")
+    validate_required_wrapper(policy, artifact)
+    if source_binary.is_symlink() or not source_binary.is_file() or not os.access(source_binary, os.X_OK):
+        raise RootArtifactError("managed build binary is not a regular executable file")
+    if stage_dir.exists() and any(stage_dir.iterdir()):
+        raise RootArtifactError("root-artifact stage directory must be empty")
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    staged_binary = stage_dir / str(artifact["binary_name"])
+    if source_binary.resolve() == staged_binary.resolve():
+        raise RootArtifactError("root-artifact source and staged binary paths must differ")
+    shutil.copy2(source_binary, staged_binary)
+    initial_digest = file_sha256(staged_binary)
+    tracked_paths, overlays = tracked_config_paths(repo)
+    executed_overlays: list[str] = []
+    generate_keys = {
+        "generated_live_config",
+        "output",
+        "source_profile",
+        "profile_bundle_sha256",
+        "generator_format_version",
+        "invariants",
+    }
+    verify_keys = {
+        "verified_live_config",
+        "profile",
+        "deployed",
+        "profile_bundle_sha256",
+        "matches_profile",
+        "loads_against_binary",
+        "invariants",
+    }
+    with tempfile.TemporaryDirectory(prefix="root-artifact-cases-", dir=stage_dir.parent) as raw_cases:
+        cases = pathlib.Path(raw_cases)
+        for index, overlay in enumerate(overlays):
+            profile = overlay.name.removesuffix(".overlay.toml")
+            positive = cases / f"{index:04d}-positive"
+            copy_tracked_config(repo, tracked_paths, positive)
+            config_root = (positive / "config").resolve()
+            live_path = config_root / "live.toml"
+            generated = require_success_json(
+                run_staged_binary(
+                    staged_binary,
+                    ["ops", "generate-live-config", "--profile", profile, "--config-root", str(config_root)],
+                ),
+                label=f"generate {profile}",
+                expected_keys=generate_keys,
+            )
+            checksum = validate_generate_payload(generated, profile=profile, live_path=live_path)
+            verified = require_success_json(
+                run_staged_binary(
+                    staged_binary,
+                    ["ops", "verify-live-config", "--profile", profile, "--config-root", str(config_root)],
+                ),
+                label=f"verify {profile}",
+                expected_keys=verify_keys,
+            )
+            validate_verify_payload(verified, profile=profile, live_path=live_path, checksum=checksum)
+            executed_overlays.append(overlay.as_posix())
+
+            with live_path.open("a", encoding="utf-8") as handle:
+                handle.write("\n# root-artifact tamper\n")
+            require_failure(
+                run_staged_binary(
+                    staged_binary,
+                    ["ops", "verify-live-config", "--profile", profile, "--config-root", str(config_root)],
+                ),
+                label=f"tampered verify {profile}",
+            )
+
+            for negative, mutation in (
+                ("malformed", lambda text: f"{text}\n[malformed\n"),
+                ("unknown-field", lambda text: f"root_artifact_unknown_field = true\n{text}"),
+            ):
+                negative_root = cases / f"{index:04d}-{negative}"
+                copy_tracked_config(repo, tracked_paths, negative_root)
+                negative_overlay = negative_root / overlay
+                original = negative_overlay.read_text(encoding="utf-8")
+                negative_overlay.write_text(mutation(original), encoding="utf-8")
+                require_failure(
+                    run_staged_binary(
+                        staged_binary,
+                        [
+                            "ops",
+                            "generate-live-config",
+                            "--profile",
+                            profile,
+                            "--config-root",
+                            str((negative_root / "config").resolve()),
+                        ],
+                    ),
+                    label=f"{negative} generate {profile}",
+                )
+
+    require_failure(run_staged_binary(staged_binary, []), label="plain staged-binary run")
+    expected_overlays = [path.as_posix() for path in overlays]
+    if executed_overlays != expected_overlays or len(executed_overlays) != len(set(executed_overlays)):
+        raise RootArtifactError("root-artifact overlay execution was omitted or duplicated")
+    final_digest = file_sha256(staged_binary)
+    if final_digest != initial_digest:
+        raise RootArtifactError("staged binary digest changed during root-artifact execution")
+    checksum_path = stage_dir / str(artifact["checksum_file"])
+    checksum_path.write_text(f"{initial_digest}  {staged_binary.name}\n", encoding="utf-8")
+    evidence_path = stage_dir / str(artifact["evidence_file"])
+    evidence = {
+        "schema_version": artifact["evidence_schema_version"],
+        "operation": artifact["operation"],
+        "head_sha": head_sha,
+        "binary_sha256": initial_digest,
+        "overlays": expected_overlays,
+    }
+    evidence_path.write_text(json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    return {
+        "stage_dir": str(stage_dir),
+        "binary": str(staged_binary),
+        "checksum": str(checksum_path),
+        "evidence": str(evidence_path),
+    }
+
+
+def cmd_root_artifact_evidence(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        outputs = create_root_artifact_evidence(
+            repo=repo,
+            source_binary=pathlib.Path(args.binary).absolute(),
+            head_sha=args.head_sha,
+            stage_dir=pathlib.Path(args.stage_dir).absolute(),
+            policy=load_policy(repo),
+        )
+        if args.github_output:
+            append_github_outputs(
+                pathlib.Path(args.github_output),
+                {key: outputs[key] for key in ("stage_dir", "binary", "checksum", "evidence")},
+            )
+        print(json.dumps(outputs, sort_keys=True))
+    except (OSError, PolicyError, RootArtifactError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_binary_path(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     try:
@@ -4934,6 +5306,18 @@ def build_parser() -> argparse.ArgumentParser:
     binary.add_argument("--repo", required=True)
     binary.add_argument("--bin", required=True)
     binary.set_defaults(func=cmd_binary_path)
+
+    root_artifact = subparsers.add_parser("root-artifact-evidence")
+    root_artifact.add_argument("--repo", required=True)
+    root_artifact.add_argument("--binary", required=True)
+    root_artifact.add_argument("--head-sha", required=True)
+    root_artifact.add_argument("--stage-dir", required=True)
+    root_artifact.add_argument("--github-output")
+    root_artifact.set_defaults(func=cmd_root_artifact_evidence)
+
+    root_artifact_wrapper = subparsers.add_parser("root-artifact-wrapper")
+    root_artifact_wrapper.add_argument("--repo", required=True)
+    root_artifact_wrapper.set_defaults(func=cmd_root_artifact_wrapper)
 
     fast_linker_programs = subparsers.add_parser("fast-linker-programs")
     fast_linker_programs.add_argument("--repo", required=True)

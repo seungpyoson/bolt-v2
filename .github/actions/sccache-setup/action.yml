@@ -18,6 +18,26 @@ inputs:
     description: Repository TOML file that owns the expected sccache location.
     required: false
     default: ci/sccache-location.toml
+  required:
+    description: Fail closed unless the producer receives a verified sccache wrapper.
+    required: false
+    default: "false"
+  operation:
+    description: Producer operation identity for strict eligibility.
+    required: false
+    default: ""
+  expected-sha:
+    description: Exact requested main SHA for strict eligibility.
+    required: false
+    default: ""
+  checked-out-sha:
+    description: Exact checked-out SHA for strict eligibility.
+    required: false
+    default: ""
+  remote-main-sha:
+    description: Exact observed remote-main SHA for strict eligibility.
+    required: false
+    default: ""
 
 outputs:
   enabled:
@@ -29,6 +49,9 @@ outputs:
   cache-mode:
     description: Cache access mode selected by this action.
     value: ${{ steps.eligibility.outputs.cache_mode }}
+  wrapper-path:
+    description: Checksum-verified sccache path, empty when unavailable.
+    value: ${{ steps.verify.outputs.wrapper_path }}
 
 runs:
   using: composite
@@ -42,6 +65,11 @@ runs:
         READ_ROLE_ARN: ${{ inputs.role-arn }}
         WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}
         CONFIG_PATH: ${{ inputs.config-path }}
+        SCCACHE_REQUIRED: ${{ inputs.required }}
+        SCCACHE_OPERATION: ${{ inputs.operation }}
+        SCCACHE_EXPECTED_SHA: ${{ inputs.expected-sha }}
+        SCCACHE_CHECKED_OUT_SHA: ${{ inputs.checked-out-sha }}
+        SCCACHE_REMOTE_MAIN_SHA: ${{ inputs.remote-main-sha }}
       run: |
         python3.12 scripts/sccache_eligibility.py
 
@@ -63,16 +91,57 @@ runs:
         version: "v0.10.0"
         disable_annotations: "true"
 
+    - name: Verify installed sccache
+      id: verify
+      if: steps.eligibility.outputs.eligible == 'true' && steps.aws.outcome == 'success' && steps.install.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        EXPECTED_TARGET: ${{ steps.eligibility.outputs.installer_target }}
+        EXPECTED_EXECUTABLE: ${{ steps.eligibility.outputs.installer_executable }}
+        EXPECTED_VERSION_OUTPUT: ${{ steps.eligibility.outputs.installer_version_output }}
+        EXPECTED_SHA256: ${{ steps.eligibility.outputs.installer_sha256 }}
+      run: |
+        set -euo pipefail
+        candidate="${SCCACHE_PATH:-}"
+        if [[ -z "$candidate" || "$candidate" != /* || "$candidate" =~ [[:space:]] || ! -f "$candidate" || ! -x "$candidate" ]]; then
+          echo "installed sccache path is not an absolute executable file" >&2
+          exit 1
+        fi
+        wrapper_path="$(readlink -f "$candidate")"
+        if [[ "$(basename "$wrapper_path")" != "$EXPECTED_EXECUTABLE" ]]; then
+          echo "installed sccache path does not identify the configured executable" >&2
+          exit 1
+        fi
+        if [[ "$EXPECTED_TARGET" != "aarch64-unknown-linux-gnu" || "$(uname -m)" != "aarch64" ]]; then
+          echo "installed sccache target does not match the ARM64 producer" >&2
+          exit 1
+        fi
+        if [[ "$("$wrapper_path" --version)" != "$EXPECTED_VERSION_OUTPUT" ]]; then
+          echo "installed sccache version does not match repository config" >&2
+          exit 1
+        fi
+        actual_sha256="$(sha256sum "$wrapper_path" | awk '{print $1}')"
+        if [[ "$actual_sha256" != "$EXPECTED_SHA256" ]]; then
+          echo "installed sccache checksum does not match repository config" >&2
+          exit 1
+        fi
+        echo "wrapper_path=$wrapper_path" >> "$GITHUB_OUTPUT"
+        echo "SCCACHE_PATH=$wrapper_path" >> "$GITHUB_ENV"
+
     - name: Resolve sccache enablement
       id: enable
       continue-on-error: true
       if: always()
       shell: bash
+      env:
+        SCCACHE_PATH: ${{ steps.verify.outputs.wrapper_path }}
       run: |
         enabled=false
         if [[ "${{ steps.eligibility.outputs.eligible }}" == "true" \
               && "${{ steps.aws.outcome }}" == "success" \
               && "${{ steps.install.outcome }}" == "success" \
+              && "${{ steps.verify.outcome }}" == "success" \
               && -n "${SCCACHE_PATH:-}" ]]; then
           if "$SCCACHE_PATH" --start-server; then
             "$SCCACHE_PATH" --zero-stats || true
@@ -84,6 +153,25 @@ runs:
         echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
         echo "sccache enabled=$enabled"
 
+    - name: Require verified sccache
+      if: inputs.required == 'true'
+      shell: bash
+      env:
+        ELIGIBILITY_OUTCOME: ${{ steps.eligibility.outcome }}
+        SCCACHE_ELIGIBLE: ${{ steps.eligibility.outputs.eligible || 'false' }}
+        AWS_OUTCOME: ${{ steps.aws.outcome || 'skipped' }}
+        INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
+        VERIFY_OUTCOME: ${{ steps.verify.outcome || 'skipped' }}
+        SCCACHE_ENABLED: ${{ steps.enable.outputs.enabled || 'false' }}
+        VERIFIED_WRAPPER: ${{ steps.verify.outputs.wrapper_path }}
+      run: |
+        set -euo pipefail
+        if [[ "$ELIGIBILITY_OUTCOME" != "success" || "$SCCACHE_ELIGIBLE" != "true" || "$AWS_OUTCOME" != "success" || "$INSTALL_OUTCOME" != "success" || "$VERIFY_OUTCOME" != "success" || "$SCCACHE_ENABLED" != "true" || -z "$VERIFIED_WRAPPER" ]]; then
+          echo "root-artifact requires configured credentials and checksum-verified action-installed sccache" >&2
+          exit 1
+        fi
+        echo "BOLT_RUST_VERIFICATION_SCCACHE=1" >> "$GITHUB_ENV"
+
     - name: Summarize sccache state
       if: always()
       shell: bash
@@ -93,9 +181,10 @@ runs:
         SCCACHE_ENABLED: ${{ steps.enable.outputs.enabled || 'false' }}
         SCCACHE_AWS_OUTCOME: ${{ steps.aws.outcome || 'skipped' }}
         SCCACHE_INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
+        SCCACHE_VERIFY_OUTCOME: ${{ steps.verify.outcome || 'skipped' }}
         SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}
       run: |
-        echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+        echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME} verify=${SCCACHE_VERIFY_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
         if [[ "$SCCACHE_ENABLED" != "true" ]]; then
           echo "::notice::sccache cache disabled; compiling without remote cache"
         fi

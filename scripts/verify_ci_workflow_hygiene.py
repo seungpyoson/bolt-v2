@@ -409,6 +409,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/debug-test.yml": "debug_test",
     "rust-probe.yml": "rust_probe",
     ".github/workflows/rust-probe.yml": "rust_probe",
+    "rust-producer.yml": "rust_producer",
+    ".github/workflows/rust-producer.yml": "rust_producer",
     "actionlint.yml": "actionlint",
     ".github/workflows/actionlint.yml": "actionlint",
     "ai-review-glm-pr-agent.yml": "ai_review_glm_pr_agent",

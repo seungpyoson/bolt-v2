@@ -6,11 +6,16 @@ from __future__ import annotations
 import pathlib
 import tomllib
 
-from sccache_eligibility import resolve_sccache_eligibility
+from sccache_eligibility import (
+    SccacheConfigError,
+    parse_sccache_config,
+    resolve_sccache_eligibility,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-LOCATION = tomllib.loads((REPO_ROOT / "ci" / "sccache-location.toml").read_text(encoding="utf-8"))["location"]
+CONFIG_TEXT = (REPO_ROOT / "ci" / "sccache-location.toml").read_text(encoding="utf-8")
+LOCATION = tomllib.loads(CONFIG_TEXT)["location"]
 
 
 def assert_case(
@@ -127,6 +132,64 @@ def main() -> int:
         expected_role=read_role,
         expected_mode="read_only",
     )
+    strict = resolve_sccache_eligibility(
+        active=True,
+        event_name="workflow_dispatch",
+        github_ref="refs/heads/main",
+        read_role_arn=read_role,
+        write_role_arn=write_role,
+        location=LOCATION,
+        required=True,
+        operation="root-artifact",
+        github_sha="a" * 40,
+        expected_sha="a" * 40,
+        checked_out_sha="a" * 40,
+        remote_main_sha="a" * 40,
+    )
+    if not strict.eligible or not strict.strict_context_valid or strict.cache_mode != "read_write":
+        raise AssertionError(f"exact-main root-artifact must be strictly eligible: {strict!r}")
+    for label, overrides in (
+        ("wrong operation", {"operation": "root-seed"}),
+        ("wrong ref", {"github_ref": "refs/heads/feature"}),
+        ("wrong checked-out SHA", {"checked_out_sha": "b" * 40}),
+        ("malformed remote SHA", {"remote_main_sha": "not-a-sha"}),
+    ):
+        values = {
+            "event_name": "workflow_dispatch",
+            "github_ref": "refs/heads/main",
+            "operation": "root-artifact",
+            "github_sha": "a" * 40,
+            "expected_sha": "a" * 40,
+            "checked_out_sha": "a" * 40,
+            "remote_main_sha": "a" * 40,
+        }
+        values.update(overrides)
+        rejected = resolve_sccache_eligibility(
+            active=True,
+            read_role_arn=read_role,
+            write_role_arn=write_role,
+            location=LOCATION,
+            required=True,
+            **values,
+        )
+        if rejected.eligible or rejected.strict_context_valid:
+            raise AssertionError(f"strict eligibility must reject {label}: {rejected!r}")
+
+    parsed = parse_sccache_config(CONFIG_TEXT, label="committed config")
+    if parsed.sha256 != "d6a1ce4acd02b937cd61bc675a8be029a60f7bc167594c33d75732bbc0a07400":
+        raise AssertionError("committed ARM64 sccache checksum is not the approved value")
+    invalid_configs = (
+        ("missing installer", CONFIG_TEXT.split("\n[installer]", 1)[0]),
+        ("unknown field", CONFIG_TEXT + "\nunknown = true\n"),
+        ("duplicate config", CONFIG_TEXT + "\n[location]\nbucket = \"duplicate\"\n"),
+    )
+    for label, text in invalid_configs:
+        try:
+            parse_sccache_config(text, label=label)
+        except SccacheConfigError:
+            pass
+        else:
+            raise AssertionError(f"{label} must fail strict sccache config parsing")
     print("OK: sccache eligibility self-tests passed.")
     return 0
 

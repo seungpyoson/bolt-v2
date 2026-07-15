@@ -1,6 +1,13 @@
-schema_version = 1
+schema_version = 2
 
 [location]
 bucket = "bolt-v2-ci-cache-675819144420-us-east-2"
 region = "us-east-2"
 key_prefix = "sccache/bolt-v2/arm64/root-nextest/"
+
+[installer]
+version = "v0.10.0"
+target = "aarch64-unknown-linux-gnu"
+executable = "sccache"
+version_output = "sccache 0.10.0"
+sha256 = "d6a1ce4acd02b937cd61bc675a8be029a60f7bc167594c33d75732bbc0a07400"

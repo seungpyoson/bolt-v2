@@ -79,6 +79,10 @@ probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
+[workflows.rust_producer]
+preflight = "github_hosted"
+root-artifact = "managed_heavy"
+
 [cargo_build_jobs.ci]
 clippy = 3
 check-aarch64 = 3
@@ -92,6 +96,9 @@ test-archive = 3
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3
 probe-light = 3
+
+[cargo_build_jobs.rust_producer]
+root-artifact = 3
 
 [cargo_build_jobs.flaky_test_detection]
 flaky-detection-rust-root = 3
@@ -180,6 +187,7 @@ included_workflows = [
   "ci_runner_debug",
   "debug_test",
   "rust_probe",
+  "rust_producer",
 ]
 
 [meter.api_limits]
@@ -430,6 +438,11 @@ retention_days = 7
 artifact_name = "ci-storage-cleanup-feasibility"
 artifact_class = "transient"
 retention_days = 7
+
+[artifact_retention.uploads.".github/workflows/rust-producer.yml::root-artifact::upload-root-artifact"]
+artifact_name = "root-artifact"
+artifact_class = "transient"
+retention_days = 3
 
 # Every artifact reused from a prior run must have a binding here.
 [artifact_retention.lookback_bindings.build_deploy]

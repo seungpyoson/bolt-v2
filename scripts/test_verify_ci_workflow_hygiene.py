@@ -10801,6 +10801,51 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
         raise AssertionError("cargo-zigbuild executable probe must not use redundant && true")
 
 
+def assert_root_artifact_workflow_contract() -> None:
+    verifier = load_verifier()
+    path = REPO_ROOT / ".github" / "workflows" / "rust-producer.yml"
+    workflow = path.read_text(encoding="utf-8")
+    if verifier.WORKFLOW_RUNNER_CONFIG_KEYS.get(path.name) != "rust_producer":
+        raise AssertionError("rust-producer workflow must have one existing runner-config registration")
+    required = (
+        "  workflow_dispatch:\n",
+        "  group: root-artifact-producer\n  cancel-in-progress: false\n",
+        '          if [[ "$OPERATION" != "root-artifact" || "$EVENT_REF" != "refs/heads/main"',
+        'remote_main_sha="$(git ls-remote',
+        "          required: \"true\"\n",
+        "          operation: ${{ inputs.operation }}\n",
+        "          expected-sha: ${{ inputs.expected_sha }}\n",
+        "root-artifact-wrapper --repo",
+        "root-artifact-evidence",
+        "--binary \"$binary_path\"",
+        "${{ steps.root-artifact.outputs.binary }}",
+        "${{ steps.root-artifact.outputs.checksum }}",
+        "${{ steps.root-artifact.outputs.evidence }}",
+    )
+    missing = [fragment for fragment in required if fragment not in workflow]
+    if missing:
+        raise AssertionError(f"rust-producer root-artifact contract is missing {missing!r}")
+    on_block = workflow.split("on:\n", 1)[1].split("\nconcurrency:\n", 1)[0]
+    if any(f"  {trigger}:" in on_block for trigger in ("push", "pull_request", "merge_group", "schedule")):
+        raise AssertionError("rust-producer must remain workflow_dispatch-only")
+    if workflow.count("          just build\n") != 1:
+        raise AssertionError("root-artifact must invoke one managed build")
+    forbidden = (
+        "cargo test",
+        "cargo nextest",
+        "just test",
+        "root-seed",
+        "backtester-seed",
+        "actions/download-artifact@",
+        "ops launch",
+    )
+    present = [fragment for fragment in forbidden if fragment in workflow]
+    if present:
+        raise AssertionError(f"rust-producer contains forbidden test/seed/consumer edges: {present!r}")
+    if workflow.count("actions/upload-artifact@") != 1:
+        raise AssertionError("root-artifact must have exactly one evidence upload")
+
+
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
     assert_ci_lint_runs_verify_remote_tests()
@@ -10811,6 +10856,7 @@ def main() -> int:
     test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
+    assert_root_artifact_workflow_contract()
     assert_binance_timestamp_archive_execution_proof_gaps_are_reported()
     assert_test_archive_filtered_run_recipe_preserves_filterset_argv()
     real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")

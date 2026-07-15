@@ -1047,13 +1047,14 @@ fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Resul
 
 #[derive(Serialize)]
 struct ExecutionRecordFingerprint<'a> {
-    pack_context: &'a serde_json::Value,
+    pack_context_sha256: &'a str,
     record: &'a SourceUniverseExecutionPackRecord,
 }
 
-/// Compute every record fingerprint from one copy of the pack's non-record
-/// context. Removing `records` before the per-record loop prevents each digest
-/// from recursively serializing or cloning the complete record vector.
+/// Compute every record fingerprint from one digest of the pack's non-record
+/// context. Removing `records` and hashing the remaining context once prevents
+/// unbounded pack metadata (for example `artifact_refs`) from being
+/// canonicalized again for every record.
 fn execution_record_digests(pack: &SourceUniverseExecutionPack) -> Result<BTreeMap<u64, String>> {
     let mut pack_context =
         serde_json::to_value(pack).context("serialize execution pack context")?;
@@ -1064,12 +1065,14 @@ fn execution_record_digests(pack: &SourceUniverseExecutionPack) -> Result<BTreeM
         pack_object.remove("records").is_some(),
         "serialized execution pack context is missing records"
     );
+    let pack_context_sha256 = crate::reference_artifact::canonical_json_sha256(&pack_context)
+        .context("hash execution-pack non-record context")?;
 
     let mut digests = BTreeMap::new();
     for record in &pack.records {
         let digest =
             crate::reference_artifact::canonical_json_sha256(&ExecutionRecordFingerprint {
-                pack_context: &pack_context,
+                pack_context_sha256: &pack_context_sha256,
                 record,
             })
             .context("hash execution-pack record and pack context")?;

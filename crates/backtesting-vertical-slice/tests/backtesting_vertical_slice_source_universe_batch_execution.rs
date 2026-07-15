@@ -2351,7 +2351,7 @@ fn resume_reprocesses_when_an_unreported_pack_record_field_drifts() {
 }
 
 #[test]
-fn resume_does_not_carry_when_pack_level_universe_metadata_drifts() {
+fn resume_does_not_carry_when_fingerprint_only_pack_metadata_drifts() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let objects = vec![(0, b"object zero".to_vec())];
     let fixture = write_valid_pack(temp_dir.path(), &objects);
@@ -2377,14 +2377,14 @@ fn resume_does_not_carry_when_pack_level_universe_metadata_drifts() {
             .expect("write prior report");
     rewrite_pack_field(
         &fixture.pack_path,
-        "universe_id",
-        serde_json::Value::String("drifted-source-universe".to_string()),
+        "work_order_id",
+        serde_json::Value::String("drifted-work-order".to_string()),
     );
 
     let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
     let resume_calls = resume_fetcher.calls();
     let mut resume_runner = RecordingRunner::default();
-    let result = execute_source_universe_batch_with_config(
+    execute_source_universe_batch_with_config(
         "source-universe-batch-synthetic-resume",
         &fixture.pack_path,
         &temp_dir.path().join("resume-output"),
@@ -2397,19 +2397,15 @@ fn resume_does_not_carry_when_pack_level_universe_metadata_drifts() {
         },
         &mut resume_fetcher,
         &mut resume_runner,
-    );
+    )
+    .expect("fingerprint-only pack drift reexecutes");
 
-    match result {
-        Ok(_) => assert_eq!(
-            resume_calls.lock().expect("resume fetch calls").as_slice(),
-            &[0],
-            "pack-level metadata drift may reprocess but must never carry"
-        ),
-        Err(error) => assert!(
-            format!("{error:#}").contains("universe"),
-            "fail-closed resume error identifies universe drift: {error:#}"
-        ),
-    }
+    assert_eq!(
+        resume_calls.lock().expect("resume fetch calls").as_slice(),
+        &[0],
+        "fingerprint-only pack metadata drift must reprocess, never carry"
+    );
+    assert_eq!(resume_runner.calls.len(), 1);
 }
 
 #[test]

@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.8.0",
+  "checkpoint_id": "6c36ae849005",
+  "session_id": "019f60d7-8211-7060-8292-6fcd460c60a2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-15T14:01:19.730951Z",
+  "branch": "vorflux/strategy-agnostic-substrate",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "84d553f6d31d",
+  "checkpoint_transcript_start": 3439,
+  "transcript_lines_at_start": 3439,
+  "compact_transcript_start": 725
+}

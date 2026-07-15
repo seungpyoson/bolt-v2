@@ -108,7 +108,7 @@ fn subscribed_order_event_panics_on_poisoned_capital_admission_feed_lock() {
     let _subscription = subscribe_capital_admission_runtime_feed(feed);
 
     publish_order_event(
-        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
         &OrderEventAny::Canceled(order_canceled_event("client-order-1", 1_100)),
     );
 }
@@ -639,7 +639,7 @@ fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
         &adjusted_position_event(AccountId::from("ACCOUNT-001"), 2_200),
     );
     publish_order_event(
-        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
         &OrderEventAny::Canceled(order_canceled_event("client-order-1", 2_300)),
     );
 
@@ -2615,7 +2615,7 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
     let mut subscription = subscribe_capital_admission_runtime_feed(feed.clone());
 
     publish_order_event(
-        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
         &OrderEventAny::Canceled(order_canceled_event("client-order-1", 1_100)),
     );
     subscription.unsubscribe_all();

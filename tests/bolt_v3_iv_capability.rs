@@ -208,30 +208,41 @@ fn whole_checkout_scan_surfaces_microstructure_terms_without_iv_anchor_words() {
 }
 
 #[test]
-fn whole_checkout_scan_handles_public_const_functions_as_named_surfaces() {
+fn option_chain_manager_scan_handles_public_const_functions_as_named_surfaces() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
 
     write_source(
         root,
-        "crates/model/src/enums.rs",
-        "/// Returns whether this option class has an expiration.\npub const fn has_expiration(&self) -> bool { true }\n",
+        "crates/data/src/option_chains/manager.rs",
+        "/// Returns whether the option chain is bootstrapped.\npub const fn is_bootstrapped(&self) -> bool { true }\n",
     );
 
     let candidates = scan_whole_checkout_candidates(root).unwrap();
 
     assert!(
-        candidates
-            .iter()
-            .any(|candidate| candidate.surface_id == "nt.crates.model.src.enums.has_expiration"),
-        "pub const fn should surface by function name"
+        candidates.iter().any(|candidate| candidate.surface_id
+            == "nt.crates.data.src.option_chains.manager.is_bootstrapped"),
+        "option-chain pub const fn should surface by its real function name"
     );
     assert!(
         candidates
             .iter()
-            .all(|candidate| candidate.surface_id != "nt.crates.model.src.enums.fn"),
-        "pub const fn must not produce a synthetic `fn` surface"
+            .all(|candidate| candidate.surface_id != "nt.crates.data.src.option_chains.manager.fn"),
+        "option-chain pub const fn must not produce a synthetic `fn` surface"
     );
+}
+
+#[test]
+fn committed_capability_ledger_contains_no_synthetic_fn_symbols() {
+    let fixture = load_capability_ledger_fixture(&repo_path(
+        "tests/fixtures/bolt_v3_iv/capability-ledger.toml",
+    ))
+    .unwrap();
+
+    for surface in &fixture.surfaces {
+        assert_ne!(surface.symbol, "fn", "synthetic public symbol in ledger");
+    }
 }
 
 #[test]

@@ -2,6 +2,7 @@
 
 use super::*;
 use nautilus_common::{
+    actor::DataActorNative,
     messages::data::DataCommand,
     msgbus::TypedIntoHandler,
     runner::{DataCommandSender, get_data_cmd_sender, replace_data_cmd_sender},
@@ -1059,7 +1060,7 @@ pub(super) fn register_test_strategy_with_clock(
 ) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
     install_test_data_command_sender();
     if strategy.is_registered() {
-        let cache = strategy.core.cache_rc();
+        let cache = strategy.cache_rc();
         let clock = registered_test_clock_for_cache(&cache);
         return (cache, clock);
     }
@@ -1072,8 +1073,8 @@ pub(super) fn register_test_strategy_with_clock(
     let cache_handle = cache.clone();
     let clock_handle = clock.clone();
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
-        cache.clone(),
         clock.clone(),
+        cache.clone(),
         None,
     )));
     strategy

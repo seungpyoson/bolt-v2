@@ -1294,17 +1294,17 @@ fn write_pmxt_one_off_projection_to_catalog_with_report_root(
         .context("write PMXT one-off instrument to NT catalog")?;
     if !projection.order_book_deltas.is_empty() {
         catalog
-            .write_to_parquet(projection.order_book_deltas.clone(), None, None, None)
+            .write_to_parquet(&projection.order_book_deltas, None, None, None)
             .context("write PMXT one-off L2 deltas to NT catalog")?;
     }
     if !projection.quote_ticks.is_empty() {
         catalog
-            .write_to_parquet(projection.quote_ticks.clone(), None, None, None)
+            .write_to_parquet(&projection.quote_ticks, None, None, None)
             .context("write PMXT one-off quote ticks to NT catalog")?;
     }
     if !projection.trade_ticks.is_empty() {
         catalog
-            .write_to_parquet(projection.trade_ticks.clone(), None, None, None)
+            .write_to_parquet(&projection.trade_ticks, None, None, None)
             .context("write PMXT one-off trade ticks to NT catalog")?;
     }
 

@@ -152,7 +152,7 @@ where
         )
         .context("write configured instruments through NT catalog")?;
     catalog
-        .write_to_parquet(ticks, None, None, None)
+        .write_to_parquet(&ticks, None, None, None)
         .context("write configured TradeTick data through NT catalog")?;
 
     let loaded_instruments = catalog
@@ -382,13 +382,15 @@ fn run_backtest_node(
             storage_options.map(|options| options.into_iter().collect()),
         )
         .instrument_ids(instrument_ids.to_vec())
-        .build();
+        .build()
+        .context("build NT backtest data config")?;
 
     let run_config = BacktestRunConfig::builder()
         .id(spec.proof_id.clone())
-        .venues(build_venue_configs(&spec.instruments))
+        .venues(build_venue_configs(&spec.instruments)?)
         .data(vec![data_config])
-        .build();
+        .build()
+        .context("build NT backtest run config")?;
     let mut node = BacktestNode::new(vec![run_config]).context("construct NT BacktestNode")?;
     node.build().context("build NT BacktestNode")?;
     let mut results = node.run().context("run NT BacktestNode")?;
@@ -400,7 +402,9 @@ fn run_backtest_node(
     Ok(results.remove(0))
 }
 
-fn build_venue_configs(instruments: &[NtCatalogProofInstrumentSpec]) -> Vec<BacktestVenueConfig> {
+fn build_venue_configs(
+    instruments: &[NtCatalogProofInstrumentSpec],
+) -> Result<Vec<BacktestVenueConfig>> {
     let mut quote_currencies_by_venue: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for instrument in instruments {
         quote_currencies_by_venue
@@ -423,6 +427,7 @@ fn build_venue_configs(instruments: &[NtCatalogProofInstrumentSpec]) -> Vec<Back
                         .collect(),
                 )
                 .build()
+                .with_context(|| format!("build NT backtest venue config for {venue}"))
         })
         .collect()
 }

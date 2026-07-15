@@ -771,7 +771,11 @@ fn add_manifest_strategy(
             let trade_size = Quantity::from_str(trade_size_raw).map_err(|error| {
                 anyhow::anyhow!("invalid {PARAM_TRADE_SIZE} {trade_size_raw:?}: {error}")
             })?;
-            let config = HurstVpinDirectionalConfig::new(instrument_id, bar_type, trade_size);
+            let config = HurstVpinDirectionalConfig::builder()
+                .instrument_id(instrument_id)
+                .bar_type(bar_type)
+                .trade_size(trade_size)
+                .build();
             engine
                 .add_strategy(HurstVpinDirectional::new(config))
                 .context("add HurstVpinDirectional strategy")?;
@@ -2793,7 +2797,7 @@ mod tests {
             .context("write maker smoke instruments")?;
         catalog
             .write_to_parquet(
-                vec![
+                &[
                     maker_smoke_trade(
                         yes_id,
                         "maker-smoke-yes-1",
@@ -2824,7 +2828,7 @@ mod tests {
             .context("write execution-contract smoke instrument")?;
         catalog
             .write_to_parquet(
-                vec![
+                &[
                     maker_smoke_trade(
                         instrument_id,
                         "execution-contract-entry",

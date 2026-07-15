@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `afc014a55b51463641cc19c68bffe25cdac6588a`
+  - current value: `d636f17604cdbddc28ad40e0e15720e2d19bf860`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1374,7 +1374,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`afc014a55b51463641cc19c68bffe25cdac6588a`. WebSocket frames flow through
+`d636f17604cdbddc28ad40e0e15720e2d19bf860`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1503,14 +1503,17 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins NautilusTrader to
-`afc014a55b51463641cc19c68bffe25cdac6588a` on the bolt pin-fork
-(`seungpyoson/nautilus_trader`, branch `pin/6be5a50-sbe-schema-3-5`), which is
-upstream pin `6be5a5094716790a8ca2875445fde4fa2586107e` plus the ported
+`d636f17604cdbddc28ad40e0e15720e2d19bf860` on the bolt pin-fork
+(`seungpyoson/nautilus_trader`, branch `pin/v1.230.0-sbe-3-5-ts-init`). The
+fork commit has official `v1.230.0` release commit
+`8160730c7c550480b0a439fb11086a4c4de15f0b` as its sole parent and ports the
 Binance Spot SBE schema 3:5 instrument-loading fix (upstream
-`9a2e7a5155ffaa515c0279951eb1a06a8652ca33`) and the reviewed Binance Spot SBE
-BBO adapter-initialization timestamp fix. That pin carries Polymarket CLOB V2
-adapter support, version-tolerant Binance Spot REST SBE decode within schema id
-3, and the Hyperliquid HIP-4 metadata path. The compatibility
+`9a2e7a5155ffaa515c0279951eb1a06a8652ca33`), schema 3:5 request negotiation
+(upstream `3b59b08c9e651075a462f243c01664f4ccbd9b21`), and reviewed adapter receive-clock
+ownership from fork source `fa3391d90c1aace4733fc73dae082b4cfee6b8fa`.
+That pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
+Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata
+path. The compatibility
 evidence proves focused Bolt-v3 compile and test compatibility only. It does
 not prove live order signing, submission, fill parsing, collateral accounting,
 or fee behavior.

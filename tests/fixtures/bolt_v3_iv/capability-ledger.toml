@@ -2020,13 +2020,6 @@ matched_terms = ["volatility"]
 classification = "not_iv_options"
 
 [[surfaces]]
-surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.fn"
-evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
-symbol = "fn"
-matched_terms = ["volatility"]
-classification = "not_iv_options"
-
-[[surfaces]]
 surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.py_new"
 evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
 symbol = "py_new"
@@ -2177,13 +2170,6 @@ classification = "not_iv_options"
 surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_wick_size"
 evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
 symbol = "CandleWickSize"
-matched_terms = ["volatility"]
-classification = "not_iv_options"
-
-[[surfaces]]
-surface_id = "nt.crates.indicators.src.volatility.fuzzy.fn"
-evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
-symbol = "fn"
 matched_terms = ["volatility"]
 classification = "not_iv_options"
 
@@ -2645,6 +2631,319 @@ evidence_path = "crates/serialization/src/python/arrow.rs"
 symbol = "py_option_greeks_to_arrow_record_batch_bytes"
 matched_terms = ["greeks", "option"]
 classification = "excluded"
+
+# --- NautilusTrader v1.230.0-based fork (rev d636f176) reviewed additions ---
+# Generic native/runtime surfaces below are exact false positives caused by
+# documentation language such as "surface" or unrelated expiration terms.
+[[surfaces]]
+surface_id = "nt.crates.trading.src.strategy.core.strategy_native"
+evidence_path = "crates/trading/src/strategy/core.rs"
+symbol = "StrategyNative"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.algorithm.core.execution_algorithm_native"
+evidence_path = "crates/trading/src/algorithm/core.rs"
+symbol = "ExecutionAlgorithmNative"
+matched_terms = ["surface"]
+seed_family = "msgbus"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.actor.data_actor.data_actor_native"
+evidence_path = "crates/common/src/actor/data_actor.rs"
+symbol = "DataActorNative"
+matched_terms = ["surface"]
+seed_family = "custom_data"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.backing.message_bus_backing_factory"
+evidence_path = "crates/common/src/msgbus/backing.rs"
+symbol = "MessageBusBackingFactory"
+matched_terms = ["surface"]
+seed_family = "msgbus"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.backing.message_bus_backing"
+evidence_path = "crates/common/src/msgbus/backing.rs"
+symbol = "MessageBusBacking"
+matched_terms = ["surface"]
+seed_family = "msgbus"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.backing.message_bus_external_egress"
+evidence_path = "crates/common/src/msgbus/backing.rs"
+symbol = "MessageBusExternalEgress"
+matched_terms = ["surface"]
+seed_family = "msgbus"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.backing.message_bus_external_ingress"
+evidence_path = "crates/common/src/msgbus/backing.rs"
+symbol = "MessageBusExternalIngress"
+matched_terms = ["surface"]
+seed_family = "msgbus"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.backing.external_io_from_backing"
+evidence_path = "crates/common/src/msgbus/backing.rs"
+symbol = "external_io_from_backing"
+matched_terms = ["surface"]
+seed_family = "msgbus"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.database.cache_database_factory"
+evidence_path = "crates/common/src/cache/database.rs"
+symbol = "CacheDatabaseFactory"
+matched_terms = ["surface"]
+seed_family = "custom_data"
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.mod.purge_instrument_skip_order_guard"
+evidence_path = "crates/common/src/cache/mod.rs"
+symbol = "purge_instrument_skip_order_guard"
+matched_terms = ["expiration"]
+classification = "not_iv_options"
+
+# The remaining additions expose concrete option, Greeks, IV, or option-chain
+# semantics and therefore map to their reviewed engine owners.
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.from_actor"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "from_actor"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.message.bus_payload_type"
+evidence_path = "crates/common/src/msgbus/message.rs"
+symbol = "BusPayloadType"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_msgbus_topic" }
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.option_series_id_error"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "OptionSeriesIdError"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.binary_option.build_checked"
+evidence_path = "crates/model/src/instruments/binary_option.rs"
+symbol = "build_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option.build_checked"
+evidence_path = "crates/model/src/instruments/crypto_option.rs"
+symbol = "build_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option_spread.build_checked"
+evidence_path = "crates/model/src/instruments/crypto_option_spread.rs"
+symbol = "build_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_contract.build_checked"
+evidence_path = "crates/model/src/instruments/option_contract.rs"
+symbol = "build_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_spread.build_checked"
+evidence_path = "crates/model/src/instruments/option_spread.rs"
+symbol = "build_checked"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.common.enums_capnp.greeks_convention"
+evidence_path = "crates/serialization/generated/capnp/common/enums_capnp.rs"
+symbol = "GreeksConvention"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_option_metadata_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.option_greeks"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.get_mark_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "get_mark_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_mark_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_mark_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.get_bid_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "get_bid_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_bid_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_bid_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.get_ask_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "get_ask_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_ask_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_ask_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.get_has_mark_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "get_has_mark_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_has_mark_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_has_mark_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.get_has_bid_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "get_has_bid_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_has_bid_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_has_bid_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.get_has_ask_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "get_has_ask_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_has_ask_iv"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_has_ask_iv"
+matched_terms = ["iv"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.has_option_greeks"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "has_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.set_option_greeks"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "set_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.generated.capnp.data.market_capnp.init_option_greeks"
+evidence_path = "crates/serialization/generated/capnp/data/market_capnp.rs"
+symbol = "init_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.src.capnp.conversions.greeks_convention_to_capnp"
+evidence_path = "crates/serialization/src/capnp/conversions.rs"
+symbol = "greeks_convention_to_capnp"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_option_metadata_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.src.capnp.conversions.greeks_convention_from_capnp"
+evidence_path = "crates/serialization/src/capnp/conversions.rs"
+symbol = "greeks_convention_from_capnp"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+engine_mapping = { mapping_kind = "api", target = "iv_option_metadata_api" }
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.try_update_from_option_greeks"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "try_update_from_option_greeks"
+matched_terms = ["chain", "greeks", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.is_bootstrapped"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "is_bootstrapped"
+matched_terms = ["chain", "option"]
+seed_family = "data_actor_subscription"
+classification = "supported"
 
 [[surfaces]]
 surface_id = "nt.patches.pyo3_stub_gen.src.pyproject.stub_gen_config"

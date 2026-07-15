@@ -277,6 +277,13 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                 let snapshot = envelope.snapshot.ok_or_else(|| {
                     anyhow!("missing snapshot payload at decision evidence line {line_number}")
                 })?;
+                if snapshot.client_order_id.is_empty() {
+                    // Blocked-entry snapshots are non-authoritative diagnostics,
+                    // not members of an admitted entry chain. Multiple canonical
+                    // RV states deliberately share the empty ID, so they must not
+                    // enter the unique client-order correlation index.
+                    continue;
+                }
                 insert_unique_evidence(
                     &mut snapshots,
                     snapshot.client_order_id.clone(),

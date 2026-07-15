@@ -7,11 +7,11 @@
 //! side effects, so a misconfigured launch cannot resolve credentials on the
 //! wrong box.
 //!
-//! Degrade vs fail-closed contract (single source of truth):
+//! Diagnostic vs fail-closed contract (single source of truth):
 //!   - No `deploy.toml`, no `[target]`, or all of region / availability_zone /
 //!     instance_id absent  =>  [`TargetVerifyOutcome::NoTargetConfigured`].
-//!     The host is never observed; launch proceeds. This lets the lane work
-//!     before any instance is provisioned.
+//!     The host is never observed. Status may report this diagnostic outcome,
+//!     but the launch caller fails before secrets or Start.
 //!   - Otherwise the configured fields are compared against live host facts
 //!     read over IMDSv2. Any mismatch  =>
 //!     [`TargetVerifyOutcome::Mismatched`]. An unreadable host  =>  `Err`.
@@ -48,8 +48,9 @@ const IMDS_REGION_PATH: &str = "/latest/meta-data/placement/region";
 /// deferred to a follow-up rather than presumed unnecessary here.
 const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Parsed `deploy.toml`. The `[target]` table is optional so an absent or
-/// empty binding is a first-class "no target configured" state.
+/// Parsed `deploy.toml`. The `[target]` table is optional so status can report
+/// an absent or empty binding as a first-class diagnostic state; launch still
+/// requires an observable binding.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployTargetConfig {
@@ -68,9 +69,9 @@ pub struct TargetBinding {
 }
 
 impl TargetBinding {
-    /// A binding gates launch only if at least one of the observable identity
-    /// fields (region / availability_zone / instance_id) is set to a non-blank
-    /// value. `name_tag` alone is informational and does not arm verification.
+    /// Observable identity fields arm IMDS observation and comparison. Without
+    /// one, verification returns `NoTargetConfigured`, which `ops launch`
+    /// rejects. `name_tag` alone is diagnostic-only and is not compared.
     fn has_gating_field(&self) -> bool {
         [
             self.region.as_deref(),
@@ -213,8 +214,9 @@ pub fn load_deploy_target(config_root: &Path) -> Result<DeployTargetConfig, Depl
 
 /// Compare the configured deploy target against the running host.
 ///
-/// Observes the host only when a gating binding is present, so the verifier
-/// works offline before any instance exists.
+/// Observes the host only when a gating binding is present. Without one it
+/// returns the diagnostic-only `NoTargetConfigured` outcome for the caller to
+/// reject or render as status.
 pub fn verify_deploy_target(
     config: &DeployTargetConfig,
     source: &dyn HostFactsSource,

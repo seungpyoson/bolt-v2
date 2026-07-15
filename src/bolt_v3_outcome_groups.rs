@@ -172,15 +172,13 @@ impl GroupingProof {
     }
 }
 
-#[rustfmt::skip]
 fn validate_structured_outcome_sha_fields(
     proof: &StructuredOutcomeGroupingProof,
 ) -> Result<(), OutcomeGroupValidationError> {
-    match proof {
-        StructuredOutcomeGroupingProof {
-            proof_fingerprint, ..
-        } => validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?,
-    }
+    let StructuredOutcomeGroupingProof {
+        proof_fingerprint, ..
+    } = proof;
+    validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;
     Ok(())
 }
 

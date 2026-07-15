@@ -83,6 +83,8 @@ pub const BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND: &str = "order_lifecycle";
 // volatile field can select storage, clear a bit, or create a new episode. The
 // first three masks are the frozen six-byte legacy diagnostic boundary. The
 // remaining masks close every non-recovery producer over an exact enum domain.
+// Masked rows are non-authoritative diagnostics whose consumers tolerate
+// conservative under-emission; recovery-bearing truth bypasses every mask.
 const BLOCKED_RV_DOMAIN: u32 = 12;
 const ENTRY_SKIP_DOMAIN: u32 = 16;
 const REQUOTE_THROTTLE_DOMAIN: u32 = 12;

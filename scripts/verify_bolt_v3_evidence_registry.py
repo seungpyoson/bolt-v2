@@ -61,6 +61,8 @@ PRODUCER_KEYS = {
     "dedupe_key_evidence",
     "recovery_bearing",
     "suppression",
+    "authority_semantics",
+    "under_emission_semantics",
     "owner_decision_required",
     "canonical_state_axes",
     "max_emissions",
@@ -869,6 +871,14 @@ def validate_producers(
         if row["recovery_bearing"] and row["suppression"] != "unsuppressed":
             raise RegistryError(f"recovery-bearing producer {name} must remain unsuppressed")
         if row["recovery_bearing"]:
+            if row["authority_semantics"] != "authoritative":
+                raise RegistryError(
+                    f"recovery-bearing producer {name} must remain authoritative"
+                )
+            if row["under_emission_semantics"] != "forbidden":
+                raise RegistryError(
+                    f"recovery-bearing producer {name} must forbid under-emission"
+                )
             if set(row) & {"canonical_state_axes", "max_emissions"}:
                 raise RegistryError(
                     f"recovery-bearing producer {name} cannot declare suppression state"
@@ -877,6 +887,17 @@ def validate_producers(
             if row["suppression"] != "finite-monotone-mask":
                 raise RegistryError(
                     f"non-recovery producer {name} requires finite monotone suppression"
+                )
+            if row["authority_semantics"] != "non-authoritative-diagnostic":
+                raise RegistryError(
+                    f"suppressed producer {name} must be a non-authoritative diagnostic"
+                )
+            if (
+                row["under_emission_semantics"]
+                != "consumer-tolerates-conservative-under-emission"
+            ):
+                raise RegistryError(
+                    f"suppressed producer {name} consumers must tolerate conservative under-emission"
                 )
             axes = row.get("canonical_state_axes")
             if not isinstance(axes, list) or not axes:

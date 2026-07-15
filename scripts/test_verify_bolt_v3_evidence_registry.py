@@ -616,6 +616,41 @@ fn production_only_alias(writer: &dyn BoltV3DecisionEvidenceWriter, evidence: &B
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("requires finite monotone suppression", result.stderr)
 
+    def test_suppressed_row_must_be_non_authoritative_diagnostic(self) -> None:
+        source = REGISTRY.read_text(encoding="utf-8")
+        marker = 'authority_semantics = "non-authoritative-diagnostic"'
+        self.assertIn(marker, source)
+        result = self.run_verifier(
+            source.replace(marker, 'authority_semantics = "authoritative"', 1)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be a non-authoritative diagnostic", result.stderr)
+
+    def test_suppressed_row_consumers_must_tolerate_under_emission(self) -> None:
+        source = REGISTRY.read_text(encoding="utf-8")
+        marker = (
+            'under_emission_semantics = '
+            '"consumer-tolerates-conservative-under-emission"'
+        )
+        self.assertIn(marker, source)
+        result = self.run_verifier(
+            source.replace(marker, 'under_emission_semantics = "forbidden"', 1)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must tolerate conservative under-emission", result.stderr)
+
+    def test_recovery_bearing_row_must_remain_authoritative(self) -> None:
+        source = REGISTRY.read_text(encoding="utf-8")
+        marker = 'authority_semantics = "authoritative"'
+        self.assertIn(marker, source)
+        result = self.run_verifier(
+            source.replace(
+                marker, 'authority_semantics = "non-authoritative-diagnostic"', 1
+            )
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must remain authoritative", result.stderr)
+
     def test_identity_type_excludes_forbidden_volatile_fields(self) -> None:
         result = self.run_verifier()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

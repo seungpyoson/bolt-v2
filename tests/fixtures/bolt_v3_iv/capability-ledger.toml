@@ -2960,14 +2960,6 @@ seed_family = "data_actor_subscription"
 classification = "supported"
 
 [[surfaces]]
-surface_id = "nt.crates.data.src.option_chains.manager.fn"
-evidence_path = "crates/data/src/option_chains/manager.rs"
-symbol = "Fn"
-matched_terms = ["chain", "option"]
-seed_family = "data_actor_subscription"
-classification = "supported"
-
-[[surfaces]]
 surface_id = "nt.patches.pyo3_stub_gen.src.pyproject.stub_gen_config"
 evidence_path = "patches/pyo3-stub-gen/src/pyproject.rs"
 symbol = "stub_gen_config"

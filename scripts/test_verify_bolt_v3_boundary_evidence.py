@@ -21,7 +21,27 @@ from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
 UNRESOLVABLE_SHA = "1" * 40
-EXPECTED_NT_REV = "d636f17604cdbddc28ad40e0e15720e2d19bf860"
+
+
+def fixture_nt_revision() -> str:
+    manifest = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    dependencies = manifest.get("dependencies", {})
+    revisions = {
+        specification.get("rev")
+        for specification in dependencies.values()
+        if isinstance(specification, dict)
+        and specification.get("git")
+        == "https://github.com/seungpyoson/nautilus_trader.git"
+        and isinstance(specification.get("rev"), str)
+    }
+    if len(revisions) != 1:
+        raise AssertionError(
+            "root Cargo.toml must expose exactly one canonical NT test-fixture revision"
+        )
+    return revisions.pop()
+
+
+EXPECTED_NT_REV = fixture_nt_revision()
 OLD_NT_REV = "0000000000000000000000000000000000000000"
 BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"
@@ -45,8 +65,6 @@ REQUIRED_PIN_SURFACES = (
     "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
-    "scripts/verify_bolt_v3_boundary_evidence.py",
-    "scripts/test_verify_bolt_v3_boundary_evidence.py",
     "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
 )
 
@@ -216,16 +234,6 @@ def clean_files(root: Path) -> None:
         f"| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}` | `LiveExecEngineConfig.qsize` |\n"
         f"- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `{EXPECTED_NT_REV}`\n"
         f"Historical evidence only: `{OLD_NT_REV}`\n",
-    )
-    write(
-        root,
-        "scripts/verify_bolt_v3_boundary_evidence.py",
-        f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
-    )
-    write(
-        root,
-        "scripts/test_verify_bolt_v3_boundary_evidence.py",
-        f'EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
@@ -671,7 +679,7 @@ def test_capture_config_without_workflows_passes_boundary_scan() -> None:
 
 
 def test_pin_census_rejects_each_mismatched_surface() -> None:
-    for surface in REQUIRED_PIN_SURFACES:
+    for surface in REQUIRED_PIN_SURFACES[1:]:
         def mutate(root: Path, surface: str = surface) -> None:
             path = root / surface
             path.write_text(
@@ -680,6 +688,101 @@ def test_pin_census_rejects_each_mismatched_surface() -> None:
             )
 
         assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
+
+
+def test_pin_census_derives_revision_from_root_manifest() -> None:
+    alternate_revision = "2" * 40
+
+    def mutate(root: Path) -> None:
+        for surface in REQUIRED_PIN_SURFACES:
+            path = root / surface
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    EXPECTED_NT_REV, alternate_revision
+                ),
+                encoding="utf-8",
+            )
+
+    assert scan_temp(mutate) == []
+
+
+def test_pin_census_uses_root_revision_to_reject_stale_dependents() -> None:
+    alternate_revision = "2" * 40
+
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                EXPECTED_NT_REV, alternate_revision
+            ),
+            encoding="utf-8",
+        )
+
+    findings = scan_temp(mutate)
+    assert not any(
+        finding.startswith("Cargo.toml: NautilusTrader pin census")
+        for finding in findings
+    ), findings
+    assert_finding(findings, "Cargo.lock: NautilusTrader pin census")
+    assert_finding(
+        findings,
+        "crates/backtesting-vertical-slice/Cargo.toml: NautilusTrader pin census",
+    )
+
+
+def test_pin_census_rejects_ambiguous_binance_revision_in_root_manifest() -> None:
+    alternate_revision = "2" * 40
+
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{alternate_revision}" }}',
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "Cargo.toml: NautilusTrader pin census canonical root manifest must declare "
+        "exactly one shared immutable",
+    )
+
+
+def test_pin_census_rejects_non_commit_root_revision() -> None:
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                EXPECTED_NT_REV, "not-an-immutable-commit"
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "Cargo.toml: NautilusTrader pin census canonical root manifest must declare "
+        "exactly one shared immutable",
+    )
+
+
+def test_pin_census_checks_binance_dependency_against_derived_revision() -> None:
+    def mutate(root: Path) -> None:
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                'nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "not-an-immutable-commit" }',
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "Cargo.toml: NautilusTrader pin census dependencies.nautilus-binance "
+        "must use",
+    )
 
 
 def test_doctrine_pin_census_keeps_full_audit_revision_separate() -> None:
@@ -809,7 +912,11 @@ def test_manifest_pin_census_rejects_hidden_mixed_and_malformed_sources() -> Non
 
         findings = scan_temp(mutate)
         assert_finding(findings, "Cargo.toml: NautilusTrader pin census")
-        if label not in str(findings) and "nautilus-core" not in str(findings):
+        if (
+            label not in str(findings)
+            and "nautilus-core" not in str(findings)
+            and "exactly one shared immutable" not in str(findings)
+        ):
             raise AssertionError((label, findings))
 
 
@@ -1119,11 +1226,11 @@ def test_pin_census_accepts_tracked_workspace_inherited_nt_dependency() -> None:
 
 
 def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> None:
-    def mutate(root: Path) -> None:
-        for manifest in (
-            "Cargo.toml",
-            "crates/backtesting-vertical-slice/Cargo.toml",
-        ):
+    for manifest in (
+        "Cargo.toml",
+        "crates/backtesting-vertical-slice/Cargo.toml",
+    ):
+        def mutate(root: Path, manifest: str = manifest) -> None:
             path = root / manifest
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
@@ -1133,12 +1240,10 @@ def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> No
                 encoding="utf-8",
             )
 
-    findings = scan_temp(mutate)
-    assert_finding(findings, "Cargo.toml: NautilusTrader pin census")
-    assert_finding(
-        findings,
-        "crates/backtesting-vertical-slice/Cargo.toml: NautilusTrader pin census",
-    )
+        assert_finding(
+            scan_temp(mutate),
+            f"{manifest}: NautilusTrader pin census",
+        )
 
 
 def test_lock_pin_census_accepts_reordered_package_fields() -> None:
@@ -2367,16 +2472,8 @@ def test_text_pin_census_rejects_comment_and_expression_decoys() -> None:
             f'nautilus_trader_revision: "{OLD_NT_REV}"\n',
             encoding="utf-8",
         )
-        verifier = root / "scripts/verify_bolt_v3_boundary_evidence.py"
-        verifier.write_text(
-            f'# EXPECTED_NT_REV = "{EXPECTED_NT_REV}"\n'
-            f'EXPECTED_NT_REV = "{OLD_NT_REV}"\n',
-            encoding="utf-8",
-        )
-
     findings = scan_temp(mutate)
     assert_finding(findings, "nt-owned-name-audit.yaml: NautilusTrader pin census")
-    assert_finding(findings, "verify_bolt_v3_boundary_evidence.py: NautilusTrader pin census")
 
 
 def test_runtime_contract_pin_census_rejects_wrong_section_decoy() -> None:

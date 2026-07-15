@@ -19247,7 +19247,7 @@ kind = '''string'''
 literal = '''"no-target-configured"'''
 context = '''"ops_launch_target_verify": "no-target-configured",'''
 classification = '''ops_launch_target_verify_log_outcome'''
-reason = '''Stable JSON log value reporting that no deploy target was configured and TargetVerify degraded; a diagnostic log token, not an operator runtime value.'''
+reason = '''Stable JSON log value reporting that no observable deploy target was configured; ops status keeps this diagnostic while the launch caller rejects it before secrets or Start. It is a diagnostic log token, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/main.rs'''

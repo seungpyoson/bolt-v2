@@ -497,8 +497,8 @@ struct OpsLaunchContext {
     resolved_secrets: Option<ResolvedBoltV3Secrets>,
     /// Host facts observed by the `TargetVerify` stage, threaded forward so the
     /// `Start` stage can record them in the durable launch identity. `None`
-    /// until `TargetVerify` runs, and stays `None` when no deploy target is
-    /// configured (no host was observed).
+    /// until `TargetVerify` proves an observable match. A missing observable
+    /// target leaves this `None` and fails the launch before later stages.
     observed_host_facts: Option<ObservedHostFacts>,
 }
 
@@ -1070,9 +1070,8 @@ enum IntendedShaStatus {
 enum StateAdvisory {
     /// Installed binary == intended, the recorded launch identity matches the
     /// installed binary / requested profile / current config bundle, AND the
-    /// running host is the configured deploy target (or no target is
-    /// configured). Reflects the last recorded launch, not live process
-    /// liveness (that is systemd's concern).
+    /// running host is the configured deploy target. Reflects the last recorded
+    /// launch, not live process liveness (that is systemd's concern).
     NoOp,
     /// Installed binary == intended but the recorded launch identity is absent or
     /// diverges (binary, profile, or config bundle), so a relaunch is needed.
@@ -1191,9 +1190,9 @@ fn intended_sha_status(intended: Option<&str>, installed: Option<&str>) -> Inten
 /// Classifies the installed-vs-intended SHA via `intended_sha_status` (the single
 /// owner of that truth-table), layers the launch-identity liveness check on top,
 /// and downgrades to `Unknown` whenever the deploy target cannot be confirmed
-/// (mismatched / unobservable host) or the config is unavailable — so `NoOp` is
-/// only ever reported when the running host is the configured (or unconfigured)
-/// target.
+/// (absent / mismatched / unobservable host) or the config is unavailable — so
+/// actionable guidance is reported only when the running host is confirmed as
+/// the configured target.
 fn derive_state_advisory(
     intended: Option<&str>,
     installed: Option<&str>,
@@ -1207,10 +1206,7 @@ fn derive_state_advisory(
     // recommend any action -> `Unknown`. Gating ABOVE the SHA check ensures a
     // SHA mismatch on the wrong / unobservable host does not surface a
     // misleading `deploy-needed` next to `deploy_target: mismatched`.
-    let host_confirmed = matches!(
-        deploy_target,
-        DeployTargetStatus::Matched | DeployTargetStatus::NoTargetConfigured
-    );
+    let host_confirmed = matches!(deploy_target, DeployTargetStatus::Matched);
     if !host_confirmed
         || matches!(
             launch_identity,
@@ -1903,8 +1899,8 @@ struct SecretCheckReport {
 /// secrets or runtime side effects. Reads `deploy.toml` from `config_root`
 /// (a separate load path from the live-config bundle), observes host facts
 /// over IMDSv2 only when a gating binding is configured, and fails closed on
-/// a mismatch or an unobservable host. An unconfigured target degrades to a
-/// successful no-op so the lane works before any instance is provisioned.
+/// a missing observable binding, mismatch, or unobservable host. Only an
+/// observable match may advance toward secrets and Start.
 fn run_loaded_target_verify(
     config_root: &Path,
     source: &dyn HostFactsSource,
@@ -1932,9 +1928,10 @@ fn run_loaded_target_verify(
     };
     println!("{}", serde_json::to_string(&log)?);
     match verification.outcome {
-        TargetVerifyOutcome::NoTargetConfigured | TargetVerifyOutcome::Matched => {
-            Ok(verification.observed_host_facts)
-        }
+        TargetVerifyOutcome::NoTargetConfigured => Err(
+            "deploy target verification failed: no observable deploy target is configured".into(),
+        ),
+        TargetVerifyOutcome::Matched => Ok(verification.observed_host_facts),
         TargetVerifyOutcome::Mismatched(mismatches) => Err(format!(
             "deploy target verification failed: {} configured field(s) do not match the running host",
             mismatches.len()
@@ -2463,144 +2460,113 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ops_launch_target_verify_stage_degrades_when_no_deploy_toml() {
-        // Dispatch guard for the TargetVerify arm of `run_ops_launch_stage`:
-        // a `config_root` with no `deploy.toml` exercises the dispatch arm and
-        // the `NoTargetConfigured => Ok(())` degrade WITHOUT reaching the real
-        // IMDS endpoint (no gating binding means the host is never observed),
-        // so the test is hermetic — no 169.254.x network call.
-        // The `Mismatched => Err` and observe-error fail-closed exits of
-        // `run_loaded_target_verify` are pinned directly by
-        // `run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target`
-        // and `run_loaded_target_verify_errors_when_host_unobservable_for_configured_target`.
+    fn exercise_target_verify_in_launch_chain(
+        deploy_toml: Option<&str>,
+        source: FakeHostFactsSource,
+    ) -> (
+        Result<(), Box<dyn std::error::Error>>,
+        Vec<OpsLaunchStage>,
+        Option<ObservedHostFacts>,
+    ) {
         let temp = tempfile::tempdir().expect("tempdir should create");
+        if let Some(contents) = deploy_toml {
+            fs::write(temp.path().join("deploy.toml"), contents)
+                .expect("deploy.toml fixture should write");
+        }
         let mut context = OpsLaunchContext::new(
             "fixture-profile".to_string(),
             temp.path().to_path_buf(),
-            Box::new(FakeHostFactsSource::erroring()),
+            Box::new(source),
         );
+        let mut visited = Vec::new();
 
-        run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context).expect(
-            "target-verify stage must degrade to Ok when no deploy.toml configures a target",
-        );
-        assert!(
-            context.observed_host_facts.is_none(),
-            "an unconfigured target must observe no host facts (no host was queried)"
-        );
-    }
-
-    #[test]
-    fn ops_launch_target_verify_stage_uses_injected_host_facts_source() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        fs::write(
-            temp.path().join("deploy.toml"),
-            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
-        )
-        .expect("deploy.toml fixture should write");
-        let expected = ObservedHostFacts {
-            region: Some("region-x".to_string()),
-            availability_zone: Some("region-x-zone-a".to_string()),
-            instance_id: Some("instance-target".to_string()),
-        };
-        let mut context = OpsLaunchContext::new(
-            "fixture-profile".to_string(),
-            temp.path().to_path_buf(),
-            Box::new(FakeHostFactsSource::facts(expected.clone())),
-        );
-
-        run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context)
-            .expect("target-verify stage must use the injected source for configured targets");
-
-        assert_eq!(context.observed_host_facts, Some(expected));
-    }
-
-    #[test]
-    fn run_loaded_target_verify_returns_observed_facts_for_matching_binding() {
-        // A configured gating binding (deploy.toml) plus a source returning the
-        // matching facts must thread those facts back to the caller, so the
-        // launch identity can record where it launched. Injecting the fake source
-        // keeps the test hermetic — no IMDS network call.
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        std::fs::write(
-            temp.path().join("deploy.toml"),
-            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
-        )
-        .expect("deploy.toml fixture should write");
-        let expected = ObservedHostFacts {
-            region: Some("region-x".to_string()),
-            availability_zone: Some("region-x-zone-a".to_string()),
-            instance_id: Some("instance-target".to_string()),
-        };
-        let source = FakeHostFactsSource::facts(expected.clone());
-
-        let observed = run_loaded_target_verify(temp.path(), &source)
-            .expect("matching facts must verify and thread the observed facts back");
-
-        assert_eq!(observed, Some(expected));
-    }
-
-    #[test]
-    fn run_loaded_target_verify_returns_none_when_no_deploy_toml() {
-        // No deploy.toml means no gating binding, so the host is never observed:
-        // the verifier degrades to `Ok(None)` without touching the fake source.
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let source = FakeHostFactsSource::erroring();
-
-        let observed = run_loaded_target_verify(temp.path(), &source)
-            .expect("an unconfigured target must degrade to Ok(None), never error");
-
-        assert!(
-            observed.is_none(),
-            "an unconfigured target must observe no host facts"
-        );
-    }
-
-    #[test]
-    fn run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target() {
-        // Fail-closed launch gate: a configured gating binding whose value
-        // differs from the observed host must abort the launch (Err), never
-        // silently proceed. Pins the `Mismatched => Err` arm of
-        // `run_loaded_target_verify`; flipping that arm to `Ok(None)` makes this
-        // test fail. The injected fake source keeps it hermetic (no IMDS call).
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        std::fs::write(
-            temp.path().join("deploy.toml"),
-            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
-        )
-        .expect("deploy.toml fixture should write");
-        let source = FakeHostFactsSource::facts(ObservedHostFacts {
-            region: Some("region-x".to_string()),
-            availability_zone: Some("region-x-zone-a".to_string()),
-            instance_id: Some("instance-other".to_string()),
+        let result = run_ops_launch_chain_with(|stage| {
+            visited.push(stage);
+            if stage == OpsLaunchStage::TargetVerify {
+                run_ops_launch_stage(stage, &mut context)
+            } else {
+                Ok(())
+            }
         });
 
-        let error = run_loaded_target_verify(temp.path(), &source)
-            .expect_err("a configured target that does not match the host must fail closed");
-
-        assert!(
-            error.to_string().contains("do not match the running host"),
-            "the abort message must name the host mismatch: {error}"
-        );
+        (result, visited, context.observed_host_facts)
     }
 
     #[test]
-    fn run_loaded_target_verify_errors_when_host_unobservable_for_configured_target() {
-        // Fail-closed on an unobservable host: with a gating binding configured,
-        // an erroring host-facts source must abort the launch (Err propagated
-        // from `verify_deploy_target`), never degrade to `Ok(None)`. Without a
-        // gating binding the source is never consulted, so this fail-closed path
-        // is only reachable with a configured target.
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        std::fs::write(
-            temp.path().join("deploy.toml"),
-            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
-        )
-        .expect("deploy.toml fixture should write");
-        let source = FakeHostFactsSource::erroring();
+    fn ops_launch_target_verify_rejects_every_unproven_target_before_sensitive_stages() {
+        let configured_target =
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n";
+        let cases = [
+            ("absent deploy.toml", None, FakeHostFactsSource::erroring()),
+            (
+                "empty target",
+                Some("[target]\n"),
+                FakeHostFactsSource::erroring(),
+            ),
+            (
+                "name-tag-only target",
+                Some("[target]\nname_tag = \"diagnostic-only\"\n"),
+                FakeHostFactsSource::erroring(),
+            ),
+            (
+                "unobservable target",
+                Some(configured_target),
+                FakeHostFactsSource::erroring(),
+            ),
+            (
+                "mismatched target",
+                Some(configured_target),
+                FakeHostFactsSource::facts(ObservedHostFacts {
+                    region: Some("region-x".to_string()),
+                    availability_zone: Some("region-x-zone-a".to_string()),
+                    instance_id: Some("instance-other".to_string()),
+                }),
+            ),
+        ];
 
-        run_loaded_target_verify(temp.path(), &source)
-            .expect_err("an unobservable host with a configured target must fail closed");
+        for (case, deploy_toml, source) in cases {
+            let (result, visited, observed_host_facts) =
+                exercise_target_verify_in_launch_chain(deploy_toml, source);
+
+            let error = result.expect_err(case);
+            let error_text = error.to_string();
+            assert!(
+                error_text.contains("deploy target") || error_text.contains("deploy host facts"),
+                "{case} must fail with a target-specific diagnostic, got: {error}"
+            );
+            assert_eq!(
+                visited,
+                vec![OpsLaunchStage::VerifyConfig, OpsLaunchStage::TargetVerify],
+                "{case} must stop the real launch chain at TargetVerify"
+            );
+            assert!(
+                !visited.contains(&OpsLaunchStage::SecretsCheck)
+                    && !visited.contains(&OpsLaunchStage::SecretsResolve)
+                    && !visited.contains(&OpsLaunchStage::Start),
+                "{case} must not reach secrets or Start: {visited:?}"
+            );
+            assert!(
+                observed_host_facts.is_none(),
+                "a rejected target must not be threaded toward Start"
+            );
+        }
+    }
+
+    #[test]
+    fn ops_launch_target_verify_match_advances_and_returns_observed_facts() {
+        let expected = ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: Some("region-x-zone-a".to_string()),
+            instance_id: Some("instance-target".to_string()),
+        };
+        let (result, visited, observed_host_facts) = exercise_target_verify_in_launch_chain(
+            Some("[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n"),
+            FakeHostFactsSource::facts(expected.clone()),
+        );
+
+        result.expect("an observable matching target must advance through the launch chain");
+        assert_eq!(visited.as_slice(), OPS_LAUNCH_STAGE_CHAIN);
+        assert_eq!(observed_host_facts, Some(expected));
     }
 
     #[test]
@@ -3267,7 +3233,11 @@ mod tests {
 
         let status = deploy_target_status(temp.path(), &FakeHostFactsSource::erroring());
 
-        assert!(matches!(status, DeployTargetStatus::NoTargetConfigured));
+        assert!(matches!(&status, DeployTargetStatus::NoTargetConfigured));
+        assert_eq!(
+            serde_json::to_value(&status).expect("deploy target status must serialize")["status"],
+            "no-target-configured"
+        );
     }
 
     #[test]
@@ -3350,7 +3320,7 @@ mod tests {
                 None,
                 Some(sha.as_str()),
                 &LaunchIdentityStatus::Absent,
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::Unknown
         );
@@ -3364,7 +3334,7 @@ mod tests {
                 Some(sha.as_str()),
                 None,
                 &LaunchIdentityStatus::Absent,
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::Unknown
         );
@@ -3377,7 +3347,7 @@ mod tests {
                 Some("not-a-sha"),
                 Some(well_formed_git_sha('a').as_str()),
                 &LaunchIdentityStatus::Absent,
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::Unknown
         );
@@ -3390,23 +3360,9 @@ mod tests {
                 Some(well_formed_git_sha('a').as_str()),
                 Some(well_formed_git_sha('b').as_str()),
                 &present_launch_identity(Some(true), true, true),
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::DeployNeeded
-        );
-    }
-
-    #[test]
-    fn derive_state_advisory_reports_no_op_when_installed_matches_and_identity_live() {
-        let sha = well_formed_git_sha('a');
-        assert_eq!(
-            derive_state_advisory(
-                Some(sha.as_str()),
-                Some(sha.as_str()),
-                &present_launch_identity(Some(true), true, true),
-                &DeployTargetStatus::NoTargetConfigured,
-            ),
-            StateAdvisory::NoOp
         );
     }
 
@@ -3418,7 +3374,7 @@ mod tests {
                 Some(sha.as_str()),
                 Some(sha.as_str()),
                 &LaunchIdentityStatus::Absent,
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::LaunchNeeded
         );
@@ -3439,7 +3395,7 @@ mod tests {
                     Some(sha.as_str()),
                     Some(sha.as_str()),
                     &identity,
-                    &DeployTargetStatus::NoTargetConfigured,
+                    &DeployTargetStatus::Matched,
                 ),
                 StateAdvisory::LaunchNeeded
             );
@@ -3459,14 +3415,14 @@ mod tests {
                 Some(sha.as_str()),
                 Some(sha.as_str()),
                 &present_launch_identity(Some(true), true, false),
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::LaunchNeeded
         );
     }
 
     #[test]
-    fn derive_state_advisory_reports_no_op_when_host_matches_configured_target() {
+    fn derive_state_advisory_reports_no_op_when_host_matches_target_and_identity_is_live() {
         let sha = well_formed_git_sha('a');
         assert_eq!(
             derive_state_advisory(
@@ -3477,6 +3433,42 @@ mod tests {
             ),
             StateAdvisory::NoOp
         );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_without_an_observable_target() {
+        let intended = well_formed_git_sha('a');
+        let different_installed = well_formed_git_sha('b');
+        let cases = [
+            (
+                "would otherwise require deploy",
+                different_installed.as_str(),
+                present_launch_identity(Some(true), true, true),
+            ),
+            (
+                "would otherwise require launch",
+                intended.as_str(),
+                LaunchIdentityStatus::Absent,
+            ),
+            (
+                "would otherwise be no-op",
+                intended.as_str(),
+                present_launch_identity(Some(true), true, true),
+            ),
+        ];
+
+        for (case, installed, launch_identity) in cases {
+            assert_eq!(
+                derive_state_advisory(
+                    Some(intended.as_str()),
+                    Some(installed),
+                    &launch_identity,
+                    &DeployTargetStatus::NoTargetConfigured,
+                ),
+                StateAdvisory::Unknown,
+                "{case} must remain non-actionable without a confirmed host"
+            );
+        }
     }
 
     #[test]
@@ -3525,7 +3517,7 @@ mod tests {
                 Some(sha.as_str()),
                 Some(sha.as_str()),
                 &LaunchIdentityStatus::SkippedConfigUnavailable,
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::Unknown
         );
@@ -3569,7 +3561,7 @@ mod tests {
                 Some(well_formed_git_sha('a').as_str()),
                 Some(well_formed_git_sha('b').as_str()),
                 &LaunchIdentityStatus::SkippedConfigUnavailable,
-                &DeployTargetStatus::NoTargetConfigured,
+                &DeployTargetStatus::Matched,
             ),
             StateAdvisory::Unknown
         );

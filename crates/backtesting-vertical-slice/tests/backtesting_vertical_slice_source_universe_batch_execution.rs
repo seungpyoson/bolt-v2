@@ -1788,6 +1788,109 @@ fn prepare_batch_rejects_existing_symlinked_operator_output_before_fetch() {
     result.expect_err("existing symlinked operator output must fail preflight");
 }
 
+#[cfg(unix)]
+#[test]
+fn selected_output_preflight_failure_honors_continue_on_error() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0, b"accepted object zero".to_vec()),
+        (1, b"accepted object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read execution pack"))
+            .expect("parse execution pack");
+    fs::create_dir_all(&fixture.output_dir).expect("create output root");
+    let outside = temp_dir.path().join("outside-output");
+    fs::create_dir_all(&outside).expect("create outside output");
+    std::os::unix::fs::symlink(
+        &outside,
+        fixture.output_dir.join(&pack.records[0].operator_run_id),
+    )
+    .expect("create selected output symlink");
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = RecordingRunner::default();
+
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: true,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("selected output preflight failure is recorded");
+
+    assert_eq!(report.failed_record_count, 1);
+    assert_eq!(report.completed_record_count, 1);
+    assert_eq!(report.failures[0].sequence, 0);
+    assert_eq!(*fetch_calls.lock().expect("fetch calls"), vec![1]);
+}
+
+#[cfg(unix)]
+#[test]
+fn output_symlink_swap_during_fetch_is_rejected_before_runner() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let object_bytes = b"accepted object bytes".to_vec();
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read execution pack"))
+            .expect("parse execution pack");
+    let claimed_output = fixture.output_dir.join(&pack.records[0].operator_run_id);
+    let outside = temp_dir.path().join("outside-output");
+    fs::create_dir_all(&outside).expect("create outside output");
+    let mut fetcher = OutputSymlinkSwapFetcher {
+        object_bytes,
+        claimed_output,
+        outside,
+    };
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    );
+
+    result.expect_err("output symlink swap must reject before operator runner");
+    assert!(runner.calls.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn output_root_replacement_during_fetch_is_rejected_before_runner() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut fetcher = OutputRootSwapFetcher {
+        object_bytes: b"accepted object bytes".to_vec(),
+        output_root: fixture.output_dir.clone(),
+        displaced_root: temp_dir.path().join("displaced-output-root"),
+    };
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    );
+
+    result.expect_err("output-root replacement must reject before operator runner");
+    assert!(runner.calls.is_empty());
+}
+
 // ── Fix 1: path-traversal class — sha256 validation at the consume boundary ──
 
 /// A pack record with a `../`-prefixed sha256 field must be rejected at pack
@@ -2506,6 +2609,40 @@ impl SourceUniverseObjectFetcher for MutatingControlArtifactFetcher {
     }
 }
 
+#[cfg(unix)]
+struct OutputSymlinkSwapFetcher {
+    object_bytes: Vec<u8>,
+    claimed_output: PathBuf,
+    outside: PathBuf,
+}
+
+#[cfg(unix)]
+impl SourceUniverseObjectFetcher for OutputSymlinkSwapFetcher {
+    fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+        fs::remove_dir(&self.claimed_output).expect("remove atomically claimed output directory");
+        std::os::unix::fs::symlink(&self.outside, &self.claimed_output)
+            .expect("replace claimed output with symlink during fetch");
+        Ok(self.object_bytes.clone())
+    }
+}
+
+#[cfg(unix)]
+struct OutputRootSwapFetcher {
+    object_bytes: Vec<u8>,
+    output_root: PathBuf,
+    displaced_root: PathBuf,
+}
+
+#[cfg(unix)]
+impl SourceUniverseObjectFetcher for OutputRootSwapFetcher {
+    fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+        fs::rename(&self.output_root, &self.displaced_root)
+            .expect("displace leased output root during fetch");
+        fs::create_dir(&self.output_root).expect("replace leased output root during fetch");
+        Ok(self.object_bytes.clone())
+    }
+}
+
 impl SourceUniverseObjectFetcher for StaticFetcher {
     fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
         assert_eq!(record.source_url, self.expected_source_url);
@@ -3057,6 +3194,15 @@ fn write_n_record_pack(
 ) {
     let pack_dir = pack_path.parent().expect("pack path has parent");
     let committed = committed_record_zero_controls();
+    let source_bindings_path = pack_dir.join("source-bindings.toml");
+    fs::copy(
+        repo_root().join(
+            "specs/023-nt-research-analytics-platform/reference/\
+             backfill-source-bindings.v1.toml",
+        ),
+        &source_bindings_path,
+    )
+    .expect("copy pack-local source-binding registry");
     let mut records = Vec::with_capacity(objects.len());
 
     for (record_index, (sequence, object_bytes)) in objects.iter().enumerate() {
@@ -3083,6 +3229,7 @@ fn write_n_record_pack(
         let accepted_tranche_id = format!("accepted-tranche-synthetic-{sequence}");
 
         let mut run_spec = committed.run_spec.clone();
+        run_spec.source_bindings_path = PathBuf::from("source-bindings.toml");
         run_spec.manifest.run_id.clone_from(&operator_run_id);
         run_spec.manifest.output_prefix = format!(
             "{}-synthetic-{sequence}",

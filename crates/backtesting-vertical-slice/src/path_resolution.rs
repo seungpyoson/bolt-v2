@@ -67,7 +67,7 @@ pub fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
 ///
 /// Returns an error for absolute paths, parent traversal, missing inputs, a
 /// repo-relative identity without an owning marker root, or a canonical path
-/// outside both the pack directory and its owning repository.
+/// outside the single authoritative root selected by the path class.
 pub fn resolve_pack_control_path(pack_base_dir: &Path, path: &Path) -> Result<PathBuf> {
     ensure!(
         !path.is_absolute(),
@@ -92,7 +92,6 @@ pub fn resolve_pack_control_path(pack_base_dir: &Path, path: &Path) -> Result<Pa
         )
     })?;
     let canonical_repo_root = marker_repo_root_from_base_dir(&canonical_pack_dir)
-        .or_else(|| repo_root_dirs().into_iter().next())
         .map(|root| {
             root.canonicalize()
                 .with_context(|| format!("canonicalize repository root {}", root.display()))
@@ -116,19 +115,18 @@ pub fn resolve_pack_control_path(pack_base_dir: &Path, path: &Path) -> Result<Pa
     let canonical_candidate = candidate
         .canonicalize()
         .with_context(|| format!("canonicalize pack control path {}", candidate.display()))?;
-    let contained_by_pack = canonical_candidate.starts_with(&canonical_pack_dir);
-    let contained_by_repo = canonical_repo_root
-        .as_ref()
-        .is_some_and(|root| canonical_candidate.starts_with(root));
-    ensure!(
-        contained_by_pack || contained_by_repo,
-        "pack control path {} resolves outside pack directory {}{}",
-        path.display(),
-        canonical_pack_dir.display(),
+    let expected_root = if looks_repo_relative(path) || looks_repo_scratch_path(path) {
         canonical_repo_root
             .as_ref()
-            .map(|root| format!(" and repository root {}", root.display()))
-            .unwrap_or_default()
+            .expect("repo-relative branch established a marker root")
+    } else {
+        &canonical_pack_dir
+    };
+    ensure!(
+        canonical_candidate.starts_with(expected_root),
+        "pack control path {} resolves outside its authoritative root {}",
+        path.display(),
+        expected_root.display()
     );
     Ok(canonical_candidate)
 }
@@ -191,6 +189,38 @@ pub fn resolve_contained_output_component(output_root: &Path, component: &str) -
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
         Err(error) => {
             Err(error).with_context(|| format!("inspect operator output {}", candidate.display()))
+        }
+    }
+}
+
+/// Atomically claim an absent operator output directory, or validate an
+/// already-existing real directory, below the canonical batch output root.
+///
+/// This establishes the strongest pathname claim available through `std`.
+/// Callers must still revalidate after long-running external work because
+/// downstream NautilusTrader/operator APIs reopen artifacts by pathname rather
+/// than accepting a directory handle.
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve_contained_output_component`], plus any
+/// error creating an absent output directory.
+pub fn claim_contained_output_component(output_root: &Path, component: &str) -> Result<PathBuf> {
+    validate_portable_path_component("operator_run_id", component)?;
+    let canonical_root = output_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize batch output directory {}",
+            output_root.display()
+        )
+    })?;
+    let candidate = canonical_root.join(component);
+    match std::fs::create_dir(&candidate) {
+        Ok(()) => resolve_contained_output_component(&canonical_root, component),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            resolve_contained_output_component(&canonical_root, component)
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("claim operator output {}", candidate.display()))
         }
     }
 }
@@ -470,6 +500,18 @@ mod tests {
         let error = resolve_pack_control_path(temp_dir.path(), Path::new("missing-control.json"))
             .expect_err("missing pack control must fail closed");
         assert!(error.to_string().contains("canonicalize pack control path"));
+    }
+
+    #[test]
+    fn markerless_pack_cannot_borrow_an_ambient_repo_root() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let error = resolve_pack_control_path(temp_dir.path(), Path::new("specs/control.json"))
+            .expect_err("markerless pack must not borrow cwd repository authority");
+        assert!(
+            error
+                .to_string()
+                .contains("no marker-bearing repository root")
+        );
     }
 
     #[test]

@@ -20,6 +20,9 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use crate::atomic_artifact_write::atomic_write;
 use crate::backfill_accepted_tranche::BackfillAcceptedTrancheManifest;
 use crate::backfill_execution_plan::{
@@ -28,7 +31,8 @@ use crate::backfill_execution_plan::{
 };
 use crate::catalog_projection::logical_catalog_hash;
 use crate::path_resolution::{
-    resolve_contained_output_component, resolve_pack_control_path, validate_portable_path_component,
+    claim_contained_output_component, resolve_contained_output_component,
+    resolve_pack_control_path, validate_portable_path_component,
 };
 use crate::{
     operator::{
@@ -412,7 +416,13 @@ where
     // report is identical for the same outcomes.
     let mut slots: Vec<Option<RecordSlot>> = (0..plan.work_items.len()).map(|_| None).collect();
     for (slot_index, work_item) in plan.work_items.iter().enumerate() {
-        let slot = process_work_item(work_item, output_dir, &config, fetcher, runner);
+        let slot = process_work_item(
+            work_item,
+            &owned_plan.output_root_lease,
+            &config,
+            fetcher,
+            runner,
+        );
         let stop = !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_));
         slots[slot_index] = Some(slot);
         if stop {
@@ -475,6 +485,7 @@ where
             let config = &config;
             let fetcher_factory = &fetcher_factory;
             let runner_factory = &runner_factory;
+            let output_root_lease = &owned_plan.output_root_lease;
             handles.push(scope.spawn(move || -> Result<()> {
                 let mut fetcher = fetcher_factory().context("construct batch worker fetcher")?;
                 let mut runner = runner_factory().context("construct batch worker runner")?;
@@ -487,8 +498,13 @@ where
                         break;
                     }
                     let work_item = &work_items[index];
-                    let slot =
-                        process_work_item(work_item, output_dir, config, &mut fetcher, &mut runner);
+                    let slot = process_work_item(
+                        work_item,
+                        output_root_lease,
+                        config,
+                        &mut fetcher,
+                        &mut runner,
+                    );
                     if !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_)) {
                         stop_flag.store(true, Ordering::SeqCst);
                     }
@@ -533,6 +549,7 @@ enum BatchWorkItem<'pack> {
     NeedsWork {
         record: &'pack SourceUniverseExecutionPackRecord,
         control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
+        output_claim: &'pack BatchOutputChildClaim,
     },
 }
 
@@ -551,6 +568,169 @@ struct StoppedRecord {
 
 struct BatchPlan<'pack> {
     work_items: Vec<BatchWorkItem<'pack>>,
+}
+
+/// Held identity for the trusted, exclusively controlled local batch output
+/// root. On Unix the open directory handle's device/inode is compared with the
+/// current pathname before and after long-running work, detecting replacement.
+struct BatchOutputRootLease {
+    canonical_path: PathBuf,
+    handle: fs::File,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl BatchOutputRootLease {
+    fn acquire(output_dir: &Path) -> Result<Self> {
+        let canonical_path = output_dir
+            .canonicalize()
+            .with_context(|| format!("canonicalize batch output root {}", output_dir.display()))?;
+        let handle = fs::File::open(&canonical_path)
+            .with_context(|| format!("open batch output root {}", canonical_path.display()))?;
+        let metadata = handle
+            .metadata()
+            .with_context(|| format!("stat batch output root {}", canonical_path.display()))?;
+        ensure!(
+            metadata.is_dir(),
+            "batch output root {} must be a directory",
+            canonical_path.display()
+        );
+        let lease = Self {
+            canonical_path,
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            handle,
+        };
+        lease.revalidate()?;
+        Ok(lease)
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        let canonical_now = self.canonical_path.canonicalize().with_context(|| {
+            format!(
+                "canonicalize leased batch output root {}",
+                self.canonical_path.display()
+            )
+        })?;
+        ensure!(
+            canonical_now == self.canonical_path,
+            "leased batch output root canonical identity changed from {} to {}",
+            self.canonical_path.display(),
+            canonical_now.display()
+        );
+        let path_metadata = fs::metadata(&self.canonical_path).with_context(|| {
+            format!(
+                "stat leased batch output root path {}",
+                self.canonical_path.display()
+            )
+        })?;
+        let handle_metadata = self.handle.metadata().with_context(|| {
+            format!(
+                "stat held batch output root handle {}",
+                self.canonical_path.display()
+            )
+        })?;
+        ensure!(
+            path_metadata.is_dir() && handle_metadata.is_dir(),
+            "leased batch output root {} is no longer a directory",
+            self.canonical_path.display()
+        );
+        #[cfg(unix)]
+        ensure!(
+            path_metadata.dev() == self.device
+                && path_metadata.ino() == self.inode
+                && handle_metadata.dev() == self.device
+                && handle_metadata.ino() == self.inode,
+            "leased batch output root {} device/inode identity changed",
+            self.canonical_path.display()
+        );
+        Ok(())
+    }
+
+    fn revalidate_child(&self, operator_run_id: &str) -> Result<PathBuf> {
+        self.revalidate()?;
+        resolve_contained_output_component(&self.canonical_path, operator_run_id)
+    }
+}
+
+/// Held identity for one atomically claimed selected output directory.
+struct BatchOutputChildClaim {
+    canonical_path: PathBuf,
+    handle: fs::File,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl BatchOutputChildClaim {
+    fn acquire(root: &BatchOutputRootLease, operator_run_id: &str) -> Result<Self> {
+        root.revalidate()?;
+        let canonical_path =
+            claim_contained_output_component(&root.canonical_path, operator_run_id)?;
+        let handle = fs::File::open(&canonical_path).with_context(|| {
+            format!("open claimed operator output {}", canonical_path.display())
+        })?;
+        let metadata = handle.metadata().with_context(|| {
+            format!("stat claimed operator output {}", canonical_path.display())
+        })?;
+        ensure!(
+            metadata.is_dir(),
+            "claimed operator output {} must be a directory",
+            canonical_path.display()
+        );
+        let claim = Self {
+            canonical_path,
+            handle,
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        };
+        claim.revalidate(root, operator_run_id)?;
+        Ok(claim)
+    }
+
+    fn revalidate(&self, root: &BatchOutputRootLease, operator_run_id: &str) -> Result<PathBuf> {
+        let canonical_now = root.revalidate_child(operator_run_id)?;
+        ensure!(
+            canonical_now == self.canonical_path,
+            "claimed operator output canonical identity changed from {} to {}",
+            self.canonical_path.display(),
+            canonical_now.display()
+        );
+        let path_metadata = fs::metadata(&self.canonical_path).with_context(|| {
+            format!(
+                "stat claimed operator output path {}",
+                self.canonical_path.display()
+            )
+        })?;
+        let handle_metadata = self.handle.metadata().with_context(|| {
+            format!(
+                "stat held operator output handle {}",
+                self.canonical_path.display()
+            )
+        })?;
+        ensure!(
+            path_metadata.is_dir() && handle_metadata.is_dir(),
+            "claimed operator output {} is no longer a directory",
+            self.canonical_path.display()
+        );
+        #[cfg(unix)]
+        ensure!(
+            path_metadata.dev() == self.device
+                && path_metadata.ino() == self.inode
+                && handle_metadata.dev() == self.device
+                && handle_metadata.ino() == self.inode,
+            "claimed operator output {} device/inode identity changed",
+            self.canonical_path.display()
+        );
+        Ok(canonical_now)
+    }
 }
 
 fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Result<()> {
@@ -752,16 +932,7 @@ fn prepare_batch(
         .to_path_buf();
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
-    for record in &pack.records {
-        resolve_contained_output_component(output_dir, &record.operator_run_id).with_context(
-            || {
-                format!(
-                    "validate output containment for pack record {} ({})",
-                    record.sequence, record.operator_run_id
-                )
-            },
-        )?;
-    }
+    let output_root_lease = BatchOutputRootLease::acquire(output_dir)?;
 
     // Resuming into the dir holding the resume report itself would only fail
     // later, at the clean-write report guard (which refuses to overwrite the
@@ -816,6 +987,7 @@ fn prepare_batch(
     let mut verified_artifact_cache = BTreeMap::new();
     let mut verified_registry_cache = BTreeMap::new();
     let mut verified_control_artifacts = BTreeMap::new();
+    let mut verified_output_claims = BTreeMap::new();
     let mut control_artifact_failures = BTreeMap::new();
     for record in pack
         .records
@@ -834,25 +1006,29 @@ fn prepare_batch(
             pack.pack_id,
             record.sequence,
         );
-        let record_output_dir =
-            resolve_contained_output_component(output_dir, &record.operator_run_id).with_context(
-                || {
-                    format!(
-                        "validate selected output containment for pack record {} ({})",
-                        record.sequence, record.operator_run_id
-                    )
-                },
+        let preflight = (|| {
+            let output_claim =
+                BatchOutputChildClaim::acquire(&output_root_lease, &record.operator_run_id)
+                    .with_context(|| {
+                        format!(
+                            "claim selected output for pack record {} ({})",
+                            record.sequence, record.operator_run_id
+                        )
+                    })?;
+            let verified = verify_pack_control_artifacts(
+                &pack,
+                &pack_base_dir,
+                record,
+                &output_claim.canonical_path,
+                &mut verified_artifact_cache,
+                &mut verified_registry_cache,
             )?;
-        match verify_pack_control_artifacts(
-            &pack,
-            &pack_base_dir,
-            record,
-            &record_output_dir,
-            &mut verified_artifact_cache,
-            &mut verified_registry_cache,
-        ) {
-            Ok(verified) => {
+            Ok::<_, anyhow::Error>((verified, output_claim))
+        })();
+        match preflight {
+            Ok((verified, output_claim)) => {
                 verified_control_artifacts.insert(record.sequence, verified);
+                verified_output_claims.insert(record.sequence, output_claim);
             }
             Err(error) if config.continue_on_error => {
                 control_artifact_failures.insert(record.sequence, format!("{error:#}"));
@@ -866,10 +1042,12 @@ fn prepare_batch(
     Ok(OwnedBatchPlan {
         pack,
         verified_control_artifacts,
+        verified_output_claims,
         control_artifact_failures,
         resume_records,
         start_sequence: config.start_sequence,
         record_limit,
+        output_root_lease,
     })
 }
 
@@ -1096,10 +1274,12 @@ fn verify_pack_control_artifact(
 struct OwnedBatchPlan {
     pack: SourceUniverseExecutionPack,
     verified_control_artifacts: BTreeMap<u64, SourceUniverseVerifiedControlArtifacts>,
+    verified_output_claims: BTreeMap<u64, BatchOutputChildClaim>,
     control_artifact_failures: BTreeMap<u64, String>,
     resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
     start_sequence: Option<u64>,
     record_limit: usize,
+    output_root_lease: BatchOutputRootLease,
 }
 
 impl OwnedBatchPlan {
@@ -1138,6 +1318,10 @@ impl OwnedBatchPlan {
                             .verified_control_artifacts
                             .get(&record.sequence)
                             .expect("selected record control artifacts were verified"),
+                        output_claim: self
+                            .verified_output_claims
+                            .get(&record.sequence)
+                            .expect("selected record output was claimed"),
                     },
                 }
             })
@@ -1217,7 +1401,7 @@ fn load_resume_records(
 
 fn process_work_item<F, R>(
     work_item: &BatchWorkItem<'_>,
-    output_dir: &Path,
+    output_root_lease: &BatchOutputRootLease,
     config: &SourceUniverseBatchExecutionConfig,
     fetcher: &mut F,
     runner: &mut R,
@@ -1226,7 +1410,7 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
-    let (record, control_artifacts) = match work_item {
+    let (record, control_artifacts, output_claim) = match work_item {
         BatchWorkItem::PreflightFailed { record, error } => {
             return record_error_slot(
                 record,
@@ -1245,10 +1429,12 @@ where
         BatchWorkItem::NeedsWork {
             record,
             control_artifacts,
-        } => (*record, *control_artifacts),
+            output_claim,
+        } => (*record, *control_artifacts, *output_claim),
     };
 
-    if let Err(error) = resolve_contained_output_component(output_dir, &record.operator_run_id)
+    if let Err(error) = output_claim
+        .revalidate(output_root_lease, &record.operator_run_id)
         .with_context(|| {
             format!(
                 "revalidate output containment before fetch for {}",
@@ -1272,23 +1458,41 @@ where
         return record_error_slot(record, "verify_object", error, config);
     }
 
-    let record_output_dir =
-        match resolve_contained_output_component(output_dir, &record.operator_run_id).with_context(
-            || {
-                format!(
-                    "revalidate output containment after fetch for {}",
-                    record.operator_run_id
-                )
-            },
-        ) {
-            Ok(record_output_dir) => record_output_dir,
-            Err(error) => return record_error_slot(record, "validate_output", error, config),
-        };
+    // Threat boundary: this detects replacement during the potentially long
+    // fetch, but it is not an openat-style capability. `SourceUniverseOperatorRunner::run`
+    // and the NT catalog APIs accept `&Path` and reopen descendants by pathname,
+    // so an actor able to mutate this trusted workspace after this check cannot
+    // be excluded atomically without changing the operator/NT storage API. The
+    // preflight atomic child claim, held root/child identities, and this
+    // post-fetch check reject every drift observable at the available boundary
+    // without pretending otherwise.
+    let record_output_dir = match output_claim
+        .revalidate(output_root_lease, &record.operator_run_id)
+        .with_context(|| {
+            format!(
+                "revalidate output root and child after fetch for {}",
+                record.operator_run_id
+            )
+        }) {
+        Ok(record_output_dir) => record_output_dir,
+        Err(error) => return record_error_slot(record, "validate_output", error, config),
+    };
 
-    let run_output = match runner
+    let run_result = runner
         .run(record, &object_bytes, control_artifacts, &record_output_dir)
-        .with_context(|| format!("run operator {}", record.operator_run_id))
-    {
+        .with_context(|| format!("run operator {}", record.operator_run_id));
+    let record_output_dir = match output_claim
+        .revalidate(output_root_lease, &record.operator_run_id)
+        .with_context(|| {
+            format!(
+                "revalidate output root and child after runner for {}",
+                record.operator_run_id
+            )
+        }) {
+        Ok(record_output_dir) => record_output_dir,
+        Err(error) => return record_error_slot(record, "validate_output", error, config),
+    };
+    let run_output = match run_result {
         Ok(run_output) => run_output,
         Err(error) => return record_error_slot(record, "run_operator", error, config),
     };
@@ -1718,13 +1922,25 @@ mod tests {
                 source_bindings,
             },
         );
+        let output_root_lease = BatchOutputRootLease::acquire(
+            prior.output_dir.parent().expect("prior output has parent"),
+        )
+        .expect("acquire test output-root lease");
+        let mut verified_output_claims = BTreeMap::new();
+        verified_output_claims.insert(
+            0,
+            BatchOutputChildClaim::acquire(&output_root_lease, &prior.operator_run_id)
+                .expect("claim test operator output"),
+        );
         OwnedBatchPlan {
             pack,
             verified_control_artifacts,
+            verified_output_claims,
             control_artifact_failures: BTreeMap::new(),
             resume_records,
             start_sequence: None,
             record_limit: usize::MAX,
+            output_root_lease,
         }
     }
 

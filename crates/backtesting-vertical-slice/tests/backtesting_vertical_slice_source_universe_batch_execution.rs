@@ -3,7 +3,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -16,6 +16,10 @@ use backtesting_vertical_slice::{
         BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
     },
     operator::RunSpec,
+    operator_work_budget::{
+        OperatorWorkBudget, OperatorWorkBudgetClock, OperatorWorkBudgetGuard,
+        OperatorWorkBudgetStage,
+    },
     source_proof::SourceBindingRegistry,
     source_universe_batch_execution::{
         CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
@@ -23,8 +27,10 @@ use backtesting_vertical_slice::{
         SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
         SourceUniverseBatchExecutionRunOutput, SourceUniverseObjectFetcher,
         SourceUniverseOperatorRunner, SourceUniverseVerifiedControlArtifacts,
-        execute_source_universe_batch, execute_source_universe_batch_with_config,
-        execute_source_universe_batch_with_factories, write_source_universe_batch_execution_report,
+        SourceUniverseWorkBudgetGuardFactory, execute_source_universe_batch,
+        execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
+        execute_source_universe_batch_with_guard_factory,
+        write_source_universe_batch_execution_report,
     },
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
@@ -345,6 +351,53 @@ fn continue_on_error_isolates_malformed_runner_output_and_runs_later_record() {
 }
 
 #[test]
+fn expired_fresh_record_never_invokes_runner_and_continue_on_error_progresses() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![
+        (0u64, b"synthetic object zero".to_vec()),
+        (1u64, b"synthetic object one".to_vec()),
+    ];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let clock = Arc::new(BatchFakeClock::default());
+    let guard_factory = BatchFakeGuardFactory {
+        clock: Arc::clone(&clock),
+    };
+    let mut fetcher = ExpiringFirstFetcher {
+        object_bytes_by_sequence: objects.into_iter().collect(),
+        clock,
+    };
+    let mut runner = RecordingRunner::default();
+
+    let report = execute_source_universe_batch_with_guard_factory(
+        "source-universe-batch-synthetic",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(2),
+            continue_on_error: true,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+        &guard_factory,
+    )
+    .expect("expired first record is isolated and the next record progresses");
+
+    assert_eq!(report.failed_record_count, 1);
+    assert_eq!(report.completed_record_count, 1);
+    assert_eq!(report.failures[0].sequence, 0);
+    assert_eq!(report.failures[0].failure_stage, "fetch");
+    assert!(report.failures[0].error.contains("max_wall_seconds"));
+    assert_eq!(runner.calls.len(), 1, "expired record never reaches runner");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00001"
+    );
+}
+
+#[test]
 fn http_source_universe_fetcher_rejects_zero_timeout() {
     match HttpSourceUniverseObjectFetcher::new(Some(0), None) {
         Ok(_) => panic!("zero timeout accepted"),
@@ -366,7 +419,10 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
     let inner_calls = inner.calls();
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
-    let first = fetcher.fetch(&record).expect("first fetch populates cache");
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    let first = fetcher
+        .fetch(&record, &work_budget)
+        .expect("first fetch populates cache");
     assert_eq!(first, object_bytes);
     assert_eq!(
         inner_calls.load(Ordering::SeqCst),
@@ -387,7 +443,9 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
         .any(|entry| entry.file_name() != std::ffi::OsStr::new(&record.selected_object_sha256));
     assert!(!stray_temp, "no temp files left behind after atomic rename");
 
-    let second = fetcher.fetch(&record).expect("second fetch hits cache");
+    let second = fetcher
+        .fetch(&record, &work_budget)
+        .expect("second fetch hits cache");
     assert_eq!(second, object_bytes);
     assert_eq!(
         inner_calls.load(Ordering::SeqCst),
@@ -413,7 +471,7 @@ fn caching_fetcher_corrupt_entry_is_deleted_and_repaired() {
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
     let bytes = fetcher
-        .fetch(&record)
+        .fetch(&record, &OperatorWorkBudgetGuard::unbounded())
         .expect("corrupt entry falls through to inner");
     assert_eq!(bytes, object_bytes);
     assert_eq!(
@@ -439,7 +497,7 @@ fn caching_fetcher_unverified_inner_bytes_never_enter_cache() {
     let inner = CountingFetcher::new(vec![(0, b"wrong inner bytes".to_vec())]);
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
-    let result = fetcher.fetch(&record);
+    let result = fetcher.fetch(&record, &OperatorWorkBudgetGuard::unbounded());
     assert!(result.is_err(), "unverified inner bytes fail the fetch");
     let cache_path = cache_dir.join(&record.selected_object_sha256);
     assert!(
@@ -2670,6 +2728,58 @@ struct StaticFetcher {
     calls: usize,
 }
 
+#[derive(Debug, Default)]
+struct BatchFakeClock {
+    now: Mutex<Duration>,
+}
+
+impl BatchFakeClock {
+    fn advance(&self, elapsed: Duration) {
+        let mut now = self.now.lock().expect("fake clock lock");
+        *now = now.checked_add(elapsed).expect("fake clock overflow");
+    }
+}
+
+impl OperatorWorkBudgetClock for BatchFakeClock {
+    fn now(&self) -> Duration {
+        *self.now.lock().expect("fake clock lock")
+    }
+}
+
+struct BatchFakeGuardFactory {
+    clock: Arc<BatchFakeClock>,
+}
+
+impl SourceUniverseWorkBudgetGuardFactory for BatchFakeGuardFactory {
+    fn create(&self, budget: OperatorWorkBudget) -> anyhow::Result<OperatorWorkBudgetGuard> {
+        OperatorWorkBudgetGuard::with_clock(budget, self.clock.clone())
+    }
+}
+
+struct ExpiringFirstFetcher {
+    object_bytes_by_sequence: std::collections::BTreeMap<u64, Vec<u8>>,
+    clock: Arc<BatchFakeClock>,
+}
+
+impl SourceUniverseObjectFetcher for ExpiringFirstFetcher {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
+        if record.sequence == 0 {
+            let remaining = work_budget
+                .remaining_wall_time(OperatorWorkBudgetStage::Fetch)?
+                .expect("validated backfill guard has a wall deadline");
+            self.clock.advance(remaining);
+        }
+        self.object_bytes_by_sequence
+            .get(&record.sequence)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing bytes for sequence {}", record.sequence))
+    }
+}
+
 struct MutatingControlArtifactFetcher {
     object_bytes: Vec<u8>,
     artifact_path: PathBuf,
@@ -2677,7 +2787,11 @@ struct MutatingControlArtifactFetcher {
 }
 
 impl SourceUniverseObjectFetcher for MutatingControlArtifactFetcher {
-    fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        _record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         fs::write(&self.artifact_path, &self.replacement_bytes)
             .expect("mutate control artifact during fetch");
         Ok(self.object_bytes.clone())
@@ -2693,7 +2807,11 @@ struct OutputSymlinkSwapFetcher {
 
 #[cfg(unix)]
 impl SourceUniverseObjectFetcher for OutputSymlinkSwapFetcher {
-    fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        _record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         fs::remove_dir(&self.claimed_output).expect("remove atomically claimed output directory");
         std::os::unix::fs::symlink(&self.outside, &self.claimed_output)
             .expect("replace claimed output with symlink during fetch");
@@ -2710,7 +2828,11 @@ struct OutputRootSwapFetcher {
 
 #[cfg(unix)]
 impl SourceUniverseObjectFetcher for OutputRootSwapFetcher {
-    fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        _record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         fs::rename(&self.output_root, &self.displaced_root)
             .expect("displace leased output root during fetch");
         fs::create_dir(&self.output_root).expect("replace leased output root during fetch");
@@ -2719,7 +2841,11 @@ impl SourceUniverseObjectFetcher for OutputRootSwapFetcher {
 }
 
 impl SourceUniverseObjectFetcher for StaticFetcher {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         assert_eq!(record.source_url, self.expected_source_url);
         self.calls += 1;
         Ok(self.object_bytes.clone())
@@ -2762,7 +2888,11 @@ impl SequencedFetcher {
 }
 
 impl SourceUniverseObjectFetcher for SequencedFetcher {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         self.calls
             .lock()
             .expect("fetch call log")
@@ -2781,6 +2911,7 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
         object_bytes: &[u8],
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
+        _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         self.calls.push(RunCall {
             operator_run_id: record.operator_run_id.clone(),
@@ -2813,6 +2944,7 @@ impl SourceUniverseOperatorRunner for MalformedFirstCatalogHashRunner {
         _object_bytes: &[u8],
         _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
+        _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         self.calls.push(record.sequence);
         Ok(SourceUniverseBatchExecutionRunOutput {
@@ -2839,6 +2971,7 @@ impl SourceUniverseOperatorRunner for CatalogMutatingRunner {
         _object_bytes: &[u8],
         _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
+        _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         self.calls.push(record.sequence);
         if record.sequence == 0 {
@@ -3552,7 +3685,11 @@ impl CountingFetcher {
 }
 
 impl SourceUniverseObjectFetcher for CountingFetcher {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.object_bytes_by_sequence
             .get(&record.sequence)
@@ -3587,6 +3724,7 @@ impl SourceUniverseOperatorRunner for ConcurrencyRunner {
         _object_bytes: &[u8],
         _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
+        _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         if let Some(probe) = &self.probe {
             let now = probe.active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -3622,6 +3760,7 @@ impl SourceUniverseOperatorRunner for FailingRunner {
         _object_bytes: &[u8],
         _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
+        _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         if self.failing_sequences.contains(&record.sequence) {
             anyhow::bail!("synthetic runner failure for sequence {}", record.sequence);
@@ -3639,7 +3778,11 @@ impl SourceUniverseOperatorRunner for FailingRunner {
 struct NeverFetcher;
 
 impl SourceUniverseObjectFetcher for NeverFetcher {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        _work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<Vec<u8>> {
         panic!(
             "NeverFetcher called for sequence {} — validation should have rejected the pack first",
             record.sequence

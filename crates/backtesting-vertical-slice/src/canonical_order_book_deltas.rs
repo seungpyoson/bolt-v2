@@ -95,6 +95,7 @@ use super::{
         TAR_DELTAS_TRANSFORM_IDENTITY, TRADE_SOURCE_TYPE_NATIVE, TradeAggressorSide,
         TradesPartition,
     },
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
     tar_reader::TarMember,
 };
@@ -401,9 +402,29 @@ pub fn normalize_jsonl_snapshot_deltas(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
+    normalize_jsonl_snapshot_deltas_with_meter(
+        accepted,
+        identities,
+        mapping,
+        jsonl_text,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_jsonl_snapshot_deltas_with_meter(
+    accepted: &AcceptedDataset,
+    identities: &DeltaInstrumentIdentities,
+    mapping: &DeltaMappingConfig,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
     let fields = validate_snapshot_mapping(mapping, ingest_run_id)?;
     let mut accumulator = PhotoGroups::default();
-    parse_jsonl_into_groups(&fields, mapping, jsonl_text, &mut accumulator)?;
+    parse_jsonl_into_groups(&fields, mapping, jsonl_text, &mut accumulator, work_budget)?;
     expand_groups_into_tables(
         accepted,
         identities,
@@ -453,12 +474,38 @@ pub fn normalize_tar_jsonl_snapshot_deltas(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
+    normalize_tar_jsonl_snapshot_deltas_with_meter(
+        accepted,
+        identities,
+        mapping,
+        members,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_tar_jsonl_snapshot_deltas_with_meter(
+    accepted: &AcceptedDataset,
+    identities: &DeltaInstrumentIdentities,
+    mapping: &DeltaMappingConfig,
+    members: impl Iterator<Item = Result<TarMember>>,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
     let fields = validate_snapshot_mapping(mapping, ingest_run_id)?;
     let mut accumulator = PhotoGroups::default();
     for member in members {
         let member = member.context("read next tar member")?;
-        parse_jsonl_into_groups(&fields, mapping, &member.text, &mut accumulator)
-            .with_context(|| format!("normalize tar member {:?}", member.name))?;
+        parse_jsonl_into_groups(
+            &fields,
+            mapping,
+            &member.text,
+            &mut accumulator,
+            work_budget,
+        )
+        .with_context(|| format!("normalize tar member {:?}", member.name))?;
     }
     expand_groups_into_tables(
         accepted,
@@ -523,8 +570,33 @@ pub fn normalize_parquet_event_stream_deltas(
     Vec<CanonicalOrderBookDeltasTable>,
     Vec<CanonicalTradesTable>,
 )> {
+    normalize_parquet_event_stream_deltas_with_meter(
+        accepted,
+        identities,
+        mapping,
+        parquet_bytes,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_parquet_event_stream_deltas_with_meter(
+    accepted: &AcceptedDataset,
+    identities: &DeltaInstrumentIdentities,
+    mapping: &DeltaMappingConfig,
+    parquet_bytes: &[u8],
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<(
+    Vec<CanonicalOrderBookDeltasTable>,
+    Vec<CanonicalTradesTable>,
+)> {
     let fields = validate_event_stream_mapping(mapping, accepted, ingest_run_id)?;
-    let raw_rows = decode_event_stream_rows(&fields, parquet_bytes)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+    let raw_rows = decode_event_stream_rows(&fields, parquet_bytes, work_budget)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     expand_event_stream_into_tables(
         accepted,
         identities,
@@ -811,6 +883,7 @@ struct RawEventRow {
 fn decode_event_stream_rows(
     fields: &EventStreamFields<'_>,
     parquet_bytes: &[u8],
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<RawEventRow>> {
     let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(parquet_bytes.to_vec()))
         .context("construct event-stream parquet reader")?
@@ -821,7 +894,13 @@ fn decode_event_stream_rows(
     let mut source_row_index: u64 = 0;
     for batch in reader {
         let batch = batch.context("read event-stream parquet batch")?;
-        decode_event_stream_batch(fields, &batch, &mut rows, &mut source_row_index)?;
+        decode_event_stream_batch(
+            fields,
+            &batch,
+            &mut rows,
+            &mut source_row_index,
+            work_budget,
+        )?;
     }
     Ok(rows)
 }
@@ -832,8 +911,10 @@ fn decode_event_stream_batch(
     batch: &RecordBatch,
     rows: &mut Vec<RawEventRow>,
     source_row_index: &mut u64,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     for row in 0..batch.num_rows() {
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Decode)?;
         let capture_raw = required_string_cell(batch, fields.capture_time_field, row)?;
         let capture_time = fields
             .capture_time_unit
@@ -1673,6 +1754,7 @@ fn parse_jsonl_into_groups(
     mapping: &DeltaMappingConfig,
     jsonl_text: &str,
     accumulator: &mut PhotoGroups,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     // Borrow the two fields separately so the `or_insert_with` closure pushes to
     // `order` while `groups.entry` holds its own disjoint mutable borrow.
@@ -1681,6 +1763,7 @@ fn parse_jsonl_into_groups(
         if line.trim().is_empty() {
             continue;
         }
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         let value: Value = serde_json::from_str(line)
             .with_context(|| format!("line {index}: malformed snapshot JSON"))?;
 
@@ -2230,6 +2313,62 @@ table_families = ["order_book_snapshot_deltas"]
         assert_eq!(
             table.rows[0].nt_instrument_id.as_deref(),
             Some("BASEQUOTE.TESTVENUE")
+        );
+    }
+
+    #[test]
+    fn source_budget_counts_snapshot_records_before_row_expansion() {
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 2,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+        let tables = normalize_jsonl_snapshot_deltas_with_meter(
+            &accepted_dataset(),
+            &single_identity(),
+            &single_mapping(),
+            SINGLE_JSONL,
+            42,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect("two source records are within budget despite six expanded rows");
+
+        assert_eq!(guard.source_rows_consumed(), 2);
+        assert_eq!(tables[0].rows.len(), 6);
+
+        let exhausted = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+        let error = normalize_jsonl_snapshot_deltas_with_meter(
+            &accepted_dataset(),
+            &single_identity(),
+            &single_mapping(),
+            SINGLE_JSONL,
+            42,
+            "ingest-run-test",
+            &exhausted,
+        )
+        .expect_err("second source record must exceed a one-record budget");
+        assert!(
+            error
+                .to_string()
+                .contains("max_source_rows actual 2 exceeds limit 1"),
+            "{error:#}"
         );
     }
 
@@ -2861,15 +3000,32 @@ table_families = ["order_book_snapshot_deltas"]
             },
         ];
         let parquet = build_event_parquet(&rows);
-        let (deltas, trades) = normalize_parquet_event_stream_deltas(
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 4,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+        let (deltas, trades) = normalize_parquet_event_stream_deltas_with_meter(
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
             &parquet,
             42,
             "ingest-run-test",
+            &guard,
         )
         .expect("event-stream dual emission");
+        assert_eq!(
+            guard.source_rows_consumed(),
+            4,
+            "four physical Parquet rows count once despite dual emission and filtering"
+        );
 
         assert_eq!(deltas.len(), 1, "single instrument => one deltas table");
         assert_eq!(trades.len(), 1, "trade present => one trades table");
@@ -2909,6 +3065,34 @@ table_families = ["order_book_snapshot_deltas"]
         assert_eq!(
             trade_table.forbidden_claims,
             vec!["No order-book-imbalance claims from trade prints.".to_string()]
+        );
+
+        let exhausted = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 3,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+        let error = normalize_parquet_event_stream_deltas_with_meter(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+            &exhausted,
+        )
+        .expect_err("fourth physical row must exceed a three-row budget");
+        assert!(
+            error
+                .to_string()
+                .contains("max_source_rows actual 4 exceeds limit 3"),
+            "{error:#}"
         );
     }
 

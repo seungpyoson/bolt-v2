@@ -337,8 +337,11 @@ fn mechanical_probe_produces_orders_and_positions_through_result_contract() {
     let catalog_path = catalog_root.to_str().unwrap().to_string();
     let manifest = manifest(&catalog_path);
     let contract_manifest_hash = manifest.manifest_hash();
+    let work_budget =
+        backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard::unbounded();
 
     let output = run_backtest(BacktestRunInputs {
+        work_budget: &work_budget,
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),

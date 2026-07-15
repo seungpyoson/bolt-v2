@@ -56,6 +56,7 @@ pub mod nt_catalog_capability;
 pub mod nt_catalog_proof;
 pub mod nt_dependency_proof;
 pub mod operator;
+pub mod operator_work_budget;
 pub mod path_resolution;
 pub mod pmxt_one_off_backfill_projection;
 pub mod polymarket_metadata_gate;

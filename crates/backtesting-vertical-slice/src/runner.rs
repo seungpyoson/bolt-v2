@@ -77,7 +77,8 @@ use super::{
         TradeAggressorSide, normalize_registered_trade_converter,
     },
     catalog_projection::{
-        CatalogInstrumentSpecSource, CatalogProjection, project_canonical_trades_to_catalog,
+        CatalogInstrumentSpecSource, CatalogProjection, actual_nt_market_data_metadata,
+        project_canonical_trades_to_catalog, projected_nt_market_data_row_groups,
         read_back_trade_ticks, ts_event_nanos, ts_init_nanos,
     },
     conversion_boundary::{
@@ -87,6 +88,7 @@ use super::{
         domain_statistics_from_analyzer, register_domain_statistics, resolve_domain_statistics,
     },
     mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
     path_resolution::resolve_existing_input_path,
     result_contract::{
         BacktestFeedLabel, BacktestResultContract, BacktestRunGuardReport, ResultArtifactUris,
@@ -533,6 +535,7 @@ pub struct BacktestRunInputs<'a> {
     pub selector_provenance: Option<BacktestSelectorProvenance<'a>>,
     pub created_at: &'a str,
     pub artifact_uris: ResultArtifactUris,
+    pub work_budget: &'a OperatorWorkBudgetGuard,
 }
 
 /// Source-selector provenance that must bind any L2 replay result contract.
@@ -1186,6 +1189,14 @@ fn ensure_settlement_currency_funded(
 }
 
 pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
+    run_nt_backtest_node_guarded(manifest, &OperatorWorkBudgetGuard::unbounded())
+}
+
+pub(crate) fn run_nt_backtest_node_guarded(
+    manifest: &BacktestingRunManifest,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<NtBacktestNodeRun> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
@@ -1226,7 +1237,9 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
             .add_data(instrument_settlement_data, None, false, true)
             .context("add instrument settlement close events")?;
     }
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let mut results = node.run().context("run BacktestNode")?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     ensure!(
         results.len() == 1,
         "expected exactly one backtest result, got {}",
@@ -1406,13 +1419,27 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         inputs.csv_text,
         inputs.capture_time_nanos,
         &inputs.manifest.run_id,
+        inputs.work_budget,
     )
     .context("canonical normalization failed")?;
+    let projected_row_groups =
+        projected_nt_market_data_row_groups([u64::try_from(canonical_table.rows.len())
+            .context("canonical row count does not fit u64")?])?;
+    inputs.work_budget.check_projected_row_groups(
+        projected_row_groups,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     canonical_table
         .write_parquet(inputs.canonical_artifact_path)
         .context("write canonical artifact failed")?;
 
     // Gate 3: NautilusTrader catalog projection + read-back proof.
+    inputs
+        .work_budget
+        .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let projection = project_canonical_trades_to_catalog(
         &canonical_table,
         inputs.instrument_spec,
@@ -1443,6 +1470,23 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         &canonical_table.rows,
         &projection.nt_instrument_id,
     )?;
+    let actual_metadata = actual_nt_market_data_metadata(inputs.catalog_root)?;
+    let canonical_rows = u64::try_from(canonical_table.rows.len())
+        .context("canonical row count does not fit u64")?;
+    ensure!(
+        actual_metadata.rows == canonical_rows,
+        "actual projected Parquet metadata rows {} do not match canonical rows {canonical_rows}",
+        actual_metadata.rows
+    );
+    ensure!(
+        actual_metadata.row_groups == projected_row_groups,
+        "actual projected row groups {} do not match pre-write projection {projected_row_groups}",
+        actual_metadata.row_groups
+    );
+    inputs.work_budget.verify_actual_row_groups(
+        actual_metadata.row_groups,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     // An optional manifest time window must overlap the accepted data's event
     // range, or the engine would filter out every accepted trade and still
     // "succeed" over zero data while stamping the accepted source/catalog hash.
@@ -1455,7 +1499,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         config_override_report,
         run_guard_report,
         ..
-    } = run_nt_backtest_node(inputs.manifest)?;
+    } = run_nt_backtest_node_guarded(inputs.manifest, inputs.work_budget)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
     // engine's own iteration count equals the number of accepted trades inside the

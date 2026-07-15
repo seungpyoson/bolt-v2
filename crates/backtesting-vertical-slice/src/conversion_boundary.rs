@@ -15,6 +15,8 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+
+use crate::operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage};
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
@@ -681,23 +683,19 @@ pub fn inspect_conversion_output(
     checkpoint.validate_for(expected)?;
     let checkpoint_hash = checkpoint.content_hash()?;
 
-    if !manifest_path.exists() {
-        ensure!(
-            checkpoint.stage != ConversionCheckpointStage::Completed,
-            "dirty conversion output {}: completed checkpoint is missing {CONVERSION_MANIFEST_FILE}",
-            output_dir.display()
-        );
+    if checkpoint.stage != ConversionCheckpointStage::Completed {
         return Ok(ConversionOutputState::ResumeFromCheckpoint {
             stage: checkpoint.stage,
         });
     }
 
-    ensure!(
-        checkpoint.stage == ConversionCheckpointStage::Completed,
-        "dirty conversion output {}: manifest exists but checkpoint stage is {:?}",
-        output_dir.display(),
-        checkpoint.stage
-    );
+    if !manifest_path.exists() {
+        bail!(
+            "dirty conversion output {}: completed checkpoint is missing {CONVERSION_MANIFEST_FILE}",
+            output_dir.display()
+        );
+    }
+
     let manifest: ConversionManifest = read_json(&manifest_path)?;
     manifest.validate_for(expected, &checkpoint_hash)?;
     let manifest_hash = manifest.content_hash()?;
@@ -744,16 +742,49 @@ pub fn write_completed_conversion_artifacts(
     checkpoint: &ConversionCheckpoint,
     metadata: &ConversionCatalogMetadata,
 ) -> Result<()> {
+    write_completed_conversion_artifacts_guarded(
+        output_dir,
+        manifest,
+        checkpoint,
+        metadata,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub fn write_completed_conversion_artifacts_guarded(
+    output_dir: &Path,
+    manifest: &ConversionManifest,
+    checkpoint: &ConversionCheckpoint,
+    metadata: &ConversionCatalogMetadata,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "completion commit requires a completed conversion checkpoint"
+    );
+    write_pending_conversion_artifacts(output_dir, manifest, metadata)?;
+    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    let checkpoint_bytes = crate::reference_artifact::canonical_json_bytes(checkpoint)
+        .context("serialize completed conversion checkpoint")?;
+    crate::atomic_artifact_write::atomic_write_guarded(
+        &checkpoint_path,
+        &checkpoint_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )
+    .with_context(|| format!("commit {}", checkpoint_path.display()))?;
+    Ok(())
+}
+
+/// Write all local completion artifacts except the completed checkpoint commit
+/// object. A started checkpoint remains authoritative until the caller commits.
+pub fn write_pending_conversion_artifacts(
+    output_dir: &Path,
+    manifest: &ConversionManifest,
+    metadata: &ConversionCatalogMetadata,
+) -> Result<()> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
-    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
-        &checkpoint_path,
-        CONVERSION_CHECKPOINT_FILE,
-        checkpoint,
-        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
-    )
-    .with_context(|| format!("write {}", checkpoint_path.display()))?;
     let manifest_path = output_dir.join(CONVERSION_MANIFEST_FILE);
     crate::reference_artifact::write_reference_artifact_with_len(
         &manifest_path,

@@ -61,10 +61,11 @@ impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
     fn fetch(
         &mut self,
         record: &backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord,
+        work_budget: &backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard,
     ) -> Result<Vec<u8>> {
         match self {
-            BatchWorkerFetcher::Direct(fetcher) => fetcher.fetch(record),
-            BatchWorkerFetcher::Cached(fetcher) => fetcher.fetch(record),
+            BatchWorkerFetcher::Direct(fetcher) => fetcher.fetch(record, work_budget),
+            BatchWorkerFetcher::Cached(fetcher) => fetcher.fetch(record, work_budget),
         }
     }
 }

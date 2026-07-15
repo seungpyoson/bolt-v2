@@ -2,9 +2,9 @@ use std::fs;
 
 use backtesting_vertical_slice::conversion_boundary::{
     CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
-    ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
-    ConversionFingerprint, ConversionManifest, ConversionOutputState, inspect_conversion_output,
-    write_completed_conversion_artifacts, write_conversion_checkpoint,
+    CONVERSION_TABLES_FILE, ConversionCatalogMetadata, ConversionCheckpoint,
+    ConversionCheckpointStage, ConversionFingerprint, ConversionManifest, ConversionOutputState,
+    inspect_conversion_output, write_completed_conversion_artifacts, write_conversion_checkpoint,
 };
 
 fn fingerprint() -> ConversionFingerprint {
@@ -208,6 +208,27 @@ fn partial_failed_run_resumes_only_from_validated_checkpoint() {
 
     let err = inspect_conversion_output(invalid_dir.path(), &fingerprint).unwrap_err();
     assert!(err.to_string().contains("converter_identity"), "{err}");
+}
+
+#[test]
+fn noncompleted_checkpoint_owns_manifest_metadata_and_table_index_residue() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let fingerprint = fingerprint();
+    write_conversion_checkpoint(
+        dir.path(),
+        &ConversionCheckpoint::started(fingerprint.clone(), "2026-06-06T00:00:00Z"),
+    )
+    .unwrap();
+    fs::write(dir.path().join(CONVERSION_MANIFEST_FILE), b"pending").unwrap();
+    fs::write(dir.path().join(CATALOG_METADATA_FILE), b"pending").unwrap();
+    fs::write(dir.path().join(CONVERSION_TABLES_FILE), b"pending").unwrap();
+
+    assert_eq!(
+        inspect_conversion_output(dir.path(), &fingerprint).unwrap(),
+        ConversionOutputState::ResumeFromCheckpoint {
+            stage: ConversionCheckpointStage::Started
+        }
+    );
 }
 
 #[test]

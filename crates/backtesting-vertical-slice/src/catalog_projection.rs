@@ -35,6 +35,7 @@ use nautilus_model::{
     types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::{ParquetDataCatalog, urisafe_instrument_id};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -48,6 +49,7 @@ use super::{
         CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction, DeltaSide,
     },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
+    operator_work_budget::projected_row_group_count,
     source_proof::SourceProofFidelityClass,
 };
 
@@ -83,6 +85,117 @@ pub const NT_DATA_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";
 /// `funding_rate_update` via NT's own
 /// `impl_catalog_path_prefix!(FundingRateUpdate, "funding_rate_update")`.
 pub const NT_DATA_TYPE_FUNDING_RATE_UPDATE: &str = "FundingRateUpdate";
+
+/// Maximum rows used by the exact NT catalog constructor shared by every
+/// projection in this module.
+pub(crate) fn nt_catalog_max_row_group_size() -> Result<u64> {
+    let catalog = ParquetDataCatalog::new(Path::new("."), None, None, None, None);
+    u64::try_from(catalog.max_row_group_size)
+        .context("NT catalog max_row_group_size does not fit u64")
+}
+
+/// Exact pre-write row-group projection for NT market-data tables.
+pub(crate) fn projected_nt_market_data_row_groups(
+    table_rows: impl IntoIterator<Item = u64>,
+) -> Result<u64> {
+    projected_row_group_count(table_rows, nt_catalog_max_row_group_size()?)
+}
+
+/// Actual Parquet metadata totals for NT market-data files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NtMarketDataParquetMetadata {
+    pub rows: u64,
+    pub row_groups: u64,
+}
+
+/// Count actual NT market-data Parquet rows and row groups, excluding only the
+/// exact `data/instruments/**` subtree.
+pub(crate) fn actual_nt_market_data_metadata(
+    catalog_root: &Path,
+) -> Result<NtMarketDataParquetMetadata> {
+    let mut files = Vec::new();
+    collect_market_data_parquet_files(catalog_root, catalog_root, &mut files)?;
+    files.sort();
+    files.into_iter().try_fold(
+        NtMarketDataParquetMetadata {
+            rows: 0,
+            row_groups: 0,
+        },
+        |total, path| {
+            let file = fs::File::open(&path)
+                .with_context(|| format!("open projected Parquet metadata {}", path.display()))?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                .with_context(|| format!("read projected Parquet metadata {}", path.display()))?;
+            let row_groups = u64::try_from(reader.metadata().num_row_groups())
+                .context("projected Parquet row-group count does not fit u64")?;
+            let rows =
+                reader
+                    .metadata()
+                    .row_groups()
+                    .iter()
+                    .try_fold(0_u64, |rows, row_group| {
+                        let row_group_rows =
+                            u64::try_from(row_group.num_rows()).with_context(|| {
+                                format!(
+                                    "negative projected Parquet row count in {}",
+                                    path.display()
+                                )
+                            })?;
+                        rows.checked_add(row_group_rows).with_context(|| {
+                            format!("projected Parquet row count overflow in {}", path.display())
+                        })
+                    })?;
+            Ok(NtMarketDataParquetMetadata {
+                rows: total.rows.checked_add(rows).with_context(|| {
+                    format!("actual projected row count overflow at {}", path.display())
+                })?,
+                row_groups: total.row_groups.checked_add(row_groups).with_context(|| {
+                    format!(
+                        "actual projected row-group count overflow at {}",
+                        path.display()
+                    )
+                })?,
+            })
+        },
+    )
+}
+
+fn collect_market_data_parquet_files(
+    catalog_root: &Path,
+    directory: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("read projected catalog directory {}", directory.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!("read projected catalog entry under {}", directory.display())
+        })?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read projected catalog file type {}", path.display()))?;
+        if file_type.is_dir() {
+            let relative = path.strip_prefix(catalog_root).with_context(|| {
+                format!("derive projected catalog relative path {}", path.display())
+            })?;
+            if relative == Path::new("data").join("instruments") {
+                continue;
+            }
+            collect_market_data_parquet_files(catalog_root, &path, files)?;
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "parquet")
+        {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
 
 /// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
@@ -3885,6 +3998,15 @@ max_notional = "200000"
         assert_eq!(projection.data_type, NT_DATA_TYPE_TRADE_TICK);
         assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
         assert!(!projection.catalog_hash.is_empty());
+        let projected_row_groups =
+            projected_nt_market_data_row_groups([
+                u64::try_from(table.rows.len()).expect("row count fits u64")
+            ])
+            .expect("project row groups");
+        let actual_metadata =
+            actual_nt_market_data_metadata(dir.path()).expect("read actual Parquet metadata");
+        assert_eq!(actual_metadata.rows, table.rows.len() as u64);
+        assert_eq!(actual_metadata.row_groups, projected_row_groups);
 
         let loaded = read_back_trade_ticks(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 3);

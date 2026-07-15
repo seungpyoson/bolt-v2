@@ -335,8 +335,11 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     let catalog_path = catalog_root.to_str().unwrap().to_string();
     let manifest = manifest(&catalog_path);
     let contract_manifest_hash = manifest.manifest_hash();
+    let work_budget =
+        backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard::unbounded();
 
     let output = run_backtest(BacktestRunInputs {
+        work_budget: &work_budget,
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),
@@ -510,7 +513,10 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
     let mut admit_manifest = manifest(&admit_catalog_path);
     admit_manifest.end_time = Some(capture_time_nanos);
     let admit_contract_manifest_hash = admit_manifest.manifest_hash();
+    let admit_work_budget =
+        backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard::unbounded();
     let admitted = run_backtest(BacktestRunInputs {
+        work_budget: &admit_work_budget,
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),
@@ -568,7 +574,10 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
     let mut reject_manifest = manifest(&reject_catalog_path);
     reject_manifest.end_time = Some(capture_time_nanos - 1);
     let reject_contract_manifest_hash = reject_manifest.manifest_hash();
+    let reject_work_budget =
+        backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard::unbounded();
     let rejected = run_backtest(BacktestRunInputs {
+        work_budget: &reject_work_budget,
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),

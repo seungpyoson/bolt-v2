@@ -26,10 +26,11 @@ use backtesting_vertical_slice::{
     operator::{
         MultiTableRunArtifacts, OperatorRunArtifacts, PublishOptions, PublishedArtifact,
         PublishedCatalogProof, RunArtifacts, RunSpec,
-        run_from_run_spec_and_publish_with_resolved_storage_options,
-        run_from_run_spec_with_artifact_store, run_operator_from_run_spec,
+        run_from_run_spec_and_publish_with_resolved_storage_options_guarded,
+        run_from_run_spec_with_artifact_store_guarded, run_operator_from_run_spec_guarded,
         validate_run_spec_manifest_for_object_hash,
     },
+    operator_work_budget::{OperatorWorkBudget, OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
     result_contract::{BacktestFeedLabel, BacktestRunGuardReport},
 };
 
@@ -106,6 +107,8 @@ where
     let execution_plan = read_execution_plan(&cli.execution_plan)?;
     validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
         .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
+    let work_budget =
+        OperatorWorkBudgetGuard::new(OperatorWorkBudget::from_execution_plan(&execution_plan))?;
     validate_run_spec_manifest_for_object_hash(
         &spec,
         &cli.output_dir,
@@ -115,7 +118,10 @@ where
     backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
         &spec,
     )?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let artifact_store = spec.required_artifact_store()?;
     let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
     let artifact_root = artifact_store.resolve()?;
@@ -124,8 +130,9 @@ where
     let credentials = credential_resolver
         .resolve(&nt_catalog_capability_proof.ssm_parameter_refs)
         .await?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
-    let artifacts = run_from_run_spec_with_artifact_store(
+    let artifacts = run_from_run_spec_with_artifact_store_guarded(
         &spec,
         &object_bytes,
         &cli.output_dir,
@@ -137,6 +144,7 @@ where
                 create_only_probe,
             )
         },
+        &work_budget,
     )
     .await?;
     print_trade_run(&artifacts, None, None);
@@ -171,14 +179,20 @@ where
     let execution_plan = read_execution_plan(&cli.execution_plan)?;
     validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
         .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
+    let work_budget =
+        OperatorWorkBudgetGuard::new(OperatorWorkBudget::from_execution_plan(&execution_plan))?;
     let publish_options = PublishOptions {
         prove_published_catalog: cli.prove_published_catalog,
     };
     let resolved_publish_storage_options = if cli.publish_output {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         let mut resolve_secret = |region: &str, path: &str| resolver.resolve_secret(region, path);
-        spec.manifest
+        let options = spec
+            .manifest
             .artifact_store_storage_options_resolved(&mut resolve_secret)
-            .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?
+            .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        options
     } else {
         None
     };
@@ -191,15 +205,18 @@ where
     backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
         &spec,
     )?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
 
     if cli.publish_output {
-        let published = run_from_run_spec_and_publish_with_resolved_storage_options(
+        let published = run_from_run_spec_and_publish_with_resolved_storage_options_guarded(
             &spec,
             &object_bytes,
             &cli.output_dir,
             publish_options,
             resolved_publish_storage_options.as_ref(),
+            &work_budget,
         )?;
         print_trade_run(
             &published.run,
@@ -207,7 +224,12 @@ where
             published.published_catalog_proof,
         );
     } else {
-        match run_operator_from_run_spec(&spec, &object_bytes, &cli.output_dir)? {
+        match run_operator_from_run_spec_guarded(
+            &spec,
+            &object_bytes,
+            &cli.output_dir,
+            &work_budget,
+        )? {
             OperatorRunArtifacts::Trade(artifacts) => print_trade_run(&artifacts, None, None),
             OperatorRunArtifacts::MultiTable(artifacts) => print_multi_table_run(&artifacts),
         }

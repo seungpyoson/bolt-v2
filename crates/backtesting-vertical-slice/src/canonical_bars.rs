@@ -50,6 +50,7 @@ use super::{
         JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY, PAGED_JSON_BARS_TRANSFORM_IDENTITY,
         TradesPartition, column_index,
     },
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
     source_proof::AcceptedDataset,
 };
 
@@ -344,6 +345,26 @@ pub fn normalize_csv_native_bars(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalBarsTable>> {
+    normalize_csv_native_bars_with_meter(
+        accepted,
+        identities,
+        mapping,
+        csv_text,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_csv_native_bars_with_meter(
+    accepted: &AcceptedDataset,
+    identities: &BarInstrumentIdentities,
+    mapping: &BarMappingConfig,
+    csv_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalBarsTable>> {
     ensure!(
         !ingest_run_id.trim().is_empty(),
         "ingest_run_id must not be empty"
@@ -439,10 +460,17 @@ pub fn normalize_csv_native_bars(
     let mut groups: BTreeMap<Option<String>, Vec<ParsedBarRow>> = BTreeMap::new();
 
     for (index, record) in reader.records().enumerate() {
-        let fields = record.with_context(|| format!("row {index}: malformed csv record"))?;
+        let fields = match record {
+            Ok(fields) => fields,
+            Err(error) => {
+                work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
+                return Err(error).with_context(|| format!("row {index}: malformed csv record"));
+            }
+        };
         if fields.iter().all(str::is_empty) {
             continue;
         }
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             fields.len() == header_columns.len(),
             "row {index} has {} fields, expected {}",
@@ -769,6 +797,26 @@ pub fn normalize_paged_json_bars(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalBarsTable>> {
+    normalize_paged_json_bars_with_meter(
+        accepted,
+        identity,
+        mapping,
+        json_text,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_paged_json_bars_with_meter(
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    mapping: &PagedJsonBarMappingConfig,
+    json_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalBarsTable>> {
     ensure!(
         !ingest_run_id.trim().is_empty(),
         "ingest_run_id must not be empty"
@@ -822,6 +870,7 @@ pub fn normalize_paged_json_bars(
             )
         })?;
         for (row_index, row_value) in rows.iter().enumerate() {
+            work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
             let parsed = parse_paged_json_row(
                 page_index,
                 row_index,
@@ -1114,6 +1163,26 @@ pub fn normalize_jsonl_multi_interval_bars(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalBarsTable>> {
+    normalize_jsonl_multi_interval_bars_with_meter(
+        accepted,
+        identities,
+        mapping,
+        jsonl_text,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_jsonl_multi_interval_bars_with_meter(
+    accepted: &AcceptedDataset,
+    identities: &BarInstrumentIdentities,
+    mapping: &JsonlBarMappingConfig,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalBarsTable>> {
     ensure!(
         !ingest_run_id.trim().is_empty(),
         "ingest_run_id must not be empty"
@@ -1168,6 +1237,7 @@ pub fn normalize_jsonl_multi_interval_bars(
         if line.trim().is_empty() {
             continue;
         }
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         let location = format!("line {}", line_index + 1);
         let record: serde_json::Value = serde_json::from_str(line)
             .with_context(|| format!("{location}: invalid JSON object"))?;

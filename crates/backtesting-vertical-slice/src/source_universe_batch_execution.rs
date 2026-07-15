@@ -30,6 +30,9 @@ use crate::backfill_execution_plan::{
     validate_backfill_execution_control_bytes,
 };
 use crate::catalog_projection::logical_catalog_hash;
+use crate::operator_work_budget::{
+    OperatorWorkBudget, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+};
 use crate::path_resolution::{
     claim_contained_output_component, resolve_contained_output_component,
     resolve_pack_control_path, validate_portable_path_component,
@@ -52,7 +55,11 @@ pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE: &str =
     "source-universe-batch-execution-report.json";
 
 pub trait SourceUniverseObjectFetcher {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>>;
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Vec<u8>>;
 }
 
 pub trait SourceUniverseOperatorRunner {
@@ -62,7 +69,23 @@ pub trait SourceUniverseOperatorRunner {
         object_bytes: &[u8],
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<SourceUniverseBatchExecutionRunOutput>;
+}
+
+/// Clock-injection seam for deterministic batch deadline tests. Production uses
+/// [`SystemSourceUniverseWorkBudgetGuardFactory`].
+pub trait SourceUniverseWorkBudgetGuardFactory: Sync {
+    fn create(&self, budget: OperatorWorkBudget) -> Result<OperatorWorkBudgetGuard>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemSourceUniverseWorkBudgetGuardFactory;
+
+impl SourceUniverseWorkBudgetGuardFactory for SystemSourceUniverseWorkBudgetGuardFactory {
+    fn create(&self, budget: OperatorWorkBudget) -> Result<OperatorWorkBudgetGuard> {
+        OperatorWorkBudgetGuard::new(budget)
+    }
 }
 
 /// Exact control-artifact bytes verified against an execution-pack record.
@@ -396,11 +419,13 @@ fn validate_report_record_identity(
 pub struct HttpSourceUniverseObjectFetcher {
     client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
+    fetch_timeout: Option<Duration>,
 }
 
 impl HttpSourceUniverseObjectFetcher {
     pub fn new(fetch_timeout_seconds: Option<u64>, http_user_agent: Option<&str>) -> Result<Self> {
         let mut client_builder = reqwest::Client::builder();
+        let fetch_timeout = fetch_timeout_seconds.map(Duration::from_secs);
         if let Some(fetch_timeout_seconds) = fetch_timeout_seconds {
             ensure!(
                 fetch_timeout_seconds > 0,
@@ -420,17 +445,35 @@ impl HttpSourceUniverseObjectFetcher {
             .enable_all()
             .build()
             .context("create HTTP fetch runtime")?;
-        Ok(Self { client, runtime })
+        Ok(Self {
+            client,
+            runtime,
+            fetch_timeout,
+        })
     }
 }
 
 impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Vec<u8>> {
+        let remaining = work_budget.remaining_wall_time(OperatorWorkBudgetStage::Fetch)?;
+        let request_timeout = match (self.fetch_timeout, remaining) {
+            (Some(configured), Some(remaining)) => Some(configured.min(remaining)),
+            (Some(configured), None) => Some(configured),
+            (None, Some(remaining)) => Some(remaining),
+            (None, None) => None,
+        };
         let source_url = validated_http_source_url(&record.source_url)?;
         let client = self.client.clone();
         let bytes = self.runtime.block_on(async {
-            let response = client
-                .get(source_url)
+            let mut request = client.get(source_url);
+            if let Some(request_timeout) = request_timeout {
+                request = request.timeout(request_timeout);
+            }
+            let response = request
                 .send()
                 .await
                 .with_context(|| format!("GET {}", record.source_url))?;
@@ -441,6 +484,7 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
                 .await
                 .with_context(|| format!("read response body {}", record.source_url))
         })?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
         Ok(bytes.to_vec())
     }
 }
@@ -480,6 +524,7 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
         &self,
         record: &SourceUniverseExecutionPackRecord,
         cache_path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Option<Vec<u8>>> {
         let cached = match fs::read(cache_path) {
             Ok(cached) => cached,
@@ -489,7 +534,9 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
                     .with_context(|| format!("read object cache entry {}", cache_path.display()));
             }
         };
+        work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
         if verify_object(record, &cached).is_ok() {
+            work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
             return Ok(Some(cached));
         }
         Self::remove_corrupt_cache_entry(cache_path)?;
@@ -529,18 +576,26 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
 impl<F: SourceUniverseObjectFetcher> SourceUniverseObjectFetcher
     for CachingSourceUniverseObjectFetcher<F>
 {
-    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Vec<u8>> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
         let cache_path = self.cache_entry_path(record);
-        if let Some(cached) = self.read_verified_cache_entry(record, &cache_path)? {
+        if let Some(cached) = self.read_verified_cache_entry(record, &cache_path, work_budget)? {
             return Ok(cached);
         }
-        let object_bytes = self.inner.fetch(record)?;
+        let object_bytes = self.inner.fetch(record, work_budget)?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
         verify_object(record, &object_bytes).with_context(|| {
             format!(
                 "verify fetched object before caching {}",
                 record.operator_run_id
             )
         })?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
         self.store_verified(&cache_path, &object_bytes)?;
         Ok(object_bytes)
     }
@@ -556,12 +611,14 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         object_bytes: &[u8],
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
         let artifacts = run_from_run_spec_with_registry(
             &control_artifacts.run_spec,
             object_bytes,
             output_dir,
             &control_artifacts.source_bindings,
+            work_budget,
         )?;
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
@@ -608,6 +665,32 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
+    execute_source_universe_batch_with_guard_factory(
+        batch_id,
+        execution_pack_path,
+        output_dir,
+        config,
+        fetcher,
+        runner,
+        &SystemSourceUniverseWorkBudgetGuardFactory,
+    )
+}
+
+#[doc(hidden)]
+pub fn execute_source_universe_batch_with_guard_factory<F, R, G>(
+    batch_id: &str,
+    execution_pack_path: &Path,
+    output_dir: &Path,
+    config: SourceUniverseBatchExecutionConfig,
+    fetcher: &mut F,
+    runner: &mut R,
+    guard_factory: &G,
+) -> Result<SourceUniverseBatchExecutionReport>
+where
+    F: SourceUniverseObjectFetcher,
+    R: SourceUniverseOperatorRunner,
+    G: SourceUniverseWorkBudgetGuardFactory,
+{
     let owned_plan = prepare_batch(batch_id, execution_pack_path, output_dir, &config)?;
     let plan = owned_plan.plan();
     // The borrowed-fetcher/runner entry point is inherently serial: it owns a
@@ -622,6 +705,7 @@ where
             &config,
             fetcher,
             runner,
+            guard_factory,
         );
         let stop = !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_));
         slots[slot_index] = Some(slot);
@@ -660,6 +744,7 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
+    let guard_factory = SystemSourceUniverseWorkBudgetGuardFactory;
     let owned_plan = prepare_batch(batch_id, execution_pack_path, output_dir, &config)?;
     let plan = owned_plan.plan();
     let work_item_count = plan.work_items.len();
@@ -741,6 +826,7 @@ where
                                 config,
                                 fetcher,
                                 runner,
+                                &guard_factory,
                             )
                         }
                     };
@@ -1736,22 +1822,29 @@ fn load_resume_records(
     Ok(resume_records)
 }
 
-fn process_work_item<F, R>(
+fn process_work_item<F, R, G>(
     work_item: &BatchWorkItem<'_>,
     output_root_lease: &BatchOutputRootLease,
     config: &SourceUniverseBatchExecutionConfig,
     fetcher: &mut F,
     runner: &mut R,
+    guard_factory: &G,
 ) -> RecordSlot
 where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
+    G: SourceUniverseWorkBudgetGuardFactory,
 {
     match resolve_work_item(work_item, output_root_lease, config) {
         ResolvedBatchWorkItem::Terminal(slot) => slot,
-        ResolvedBatchWorkItem::Fresh(fresh) => {
-            process_fresh_work_item(fresh, output_root_lease, config, fetcher, runner)
-        }
+        ResolvedBatchWorkItem::Fresh(fresh) => process_fresh_work_item(
+            fresh,
+            output_root_lease,
+            config,
+            fetcher,
+            runner,
+            guard_factory,
+        ),
     }
 }
 
@@ -1830,16 +1923,18 @@ fn resolve_work_item<'pack>(
     }
 }
 
-fn process_fresh_work_item<F, R>(
+fn process_fresh_work_item<F, R, G>(
     fresh: FreshBatchWorkItem<'_>,
     output_root_lease: &BatchOutputRootLease,
     config: &SourceUniverseBatchExecutionConfig,
     fetcher: &mut F,
     runner: &mut R,
+    guard_factory: &G,
 ) -> RecordSlot
 where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
+    G: SourceUniverseWorkBudgetGuardFactory,
 {
     let FreshBatchWorkItem {
         record,
@@ -1847,6 +1942,21 @@ where
         execution_record_sha256,
         output_claim,
     } = fresh;
+
+    let work_budget = match guard_factory.create(OperatorWorkBudget::from_execution_plan(
+        &control_artifacts.execution_plan,
+    )) {
+        Ok(work_budget) => work_budget,
+        Err(error) => {
+            return record_error_slot(
+                record,
+                execution_record_sha256,
+                "create_work_budget",
+                error,
+                config,
+            );
+        }
+    };
 
     if let Err(error) = output_claim
         .revalidate(output_root_lease, &record.operator_run_id)
@@ -1866,8 +1976,14 @@ where
         );
     }
 
-    let object_bytes = match fetcher
-        .fetch(record)
+    let object_bytes = match work_budget
+        .check_deadline(OperatorWorkBudgetStage::Fetch)
+        .and_then(|()| fetcher.fetch(record, &work_budget))
+        .and_then(|object_bytes| {
+            work_budget
+                .check_deadline(OperatorWorkBudgetStage::Fetch)
+                .map(|()| object_bytes)
+        })
         .with_context(|| format!("fetch source object for {}", record.operator_run_id))
     {
         Ok(object_bytes) => object_bytes,
@@ -1875,7 +1991,10 @@ where
             return record_error_slot(record, execution_record_sha256, "fetch", error, config);
         }
     };
-    if let Err(error) = verify_object(record, &object_bytes)
+    if let Err(error) = work_budget
+        .check_deadline(OperatorWorkBudgetStage::ObjectVerification)
+        .and_then(|()| verify_object(record, &object_bytes))
+        .and_then(|()| work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification))
         .with_context(|| format!("verify source object for {}", record.operator_run_id))
     {
         return record_error_slot(
@@ -1915,8 +2034,22 @@ where
         }
     };
 
-    let run_result = runner
-        .run(record, &object_bytes, control_artifacts, &record_output_dir)
+    let run_result = work_budget
+        .check_deadline(OperatorWorkBudgetStage::Backtest)
+        .and_then(|()| {
+            runner.run(
+                record,
+                &object_bytes,
+                control_artifacts,
+                &record_output_dir,
+                &work_budget,
+            )
+        })
+        .and_then(|run_output| {
+            work_budget
+                .check_deadline(OperatorWorkBudgetStage::Finalize)
+                .map(|()| run_output)
+        })
         .with_context(|| format!("run operator {}", record.operator_run_id));
     let record_output_dir = match output_claim
         .revalidate(output_root_lease, &record.operator_run_id)
@@ -2211,7 +2344,11 @@ mod tests {
     struct PanicFetcher;
 
     impl SourceUniverseObjectFetcher for PanicFetcher {
-        fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
+        fn fetch(
+            &mut self,
+            _record: &SourceUniverseExecutionPackRecord,
+            _work_budget: &OperatorWorkBudgetGuard,
+        ) -> Result<Vec<u8>> {
             panic!("inner fetcher must not be called")
         }
     }

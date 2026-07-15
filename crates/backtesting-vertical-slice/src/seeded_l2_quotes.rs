@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use super::{
     canonical_market_data::{CanonicalQuoteRow, CanonicalQuotesTable, NORMALIZED_SCHEMA_VERSION},
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit, TradesPartition},
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
     tar_reader::TarMember,
 };
@@ -145,7 +146,27 @@ pub fn normalize_seeded_l2_jsonl_quotes(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalQuotesTable>> {
-    let events = parse_seeded_l2_jsonl(mapping, jsonl_text)?;
+    normalize_seeded_l2_jsonl_quotes_with_meter(
+        accepted,
+        identity,
+        mapping,
+        jsonl_text,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_seeded_l2_jsonl_quotes_with_meter(
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    mapping: &SeededL2QuoteMappingConfig,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalQuotesTable>> {
+    let events = parse_seeded_l2_jsonl_with_meter(mapping, jsonl_text, work_budget)?;
     let provenance = SeededL2QuoteProvenance::from_accepted(
         accepted,
         identity,
@@ -172,10 +193,31 @@ pub fn normalize_seeded_l2_tar_jsonl_quotes(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalQuotesTable>> {
+    normalize_seeded_l2_tar_jsonl_quotes_with_meter(
+        accepted,
+        identity,
+        mapping,
+        members,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn normalize_seeded_l2_tar_jsonl_quotes_with_meter(
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    mapping: &SeededL2QuoteMappingConfig,
+    members: impl IntoIterator<Item = TarMember>,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CanonicalQuotesTable>> {
     let mut events = Vec::new();
     for member in members {
-        let mut member_events = parse_seeded_l2_jsonl(mapping, &member.text)
-            .with_context(|| format!("parse seeded L2 quote member {:?}", member.name))?;
+        let mut member_events =
+            parse_seeded_l2_jsonl_with_meter(mapping, &member.text, work_budget)
+                .with_context(|| format!("parse seeded L2 quote member {:?}", member.name))?;
         events.append(&mut member_events);
     }
     ensure!(
@@ -201,6 +243,14 @@ pub fn parse_seeded_l2_jsonl(
     mapping: &SeededL2QuoteMappingConfig,
     jsonl_text: &str,
 ) -> Result<Vec<SeededL2QuoteEvent>> {
+    parse_seeded_l2_jsonl_with_meter(mapping, jsonl_text, &OperatorWorkBudgetGuard::unbounded())
+}
+
+fn parse_seeded_l2_jsonl_with_meter(
+    mapping: &SeededL2QuoteMappingConfig,
+    jsonl_text: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<SeededL2QuoteEvent>> {
     validate_mapping(mapping)?;
     let mut events = Vec::new();
     for (line_index, line) in jsonl_text.lines().enumerate() {
@@ -208,6 +258,7 @@ pub fn parse_seeded_l2_jsonl(
         if trimmed.is_empty() {
             continue;
         }
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         let value: Value = serde_json::from_str(trimmed)
             .with_context(|| format!("line {}: invalid JSON", line_index + 1))?;
         events.push(parse_seeded_l2_json_value(mapping, &value, line_index + 1)?);

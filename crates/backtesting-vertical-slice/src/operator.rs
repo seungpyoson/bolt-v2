@@ -33,7 +33,8 @@ use crate::{
     artifact_store::{
         ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
         CreateOnlyProbeTranscript, PersistedCatalogProjection, PersistedCatalogProjectionObject,
-        ResolvedArtifactRoot, S3ConditionalPutMode, persist_catalog_projection_for_source_binding,
+        ResolvedArtifactRoot, S3ConditionalPutMode,
+        persist_catalog_projection_for_source_binding_guarded,
     },
     canonical_market_data::{
         CanonicalBarsTable, CanonicalFundingRatesTable, CanonicalIndexPricesTable,
@@ -58,23 +59,28 @@ use crate::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
         NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
         NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        NT_DATA_TYPE_TRADE_TICK, logical_catalog_hash, project_canonical_bars_to_catalog,
-        project_canonical_funding_rates_to_catalog, project_canonical_index_to_catalog,
-        project_canonical_mark_to_catalog, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
+        NT_DATA_TYPE_TRADE_TICK, actual_nt_market_data_metadata, logical_catalog_hash,
+        project_canonical_bars_to_catalog, project_canonical_funding_rates_to_catalog,
+        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
+        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
+        project_canonical_trades_to_catalog, projected_nt_market_data_row_groups, read_back_bars,
         read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
         read_back_quotes, read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
-        CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
-        ConversionCheckpoint, ConversionFingerprint, ConversionManifest, ConversionOutputState,
-        ConversionTableRecord, inspect_conversion_output, validate_conversion_tables_index,
-        write_completed_conversion_artifacts, write_conversion_checkpoint,
-        write_conversion_tables_index,
+        CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_TABLES_FILE,
+        ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
+        ConversionFingerprint, ConversionManifest, ConversionOutputState, ConversionTableRecord,
+        inspect_conversion_output, validate_conversion_tables_index,
+        write_completed_conversion_artifacts_guarded, write_conversion_checkpoint,
+        write_conversion_tables_index, write_pending_conversion_artifacts,
     },
     nt_catalog_capability::{
         NtCatalogCapabilityEvidence, NtCatalogCapabilityPlan, NtCatalogCapabilityProofArtifact,
         NtCatalogCapabilityRunSpec,
+    },
+    operator_work_budget::{
+        OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
     },
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
@@ -87,8 +93,8 @@ use crate::{
         assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
         expected_iterations, iterations_mismatch, market_structure_label,
         nt_extension_surface_claim_limits, result_contract_feed_labels, result_contract_warnings,
-        run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
-        window_bound_nanos,
+        run_backtest, run_nt_backtest_node_guarded, run_purpose_label,
+        time_window_excludes_all_data, window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
@@ -523,11 +529,15 @@ fn replace_contract_claim_limit_uri(
 
 async fn persist_durable_contract_artifact(
     writer: &CreateOnlyArtifactWriter<'_>,
+    store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
     local_path: &Path,
     uri: &str,
+    committed: bool,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     let path = artifact_root.object_path_for_uri(uri)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let payload = fs::read(local_path).with_context(|| {
         format!(
             "read durable contract artifact {} for {}",
@@ -535,48 +545,144 @@ async fn persist_durable_contract_artifact(
             uri
         )
     })?;
-    writer
-        .put_create_idempotent(&path, payload)
-        .await
-        .with_context(|| format!("persist durable contract artifact {uri}"))?;
+    if committed {
+        let existing = read_object_store_object(store, &path)
+            .await?
+            .with_context(|| format!("committed durable artifact {uri} is missing"))?;
+        ensure!(
+            existing.as_ref() == payload.as_slice(),
+            "committed durable artifact {uri} has different bytes"
+        );
+    } else {
+        writer
+            .put_create_idempotent(&path, payload)
+            .await
+            .with_context(|| format!("persist durable contract artifact {uri}"))?;
+    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     Ok(())
 }
 
 async fn persist_durable_contract_artifacts(
     writer: &CreateOnlyArtifactWriter<'_>,
+    store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
     artifacts: &RunArtifacts,
+    output_prefix: &str,
+    committed: bool,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     let uris = &artifacts.output.contract.artifact_uris;
     persist_durable_contract_artifact(
         writer,
+        store,
         artifact_root,
         &artifacts.proof_path,
         &uris.source_proof_uri,
+        committed,
+        work_budget,
     )
     .await?;
     persist_durable_contract_artifact(
         writer,
+        store,
         artifact_root,
         &artifacts.canonical_artifact_path,
         &uris.canonical_table_uri,
+        committed,
+        work_budget,
     )
     .await?;
     persist_durable_contract_artifact(
         writer,
+        store,
         artifact_root,
         &artifacts.catalog_metadata_path,
         &uris.catalog_metadata_uri,
+        committed,
+        work_budget,
     )
     .await?;
     persist_durable_contract_artifact(
         writer,
+        store,
         artifact_root,
         &artifacts.contract_path,
         &uris.result_contract_uri,
+        committed,
+        work_budget,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        store,
+        artifact_root,
+        &artifacts.run_manifest_path,
+        &portable_artifact_uri(output_prefix, BACKTEST_RUN_MANIFEST_FILE),
+        committed,
+        work_budget,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        store,
+        artifact_root,
+        &artifacts.conversion_manifest_path,
+        &portable_artifact_uri(
+            output_prefix,
+            crate::conversion_boundary::CONVERSION_MANIFEST_FILE,
+        ),
+        committed,
+        work_budget,
     )
     .await?;
     Ok(())
+}
+
+async fn read_object_store_object(
+    store: &dyn ObjectStore,
+    path: &ObjectPath,
+) -> Result<Option<Bytes>> {
+    let object = match store.get(path).await {
+        Ok(object) => object,
+        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("read object-store path {path}")),
+    };
+    object
+        .bytes()
+        .await
+        .map(Some)
+        .with_context(|| format!("read object-store bytes {path}"))
+}
+
+async fn commit_durable_checkpoint(
+    store: &dyn ObjectStore,
+    checkpoint_path: &ObjectPath,
+    checkpoint_bytes: &[u8],
+    _permit: OperatorWorkBudgetCommitPermit,
+) -> Result<()> {
+    match store
+        .put_opts(
+            checkpoint_path,
+            Bytes::copy_from_slice(checkpoint_bytes).into(),
+            PutMode::Create.into(),
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(ObjectStoreError::AlreadyExists { .. })
+        | Err(ObjectStoreError::Precondition { .. }) => {
+            let existing = read_object_store_object(store, checkpoint_path)
+                .await?
+                .context("durable completion checkpoint disappeared after create conflict")?;
+            ensure!(
+                existing.as_ref() == checkpoint_bytes,
+                "durable completion checkpoint won a create race with different bytes"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error).context("create durable completion checkpoint"),
+    }
 }
 
 fn verify_completed_result_contract(
@@ -1010,6 +1116,7 @@ struct CompletedOutputInputs<'a> {
     artifact_uris: ResultArtifactUris,
     created_at: &'a str,
     spec_manifest: &'a BacktestingRunManifest,
+    work_budget: &'a OperatorWorkBudgetGuard,
 }
 
 fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArtifacts> {
@@ -1055,9 +1162,28 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         inputs.expected_catalog_hash,
         actual_catalog_hash
     );
-
     let canonical_table =
         CanonicalTradesTable::read_parquet(&inputs.canonical_artifact_path, inputs.accepted)?;
+    let actual_metadata = actual_nt_market_data_metadata(&inputs.catalog_root)?;
+    let canonical_rows = u64::try_from(canonical_table.rows.len())
+        .context("canonical row count does not fit u64")?;
+    let projected_row_groups =
+        projected_nt_market_data_row_groups([u64::try_from(canonical_table.rows.len())
+            .context("canonical row count does not fit u64")?])?;
+    ensure!(
+        actual_metadata.rows == canonical_rows,
+        "completed actual projected Parquet metadata rows {} do not match canonical rows {canonical_rows}",
+        actual_metadata.rows
+    );
+    ensure!(
+        actual_metadata.row_groups == projected_row_groups,
+        "completed actual projected row groups {} do not match expected {projected_row_groups}",
+        actual_metadata.row_groups
+    );
+    inputs.work_budget.verify_actual_row_groups(
+        actual_metadata.row_groups,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         canonical_table.rows.len() == conversion_manifest.canonical_rows,
         "completed canonical row count mismatch: manifest has {}, parquet has {}",
@@ -1093,7 +1219,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         config_override_report,
         run_guard_report,
         ..
-    } = run_nt_backtest_node(&inputs.manifest)?;
+    } = run_nt_backtest_node_guarded(&inputs.manifest, inputs.work_budget)?;
     let expected = expected_iterations(
         &canonical_table.rows,
         inputs.manifest.start_time,
@@ -1226,8 +1352,39 @@ pub fn run_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<RunArtifacts> {
+    run_from_run_spec_guarded(
+        spec,
+        object_bytes,
+        output_dir,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub fn run_from_run_spec_guarded(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<RunArtifacts> {
     let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    run_from_run_spec_inner(spec, object_bytes, output_dir, true, &registry)
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true, &registry, work_budget)
+}
+
+fn run_from_run_spec_pending_guarded(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<RunArtifacts> {
+    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    run_from_run_spec_inner(
+        spec,
+        object_bytes,
+        output_dir,
+        false,
+        &registry,
+        work_budget,
+    )
 }
 
 /// Run the vertical slice against the exact source-binding registry snapshot
@@ -1242,8 +1399,9 @@ pub fn run_from_run_spec_with_registry(
     object_bytes: &[u8],
     output_dir: &Path,
     registry: &SourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
-    run_from_run_spec_inner(spec, object_bytes, output_dir, true, registry)
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true, registry, work_budget)
 }
 
 fn run_from_run_spec_inner(
@@ -1252,7 +1410,9 @@ fn run_from_run_spec_inner(
     output_dir: &Path,
     reuse_completed_output: bool,
     source_binding_registry: &SourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     validate_converter_config(&spec.converter)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
@@ -1283,6 +1443,7 @@ fn run_from_run_spec_inner(
     let mut hasher = Sha256::new();
     hasher.update(object_bytes);
     let verified_sha256 = hex::encode(hasher.finalize());
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     ensure!(
         verified_sha256 == spec.accepted_object.sha256,
         "object SHA-256 {verified_sha256} does not match run-spec {}",
@@ -1314,6 +1475,17 @@ fn run_from_run_spec_inner(
     validate_local_run_manifest(&manifest, &accepted)?;
     let artifact_uris = portable_artifact_uris(&manifest);
 
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+    let DecodedPayload::Text(csv_text) =
+        decode_object_payload(&spec.converter.raw_payload, object_bytes)?
+    else {
+        anyhow::bail!(
+            "single-table trade entry requires a text payload container, got {:?}",
+            spec.converter.raw_payload.container
+        );
+    };
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+
     if reuse_completed_output {
         match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
             ConversionOutputState::Complete {
@@ -1321,6 +1493,16 @@ fn run_from_run_spec_inner(
                 checkpoint_hash,
                 catalog_hash,
             } => {
+                normalize_registered_trade_converter(
+                    &spec.converter,
+                    &accepted,
+                    identity,
+                    &csv_text,
+                    rfc3339_to_nanos(&spec.capture_time_utc)?,
+                    &manifest.run_id,
+                    work_budget,
+                )
+                .context("revalidate completed source rows against current work budget")?;
                 return run_from_completed_output(CompletedOutputInputs {
                     verified_sha256,
                     accepted_source_proof: accepted_proof,
@@ -1341,6 +1523,7 @@ fn run_from_run_spec_inner(
                     artifact_uris,
                     created_at: &spec.created_at_utc,
                     spec_manifest: &spec.manifest,
+                    work_budget,
                 });
             }
             ConversionOutputState::CleanNew
@@ -1348,11 +1531,13 @@ fn run_from_run_spec_inner(
         }
     }
 
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output dir {}", output_dir.display()))?;
     for stale_completed_artifact in [
         crate::conversion_boundary::CONVERSION_MANIFEST_FILE,
         crate::conversion_boundary::CATALOG_METADATA_FILE,
+        PUBLISHED_CATALOG_PROOF_FILE,
     ] {
         let path = output_dir.join(stale_completed_artifact);
         if path.exists() {
@@ -1373,17 +1558,6 @@ fn run_from_run_spec_inner(
             .with_context(|| format!("clean catalog root {}", catalog_root.display()))?;
     }
 
-    // Decode to CSV text only when conversion is required. Completed outputs
-    // are reused from the proven canonical Parquet artifact.
-    let DecodedPayload::Text(csv_text) =
-        decode_object_payload(&spec.converter.raw_payload, object_bytes)?
-    else {
-        anyhow::bail!(
-            "single-table trade entry requires a text payload container, got {:?}",
-            spec.converter.raw_payload.container
-        );
-    };
-
     let mut output = run_backtest(BacktestRunInputs {
         accepted: &accepted,
         identity,
@@ -1398,9 +1572,11 @@ fn run_from_run_spec_inner(
         selector_provenance: None,
         created_at: &spec.created_at_utc,
         artifact_uris,
+        work_budget,
     })?;
     redact_operator_contract(&mut output, &catalog_root);
 
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
     atomic_write(
         &proof_path,
         serde_json::to_string_pretty(&accepted_proof)
@@ -1422,12 +1598,22 @@ fn run_from_run_spec_inner(
             .as_bytes(),
     )
     .with_context(|| format!("write {}", run_manifest_path.display()))?;
-    write_completed_conversion_artifacts(
-        output_dir,
-        &output.conversion_manifest,
-        &output.conversion_checkpoint,
-        &output.conversion_catalog_metadata,
-    )?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    if reuse_completed_output {
+        write_completed_conversion_artifacts_guarded(
+            output_dir,
+            &output.conversion_manifest,
+            &output.conversion_checkpoint,
+            &output.conversion_catalog_metadata,
+            work_budget,
+        )?;
+    } else {
+        write_pending_conversion_artifacts(
+            output_dir,
+            &output.conversion_manifest,
+            &output.conversion_catalog_metadata,
+        )?;
+    }
 
     Ok(RunArtifacts {
         verified_sha256,
@@ -1474,6 +1660,34 @@ where
         CreateOnlyProbeTranscript,
     ) -> Result<NtCatalogCapabilityEvidence>,
 {
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    run_from_run_spec_with_artifact_store_guarded(
+        spec,
+        gz_bytes,
+        output_dir,
+        store,
+        build_capability_evidence,
+        &work_budget,
+    )
+    .await
+}
+
+/// Guarded durable-catalog operator path used by validated backfill callers.
+pub async fn run_from_run_spec_with_artifact_store_guarded<F>(
+    spec: &RunSpec,
+    gz_bytes: &[u8],
+    output_dir: &Path,
+    store: &dyn ObjectStore,
+    build_capability_evidence: F,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<RunArtifacts>
+where
+    F: FnOnce(
+        &ResolvedArtifactRoot,
+        &NtCatalogCapabilityPlan,
+        CreateOnlyProbeTranscript,
+    ) -> Result<NtCatalogCapabilityEvidence>,
+{
     let artifact_store = spec.required_artifact_store()?;
     spec.validate_artifact_store_publish_config(artifact_store)?;
     let catalog_dispatch = spec.required_catalog_dispatch()?;
@@ -1483,6 +1697,7 @@ where
     let base_gz_bytes = gz_bytes.to_vec();
     let base_output_dir = output_dir.to_path_buf();
     let source_binding_registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    let base_work_budget = work_budget.clone();
     let mut artifacts = tokio::task::spawn_blocking(move || {
         run_from_run_spec_inner(
             &base_spec,
@@ -1490,21 +1705,48 @@ where
             &base_output_dir,
             false,
             &source_binding_registry,
+            &base_work_budget,
         )
     })
     .await
     .context("join base run for artifact-store path")??;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let artifact_root = artifact_store.resolve()?;
     let nt_catalog_capability_plan = nt_catalog_capability_proof.proof_plan(artifact_store)?;
+    let completed_checkpoint_bytes =
+        crate::reference_artifact::canonical_json_bytes(&artifacts.output.conversion_checkpoint)
+            .context("serialize durable completion checkpoint")?;
+    let completed_checkpoint_uri =
+        portable_artifact_uri(&spec.manifest.output_prefix, CONVERSION_CHECKPOINT_FILE);
+    let completed_checkpoint_path = artifact_root.object_path_for_uri(&completed_checkpoint_uri)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let remote_checkpoint = read_object_store_object(store, &completed_checkpoint_path).await?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let remote_committed = if let Some(remote_checkpoint) = remote_checkpoint {
+        ensure!(
+            remote_checkpoint.as_ref() == completed_checkpoint_bytes.as_slice(),
+            "durable completion checkpoint already exists with different bytes"
+        );
+        true
+    } else {
+        false
+    };
+
     let writer = CreateOnlyArtifactWriter::new(store);
+    // The run-prefix checkpoint commits only run-prefix objects. Global
+    // capability/catalog roots retain their independent immutable protocols and
+    // may create or verify content on an idempotent run-prefix replay.
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let create_only_probe_transcript = writer
         .probe_create_only(&artifact_root, create_only_probe_id)
         .await?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let nt_catalog_capability_evidence = build_capability_evidence(
         &artifact_root,
         &nt_catalog_capability_plan,
         create_only_probe_transcript.clone(),
     )?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let nt_catalog_capability_proof_artifact = nt_catalog_capability_proof
         .persist_completed_proof_from_evidence(
             artifact_store,
@@ -1512,25 +1754,27 @@ where
             &nt_catalog_capability_evidence,
         )
         .await?;
-    let persisted = persist_catalog_projection_for_source_binding(
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
         store,
         &artifact_root,
         catalog_dispatch,
         &spec.source_proof.source_binding,
         spec.manifest.market_structure_fixture,
         &artifacts.catalog_root,
+        work_budget,
     )
     .await?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
 
     artifacts.output.conversion_catalog_metadata = artifacts
         .output
         .conversion_catalog_metadata
         .clone()
         .with_execution_catalog_access(persisted.catalog_root_uri.clone(), true);
-    write_completed_conversion_artifacts(
+    write_pending_conversion_artifacts(
         output_dir,
         &artifacts.output.conversion_manifest,
-        &artifacts.output.conversion_checkpoint,
         &artifacts.output.conversion_catalog_metadata,
     )?;
     artifacts.output.contract.catalog_metadata_hash = artifacts
@@ -1567,7 +1811,34 @@ where
         crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
-    persist_durable_contract_artifacts(&writer, &artifact_root, &artifacts).await?;
+    persist_durable_contract_artifacts(
+        &writer,
+        store,
+        &artifact_root,
+        &artifacts,
+        &spec.manifest.output_prefix,
+        remote_committed,
+        work_budget,
+    )
+    .await?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    write_completed_conversion_artifacts_guarded(
+        output_dir,
+        &artifacts.output.conversion_manifest,
+        &artifacts.output.conversion_checkpoint,
+        &artifacts.output.conversion_catalog_metadata,
+        work_budget,
+    )?;
+    if !remote_committed {
+        let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
+        commit_durable_checkpoint(
+            store,
+            &completed_checkpoint_path,
+            &completed_checkpoint_bytes,
+            permit,
+        )
+        .await?;
+    }
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri.clone());
     artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
     artifacts.nt_catalog_capability_proof_artifact = Some(nt_catalog_capability_proof_artifact);
@@ -2001,8 +2272,22 @@ pub fn run_operator_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<OperatorRunArtifacts> {
+    run_operator_from_run_spec_guarded(
+        spec,
+        object_bytes,
+        output_dir,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub fn run_operator_from_run_spec_guarded(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<OperatorRunArtifacts> {
     let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    run_operator_from_run_spec_with_registry(spec, object_bytes, output_dir, &registry)
+    run_operator_from_run_spec_with_registry(spec, object_bytes, output_dir, &registry, work_budget)
 }
 
 /// Dispatch any registered adapter against an already parsed source-binding
@@ -2017,16 +2302,23 @@ pub fn run_operator_from_run_spec_with_registry(
     object_bytes: &[u8],
     output_dir: &Path,
     registry: &SourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<OperatorRunArtifacts> {
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
     if adapter.kind == SourceAdapterKind::CsvNativeTrades {
         return Ok(OperatorRunArtifacts::Trade(Box::new(
-            run_from_run_spec_with_registry(spec, object_bytes, output_dir, registry)?,
+            run_from_run_spec_with_registry(spec, object_bytes, output_dir, registry, work_budget)?,
         )));
     }
     Ok(OperatorRunArtifacts::MultiTable(Box::new(
-        run_multi_table_from_run_spec_with_registry(spec, object_bytes, output_dir, registry)?,
+        run_multi_table_from_run_spec_with_registry(
+            spec,
+            object_bytes,
+            output_dir,
+            registry,
+            work_budget,
+        )?,
     )))
 }
 
@@ -2055,6 +2347,7 @@ fn normalize_tables_for_kind(
     accepted: &AcceptedDataset,
     payload: DecodedPayload,
     capture_time_nanos: i64,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<NormalizedTable>> {
     let run_id = &spec.manifest.run_id;
     let tables: Vec<NormalizedTable> = match kind {
@@ -2069,6 +2362,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Bars)
@@ -2085,6 +2379,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Bars)
@@ -2101,6 +2396,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Bars)
@@ -2117,6 +2413,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Deltas)
@@ -2135,6 +2432,7 @@ fn normalize_tables_for_kind(
                 members.into_iter().map(Ok),
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Deltas)
@@ -2153,6 +2451,7 @@ fn normalize_tables_for_kind(
                 &bytes,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?;
             delta_tables
                 .into_iter()
@@ -2175,6 +2474,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Quotes)
@@ -2188,6 +2488,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Quotes)
@@ -2200,6 +2501,7 @@ fn normalize_tables_for_kind(
                     members,
                     capture_time_nanos,
                     run_id,
+                    work_budget,
                 )?
                 .into_iter()
                 .map(NormalizedTable::Quotes)
@@ -2227,6 +2529,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Index)
@@ -2250,6 +2553,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Mark)
@@ -2272,6 +2576,7 @@ fn normalize_tables_for_kind(
                 &text,
                 capture_time_nanos,
                 run_id,
+                work_budget,
             )?
             .into_iter()
             .map(NormalizedTable::Funding)
@@ -2618,7 +2923,13 @@ pub fn run_multi_table_from_run_spec(
     output_dir: &Path,
 ) -> Result<MultiTableRunArtifacts> {
     let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    run_multi_table_from_run_spec_with_registry(spec, object_bytes, output_dir, &registry)
+    run_multi_table_from_run_spec_with_registry(
+        spec,
+        object_bytes,
+        output_dir,
+        &registry,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
 }
 
 fn run_multi_table_from_run_spec_with_registry(
@@ -2626,7 +2937,9 @@ fn run_multi_table_from_run_spec_with_registry(
     object_bytes: &[u8],
     output_dir: &Path,
     registry: &SourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<MultiTableRunArtifacts> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     validate_converter_config(&spec.converter)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
@@ -2646,6 +2959,7 @@ fn run_multi_table_from_run_spec_with_registry(
     let mut hasher = Sha256::new();
     hasher.update(object_bytes);
     let verified_sha256 = hex::encode(hasher.finalize());
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     ensure!(
         verified_sha256 == spec.accepted_object.sha256,
         "object SHA-256 {verified_sha256} does not match run-spec {}",
@@ -2687,11 +3001,30 @@ fn run_multi_table_from_run_spec_with_registry(
     // Decode and normalize on both paths: the completed path re-derives the
     // canonical tables in memory to re-prove read-back equality and the
     // engine-iteration expectation without re-projecting verified subroots.
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     let payload = decode_object_payload(&spec.converter.raw_payload, object_bytes)?;
-    let tables =
-        normalize_tables_for_kind(adapter.kind, spec, &accepted, payload, capture_time_nanos)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+    let tables = normalize_tables_for_kind(
+        adapter.kind,
+        spec,
+        &accepted,
+        payload,
+        capture_time_nanos,
+        work_budget,
+    )?;
     let table_count = tables.len();
     let planned = plan_projected_tables(output_dir, tables)?;
+    let projected_row_groups = projected_nt_market_data_row_groups(
+        planned
+            .iter()
+            .map(|table| u64::try_from(table.table.rows_len()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("projected canonical row count does not fit u64")?,
+    )?;
+    work_budget.check_projected_row_groups(
+        projected_row_groups,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
 
     if let Some((manifest_hash, checkpoint_hash, primary_catalog_hash)) = completed {
         return run_multi_from_completed_output(MultiCompletedInputs {
@@ -2711,9 +3044,12 @@ fn run_multi_table_from_run_spec_with_registry(
             conversion_manifest_path,
             conversion_checkpoint_path,
             catalog_metadata_path,
+            work_budget,
+            projected_row_groups,
         });
     }
 
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output dir {}", output_dir.display()))?;
     for stale_completed_artifact in [
@@ -2752,6 +3088,7 @@ fn run_multi_table_from_run_spec_with_registry(
     // Gates 2+3 per table: projection, read-back, equality, canonical artifact.
     let mut catalog_hashes = Vec::with_capacity(planned.len());
     for table in &planned {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
         let instrument_spec = resolve_instrument_spec(&spec.instrument_spec, table, table_count)?;
         let projection = match &table.table {
             NormalizedTable::Trades(canonical) => {
@@ -2800,6 +3137,7 @@ fn run_multi_table_from_run_spec_with_registry(
             .context("canonical artifact path has no parent")?;
         fs::create_dir_all(parent)
             .with_context(|| format!("create canonical artifact dir {}", parent.display()))?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
         match &table.table {
             NormalizedTable::Trades(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Bars(canonical) => canonical.write_parquet(&table.canonical_path),
@@ -2818,6 +3156,39 @@ fn run_multi_table_from_run_spec_with_registry(
         catalog_hashes.push(projection.catalog_hash);
     }
 
+    let (actual_rows, actual_row_groups) =
+        planned
+            .iter()
+            .try_fold((0_u64, 0_u64), |(rows, row_groups), table| {
+                let metadata = actual_nt_market_data_metadata(&table.subroot)?;
+                Ok((
+                    rows.checked_add(metadata.rows)
+                        .context("actual projected row total overflow")?,
+                    row_groups
+                        .checked_add(metadata.row_groups)
+                        .context("actual projected row-group total overflow")?,
+                ))
+            })?;
+    let expected_rows = planned.iter().try_fold(0_u64, |rows, table| {
+        rows.checked_add(
+            u64::try_from(table.table.rows_len())
+                .context("canonical row count does not fit u64")?,
+        )
+        .context("canonical row total overflow")
+    })?;
+    ensure!(
+        actual_rows == expected_rows,
+        "actual projected Parquet metadata rows {actual_rows} do not match canonical rows {expected_rows}"
+    );
+    ensure!(
+        actual_row_groups == projected_row_groups,
+        "actual projected row groups {actual_row_groups} do not match pre-write projection {projected_row_groups}"
+    );
+    work_budget.verify_actual_row_groups(
+        actual_row_groups,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+
     // Bind every manifest input to its projected table; gate 4 on the bound
     // manifest; per-table window overlap.
     let (local_manifest, bound_indices) = bind_catalog_inputs(&spec.manifest, &planned)?;
@@ -2833,7 +3204,7 @@ fn run_multi_table_from_run_spec_with_registry(
         multi_selector_provenance(spec, &planned)?;
 
     // Gate 5: ONE BacktestNode run over the N-input manifest.
-    let nt_run = run_nt_backtest_node(&local_manifest)?;
+    let nt_run = run_nt_backtest_node_guarded(&local_manifest, work_budget)?;
     let nt_result = nt_run.result;
     let config_override_report = nt_run.config_override_report;
     let run_guard_report = nt_run.run_guard_report;
@@ -2938,6 +3309,7 @@ fn run_multi_table_from_run_spec_with_registry(
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
 
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
     atomic_write(
         &proof_path,
         serde_json::to_string_pretty(&accepted_proof)
@@ -2959,12 +3331,6 @@ fn run_multi_table_from_run_spec_with_registry(
             .as_bytes(),
     )
     .with_context(|| format!("write {}", run_manifest_path.display()))?;
-    write_completed_conversion_artifacts(
-        output_dir,
-        &conversion_manifest,
-        &conversion_checkpoint,
-        &conversion_catalog_metadata,
-    )?;
     let conversion_tables_path = if planned.len() > 1 {
         let records: Vec<ConversionTableRecord> = planned
             .iter()
@@ -2975,6 +3341,13 @@ fn run_multi_table_from_run_spec_with_registry(
     } else {
         None
     };
+    write_completed_conversion_artifacts_guarded(
+        output_dir,
+        &conversion_manifest,
+        &conversion_checkpoint,
+        &conversion_catalog_metadata,
+        work_budget,
+    )?;
 
     let tables = planned
         .iter()
@@ -3031,6 +3404,8 @@ struct MultiCompletedInputs<'a> {
     conversion_manifest_path: PathBuf,
     conversion_checkpoint_path: PathBuf,
     catalog_metadata_path: PathBuf,
+    work_budget: &'a OperatorWorkBudgetGuard,
+    projected_row_groups: u64,
 }
 
 /// Reuse a completed multi-table output: re-prove every subroot hash and
@@ -3085,6 +3460,39 @@ fn run_multi_from_completed_output(
         );
         catalog_hashes.push(actual_hash);
     }
+    let (actual_rows, actual_row_groups) =
+        planned
+            .iter()
+            .try_fold((0_u64, 0_u64), |(rows, row_groups), table| {
+                let metadata = actual_nt_market_data_metadata(&table.subroot)?;
+                Ok((
+                    rows.checked_add(metadata.rows)
+                        .context("completed actual projected row total overflow")?,
+                    row_groups
+                        .checked_add(metadata.row_groups)
+                        .context("completed actual projected row-group total overflow")?,
+                ))
+            })?;
+    let expected_rows = planned.iter().try_fold(0_u64, |rows, table| {
+        rows.checked_add(
+            u64::try_from(table.table.rows_len())
+                .context("canonical row count does not fit u64")?,
+        )
+        .context("canonical row total overflow")
+    })?;
+    ensure!(
+        actual_rows == expected_rows,
+        "completed actual projected Parquet metadata rows {actual_rows} do not match canonical rows {expected_rows}"
+    );
+    ensure!(
+        actual_row_groups == inputs.projected_row_groups,
+        "completed actual projected row groups {actual_row_groups} do not match expected {}",
+        inputs.projected_row_groups
+    );
+    inputs.work_budget.verify_actual_row_groups(
+        actual_row_groups,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let index_records = validate_conversion_tables_index(inputs.output_dir, &conversion_manifest)?;
     if planned.len() > 1 {
         let records = index_records.as_deref().with_context(|| {
@@ -3146,7 +3554,7 @@ fn run_multi_from_completed_output(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
-    let nt_run = run_nt_backtest_node(&local_manifest)?;
+    let nt_run = run_nt_backtest_node_guarded(&local_manifest, inputs.work_budget)?;
     let nt_result = nt_run.result;
     let config_override_report = nt_run.config_override_report;
     let run_guard_report = nt_run.run_guard_report;
@@ -3331,34 +3739,62 @@ pub fn run_from_run_spec_and_publish_with_resolved_storage_options(
     options: PublishOptions,
     storage_options: Option<&BTreeMap<String, String>>,
 ) -> Result<PublishedRunArtifacts> {
-    let mut run = run_from_run_spec(spec, object_bytes, output_dir)?;
-    let mut published_artifacts = if options.prove_published_catalog {
-        publish_output_artifacts_with_storage_options_excluding(
-            output_dir,
-            &spec.manifest.output_prefix,
-            storage_options,
-            &[CATALOG_METADATA_FILE, RESULT_CONTRACT_FILE],
-        )?
+    run_from_run_spec_and_publish_with_resolved_storage_options_guarded(
+        spec,
+        object_bytes,
+        output_dir,
+        options,
+        storage_options,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub fn run_from_run_spec_and_publish_with_resolved_storage_options_guarded(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    options: PublishOptions,
+    storage_options: Option<&BTreeMap<String, String>>,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<PublishedRunArtifacts> {
+    let mut run = if options.prove_published_catalog {
+        run_from_run_spec_pending_guarded(spec, object_bytes, output_dir, work_budget)?
     } else {
-        publish_output_artifacts_with_storage_options(
-            output_dir,
-            &spec.manifest.output_prefix,
-            storage_options,
-        )?
+        run_from_run_spec_guarded(spec, object_bytes, output_dir, work_budget)?
     };
-    let published_catalog_proof = if options.prove_published_catalog {
-        let proof = prove_published_catalog_consumption(spec, &run.output, storage_options)
-            .context("published catalog proof failed")?;
-        let updated_paths = write_published_catalog_proof(output_dir, &mut run, &proof)?;
-        published_artifacts.extend(publish_selected_artifacts_with_storage_options(
+    let (published_artifacts, published_catalog_proof) = if options.prove_published_catalog {
+        let _phase_one_artifacts = publish_output_artifacts_with_storage_options_excluding(
             output_dir,
-            &updated_paths,
             &spec.manifest.output_prefix,
             storage_options,
-        )?);
-        Some(proof)
+            &[
+                CATALOG_METADATA_FILE,
+                RESULT_CONTRACT_FILE,
+                crate::conversion_boundary::CONVERSION_CHECKPOINT_FILE,
+            ],
+            work_budget,
+        )?;
+        let proof =
+            prove_published_catalog_consumption(spec, &run.output, storage_options, work_budget)
+                .context("published catalog proof failed")?;
+        write_published_catalog_proof(output_dir, &mut run, &proof, work_budget)?;
+        let published_artifacts = publish_completed_output_with_storage_options(
+            output_dir,
+            &spec.manifest.output_prefix,
+            storage_options,
+            work_budget,
+        )?;
+        (published_artifacts, Some(proof))
     } else {
-        None
+        (
+            publish_completed_output_with_storage_options(
+                output_dir,
+                &spec.manifest.output_prefix,
+                storage_options,
+                work_budget,
+            )?,
+            None,
+        )
     };
     Ok(PublishedRunArtifacts {
         run,
@@ -3378,19 +3814,11 @@ pub fn publish_output_artifacts(
     output_dir: &Path,
     output_prefix: &str,
 ) -> Result<Vec<PublishedArtifact>> {
-    publish_output_artifacts_with_storage_options(output_dir, output_prefix, None)
-}
-
-fn publish_output_artifacts_with_storage_options(
-    output_dir: &Path,
-    output_prefix: &str,
-    storage_options: Option<&BTreeMap<String, String>>,
-) -> Result<Vec<PublishedArtifact>> {
-    publish_output_artifacts_with_storage_options_excluding(
+    publish_completed_output_with_storage_options(
         output_dir,
         output_prefix,
-        storage_options,
-        &[],
+        None,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
 }
 
@@ -3399,7 +3827,9 @@ fn publish_output_artifacts_with_storage_options_excluding(
     output_prefix: &str,
     storage_options: Option<&BTreeMap<String, String>>,
     excluded_relative_paths: &[&str],
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<PublishedArtifact>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     ensure!(
         output_dir.is_dir(),
         "output directory does not exist: {}",
@@ -3425,15 +3855,36 @@ fn publish_output_artifacts_with_storage_options_excluding(
         &files,
         output_prefix,
         storage_options,
+        work_budget,
     )
 }
 
-fn publish_selected_artifacts_with_storage_options(
+fn publish_completed_output_with_storage_options(
     output_dir: &Path,
-    files: &[PathBuf],
     output_prefix: &str,
     storage_options: Option<&BTreeMap<String, String>>,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<PublishedArtifact>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    ensure!(
+        output_dir.is_dir(),
+        "output directory does not exist: {}",
+        output_dir.display()
+    );
+    let mut files = collect_output_files(output_dir)?;
+    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    let checkpoint_index = files
+        .iter()
+        .position(|path| path == &checkpoint_path)
+        .context("completed output is missing its conversion checkpoint")?;
+    let checkpoint: ConversionCheckpoint = read_json_artifact(&checkpoint_path)?;
+    checkpoint.validate_for(&checkpoint.fingerprint)?;
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "published output conversion checkpoint is not completed"
+    );
+    files.remove(checkpoint_index);
+
     ensure_local_publish_root_exists(output_prefix)?;
     let object_store_options = storage_options
         .cloned()
@@ -3445,52 +3896,335 @@ fn publish_selected_artifacts_with_storage_options(
         .enable_all()
         .build()
         .context("build object-store runtime")?;
-    let normalized_prefix = output_prefix.trim_end_matches('/');
+    let checkpoint_object_path =
+        ObjectPath::from(published_object_key(&base_path, CONVERSION_CHECKPOINT_FILE));
+    let checkpoint_bytes = fs::read(&checkpoint_path)
+        .with_context(|| format!("read {}", checkpoint_path.display()))?;
+
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let committed =
+        read_published_object(&runtime, object_store.as_ref(), &checkpoint_object_path)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    if let Some(existing_checkpoint) = committed {
+        ensure!(
+            existing_checkpoint.as_ref() == checkpoint_bytes.as_slice(),
+            "published completion checkpoint already exists under {output_prefix} with different bytes"
+        );
+        files.push(checkpoint_path);
+        return verify_published_files_exact(
+            output_dir,
+            &files,
+            output_prefix,
+            &base_path,
+            &runtime,
+            object_store.as_ref(),
+            work_budget,
+        );
+    }
+
+    let mut published = publish_selected_artifacts_with_storage_options(
+        output_dir,
+        &files,
+        output_prefix,
+        storage_options,
+        work_budget,
+    )?;
+
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let raced_checkpoint =
+        read_published_object(&runtime, object_store.as_ref(), &checkpoint_object_path)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    if let Some(existing_checkpoint) = raced_checkpoint {
+        ensure!(
+            existing_checkpoint.as_ref() == checkpoint_bytes.as_slice(),
+            "published completion checkpoint won a create race under {output_prefix} with different bytes"
+        );
+        files.push(checkpoint_path);
+        return verify_published_files_exact(
+            output_dir,
+            &files,
+            output_prefix,
+            &base_path,
+            &runtime,
+            object_store.as_ref(),
+            work_budget,
+        );
+    }
+
+    verify_published_files_exact(
+        output_dir,
+        &files,
+        output_prefix,
+        &base_path,
+        &runtime,
+        object_store.as_ref(),
+        work_budget,
+    )?;
+    let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
+    let created = commit_remote_checkpoint(
+        &runtime,
+        object_store.as_ref(),
+        &checkpoint_object_path,
+        &checkpoint_bytes,
+        permit,
+    )
+    .with_context(|| format!("publish completion checkpoint to {output_prefix}"))?;
+    if !created {
+        files.push(checkpoint_path);
+        return verify_published_files_exact_after_commit(
+            output_dir,
+            &files,
+            output_prefix,
+            &base_path,
+            &runtime,
+            object_store.as_ref(),
+        );
+    }
+    published.push(published_artifact_description(
+        &checkpoint_path,
+        output_dir,
+        output_prefix,
+        &checkpoint_bytes,
+    )?);
+    Ok(published)
+}
+
+fn commit_remote_checkpoint(
+    runtime: &tokio::runtime::Runtime,
+    object_store: &dyn ObjectStore,
+    checkpoint_path: &ObjectPath,
+    checkpoint_bytes: &[u8],
+    _permit: OperatorWorkBudgetCommitPermit,
+) -> Result<bool> {
+    match runtime.block_on(object_store.put_opts(
+        checkpoint_path,
+        Bytes::copy_from_slice(checkpoint_bytes).into(),
+        PutMode::Create.into(),
+    )) {
+        Ok(_) => Ok(true),
+        Err(ObjectStoreError::AlreadyExists { .. })
+        | Err(ObjectStoreError::Precondition { .. }) => {
+            let existing = read_published_object(runtime, object_store, checkpoint_path)?
+                .context("published completion checkpoint disappeared after create conflict")?;
+            ensure!(
+                existing.as_ref() == checkpoint_bytes,
+                "published completion checkpoint won a create race with different bytes"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error).context("create published completion checkpoint"),
+    }
+}
+
+fn verify_published_files_exact(
+    output_dir: &Path,
+    files: &[PathBuf],
+    output_prefix: &str,
+    base_path: &str,
+    runtime: &tokio::runtime::Runtime,
+    object_store: &dyn ObjectStore,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<PublishedArtifact>> {
+    verify_published_files_exact_inner(
+        output_dir,
+        files,
+        output_prefix,
+        base_path,
+        runtime,
+        object_store,
+        Some(work_budget),
+    )
+}
+
+fn verify_published_files_exact_after_commit(
+    output_dir: &Path,
+    files: &[PathBuf],
+    output_prefix: &str,
+    base_path: &str,
+    runtime: &tokio::runtime::Runtime,
+    object_store: &dyn ObjectStore,
+) -> Result<Vec<PublishedArtifact>> {
+    verify_published_files_exact_inner(
+        output_dir,
+        files,
+        output_prefix,
+        base_path,
+        runtime,
+        object_store,
+        None,
+    )
+}
+
+fn verify_published_files_exact_inner(
+    output_dir: &Path,
+    files: &[PathBuf],
+    output_prefix: &str,
+    base_path: &str,
+    runtime: &tokio::runtime::Runtime,
+    object_store: &dyn ObjectStore,
+    work_budget: Option<&OperatorWorkBudgetGuard>,
+) -> Result<Vec<PublishedArtifact>> {
+    let mut verified = Vec::with_capacity(files.len());
+    for local_path in files {
+        let relative = artifact_relative_path(output_dir, local_path)?;
+        let object_path = ObjectPath::from(published_object_key(base_path, &relative));
+        let bytes =
+            fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
+        if let Some(work_budget) = work_budget {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        }
+        let existing = read_published_object(runtime, object_store, &object_path)?
+            .with_context(|| format!("published artifact {relative} is missing"))?;
+        ensure!(
+            existing.as_ref() == bytes.as_slice(),
+            "published artifact {relative} already exists under {output_prefix} with different bytes"
+        );
+        if let Some(work_budget) = work_budget {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        }
+        verified.push(published_artifact_description(
+            local_path,
+            output_dir,
+            output_prefix,
+            &bytes,
+        )?);
+    }
+    Ok(verified)
+}
+
+fn published_artifact_description(
+    local_path: &Path,
+    output_dir: &Path,
+    output_prefix: &str,
+    bytes: &[u8],
+) -> Result<PublishedArtifact> {
+    let relative = artifact_relative_path(output_dir, local_path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(PublishedArtifact {
+        local_path: local_path.to_path_buf(),
+        published_uri: format!("{}/{relative}", output_prefix.trim_end_matches('/')),
+        bytes: bytes.len() as u64,
+        sha256: hex::encode(hasher.finalize()),
+    })
+}
+
+fn publish_selected_artifacts_with_storage_options(
+    output_dir: &Path,
+    files: &[PathBuf],
+    output_prefix: &str,
+    storage_options: Option<&BTreeMap<String, String>>,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<PublishedArtifact>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    ensure_local_publish_root_exists(output_prefix)?;
+    let object_store_options = storage_options
+        .cloned()
+        .map(|options| options.into_iter().collect());
+    let (object_store, base_path, _) =
+        create_object_store_from_path(output_prefix, object_store_options)
+            .with_context(|| format!("open output prefix {output_prefix:?}"))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build object-store runtime")?;
+    let completion_path =
+        ObjectPath::from(published_object_key(&base_path, CONVERSION_CHECKPOINT_FILE));
 
     let mut targets = Vec::with_capacity(files.len());
     for local_path in files {
         let relative = artifact_relative_path(output_dir, local_path)?;
+        ensure!(
+            relative != CONVERSION_CHECKPOINT_FILE,
+            "completion checkpoint must use the dedicated checkpoint-last publisher"
+        );
         let object_path = ObjectPath::from(published_object_key(&base_path, &relative));
         targets.push((local_path, relative, object_path));
     }
-    for (_, relative, object_path) in &targets {
-        match runtime.block_on(object_store.head(object_path)) {
-            Ok(_) => anyhow::bail!(
-                "published artifact {relative} already exists under {output_prefix}; choose a clean output_prefix"
-            ),
-            Err(ObjectStoreError::NotFound { .. }) => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("check published artifact {relative} under {output_prefix}")
-                });
-            }
-        }
-    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+    let committed =
+        read_published_object(&runtime, object_store.as_ref(), &completion_path)?.is_some();
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
 
     let mut published = Vec::with_capacity(targets.len());
     for (local_path, relative, object_path) in targets {
         let bytes =
             fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
-        let byte_len = bytes.len() as u64;
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let sha256 = hex::encode(hasher.finalize());
-        runtime
-            .block_on(object_store.put_opts(
-                &object_path,
-                Bytes::from(bytes).into(),
-                PutMode::Create.into(),
-            ))
-            .with_context(|| format!("publish artifact {relative} to {output_prefix}"))?;
-        published.push(PublishedArtifact {
-            local_path: local_path.clone(),
-            published_uri: format!("{normalized_prefix}/{relative}"),
-            bytes: byte_len,
-            sha256,
-        });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        match read_published_object(&runtime, object_store.as_ref(), &object_path)? {
+            Some(existing) => ensure!(
+                existing.as_ref() == bytes.as_slice(),
+                "published artifact {relative} already exists under {output_prefix} with different bytes"
+            ),
+            None => {
+                ensure!(
+                    !committed,
+                    "published artifact {relative} is missing under committed prefix {output_prefix}"
+                );
+                ensure!(
+                    read_published_object(&runtime, object_store.as_ref(), &completion_path,)?
+                        .is_none(),
+                    "published completion checkpoint already exists under {output_prefix}; refusing to fill an object under a committed prefix"
+                );
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                let put_result = runtime.block_on(object_store.put_opts(
+                    &object_path,
+                    Bytes::from(bytes.clone()).into(),
+                    PutMode::Create.into(),
+                ));
+                match put_result {
+                    Ok(_) => {}
+                    Err(ObjectStoreError::AlreadyExists { .. })
+                    | Err(ObjectStoreError::Precondition { .. }) => {
+                        let existing = read_published_object(
+                            &runtime,
+                            object_store.as_ref(),
+                            &object_path,
+                        )?
+                        .with_context(|| {
+                            format!(
+                                "published artifact {relative} disappeared after create conflict"
+                            )
+                        })?;
+                        ensure!(
+                            existing.as_ref() == bytes.as_slice(),
+                            "published artifact {relative} won a create race with different bytes"
+                        );
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("publish artifact {relative} to {output_prefix}")
+                        });
+                    }
+                }
+            }
+        }
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        published.push(published_artifact_description(
+            local_path,
+            output_dir,
+            output_prefix,
+            &bytes,
+        )?);
     }
 
     Ok(published)
+}
+
+fn read_published_object(
+    runtime: &tokio::runtime::Runtime,
+    object_store: &dyn ObjectStore,
+    object_path: &ObjectPath,
+) -> Result<Option<Bytes>> {
+    let object = match runtime.block_on(object_store.get(object_path)) {
+        Ok(object) => object,
+        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error).context("read published object"),
+    };
+    runtime
+        .block_on(object.bytes())
+        .map(Some)
+        .context("read published object bytes")
 }
 
 fn published_object_key(base_path: &str, relative: &str) -> String {
@@ -3505,9 +4239,11 @@ fn prove_published_catalog_consumption(
     spec: &RunSpec,
     local_output: &BacktestRunOutput,
     storage_options: Option<&BTreeMap<String, String>>,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<PublishedCatalogProof> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let (manifest, catalog_uri) = published_catalog_manifest(spec, storage_options)?;
-    let nt_result = run_nt_backtest_node(&manifest)?.result;
+    let nt_result = run_nt_backtest_node_guarded(&manifest, work_budget)?.result;
     let expected_iterations = local_output.nt_result.iterations;
     ensure!(
         nt_result.iterations == expected_iterations,
@@ -3568,8 +4304,18 @@ fn write_published_catalog_proof(
     output_dir: &Path,
     run: &mut RunArtifacts,
     proof: &PublishedCatalogProof,
-) -> Result<Vec<PathBuf>> {
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    write_conversion_checkpoint(
+        output_dir,
+        &ConversionCheckpoint::started(
+            run.output.conversion_checkpoint.fingerprint.clone(),
+            run.output.conversion_checkpoint.updated_at.clone(),
+        ),
+    )?;
     let proof_path = output_dir.join(PUBLISHED_CATALOG_PROOF_FILE);
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
     atomic_write(
         &proof_path,
         serde_json::to_string_pretty(proof)
@@ -3586,12 +4332,6 @@ fn write_published_catalog_proof(
             proof.catalog_uri.clone(),
             proof.direct_s3_catalog_access_proven,
         );
-    write_completed_conversion_artifacts(
-        output_dir,
-        &run.output.conversion_manifest,
-        &run.output.conversion_checkpoint,
-        &run.output.conversion_catalog_metadata,
-    )?;
     run.output.contract.catalog_metadata_hash = run
         .output
         .conversion_catalog_metadata
@@ -3601,6 +4341,12 @@ fn write_published_catalog_proof(
         .contract
         .validate()
         .map_err(|error| anyhow::anyhow!("updated result contract rejected: {error}"))?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    write_pending_conversion_artifacts(
+        output_dir,
+        &run.output.conversion_manifest,
+        &run.output.conversion_catalog_metadata,
+    )?;
     atomic_write(
         &run.contract_path,
         serde_json::to_string_pretty(&run.output.contract)
@@ -3608,12 +4354,15 @@ fn write_published_catalog_proof(
             .as_bytes(),
     )
     .with_context(|| format!("write {}", run.contract_path.display()))?;
-
-    Ok(vec![
-        proof_path,
-        output_dir.join(CATALOG_METADATA_FILE),
-        run.contract_path.clone(),
-    ])
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    write_completed_conversion_artifacts_guarded(
+        output_dir,
+        &run.output.conversion_manifest,
+        &run.output.conversion_checkpoint,
+        &run.output.conversion_catalog_metadata,
+        work_budget,
+    )?;
+    Ok(())
 }
 
 fn ensure_local_publish_root_exists(output_prefix: &str) -> Result<()> {
@@ -3675,7 +4424,11 @@ fn artifact_relative_path(root: &Path, file: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Write};
+    use std::{
+        io::{Cursor, Write},
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use crate::hashing::sha256_hex;
 
@@ -3740,6 +4493,62 @@ mod tests {
             .expect("start zip member");
         writer.write_all(text.as_bytes()).expect("write zip member");
         writer.finish().expect("finish zip").into_inner()
+    }
+
+    fn write_test_completed_checkpoint(output_dir: &Path) -> PathBuf {
+        let checkpoint = ConversionCheckpoint::completed(
+            ConversionFingerprint {
+                source_proof_id: "source-proof".to_string(),
+                source_proof_version: 1,
+                accepted_object_sha256: "accepted-object".to_string(),
+                converter_identity: "converter".to_string(),
+                converter_version: "1".to_string(),
+                converter_config_hash: "converter-config".to_string(),
+            },
+            1,
+            "catalog-hash",
+            "2026-07-15T00:00:00Z",
+        );
+        write_conversion_checkpoint(output_dir, &checkpoint).expect("write completed checkpoint")
+    }
+
+    fn test_publish_prefix(published_root: &Path) -> String {
+        format!(
+            "file://{}/backtests/published-run",
+            published_root.display()
+        )
+    }
+
+    fn test_work_budget(
+        max_source_rows: u64,
+        max_projected_row_groups: u64,
+    ) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
+            crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_source_rows,
+                max_projected_row_groups,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("test work budget")
+    }
+
+    #[derive(Default)]
+    struct TestWorkBudgetClock {
+        now: Mutex<Duration>,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for TestWorkBudgetClock {
+        fn now(&self) -> Duration {
+            *self.now.lock().expect("clock mutex")
+        }
+    }
+
+    impl TestWorkBudgetClock {
+        fn set(&self, now: Duration) {
+            *self.now.lock().expect("clock mutex") = now;
+        }
     }
     /// The committed run-spec, with the accepted-object hash rebound to a locally
     /// reproducible synthetic object (the real staged object is not committed).
@@ -4437,6 +5246,38 @@ mod tests {
     }
 
     #[test]
+    fn fresh_source_budget_failure_never_writes_a_completed_checkpoint() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let guard = test_work_budget(2, 1);
+
+        let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
+            .expect_err("third source record must exceed the two-row budget");
+
+        assert!(error.to_string().contains("max_source_rows"), "{error:#}");
+        let checkpoint: ConversionCheckpoint =
+            read_json_artifact(&dir.path().join(CONVERSION_CHECKPOINT_FILE))
+                .expect("started checkpoint remains inspectable");
+        assert_ne!(checkpoint.stage, ConversionCheckpointStage::Completed);
+    }
+
+    #[test]
+    fn completed_output_is_revalidated_against_a_stricter_source_budget() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        run_from_run_spec(&spec, &gz, dir.path()).expect("first run completes");
+        let guard = test_work_budget(2, 1);
+
+        let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
+            .expect_err("completed output must not carry across a stricter source budget");
+
+        assert!(error.to_string().contains("max_source_rows"), "{error:#}");
+        assert_eq!(guard.source_rows_consumed(), 3);
+    }
+
+    #[test]
     fn run_from_run_spec_reuses_completed_output_without_rebuilding_catalog() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
@@ -4533,18 +5374,62 @@ mod tests {
     }
 
     #[test]
-    fn publish_output_artifacts_rejects_existing_published_artifact_without_overwrite() {
+    fn publish_output_artifacts_accepts_identical_completed_prefix_without_writes() {
+        let output_dir = tempfile::TempDir::new().unwrap();
+        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
+        write_test_completed_checkpoint(output_dir.path());
+        let published_root = tempfile::TempDir::new().unwrap();
+        let output_prefix = test_publish_prefix(published_root.path());
+
+        let first = publish_output_artifacts(output_dir.path(), &output_prefix)
+            .expect("first publish succeeds");
+        let second = publish_output_artifacts(output_dir.path(), &output_prefix)
+            .expect("identical committed publish is idempotent");
+
+        assert_eq!(first, second);
+        assert!(
+            second.last().is_some_and(|artifact| artifact
+                .published_uri
+                .ends_with(CONVERSION_CHECKPOINT_FILE)),
+            "completion checkpoint must be reported last"
+        );
+    }
+
+    #[test]
+    fn publish_output_artifacts_resumes_partial_uncommitted_prefix() {
+        let output_dir = tempfile::TempDir::new().unwrap();
+        fs::write(output_dir.path().join("a.json"), b"a").unwrap();
+        fs::write(output_dir.path().join("b.json"), b"b").unwrap();
+        write_test_completed_checkpoint(output_dir.path());
+        let published_root = tempfile::TempDir::new().unwrap();
+        let output_prefix = test_publish_prefix(published_root.path());
+        let remote_root = published_root.path().join("backtests/published-run");
+        fs::create_dir_all(&remote_root).unwrap();
+        fs::write(remote_root.join("a.json"), b"a").unwrap();
+
+        let published = publish_output_artifacts(output_dir.path(), &output_prefix)
+            .expect("partial uncommitted prefix resumes");
+
+        assert_eq!(fs::read(remote_root.join("b.json")).unwrap(), b"b");
+        assert!(remote_root.join(CONVERSION_CHECKPOINT_FILE).is_file());
+        assert!(
+            published.last().is_some_and(|artifact| artifact
+                .published_uri
+                .ends_with(CONVERSION_CHECKPOINT_FILE))
+        );
+    }
+
+    #[test]
+    fn publish_output_artifacts_rejects_conflicting_uncommitted_artifact() {
         let output_dir = tempfile::TempDir::new().unwrap();
         fs::write(
             output_dir.path().join("result-contract.json"),
             b"new-result",
         )
         .unwrap();
+        write_test_completed_checkpoint(output_dir.path());
         let published_root = tempfile::TempDir::new().unwrap();
-        let output_prefix = format!(
-            "file://{}/backtests/published-run",
-            published_root.path().display()
-        );
+        let output_prefix = test_publish_prefix(published_root.path());
         let existing = published_root
             .path()
             .join("backtests/published-run/result-contract.json");
@@ -4560,6 +5445,118 @@ mod tests {
             b"existing-result",
             "existing published artifact must not be overwritten"
         );
+        assert!(
+            !published_root
+                .path()
+                .join("backtests/published-run")
+                .join(CONVERSION_CHECKPOINT_FILE)
+                .exists(),
+            "a conflict must not commit the prefix"
+        );
+    }
+
+    #[test]
+    fn publish_output_artifacts_never_repairs_a_committed_prefix() {
+        let output_dir = tempfile::TempDir::new().unwrap();
+        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
+        let local_checkpoint = write_test_completed_checkpoint(output_dir.path());
+        let published_root = tempfile::TempDir::new().unwrap();
+        let output_prefix = test_publish_prefix(published_root.path());
+        let remote_root = published_root.path().join("backtests/published-run");
+        fs::create_dir_all(&remote_root).unwrap();
+        fs::copy(
+            local_checkpoint,
+            remote_root.join(CONVERSION_CHECKPOINT_FILE),
+        )
+        .unwrap();
+
+        let err = publish_output_artifacts(output_dir.path(), &output_prefix)
+            .expect_err("committed prefix with a missing object must fail");
+
+        assert!(err.to_string().contains("is missing"), "{err:#}");
+        assert!(
+            !remote_root.join("result-contract.json").exists(),
+            "committed prefix must remain verify-only"
+        );
+    }
+
+    #[test]
+    fn expired_publication_guard_writes_no_remote_completion_artifact() {
+        let output_dir = tempfile::TempDir::new().unwrap();
+        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
+        write_test_completed_checkpoint(output_dir.path());
+        let published_root = tempfile::TempDir::new().unwrap();
+        let output_prefix = test_publish_prefix(published_root.path());
+        let clock = Arc::new(TestWorkBudgetClock::default());
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            clock.clone(),
+        )
+        .expect("guard");
+        clock.set(Duration::from_secs(1));
+
+        let error = publish_completed_output_with_storage_options(
+            output_dir.path(),
+            &output_prefix,
+            None,
+            &guard,
+        )
+        .expect_err("deadline equality must reject publication");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        let remote_root = published_root.path().join("backtests/published-run");
+        assert!(!remote_root.join(CONVERSION_CHECKPOINT_FILE).exists());
+        assert!(!remote_root.join("result-contract.json").exists());
+    }
+
+    #[test]
+    fn prove_mode_expiry_after_pending_base_leaves_local_checkpoint_started() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let output_dir = tempfile::TempDir::new().unwrap();
+        let clock = Arc::new(TestWorkBudgetClock::default());
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 10,
+                    max_projected_row_groups: 10,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            clock.clone(),
+        )
+        .expect("guard");
+        let mut run = run_from_run_spec_pending_guarded(&spec, &gz, output_dir.path(), &guard)
+            .expect("pending base run");
+        let proof = PublishedCatalogProof {
+            proof_version: "published-catalog-proof.v1".to_string(),
+            catalog_uri: portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_DIR),
+            catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
+            direct_s3_catalog_access_proven: false,
+            expected_iterations: run.output.nt_result.iterations,
+            nt_iterations: run.output.nt_result.iterations,
+            run_config_id: run.output.nt_result.run_config_id.clone(),
+            nt_version: run.output.contract.nt_version.clone(),
+            created_at: spec.created_at_utc.clone(),
+        };
+        clock.set(Duration::from_secs(60));
+
+        let error = write_published_catalog_proof(output_dir.path(), &mut run, &proof, &guard)
+            .expect_err("proof finalization must reject deadline equality");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        let checkpoint: ConversionCheckpoint =
+            read_json_artifact(&output_dir.path().join(CONVERSION_CHECKPOINT_FILE))
+                .expect("pending checkpoint");
+        assert_eq!(checkpoint.stage, ConversionCheckpointStage::Started);
     }
 
     #[test]

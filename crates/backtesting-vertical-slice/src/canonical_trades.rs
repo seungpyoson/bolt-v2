@@ -26,7 +26,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
+use super::{
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    source_proof::{AcceptedDataset, SourceProofFidelityClass},
+};
 
 /// Contracted semantic schema version for normalized market-data rows.
 pub const NORMALIZED_SCHEMA_VERSION: &str = "market_data.v1";
@@ -911,15 +914,6 @@ impl TradeAggressorSide {
         }
     }
 
-    #[cfg(test)]
-    fn parse_sample_side(raw: &str) -> Result<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "buy" => Ok(Self::Buyer),
-            "sell" => Ok(Self::Seller),
-            other => bail!("unknown trade side token: {other:?}"),
-        }
-    }
-
     fn parse_from_mapping(raw: &str, mapping: &CsvTradeMappingConfig) -> Result<Self> {
         let raw = raw.trim();
         if mapping
@@ -1123,124 +1117,25 @@ pub fn normalize_sample_spot_tick_trades(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<CanonicalTradesTable> {
-    ensure!(
-        !ingest_run_id.trim().is_empty(),
-        "ingest_run_id must not be empty"
-    );
-    ensure!(
-        accepted.object.schema_columns == SAMPLE_SPOT_TICK_TRADES_HEADER,
-        "accepted object schema {:?} does not match expected spot tick-trades header {:?}",
-        accepted.object.schema_columns,
-        SAMPLE_SPOT_TICK_TRADES_HEADER
-    );
-
-    let canonical_instrument_key = format!(
-        "{}/{}/{}",
-        accepted.venue, accepted.product_family, identity.instrument_id
-    );
-    let transform_hash = transform_hash();
-
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .trim(csv::Trim::All)
-        .from_reader(csv_text.as_bytes());
-    let header_columns: Vec<&str> = reader
-        .headers()
-        .context("empty csv: missing header")?
-        .iter()
-        .collect();
-    ensure!(
-        header_columns == SAMPLE_SPOT_TICK_TRADES_HEADER,
-        "csv header {header_columns:?} does not match expected header {SAMPLE_SPOT_TICK_TRADES_HEADER:?}"
-    );
-
-    let mut rows = Vec::new();
-    for (index, record) in reader.records().enumerate() {
-        let fields = record.with_context(|| format!("row {index}: malformed csv record"))?;
-        if fields.iter().all(str::is_empty) {
-            continue;
-        }
-        ensure!(
-            fields.len() == SAMPLE_SPOT_TICK_TRADES_HEADER.len(),
-            "row {index} has {} fields, expected {}",
-            fields.len(),
-            SAMPLE_SPOT_TICK_TRADES_HEADER.len()
-        );
-
-        let trade_id = fields.get(0).context("missing trade id")?;
-        let timestamp_ms: i64 = fields
-            .get(1)
-            .context("missing timestamp")?
-            .parse()
-            .with_context(|| format!("row {index}: invalid timestamp {:?}", fields.get(1)))?;
-        let price_raw = fields.get(2).context("missing price")?;
-        let size_raw = fields.get(3).context("missing size")?;
-        let side = TradeAggressorSide::parse_sample_side(fields.get(4).context("missing side")?)?;
-
-        ensure!(!trade_id.is_empty(), "row {index}: empty trade id");
-        let price: Decimal = price_raw
-            .parse()
-            .with_context(|| format!("row {index}: invalid price {price_raw:?}"))?;
-        let size: Decimal = size_raw
-            .parse()
-            .with_context(|| format!("row {index}: invalid size {size_raw:?}"))?;
-        ensure!(price > Decimal::ZERO, "row {index}: non-positive price");
-        ensure!(size > Decimal::ZERO, "row {index}: non-positive size");
-
-        let event_time = timestamp_ms
-            .checked_mul(NANOS_PER_MILLISECOND)
-            .with_context(|| format!("row {index}: timestamp overflow"))?;
-        let notional = price
-            .checked_mul(size)
-            .with_context(|| format!("row {index}: notional overflow"))?;
-
-        rows.push(CanonicalTradeRow {
-            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
-            ingest_run_id: ingest_run_id.to_string(),
-            source_binding: accepted.source_binding.clone(),
-            venue: accepted.venue.clone(),
-            product_family: accepted.product_family.clone(),
-            product_category: accepted.product_category.clone(),
-            instrument_id: identity.instrument_id.clone(),
-            canonical_instrument_key: canonical_instrument_key.clone(),
-            venue_symbol: identity.venue_symbol.clone(),
-            nt_instrument_id: Some(identity.nt_instrument_id.clone()),
-            event_time,
-            capture_time: capture_time_nanos,
-            availability_time: None,
-            source_sequence: Some(trade_id.to_string()),
-            raw_payload_id: accepted.object.sha256.clone(),
-            source_proof_id: accepted.source_proof_id.clone(),
-            payload_hash: accepted.object.sha256.clone(),
-            transform_hash: transform_hash.clone(),
-            trade_source_type: TRADE_SOURCE_TYPE_NATIVE.to_string(),
-            trade_id: trade_id.to_string(),
-            aggressor_side: side.as_str().to_string(),
-            price: price_raw.to_string(),
-            size: size_raw.to_string(),
-            notional: notional.normalize().to_string(),
-        });
-    }
-
-    let table = CanonicalTradesTable {
-        schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
-        partition: TradesPartition {
-            venue: accepted.venue.clone(),
-            product_family: accepted.product_family.clone(),
-            product_category: accepted.product_category.clone(),
-            instrument_id: identity.instrument_id.clone(),
-            dt: accepted.object.archive_date.clone(),
-        },
-        source_proof_id: accepted.source_proof_id.clone(),
-        source_proof_version: accepted.source_proof_version,
-        fidelity_class: accepted.fidelity_class,
-        forbidden_claims: accepted.forbidden_claims.clone(),
-        transform_hash,
-        payload_hash: accepted.object.sha256.clone(),
-        rows,
+    let mapping = CsvTradeMappingConfig {
+        has_headers: true,
+        trade_id_column: SAMPLE_SPOT_TICK_TRADES_HEADER[0].to_string(),
+        timestamp_column: SAMPLE_SPOT_TICK_TRADES_HEADER[1].to_string(),
+        timestamp_unit: CsvTimestampUnit::Milliseconds,
+        price_column: SAMPLE_SPOT_TICK_TRADES_HEADER[2].to_string(),
+        size_column: SAMPLE_SPOT_TICK_TRADES_HEADER[3].to_string(),
+        side_column: SAMPLE_SPOT_TICK_TRADES_HEADER[4].to_string(),
+        buyer_side_values: vec!["buy".to_string()],
+        seller_side_values: vec!["sell".to_string()],
     };
-    table.validate()?;
-    Ok(table)
+    normalize_csv_native_trades(
+        accepted,
+        identity,
+        &mapping,
+        csv_text,
+        capture_time_nanos,
+        ingest_run_id,
+    )
 }
 
 pub fn normalize_csv_native_trades(
@@ -1250,6 +1145,26 @@ pub fn normalize_csv_native_trades(
     csv_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+) -> Result<CanonicalTradesTable> {
+    normalize_csv_native_trades_with_meter(
+        accepted,
+        identity,
+        mapping,
+        csv_text,
+        capture_time_nanos,
+        ingest_run_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+fn normalize_csv_native_trades_with_meter(
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    mapping: &CsvTradeMappingConfig,
+    csv_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CanonicalTradesTable> {
     ensure!(
         !ingest_run_id.trim().is_empty(),
@@ -1323,10 +1238,17 @@ pub fn normalize_csv_native_trades(
 
     let mut rows = Vec::new();
     for (index, record) in reader.records().enumerate() {
-        let fields = record.with_context(|| format!("row {index}: malformed csv record"))?;
+        let fields = match record {
+            Ok(fields) => fields,
+            Err(error) => {
+                work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
+                return Err(error).with_context(|| format!("row {index}: malformed csv record"));
+            }
+        };
         if fields.iter().all(str::is_empty) {
             continue;
         }
+        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             fields.len() == header_columns.len(),
             "row {index} has {} fields, expected {}",
@@ -1356,7 +1278,9 @@ pub fn normalize_csv_native_trades(
             .with_context(|| format!("row {index}: invalid size {size_raw:?}"))?;
         ensure!(price > Decimal::ZERO, "row {index}: non-positive price");
         ensure!(size > Decimal::ZERO, "row {index}: non-positive size");
-        let notional = price * size;
+        let notional = price
+            .checked_mul(size)
+            .with_context(|| format!("row {index}: notional overflow"))?;
 
         rows.push(CanonicalTradeRow {
             schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
@@ -1414,6 +1338,7 @@ pub fn normalize_registered_trade_converter(
     csv_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CanonicalTradesTable> {
     let converter = require_registered_trade_converter_for_table_family(
         &converter_config.identity,
@@ -1421,13 +1346,14 @@ pub fn normalize_registered_trade_converter(
         &accepted.table_family,
     )?;
     match converter.kind {
-        SourceAdapterKind::CsvNativeTrades => normalize_csv_native_trades(
+        SourceAdapterKind::CsvNativeTrades => normalize_csv_native_trades_with_meter(
             accepted,
             identity,
             &converter_config.csv,
             csv_text,
             capture_time_nanos,
             ingest_run_id,
+            work_budget,
         ),
         SourceAdapterKind::CsvNativeBars => {
             bail!("CSV native-bars adapter cannot normalize native trades")
@@ -1491,6 +1417,7 @@ pub fn normalize_registered_bar_converter(
     csv_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalBarsTable>> {
     let converter = require_registered_bar_converter_for_table_family(
         &converter_config.identity,
@@ -1505,13 +1432,14 @@ pub fn normalize_registered_bar_converter(
                     converter.identity
                 )
             })?;
-            super::canonical_bars::normalize_csv_native_bars(
+            super::canonical_bars::normalize_csv_native_bars_with_meter(
                 accepted,
                 identities,
                 mapping,
                 csv_text,
                 capture_time_nanos,
                 ingest_run_id,
+                work_budget,
             )
         }
         SourceAdapterKind::CsvNativeTrades => {
@@ -1583,6 +1511,7 @@ pub fn normalize_registered_paged_json_bar_converter(
     json_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalBarsTable>> {
     let converter = require_registered_paged_json_bar_converter_for_table_family(
         &converter_config.identity,
@@ -1597,13 +1526,14 @@ pub fn normalize_registered_paged_json_bar_converter(
                     converter.identity
                 )
             })?;
-            super::canonical_bars::normalize_paged_json_bars(
+            super::canonical_bars::normalize_paged_json_bars_with_meter(
                 accepted,
                 identity,
                 mapping,
                 json_text,
                 capture_time_nanos,
                 ingest_run_id,
+                work_budget,
             )
         }
         SourceAdapterKind::CsvNativeBars => {
@@ -1674,6 +1604,7 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
     jsonl_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalBarsTable>> {
     let converter = require_registered_jsonl_multi_interval_bar_converter_for_table_family(
         &converter_config.identity,
@@ -1688,13 +1619,14 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
                     converter.identity
                 )
             })?;
-            super::canonical_bars::normalize_jsonl_multi_interval_bars(
+            super::canonical_bars::normalize_jsonl_multi_interval_bars_with_meter(
                 accepted,
                 identities,
                 mapping,
                 jsonl_text,
                 capture_time_nanos,
                 ingest_run_id,
+                work_budget,
             )
         }
         SourceAdapterKind::CsvNativeBars => {
@@ -1764,6 +1696,7 @@ pub fn normalize_registered_order_book_delta_converter(
     jsonl_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>> {
     let converter = require_registered_order_book_delta_converter_for_table_family(
         &converter_config.identity,
@@ -1778,13 +1711,14 @@ pub fn normalize_registered_order_book_delta_converter(
                     converter.identity
                 )
             })?;
-            super::canonical_order_book_deltas::normalize_jsonl_snapshot_deltas(
+            super::canonical_order_book_deltas::normalize_jsonl_snapshot_deltas_with_meter(
                 accepted,
                 identities,
                 mapping,
                 jsonl_text,
                 capture_time_nanos,
                 ingest_run_id,
+                work_budget,
             )
         }
         SourceAdapterKind::TarJsonlSnapshotDeltas => {
@@ -1862,6 +1796,7 @@ pub fn normalize_registered_tar_order_book_delta_converter(
     members: impl Iterator<Item = Result<super::tar_reader::TarMember>>,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>> {
     let converter = require_registered_tar_order_book_delta_converter_for_table_family(
         &converter_config.identity,
@@ -1876,13 +1811,14 @@ pub fn normalize_registered_tar_order_book_delta_converter(
                     converter.identity
                 )
             })?;
-            super::canonical_order_book_deltas::normalize_tar_jsonl_snapshot_deltas(
+            super::canonical_order_book_deltas::normalize_tar_jsonl_snapshot_deltas_with_meter(
                 accepted,
                 identities,
                 mapping,
                 members,
                 capture_time_nanos,
                 ingest_run_id,
+                work_budget,
             )
         }
         SourceAdapterKind::JsonlSnapshotDeltas => {
@@ -1957,6 +1893,7 @@ pub fn normalize_registered_event_stream_delta_converter(
     parquet_bytes: &[u8],
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<(
     Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>,
     Vec<CanonicalTradesTable>,
@@ -1974,13 +1911,14 @@ pub fn normalize_registered_event_stream_delta_converter(
                     converter.identity
                 )
             })?;
-            super::canonical_order_book_deltas::normalize_parquet_event_stream_deltas(
+            super::canonical_order_book_deltas::normalize_parquet_event_stream_deltas_with_meter(
                 accepted,
                 identities,
                 mapping,
                 parquet_bytes,
                 capture_time_nanos,
                 ingest_run_id,
+                work_budget,
             )
         }
         SourceAdapterKind::JsonlSnapshotDeltas => {
@@ -2050,6 +1988,7 @@ pub fn normalize_registered_seeded_l2_quote_converter(
     jsonl_text: &str,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
     let converter = require_registered_seeded_l2_quote_converter_for_table_family(
         &converter_config.identity,
@@ -2062,13 +2001,14 @@ pub fn normalize_registered_seeded_l2_quote_converter(
             converter.identity
         )
     })?;
-    super::seeded_l2_quotes::normalize_seeded_l2_jsonl_quotes(
+    super::seeded_l2_quotes::normalize_seeded_l2_jsonl_quotes_with_meter(
         accepted,
         identity,
         mapping,
         jsonl_text,
         capture_time_nanos,
         ingest_run_id,
+        work_budget,
     )
 }
 
@@ -2087,6 +2027,7 @@ pub fn normalize_registered_tar_seeded_l2_quote_converter(
     members: impl IntoIterator<Item = super::tar_reader::TarMember>,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
     let converter = require_registered_seeded_l2_quote_converter_for_table_family(
         &converter_config.identity,
@@ -2099,13 +2040,14 @@ pub fn normalize_registered_tar_seeded_l2_quote_converter(
             converter.identity
         )
     })?;
-    super::seeded_l2_quotes::normalize_seeded_l2_tar_jsonl_quotes(
+    super::seeded_l2_quotes::normalize_seeded_l2_tar_jsonl_quotes_with_meter(
         accepted,
         identity,
         mapping,
         members,
         capture_time_nanos,
         ingest_run_id,
+        work_budget,
     )
 }
 
@@ -2139,7 +2081,9 @@ pub fn normalize_registered_quote_converter(
     _text: &str,
     _capture_time_nanos: i64,
     _ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let converter = require_registered_quote_converter_for_table_family(
         &converter_config.identity,
         &converter_config.version,
@@ -2224,7 +2168,9 @@ pub fn normalize_registered_index_converter(
     _text: &str,
     _capture_time_nanos: i64,
     _ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalIndexPricesTable>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let _adapter = require_registered_index_converter_for_table_family(
         &converter_config.identity,
         &converter_config.version,
@@ -2259,7 +2205,9 @@ pub fn normalize_registered_mark_converter(
     _text: &str,
     _capture_time_nanos: i64,
     _ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalMarkPricesTable>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let _adapter = require_registered_mark_converter_for_table_family(
         &converter_config.identity,
         &converter_config.version,
@@ -2294,7 +2242,9 @@ pub fn normalize_registered_funding_converter(
     _text: &str,
     _capture_time_nanos: i64,
     _ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<super::canonical_market_data::CanonicalFundingRatesTable>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     let _adapter = require_registered_funding_converter_for_table_family(
         &converter_config.identity,
         &converter_config.version,
@@ -3722,6 +3672,53 @@ seller_side_values = ["Sell"]
         )
         .unwrap_err();
         assert!(err.to_string().contains("ingest_run_id"), "{err}");
+    }
+
+    #[test]
+    fn malformed_csv_record_is_metered_before_the_parse_error_returns() {
+        let mapping = CsvTradeMappingConfig {
+            has_headers: true,
+            trade_id_column: "id".to_string(),
+            timestamp_column: "timestamp".to_string(),
+            timestamp_unit: CsvTimestampUnit::Milliseconds,
+            price_column: "price".to_string(),
+            size_column: "volume".to_string(),
+            side_column: "side".to_string(),
+            buyer_side_values: vec!["buy".to_string()],
+            seller_side_values: vec!["sell".to_string()],
+        };
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,617.2,0.3,buy,0\n\
+            2,1772323201666,617.2\n";
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+
+        let error = normalize_csv_native_trades_with_meter(
+            &accepted_dataset(),
+            &identity(),
+            &mapping,
+            csv,
+            0,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect_err("malformed second record must consume the second source row");
+
+        assert!(
+            error
+                .to_string()
+                .contains("max_source_rows actual 2 exceeds limit 1"),
+            "{error:#}"
+        );
     }
 
     #[test]

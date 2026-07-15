@@ -11,7 +11,10 @@ use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Pa
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_manifest::MarketStructureFixture;
+use crate::{
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    run_manifest::MarketStructureFixture,
+};
 
 const CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION: &str = "catalog-projection-manifest-v1";
 
@@ -784,6 +787,55 @@ pub async fn persist_catalog_projection_for_source_binding(
     expected_market_structure_fixture: MarketStructureFixture,
     local_catalog_root: &Path,
 ) -> Result<PersistedCatalogProjection> {
+    persist_catalog_projection_for_source_binding_guarded(
+        store,
+        artifact_root,
+        dispatch,
+        source_binding,
+        expected_market_structure_fixture,
+        local_catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+}
+
+/// Persist one catalog projection while checking the shared operator deadline
+/// before and after every immutable object write.
+///
+/// # Errors
+///
+/// Returns the same errors as [`persist_catalog_projection_for_source_binding`]
+/// and fails when the operator work budget expires.
+pub async fn persist_catalog_projection_for_source_binding_guarded(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    dispatch: &CatalogDispatchConfig,
+    source_binding: &str,
+    expected_market_structure_fixture: MarketStructureFixture,
+    local_catalog_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<PersistedCatalogProjection> {
+    catalog_projection_for_source_binding_guarded(
+        store,
+        artifact_root,
+        dispatch,
+        source_binding,
+        expected_market_structure_fixture,
+        local_catalog_root,
+        work_budget,
+    )
+    .await
+}
+
+async fn catalog_projection_for_source_binding_guarded(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    dispatch: &CatalogDispatchConfig,
+    source_binding: &str,
+    expected_market_structure_fixture: MarketStructureFixture,
+    local_catalog_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<PersistedCatalogProjection> {
     ensure!(
         local_catalog_root.is_dir(),
         "local catalog projection root {} is not a directory",
@@ -804,6 +856,7 @@ pub async fn persist_catalog_projection_for_source_binding(
     let writer = CreateOnlyArtifactWriter::new(store);
     let mut objects = Vec::with_capacity(file_paths.len());
     for file_path in file_paths {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         let relative_path = file_path
             .strip_prefix(local_catalog_root)
             .with_context(|| format!("derive catalog relative path for {}", file_path.display()))?;
@@ -826,6 +879,7 @@ pub async fn persist_catalog_projection_for_source_binding(
             .put_create_idempotent_with_disposition(&object_path, payload)
             .await
             .with_context(|| format!("persist catalog object {uri}"))?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
         objects.push(PersistedCatalogProjectionObject {
             relative_path: relative_key,
             uri,
@@ -856,10 +910,12 @@ pub async fn persist_catalog_projection_for_source_binding(
                 .collect(),
         })
         .context("serialize catalog projection manifest")?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     let (_version, manifest_create_only_write) = writer
         .put_create_idempotent_with_disposition(&manifest_path, manifest_payload)
         .await
         .with_context(|| format!("persist catalog projection manifest {manifest_uri}"))?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
     Ok(PersistedCatalogProjection {
         catalog_root_uri,
         manifest_uri,

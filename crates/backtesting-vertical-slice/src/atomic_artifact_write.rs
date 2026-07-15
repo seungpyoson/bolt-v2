@@ -19,11 +19,23 @@
 //! guard that precedes any write; this helper only makes the write itself safe.
 
 use std::{
+    convert::Infallible,
     fs,
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use anyhow::{Context, Result};
+
+use crate::operator_work_budget::{
+    OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+};
+
+enum AtomicWriteInnerError<E> {
+    Io(std::io::Error),
+    Authorize(E),
+}
 
 /// Write `bytes` to `path` atomically via a uniquely named temp sibling in the
 /// same directory.
@@ -35,11 +47,46 @@ use std::{
 /// last-rename-wins. On any error the temp file is removed so no orphan
 /// remains. Returns `std::io::Error` on failure.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    match atomic_write_inner(path, bytes, || {
+        Ok::<Option<OperatorWorkBudgetCommitPermit>, Infallible>(None)
+    }) {
+        Ok(()) => Ok(()),
+        Err(AtomicWriteInnerError::Io(error)) => Err(error),
+        Err(AtomicWriteInnerError::Authorize(never)) => match never {},
+    }
+}
+
+/// Write a completion object to a temp sibling, sample the deadline immediately
+/// before rename, and consume the resulting one-use commit permit in the rename.
+pub fn atomic_write_guarded(
+    path: &Path,
+    bytes: &[u8],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    atomic_write_inner(path, bytes, || {
+        work_budget.authorize_commit(stage).map(Some)
+    })
+    .map_err(|error| match error {
+        AtomicWriteInnerError::Io(error) => anyhow::Error::new(error),
+        AtomicWriteInnerError::Authorize(error) => error,
+    })
+    .with_context(|| format!("guarded atomic write {}", path.display()))
+}
+
+fn atomic_write_inner<E, F>(
+    path: &Path,
+    bytes: &[u8],
+    authorize_commit: F,
+) -> std::result::Result<(), AtomicWriteInnerError<E>>
+where
+    F: FnOnce() -> std::result::Result<Option<OperatorWorkBudgetCommitPermit>, E>,
+{
     let dir = path.parent().ok_or_else(|| {
-        std::io::Error::new(
+        AtomicWriteInnerError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "atomic_write: path has no parent directory",
-        )
+        ))
     })?;
     // Unique sibling name so concurrent writers for the same target never share
     // a temp file (which would let one writer's bytes overwrite another's
@@ -57,13 +104,28 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // Write to temp; clean up on any error so no orphan remains.
     if let Err(write_err) = fs::write(&tmp_path, bytes) {
         let _ = fs::remove_file(&tmp_path);
-        return Err(write_err);
+        return Err(AtomicWriteInnerError::Io(write_err));
     }
-    if let Err(rename_err) = fs::rename(&tmp_path, path) {
+    let commit_permit = match authorize_commit() {
+        Ok(permit) => permit,
+        Err(error) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(AtomicWriteInnerError::Authorize(error));
+        }
+    };
+    if let Err(rename_err) = commit_atomic_rename(&tmp_path, path, commit_permit) {
         let _ = fs::remove_file(&tmp_path);
-        return Err(rename_err);
+        return Err(AtomicWriteInnerError::Io(rename_err));
     }
     Ok(())
+}
+
+fn commit_atomic_rename(
+    tmp_path: &Path,
+    path: &Path,
+    _permit: Option<OperatorWorkBudgetCommitPermit>,
+) -> std::io::Result<()> {
+    fs::rename(tmp_path, path)
 }
 
 /// Process-unique token for naming temp files. The monotonic counter guarantees

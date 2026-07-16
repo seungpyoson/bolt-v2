@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import pathlib
 import re
@@ -175,13 +176,15 @@ def _read_toml(path: pathlib.Path) -> dict[str, object]:
     return document
 
 
-def _load_runtime(path: pathlib.Path) -> RuntimeConfig:
+def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
     document = _read_toml(path)
+    root_document = _read_toml(root_path)
     _exact_keys(
         document,
         {
             "schema_version",
             "production_activation_enabled",
+            "wallet_authority",
             "redemption",
             "protocol_bounds",
             "credential_set",
@@ -193,13 +196,42 @@ def _load_runtime(path: pathlib.Path) -> RuntimeConfig:
     if activation is not False:
         raise ConfigError("production_activation_enabled must remain false")
 
+    wallet_authority = _table(document["wallet_authority"], "wallet_authority")
+    _exact_keys(wallet_authority, {"root_client"}, "wallet_authority")
+    root_client = _string(wallet_authority["root_client"], "wallet_authority.root_client")
+
+    aws = _table(root_document.get("aws"), "root.aws")
+    aws_region = _string(aws.get("region"), "root.aws.region")
+    if any(character.isspace() for character in aws_region):
+        raise ConfigError("root.aws.region must not contain whitespace")
+    clients = _table(root_document.get("clients"), "root.clients")
+    client = _table(clients.get(root_client), f"root.clients.{root_client}")
+    if _string(client.get("venue"), f"root.clients.{root_client}.venue") != "POLYMARKET":
+        raise ConfigError("wallet_authority.root_client must select a POLYMARKET client")
+    execution = _table(
+        client.get("execution"), f"root.clients.{root_client}.execution"
+    )
+    signature_type = _string(
+        execution.get("signature_type"),
+        f"root.clients.{root_client}.execution.signature_type",
+    )
+    if signature_type != "poly_gnosis_safe":
+        raise ConfigError("wallet_authority.root_client must select a poly_gnosis_safe client")
+    wallet_type = signature_type.removeprefix("poly_gnosis_").upper()
+    safe_address = _address(
+        execution.get("funder"), f"root.clients.{root_client}.execution.funder"
+    )
+    secrets = _table(client.get("secrets"), f"root.clients.{root_client}.secrets")
+    signer_private_key_ssm_path = _ssm_path(
+        secrets.get("private_key_ssm_path"),
+        f"root.clients.{root_client}.secrets.private_key_ssm_path",
+    )
+
     redemption = _table(document["redemption"], "redemption")
     _exact_keys(
         redemption,
         {
             "chain_id",
-            "wallet_type",
-            "safe_address",
             "collateral_asset",
             "output_asset",
             "standard_adapter_target",
@@ -210,9 +242,6 @@ def _load_runtime(path: pathlib.Path) -> RuntimeConfig:
         "redemption",
     )
     chain_id = _integer(redemption["chain_id"], "redemption.chain_id", minimum=1, maximum=(1 << 64) - 1)
-    wallet_type = _string(redemption["wallet_type"], "redemption.wallet_type")
-    if wallet_type != "SAFE":
-        raise ConfigError("redemption.wallet_type must equal SAFE")
     dummy_values = redemption["dummy_index_sets"]
     if not isinstance(dummy_values, list) or len(dummy_values) != 2:
         raise ConfigError("redemption.dummy_index_sets must contain exactly two uint256 strings")
@@ -234,24 +263,18 @@ def _load_runtime(path: pathlib.Path) -> RuntimeConfig:
     _exact_keys(
         credentials,
         {
-            "aws_region",
-            "signer_private_key_ssm_path",
             "builder_api_key_ssm_path",
             "builder_api_secret_ssm_path",
             "builder_passphrase_ssm_path",
         },
         "credential_set",
     )
-    aws_region = _string(credentials["aws_region"], "credential_set.aws_region")
-    if any(character.isspace() for character in aws_region):
-        raise ConfigError("credential_set.aws_region must not contain whitespace")
-
     return RuntimeConfig(
         schema_version=schema_version,
         production_activation_enabled=activation,
         chain_id=chain_id,
         wallet_type=wallet_type,
-        safe_address=_address(redemption["safe_address"], "redemption.safe_address"),
+        safe_address=safe_address,
         collateral_asset=_address(redemption["collateral_asset"], "redemption.collateral_asset"),
         output_asset=_address(redemption["output_asset"], "redemption.output_asset"),
         standard_adapter_target=_address(
@@ -267,10 +290,7 @@ def _load_runtime(path: pathlib.Path) -> RuntimeConfig:
         dummy_index_sets=dummy_index_sets,
         maximum_safe_nonce_decimal_digits=maximum_digits,
         aws_region=aws_region,
-        signer_private_key_ssm_path=_ssm_path(
-            credentials["signer_private_key_ssm_path"],
-            "credential_set.signer_private_key_ssm_path",
-        ),
+        signer_private_key_ssm_path=signer_private_key_ssm_path,
         builder_api_key_ssm_path=_ssm_path(
             credentials["builder_api_key_ssm_path"],
             "credential_set.builder_api_key_ssm_path",
@@ -286,7 +306,20 @@ def _load_runtime(path: pathlib.Path) -> RuntimeConfig:
     )
 
 
-def _load_evidence(path: pathlib.Path) -> ProtocolEvidence:
+def _deployment_fact_payload(
+    runtime: RuntimeConfig,
+    source_url: str,
+    observed_date: str,
+) -> bytes:
+    return (
+        f"source_url={source_url}\n"
+        f"observed_date={observed_date}\n"
+        f"CtfCollateralAdapter={runtime.standard_adapter_target}\n"
+        f"NegRiskCtfCollateralAdapter={runtime.negative_risk_adapter_target}\n"
+    ).encode("utf-8")
+
+
+def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEvidence:
     document = _read_toml(path)
     _exact_keys(document, {"schema_version", "adapter_abi", "safe_request"}, "evidence root")
     _schema_version(document, "schema_version")
@@ -297,8 +330,10 @@ def _load_evidence(path: pathlib.Path) -> ProtocolEvidence:
         {
             "repository",
             "revision",
-            "deployment_source_path",
-            "deployment_source_sha256",
+            "deployment_source_url",
+            "deployment_observed_date",
+            "deployment_fact_format_version",
+            "deployment_fact_sha256",
             "standard_source_path",
             "standard_source_sha256",
             "negative_risk_source_path",
@@ -310,8 +345,29 @@ def _load_evidence(path: pathlib.Path) -> ProtocolEvidence:
     )
     _string(adapter["repository"], "adapter_abi.repository")
     _revision(adapter["revision"], "adapter_abi.revision")
-    _source_path(adapter["deployment_source_path"], "adapter_abi.deployment_source_path")
-    _sha256(adapter["deployment_source_sha256"], "adapter_abi.deployment_source_sha256")
+    source_url = _string(
+        adapter["deployment_source_url"], "adapter_abi.deployment_source_url"
+    )
+    observed_date = _string(
+        adapter["deployment_observed_date"], "adapter_abi.deployment_observed_date"
+    )
+    _integer(
+        adapter["deployment_fact_format_version"],
+        "adapter_abi.deployment_fact_format_version",
+        minimum=1,
+        maximum=1,
+    )
+    observed_fact_sha256 = _sha256(
+        adapter["deployment_fact_sha256"], "adapter_abi.deployment_fact_sha256"
+    )
+    expected_fact_sha256 = hashlib.sha256(
+        _deployment_fact_payload(runtime, source_url, observed_date)
+    ).hexdigest()
+    if observed_fact_sha256 != expected_fact_sha256:
+        raise ConfigError(
+            "adapter_abi.deployment_fact_sha256 must hash the v1 canonical source URL, "
+            "observed date, and normalized runtime adapter targets"
+        )
     _source_path(adapter["standard_source_path"], "adapter_abi.standard_source_path")
     _sha256(adapter["standard_source_sha256"], "adapter_abi.standard_source_sha256")
     _source_path(
@@ -393,10 +449,15 @@ def _load_evidence(path: pathlib.Path) -> ProtocolEvidence:
     )
 
 
-def load_config(runtime_path: pathlib.Path, evidence_path: pathlib.Path) -> ConfigProjection:
+def load_config(
+    runtime_path: pathlib.Path,
+    evidence_path: pathlib.Path,
+    root_path: pathlib.Path,
+) -> ConfigProjection:
+    runtime = _load_runtime(runtime_path, root_path)
     return ConfigProjection(
-        runtime=_load_runtime(runtime_path),
-        evidence=_load_evidence(evidence_path),
+        runtime=runtime,
+        evidence=_load_evidence(evidence_path, runtime),
     )
 
 
@@ -409,12 +470,17 @@ def _u256_limbs(value: int) -> str:
     return f"U256::from_limbs([{', '.join(str(limb) for limb in limbs)}])"
 
 
-def render_rust(config: ConfigProjection, runtime_name: str, evidence_name: str) -> str:
+def render_rust(
+    config: ConfigProjection,
+    runtime_name: str,
+    evidence_name: str,
+    root_name: str,
+) -> str:
     runtime = config.runtime
     evidence = config.evidence
     selector = ", ".join(str(byte) for byte in evidence.function_selector)
     dummy = ",\n            ".join(_u256_limbs(value) for value in runtime.dummy_index_sets)
-    return f"""// @generated by scripts/generate_polymarket_redemption_config.py from {runtime_name} and {evidence_name}.
+    return f"""// @generated by scripts/generate_polymarket_redemption_config.py from {runtime_name}, {evidence_name}, and {root_name}.
 // Do not edit this file directly.
 
 use alloy_primitives::U256;
@@ -469,14 +535,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-source", type=pathlib.Path, required=True)
     parser.add_argument("--evidence-source", type=pathlib.Path, required=True)
+    parser.add_argument("--root-source", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args(argv)
     try:
         rendered = render_rust(
-            load_config(arguments.runtime_source, arguments.evidence_source),
+            load_config(
+                arguments.runtime_source,
+                arguments.evidence_source,
+                arguments.root_source,
+            ),
             arguments.runtime_source.name,
             arguments.evidence_source.name,
+            arguments.root_source.name,
         )
         if arguments.check:
             current = arguments.output.read_text(encoding="utf-8")

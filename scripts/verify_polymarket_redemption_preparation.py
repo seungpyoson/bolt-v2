@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 import re
 import subprocess
@@ -13,6 +14,7 @@ import tomllib
 OWNER = pathlib.Path("src/bolt_v3_polymarket_redemption.rs")
 GENERATED = pathlib.Path("src/bolt_v3_polymarket_redemption/generated.rs")
 RUNTIME = pathlib.Path("config/polymarket-redemption.toml")
+ROOT_RUNTIME = pathlib.Path("config/root.toml")
 EVIDENCE = pathlib.Path("config/polymarket-redemption-source-evidence.toml")
 COMPILE_FAIL = pathlib.Path("tests/polymarket_redemption_preparation_compile_fail.rs")
 GENERATOR = pathlib.Path("scripts/generate_polymarket_redemption_config.py")
@@ -20,7 +22,6 @@ RUNTIME_AUTHORITY_KEYS = frozenset(
     {
         "standard_adapter_target",
         "negative_risk_adapter_target",
-        "signer_private_key_ssm_path",
         "builder_api_key_ssm_path",
         "builder_api_secret_ssm_path",
         "builder_passphrase_ssm_path",
@@ -29,8 +30,10 @@ RUNTIME_AUTHORITY_KEYS = frozenset(
 EXPECTED_EVIDENCE = {
     "adapter_repository": "https://github.com/Polymarket/ctf-exchange-v2",
     "adapter_revision": "ccc0596074f4dfd62c944fbca4de252893b82b4b",
-    "deployment_source_path": "README.md",
-    "deployment_source_sha256": "41def0727a8adbaccefb3c25bce4e50166915f98ea3e9588323304c2851fac7c",
+    "deployment_source_url": "https://docs.polymarket.com/resources/contracts",
+    "deployment_observed_date": "2026-07-16",
+    "deployment_fact_format_version": 1,
+    "deployment_fact_sha256": "3aa2b564b14a713aa3ee7465878c6d1fe20ee3353f313d4718dfefa24d81908a",
     "standard_source_path": "src/adapters/CtfCollateralAdapter.sol",
     "standard_source_sha256": "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
     "negative_risk_source_path": "src/adapters/NegRiskCtfCollateralAdapter.sol",
@@ -78,9 +81,32 @@ def _prepare_signature(text: str) -> str:
     return text[start:body] if body >= 0 else text[start:]
 
 
+def _deployment_fact_sha256(
+    source_url: object,
+    observed_date: object,
+    standard_target: object,
+    negative_risk_target: object,
+) -> str:
+    payload = (
+        f"source_url={source_url}\n"
+        f"observed_date={observed_date}\n"
+        f"CtfCollateralAdapter={str(standard_target).lower()}\n"
+        f"NegRiskCtfCollateralAdapter={str(negative_risk_target).lower()}\n"
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def boundary_errors(root: pathlib.Path) -> list[str]:
     errors: list[str] = []
-    required = [OWNER, GENERATED, RUNTIME, EVIDENCE, COMPILE_FAIL, pathlib.Path("Cargo.toml")]
+    required = [
+        OWNER,
+        GENERATED,
+        RUNTIME,
+        ROOT_RUNTIME,
+        EVIDENCE,
+        COMPILE_FAIL,
+        pathlib.Path("Cargo.toml"),
+    ]
     missing = [str(path) for path in required if not (root / path).is_file()]
     if missing:
         return [f"missing required redemption preparation artifact(s): {missing}"]
@@ -88,6 +114,7 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
     try:
         owner_text = _read(root / OWNER)
         generated_text = _read(root / GENERATED)
+        runtime_text = _read(root / RUNTIME)
         runtime = _toml(root / RUNTIME)
         evidence = _toml(root / EVIDENCE)
         compile_fail_text = _read(root / COMPILE_FAIL)
@@ -117,6 +144,22 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
 
     if runtime.get("production_activation_enabled") is not False:
         errors.append("production_activation_enabled must remain false")
+    wallet_authority = runtime.get("wallet_authority")
+    redemption = runtime.get("redemption")
+    if not isinstance(wallet_authority, dict) or not isinstance(redemption, dict):
+        errors.append("runtime config must contain wallet_authority and redemption tables")
+    elif not isinstance(wallet_authority.get("root_client"), str):
+        errors.append("wallet_authority.root_client must select a root config client")
+    duplicated_wallet_fields = sorted(
+        field
+        for field in ("aws_region", "safe_address", "signer_private_key_ssm_path")
+        if re.search(rf"(?m)^\s*{re.escape(field)}\s*=", runtime_text)
+    )
+    if duplicated_wallet_fields:
+        errors.append(
+            "redemption wallet and signer fields must remain single-sourced from config/root.toml: "
+            f"{duplicated_wallet_fields}"
+        )
     evidence_text = _read(root / EVIDENCE)
     duplicated_keys = sorted(
         key
@@ -134,8 +177,12 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         observed = {
             "adapter_repository": adapter.get("repository"),
             "adapter_revision": adapter.get("revision"),
-            "deployment_source_path": adapter.get("deployment_source_path"),
-            "deployment_source_sha256": adapter.get("deployment_source_sha256"),
+            "deployment_source_url": adapter.get("deployment_source_url"),
+            "deployment_observed_date": adapter.get("deployment_observed_date"),
+            "deployment_fact_format_version": adapter.get(
+                "deployment_fact_format_version"
+            ),
+            "deployment_fact_sha256": adapter.get("deployment_fact_sha256"),
             "standard_source_path": adapter.get("standard_source_path"),
             "standard_source_sha256": adapter.get("standard_source_sha256"),
             "negative_risk_source_path": adapter.get("negative_risk_source_path"),
@@ -155,6 +202,17 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
             errors.append(
                 "source evidence must remain pinned to the reviewed adapter/request revisions and ABI: "
                 f"{observed}"
+            )
+        if isinstance(redemption, dict) and adapter.get(
+            "deployment_fact_sha256"
+        ) != _deployment_fact_sha256(
+            adapter.get("deployment_source_url"),
+            adapter.get("deployment_observed_date"),
+            redemption.get("standard_adapter_target"),
+            redemption.get("negative_risk_adapter_target"),
+        ):
+            errors.append(
+                "deployment fact hash must bind the source observation to normalized runtime adapter targets"
             )
 
     if "pub enum AttemptKind" not in production or not all(
@@ -321,6 +379,8 @@ def main() -> int:
             str(root / RUNTIME),
             "--evidence-source",
             str(root / EVIDENCE),
+            "--root-source",
+            str(root / ROOT_RUNTIME),
             "--output",
             str(root / GENERATED),
             "--check",

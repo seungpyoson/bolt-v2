@@ -59,24 +59,34 @@ pub(super) const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts = Redem
 RUNTIME = """\
 schema_version = 1
 production_activation_enabled = false
+[wallet_authority]
+root_client = "polymarket_main"
 [redemption]
 chain_id = 137
-wallet_type = "SAFE"
-safe_address = "0x1111111111111111111111111111111111111111"
 collateral_asset = "0x2222222222222222222222222222222222222222"
 output_asset = "0x3333333333333333333333333333333333333333"
-standard_adapter_target = "0x4444444444444444444444444444444444444444"
-negative_risk_adapter_target = "0x5555555555555555555555555555555555555555"
+standard_adapter_target = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+negative_risk_adapter_target = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 dummy_index_sets = ["1", "2"]
 [protocol_bounds]
 maximum_safe_nonce_decimal_digits = 78
 [credential_set]
-aws_region = "eu-west-2"
-signer_private_key_ssm_path = "/signer"
 builder_api_key_ssm_path = "/api-key"
 builder_api_secret_ssm_path = "/api-secret"
 builder_passphrase_ssm_path = "/passphrase"
+"""
+
+ROOT_RUNTIME = """\
+[aws]
+region = "eu-west-2"
+[clients.polymarket_main]
+venue = "POLYMARKET"
+[clients.polymarket_main.execution]
+signature_type = "poly_gnosis_safe"
+funder = "0x1111111111111111111111111111111111111111"
+[clients.polymarket_main.secrets]
+private_key_ssm_path = "/signer"
 """
 
 EVIDENCE = """\
@@ -84,8 +94,10 @@ schema_version = 1
 [adapter_abi]
 repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
-deployment_source_path = "README.md"
-deployment_source_sha256 = "41def0727a8adbaccefb3c25bce4e50166915f98ea3e9588323304c2851fac7c"
+deployment_source_url = "https://docs.polymarket.com/resources/contracts"
+deployment_observed_date = "2026-07-16"
+deployment_fact_format_version = 1
+deployment_fact_sha256 = "3aa2b564b14a713aa3ee7465878c6d1fe20ee3353f313d4718dfefa24d81908a"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
 standard_source_sha256 = "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
@@ -127,6 +139,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
         )
         (root / "src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
         (root / "config/polymarket-redemption.toml").write_text(RUNTIME, encoding="utf-8")
+        (root / "config/root.toml").write_text(ROOT_RUNTIME, encoding="utf-8")
         (root / "config/polymarket-redemption-source-evidence.toml").write_text(
             EVIDENCE, encoding="utf-8"
         )
@@ -149,8 +162,10 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
 
     def test_source_evidence_paths_and_hashes_are_pinned(self) -> None:
         mutations = (
-            ("README.md", "docs/deployments.md"),
-            ("41def0727a8adbaccefb3c25bce4e50166915f98ea3e9588323304c2851fac7c", "0" * 64),
+            ("https://docs.polymarket.com/resources/contracts", "https://docs.polymarket.com/resources/other"),
+            ("2026-07-16", "2026-07-15"),
+            ("deployment_fact_format_version = 1", "deployment_fact_format_version = 2"),
+            ("3aa2b564b14a713aa3ee7465878c6d1fe20ee3353f313d4718dfefa24d81908a", "0" * 64),
             ("src/adapters/CtfCollateralAdapter.sol", "src/adapters/Other.sol"),
             ("f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90", "1" * 64),
             ("src/adapters/NegRiskCtfCollateralAdapter.sol", "src/adapters/OtherNeg.sol"),
@@ -172,8 +187,46 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 self.assertTrue(
-                    any("source evidence must remain pinned" in error for error in verifier.boundary_errors(root))
+                    any(
+                        "source evidence must remain pinned" in error
+                        for error in verifier.boundary_errors(root)
+                    )
                 )
+
+    def test_stale_adapter_deployments_are_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        runtime = root / "config/polymarket-redemption.toml"
+        runtime.write_text(
+            runtime.read_text(encoding="utf-8").replace(
+                "0xAdA100Db00Ca00073811820692005400218FcE1f",
+                "0xADa100874d00e3331D00F2007a9c336a65009718",
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any(
+                "deployment fact hash" in error
+                for error in verifier.boundary_errors(root)
+            )
+        )
+
+    def test_wallet_and_signer_runtime_duplicates_are_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        runtime = root / "config/polymarket-redemption.toml"
+        runtime.write_text(
+            runtime.read_text(encoding="utf-8")
+            + '\nsafe_address = "0x1111111111111111111111111111111111111111"\n'
+            + 'signer_private_key_ssm_path = "/signer"\n',
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any(
+                "single-sourced from config/root.toml" in error
+                for error in verifier.boundary_errors(root)
+            )
+        )
 
     def test_new_risk_authority_in_production_owner_is_rejected(self) -> None:
         temporary, root = self.fixture()

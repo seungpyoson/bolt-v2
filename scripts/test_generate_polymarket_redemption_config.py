@@ -12,10 +12,11 @@ RUNTIME_TOML = """\
 schema_version = 1
 production_activation_enabled = false
 
+[wallet_authority]
+root_client = "polymarket_main"
+
 [redemption]
 chain_id = 137
-wallet_type = "SAFE"
-safe_address = "0x1111111111111111111111111111111111111111"
 collateral_asset = "0x4444444444444444444444444444444444444444"
 output_asset = "0x5555555555555555555555555555555555555555"
 standard_adapter_target = "0x2222222222222222222222222222222222222222"
@@ -27,11 +28,24 @@ dummy_index_sets = ["1", "2"]
 maximum_safe_nonce_decimal_digits = 78
 
 [credential_set]
-aws_region = "us-east-1"
-signer_private_key_ssm_path = "/bolt/polymarket/redemption/signer-private-key"
 builder_api_key_ssm_path = "/bolt/polymarket/redemption/builder-api-key"
 builder_api_secret_ssm_path = "/bolt/polymarket/redemption/builder-api-secret"
 builder_passphrase_ssm_path = "/bolt/polymarket/redemption/builder-passphrase"
+"""
+
+ROOT_TOML = """\
+[aws]
+region = "us-east-1"
+
+[clients.polymarket_main]
+venue = "POLYMARKET"
+
+[clients.polymarket_main.execution]
+signature_type = "poly_gnosis_safe"
+funder = "0x1111111111111111111111111111111111111111"
+
+[clients.polymarket_main.secrets]
+private_key_ssm_path = "/bolt/polymarket/redemption/signer-private-key"
 """
 
 EVIDENCE_TOML = """\
@@ -40,8 +54,10 @@ schema_version = 1
 [adapter_abi]
 repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
-deployment_source_path = "README.md"
-deployment_source_sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
+deployment_source_url = "https://docs.polymarket.com/resources/contracts"
+deployment_observed_date = "2026-07-16"
+deployment_fact_format_version = 1
+deployment_fact_sha256 = "820a77baf87037efc47eb26afdceed1acccb7844e628c9e93726a65d0cecb63b"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
 standard_source_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
@@ -75,20 +91,36 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def load(self, runtime_text: str = RUNTIME_TOML, evidence_text: str = EVIDENCE_TOML):
+    def load(
+        self,
+        runtime_text: str = RUNTIME_TOML,
+        evidence_text: str = EVIDENCE_TOML,
+        root_text: str = ROOT_TOML,
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             runtime = self.write(root, "runtime.toml", runtime_text)
             evidence = self.write(root, "evidence.toml", evidence_text)
-            return generator.load_config(runtime, evidence)
+            root_runtime = self.write(root, "root.toml", root_text)
+            return generator.load_config(runtime, evidence, root_runtime)
 
     def test_valid_sources_render_private_closed_rust_projection(self) -> None:
         config = self.load()
-        rendered = generator.render_rust(config, "runtime.toml", "evidence.toml")
+        rendered = generator.render_rust(
+            config, "runtime.toml", "evidence.toml", "root.toml"
+        )
 
         self.assertIn("production_activation_enabled: false", rendered)
         self.assertIn("chain_id: 137", rendered)
         self.assertIn('wallet_type: "SAFE"', rendered)
+        self.assertIn(
+            'safe_address: alloy_primitives::address!("0x1111111111111111111111111111111111111111")',
+            rendered,
+        )
+        self.assertIn(
+            'signer_private_key_ssm_path: "/bolt/polymarket/redemption/signer-private-key"',
+            rendered,
+        )
         self.assertIn("function_selector: [1, 183, 3, 124]", rendered)
         self.assertIn("dummy_index_sets: [", rendered)
         self.assertIn("U256::from_limbs([1, 0, 0, 0])", rendered)
@@ -103,6 +135,30 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.ConfigError, "unknown field"):
             self.load(RUNTIME_TOML.replace("chain_id = 137", "chain_id = 137\nsecond_chain_id = 137"))
 
+    def test_wallet_and_signer_are_derived_from_root_client(self) -> None:
+        changed = ROOT_TOML.replace(
+            "0x1111111111111111111111111111111111111111",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).replace(
+            "/bolt/polymarket/redemption/signer-private-key",
+            "/bolt/polymarket/rotated-private-key",
+        )
+        config = self.load(root_text=changed)
+        self.assertEqual(
+            config.runtime.safe_address,
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        self.assertEqual(
+            config.runtime.signer_private_key_ssm_path,
+            "/bolt/polymarket/rotated-private-key",
+        )
+
+    def test_wallet_authority_must_select_safe_polymarket_client(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "poly_gnosis_safe"):
+            self.load(
+                root_text=ROOT_TOML.replace("poly_gnosis_safe", "ed25519")
+            )
+
     def test_non_ssm_credential_reference_is_rejected(self) -> None:
         with self.assertRaisesRegex(generator.ConfigError, "valid absolute SSM path"):
             self.load(RUNTIME_TOML.replace("/bolt/polymarket/redemption/builder-api-key", "builder-api-key"))
@@ -110,6 +166,14 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
     def test_unpinned_evidence_revision_is_rejected(self) -> None:
         with self.assertRaisesRegex(generator.ConfigError, "40 lowercase hexadecimal"):
             self.load(evidence_text=EVIDENCE_TOML.replace("ccc0596074f4dfd62c944fbca4de252893b82b4b", "main"))
+
+    def test_deployment_fact_hash_must_match_runtime_targets(self) -> None:
+        changed_runtime = RUNTIME_TOML.replace(
+            "0x2222222222222222222222222222222222222222",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        with self.assertRaisesRegex(generator.ConfigError, "deployment_fact_sha256"):
+            self.load(runtime_text=changed_runtime)
 
     def test_evidence_cannot_duplicate_runtime_values(self) -> None:
         duplicated = EVIDENCE_TOML + '\nruntime_safe_address = "0x1111111111111111111111111111111111111111"\n'

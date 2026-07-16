@@ -21924,16 +21924,16 @@ reason = "Generated projection of the strict Polymarket redemption runtime and s
 [[allowed]]
 path = "src/bolt_v3_polymarket_redemption/generated.rs"
 kind = "string"
-literal = '''"0xada100874d00e3331d00f2007a9c336a65009718"'''
-context = '''"0xada100874d00e3331d00f2007a9c336a65009718"'''
+literal = '''"0xada100db00ca00073811820692005400218fce1f"'''
+context = '''"0xada100db00ca00073811820692005400218fce1f"'''
 classification = "generated_polymarket_redemption_toml_projection"
 reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
 
 [[allowed]]
 path = "src/bolt_v3_polymarket_redemption/generated.rs"
 kind = "string"
-literal = '''"0xada200001000ef00d07553cee7006808f895c6f1"'''
-context = '''"0xada200001000ef00d07553cee7006808f895c6f1"'''
+literal = '''"0xada2005600dec949baf300f4c6120000bdb6eaab"'''
+context = '''"0xada2005600dec949baf300f4c6120000bdb6eaab"'''
 classification = "generated_polymarket_redemption_toml_projection"
 reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
 

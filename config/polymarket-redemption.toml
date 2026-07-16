@@ -1,14 +1,15 @@
 schema_version = 1
 production_activation_enabled = false
 
+[wallet_authority]
+root_client = "polymarket_main"
+
 [redemption]
 chain_id = 137
-wallet_type = "SAFE"
-safe_address = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
 collateral_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-standard_adapter_target = "0xADa100874d00e3331D00F2007a9c336a65009718"
-negative_risk_adapter_target = "0xAdA200001000ef00D07553cEE7006808F895c6F1"
+standard_adapter_target = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+negative_risk_adapter_target = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 dummy_index_sets = ["1", "2"]
 
@@ -16,8 +17,6 @@ dummy_index_sets = ["1", "2"]
 maximum_safe_nonce_decimal_digits = 78
 
 [credential_set]
-aws_region = "eu-west-2"
-signer_private_key_ssm_path = "/bolt/polymarket/private-key"
 builder_api_key_ssm_path = "/bolt/polymarket/builder/api-key"
 builder_api_secret_ssm_path = "/bolt/polymarket/builder/api-secret"
 builder_passphrase_ssm_path = "/bolt/polymarket/builder/passphrase"

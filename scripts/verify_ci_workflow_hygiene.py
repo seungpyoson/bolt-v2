@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import hashlib
@@ -315,6 +316,7 @@ from ci_provenance import (
     POLICY_VALUES,
     REUSE_RELEVANT_WORKFLOW_ENV_KEYS,
     ProvenanceError,
+    CiPolicyResult as ProvenanceCiPolicyResult,
     check_lookback_le_retention,
     gate_name_collision_errors,
     github_actions_output_safe_check_name,
@@ -468,16 +470,6 @@ YAML_FOLDED_RUN_LINE_RE = re.compile(
 
 class PolicyError(RuntimeError):
     pass
-
-
-class CiPolicyResult(NamedTuple):
-    ci_policy_path: str
-    full_ci_required: bool
-    full_ci_deferred: bool
-    gate_name: str
-    backtester_gate_name: str
-    expected_event_class: str
-    reason: str
 
 
 class ArtifactRetentionClass(NamedTuple):
@@ -2185,25 +2177,29 @@ def evaluate_ci_policy(
     event_sender_id: int = -1,
     pull_request_author_id: int = -1,
     ref: str,
-) -> CiPolicyResult:
+) -> ProvenanceCiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
-    # Queue-only rework (#981): the runtime resolver now reads
-    # config.mergify_temp_pr_actor_id and an event_sender_id to bind the mergify temp
-    # PR to its actor. This static mirror delegates to that same resolver, so it must
-    # supply the bound actor id (or a sentinel that never matches a real sender) and
-    # thread the sender id through, or it would crash on the missing attribute.
-    config = type(
-        "StaticPolicyConfig",
-        (),
-        {
-            "policy": {key: str(value) for key, value in policy.items() if key != "override"},
-            "gate_names": dict(gate_names),
-            "mergify_temp_pr_head_ref_prefix": mergify_temp_pr_head_ref_prefix,
-            "mergify_temp_pr_actor_id": mergify_temp_pr_actor_id,
-            "force_full_ci": force_full_ci,
-        },
-    )()
+    # Keep this static policy adapter on the complete, validated runtime config
+    # contract. Dataclass replacement preserves new required fields automatically,
+    # while the policy-specific fields remain explicit synthetic test inputs.
+    base_config = load_config(DEFAULT_RUNNERS_CONFIG)
+    config = dataclasses.replace(
+        base_config,
+        policy={key: str(value) for key, value in policy.items() if key != "override"},
+        gate_names=dict(gate_names),
+        mergify_temp_pr_head_ref_prefix=(
+            mergify_temp_pr_head_ref_prefix
+            if mergify_temp_pr_head_ref_prefix
+            else base_config.mergify_temp_pr_head_ref_prefix
+        ),
+        mergify_temp_pr_actor_id=(
+            mergify_temp_pr_actor_id
+            if mergify_temp_pr_actor_id > 0
+            else base_config.mergify_temp_pr_actor_id
+        ),
+        force_full_ci=force_full_ci,
+    )
     try:
         result = provenance_evaluate_ci_policy(
             config,
@@ -2219,15 +2215,7 @@ def evaluate_ci_policy(
         )
     except ProvenanceError as exc:
         raise ValueError(str(exc)) from exc
-    return CiPolicyResult(
-        ci_policy_path=result.ci_policy_path,
-        full_ci_required=result.full_ci_required,
-        full_ci_deferred=result.full_ci_deferred,
-        gate_name=result.gate_name,
-        backtester_gate_name=result.backtester_gate_name,
-        expected_event_class=result.expected_event_class,
-        reason=result.reason,
-    )
+    return result
 
 
 def policy_row_is_proof_affecting(semantics: PolicyRowSemantics) -> bool:

@@ -48,6 +48,9 @@ ra001a_durable_tracer_max_job_minutes = 120
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 
+[backtester.issue_789]
+max_job_minutes = 120
+
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
@@ -270,6 +273,9 @@ max_wall_seconds = 3600
 [backtester.test_archive_timeout]
 ra001a_durable_tracer_max_job_minutes = 120
 ordinary_max_job_minutes = 360
+
+[backtester.issue_789]
+max_job_minutes = 120
 
 [ci_provenance.policy.override]
 ignore_emit_failure = false
@@ -860,7 +866,7 @@ def assert_positive_int_config_rejects_booleans() -> None:
             assert_raises(expected, lambda config=config: module.load_config(config))
 
 
-def assert_backtester_test_archive_timeout_config_rejects_invalid_values() -> None:
+def assert_backtester_timeout_configs_reject_invalid_values() -> None:
     module = load_script()
     cases = {
         "backtester.test_archive_timeout.ordinary_max_job_minutes must be a positive integer": CONFIG_TOML.replace(
@@ -899,13 +905,58 @@ def assert_backtester_test_archive_timeout_config_rejects_invalid_values() -> No
             1,
         ).replace("max_wall_seconds = 3600", "max_wall_seconds = 3570", 1),
     }
+    issue_789_cases = [
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = true",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                '[backtester.issue_789]\nmax_job_minutes = "120"',
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = 0",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' 360-minute maximum",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = 361",
+                1,
+            ),
+        ),
+    ]
     with tempfile.TemporaryDirectory() as tmp:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in issue_789_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
 
 
-def assert_backtester_test_archive_timeout_config_loads_limits() -> None:
+def assert_backtester_timeout_configs_load_limits() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         loaded = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -918,6 +969,11 @@ def assert_backtester_test_archive_timeout_config_loads_limits() -> None:
     )
     if actual != (360, 120, 3600, 30):
         raise AssertionError(f"backtester test-archive timeout config drifted: {actual}")
+    if loaded.backtester_issue_789_timeout_minutes != 120:
+        raise AssertionError(
+            "backtester issue #789 timeout config drifted: "
+            f"{loaded.backtester_issue_789_timeout_minutes}"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         boundary = module.load_config(
@@ -932,6 +988,20 @@ def assert_backtester_test_archive_timeout_config_loads_limits() -> None:
         )
     if boundary.backtester_test_archive_timeout.ra001a_durable_tracer_max_job_minutes != 61:
         raise AssertionError("a 61-minute job ceiling must cover a 60-minute wall limit plus 30-second grace")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        issue_789_boundary = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "[backtester.issue_789]\nmax_job_minutes = 120",
+                    "[backtester.issue_789]\nmax_job_minutes = 360",
+                    1,
+                ),
+            )
+        )
+    if issue_789_boundary.backtester_issue_789_timeout_minutes != 360:
+        raise AssertionError("the GitHub Actions 360-minute maximum must remain a valid issue #789 bound")
 
 
 def assert_deploy_artifact_window_uses_short_deploy_policy() -> None:
@@ -2768,6 +2838,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
             if output.get("backtester_test_archive_timeout_minutes") != "360":
                 raise AssertionError(f"ci-policy must expose the trusted ordinary timeout: {output}")
+            if output.get("backtester_issue_789_timeout_minutes") != "120":
+                raise AssertionError(f"ci-policy must expose the trusted issue #789 timeout: {output}")
 
         code, stdout, stderr = run_cli_with_event_sender(
             [
@@ -6040,8 +6112,8 @@ def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_positive_int_config_rejects_booleans()
-    assert_backtester_test_archive_timeout_config_rejects_invalid_values()
-    assert_backtester_test_archive_timeout_config_loads_limits()
+    assert_backtester_timeout_configs_reject_invalid_values()
+    assert_backtester_timeout_configs_load_limits()
     assert_deploy_artifact_window_uses_short_deploy_policy()
     assert_capture_config_can_omit_deploy_artifact_window()
     assert_optional_deploy_window_rejects_partial_config()

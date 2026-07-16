@@ -201,6 +201,7 @@ class ProvenanceConfig:
     max_lookback_age_seconds: int
     inherited_emitter_probe_timeout_seconds: int
     backtester_test_archive_timeout: BacktesterTestArchiveTimeoutConfig | None
+    backtester_issue_789_timeout_minutes: int | None
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -221,6 +222,7 @@ class CiPolicyResult:
     gate_name: str
     backtester_gate_name: str
     backtester_test_archive_timeout_minutes: int
+    backtester_issue_789_timeout_minutes: int
     expected_event_class: str
     reason: str
 
@@ -313,7 +315,9 @@ def load_backtester_test_archive_timeout_config(
     if backtester is None and not required:
         return None
     if not isinstance(backtester, dict):
-        raise ProvenanceError("missing [backtester]" if backtester is None else "backtester must be a table")
+        raise ProvenanceError(
+            "missing [backtester]" if backtester is None else "backtester must be a table"
+        )
 
     timeout_prefix = "backtester.test_archive_timeout"
     timeout = require_table(backtester, "test_archive_timeout", "backtester")
@@ -351,6 +355,33 @@ def load_backtester_test_archive_timeout_config(
         ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
         ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
     )
+
+
+def load_backtester_issue_789_timeout_minutes(
+    data: dict[str, object],
+    *,
+    required: bool,
+) -> int | None:
+    backtester = data.get("backtester")
+    if backtester is None and not required:
+        return None
+    if not isinstance(backtester, dict):
+        raise ProvenanceError(
+            "missing [backtester]" if backtester is None else "backtester must be a table"
+        )
+
+    issue_789 = require_table(backtester, "issue_789", "backtester")
+    max_job_minutes = require_positive_int(
+        issue_789,
+        "max_job_minutes",
+        "backtester.issue_789",
+    )
+    if max_job_minutes > GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES:
+        raise ProvenanceError(
+            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' "
+            f"{GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES}-minute maximum"
+        )
+    return max_job_minutes
 
 
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
@@ -697,6 +728,10 @@ def load_config(
         data,
         required=require_workflows,
     )
+    backtester_issue_789_timeout_minutes = load_backtester_issue_789_timeout_minutes(
+        data,
+        required=require_workflows,
+    )
 
     duplicated_fingerprint_keys = {
         "fingerprint_artifact_prefix",
@@ -951,6 +986,7 @@ def load_config(
         max_lookback_age_seconds=max_lookback_age_seconds,
         inherited_emitter_probe_timeout_seconds=inherited_emitter_probe_timeout_seconds,
         backtester_test_archive_timeout=backtester_test_archive_timeout,
+        backtester_issue_789_timeout_minutes=backtester_issue_789_timeout_minutes,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -1441,6 +1477,9 @@ def evaluate_ci_policy(
     timeout = config.backtester_test_archive_timeout
     if timeout is None:
         raise ProvenanceError("backtester test-archive timeout config is unavailable")
+    issue_789_timeout_minutes = config.backtester_issue_789_timeout_minutes
+    if issue_789_timeout_minutes is None:
+        raise ProvenanceError("backtester issue #789 timeout config is unavailable")
     mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
         event_action=event_action,
@@ -1530,6 +1569,7 @@ def evaluate_ci_policy(
         gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
         backtester_test_archive_timeout_minutes=timeout.ordinary_max_job_minutes,
+        backtester_issue_789_timeout_minutes=issue_789_timeout_minutes,
         expected_event_class=expected_event_class_for(reason, path),
         reason=reason,
     )
@@ -3627,6 +3667,10 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "backtester_test_archive_timeout_minutes="
                 f"{result.backtester_test_archive_timeout_minutes}"
+            )
+            print(
+                "backtester_issue_789_timeout_minutes="
+                f"{result.backtester_issue_789_timeout_minutes}"
             )
             print(f"expected_event_class={result.expected_event_class}")
             print(f"reason={result.reason}")

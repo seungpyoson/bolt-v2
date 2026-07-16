@@ -210,6 +210,7 @@ run_attempt = "${{ github.run_attempt }}"
 
 [backtester.issue_789]
 artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
+max_job_minutes = 120
 
 [backtester.issue_789.artifact_name_template_vars]
 run_id = "${{ github.run_id }}"

@@ -1418,13 +1418,10 @@ def assert_ci_policy_matrix() -> None:
 
 
 def assert_ci_policy_resolvers_agree() -> None:
-    # The runtime resolver (ci_provenance.evaluate_ci_policy) and the static
-    # contract resolver (verify_ci_workflow_hygiene.evaluate_ci_policy) are
-    # independent hand-maintained mirrors with no shared implementation. #848
-    # adds a merge_group row to both; this parity lock fails loud if the two ever
-    # diverge on any event, so a future drift cannot let the verifier certify a
-    # workflow the runtime actually under-validates (a skipped required check
-    # counts as passing in GitHub). Both are fed the real production config.
+    # The static adapter delegates to the runtime resolver with a typed copy of
+    # the real production config. Whole-result equality keeps every current and
+    # future CiPolicyResult field in the adapter contract instead of allowing a
+    # hand-maintained projection to silently omit new trusted outputs.
     verifier = load_verifier()
     provenance = load_provenance()
     config_path = REPO_ROOT / "ci" / "github-actions-runners.toml"
@@ -1472,28 +1469,16 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_base_changed=base_changed,
             ref=ref,
         )
-        ver_tuple = (
-            ver.ci_policy_path,
-            ver.full_ci_required,
-            ver.full_ci_deferred,
-            ver.gate_name,
-            ver.backtester_gate_name,
-            ver.expected_event_class,
-            ver.reason,
+        ver_contract = tuple(
+            (field.name, getattr(ver, field.name)) for field in dataclasses.fields(ver)
         )
-        prov_tuple = (
-            prov.ci_policy_path,
-            prov.full_ci_required,
-            prov.full_ci_deferred,
-            prov.gate_name,
-            prov.backtester_gate_name,
-            prov.expected_event_class,
-            prov.reason,
+        prov_contract = tuple(
+            (field.name, getattr(prov, field.name)) for field in dataclasses.fields(prov)
         )
-        if ver_tuple != prov_tuple:
+        if ver_contract != prov_contract:
             raise AssertionError(
                 f"ci_policy resolver drift for {event_name}/{action!r}: "
-                f"verifier={ver_tuple} provenance={prov_tuple}"
+                f"verifier={ver_contract} provenance={prov_contract}"
             )
         saw_full = saw_full or ver.ci_policy_path == "full"
         saw_iteration = saw_iteration or ver.ci_policy_path == "iteration"

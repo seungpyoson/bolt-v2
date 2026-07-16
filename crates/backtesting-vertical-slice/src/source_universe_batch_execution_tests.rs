@@ -16,7 +16,7 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
         BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
     },
-    operator::{DurableRunReceipt, OperatorRunSummary, RunSpec},
+    operator::{DurableRunReceipt, RunSpec},
     operator_work_budget::OperatorWorkBudgetGuard,
     source_proof::SourceBindingRegistry,
     source_universe_batch_execution::{
@@ -31,6 +31,7 @@ use backtesting_vertical_slice::{
         SourceUniverseVerifiedControlArtifacts, VerifiedSourceObject,
         execute_source_universe_batch_with_pinned_artifacts,
         execute_source_universe_batch_with_pinned_artifacts_factories,
+        synthetic_test_durable_completion,
         validate_source_universe_batch_execution_report,
         write_source_universe_batch_execution_report,
     },

@@ -258,7 +258,7 @@ mod tests {
     use object_store::{
         Attributes, CopyOptions, GetOptions, GetResult, GetResultPayload, ListResult,
         MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload,
-        PutResult, Result as ObjectStoreResult, memory::InMemory,
+        PutResult, Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
     };
 
     use super::{read_staged_s3_exact_current_version, staged_s3_read_plan};

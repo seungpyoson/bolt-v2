@@ -423,9 +423,18 @@ fn namespace_identity_at_fd(
     }
     // SAFETY: successful `fstatat` initialized the structure.
     let stat = unsafe { stat.assume_init() };
+    #[cfg(target_os = "linux")]
+    let device = stat.st_dev;
+    #[cfg(target_vendor = "apple")]
+    let device = u64::try_from(stat.st_dev).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "namespace reports a negative device identifier",
+        )
+    })?;
     Ok(NamespaceIdentity {
-        device: stat.st_dev as u64,
-        inode: stat.st_ino as u64,
+        device,
+        inode: stat.st_ino,
         kind: stat.st_mode & libc::S_IFMT,
     })
 }
@@ -515,8 +524,7 @@ impl OwnedAnonymousTempFile {
             .revalidate_path()
             .context("revalidate anonymous temp target parent")?;
         work_budget.check_deadline(stage)?;
-        let current = std::ffi::CStr::from_bytes_with_nul(b".\0")
-            .expect("static current-directory component must be NUL-terminated");
+        let current = c".";
         // SAFETY: the directory descriptor and static component are live. A
         // successful O_TMPFILE descriptor owns an unnamed inode and is moved
         // directly into File; no source pathname exists to swap.
@@ -559,8 +567,7 @@ impl OwnedAnonymousTempFile {
             work_budget,
             stage,
             |source_fd, target_parent_fd, target_name| {
-                let empty = std::ffi::CStr::from_bytes_with_nul(b"\0")
-                    .expect("static empty component must be NUL-terminated");
+                let empty = c"";
                 // SAFETY: source_fd is the live O_TMPFILE inode, target_parent_fd
                 // is pinned, and both C strings remain live for the syscall.
                 unsafe {
@@ -688,9 +695,7 @@ impl OwnedTempFile {
             device: metadata.dev(),
             inode: metadata.ino(),
         };
-        if let Err(error) = temp.revalidate_namespace() {
-            return Err(error);
-        }
+        temp.revalidate_namespace()?;
         Ok(temp)
     }
 
@@ -1023,15 +1028,18 @@ fn capture_directory_manifest_at_with_post_traversal_hook_guarded(
         work_budget,
         stage,
     )?;
+    let traversal_context = DirectoryManifestTraversalContext {
+        retained_inventory_bytes,
+        work_budget,
+        stage,
+    };
     accumulate_directory_manifest_guarded(
         &root_entry.file,
         Path::new(""),
         &mut manifest,
         &mut physical_file_bytes,
-        retained_inventory_bytes,
         child_c_name.live_bytes,
-        work_budget,
-        stage,
+        &traversal_context,
         post_traversal,
     )?;
     manifest.entries.sort_segments_guarded(work_budget, stage)?;
@@ -1047,21 +1055,26 @@ fn capture_directory_manifest_at_with_post_traversal_hook_guarded(
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+struct DirectoryManifestTraversalContext<'a> {
+    retained_inventory_bytes: u64,
+    work_budget: &'a OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 fn accumulate_directory_manifest_guarded(
     directory: &File,
     directory_relative_path: &Path,
     manifest: &mut OwnedDirectoryManifest,
     physical_file_bytes: &mut u64,
-    retained_inventory_bytes: u64,
     ancestor_path_bytes: u64,
-    work_budget: &OperatorWorkBudgetGuard,
-    stage: OperatorWorkBudgetStage,
+    context: &DirectoryManifestTraversalContext<'_>,
     post_traversal: &mut impl FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
-    work_budget.check_deadline(stage)?;
+    context.work_budget.check_deadline(context.stage)?;
     for_each_directory_component(directory, |name| {
         let captured_live_bytes = capture_live_bytes(
-            retained_inventory_bytes,
+            context.retained_inventory_bytes,
             manifest.inventory_bytes,
             *physical_file_bytes,
             ancestor_path_bytes,
@@ -1070,8 +1083,8 @@ fn accumulate_directory_manifest_guarded(
             directory_relative_path,
             name,
             captured_live_bytes,
-            work_budget,
-            stage,
+            context.work_budget,
+            context.stage,
         )?;
         let pending_entry_bytes = u64::try_from(size_of::<OwnedDirectoryManifestEntry>())
             .context("owned directory pending entry bytes do not fit u64")?
@@ -1087,8 +1100,8 @@ fn accumulate_directory_manifest_guarded(
             name,
             "manifest entry",
             pending_live_bytes,
-            work_budget,
-            stage,
+            context.work_budget,
+            context.stage,
         )?;
         let open_live_bytes = pending_live_bytes
             .checked_add(c_name.live_bytes)
@@ -1098,8 +1111,8 @@ fn accumulate_directory_manifest_guarded(
             c_name.as_c_str()?,
             relative_path,
             open_live_bytes,
-            work_budget,
-            stage,
+            context.work_budget,
+            context.stage,
         )?;
         let entry_identity = opened.record.identity;
         let is_directory = opened.record.identity.is_dir;
@@ -1110,10 +1123,10 @@ fn accumulate_directory_manifest_guarded(
             manifest,
             opened.record,
             physical_file_bytes,
-            retained_inventory_bytes,
+            context.retained_inventory_bytes,
             component_ancestor_path_bytes,
-            work_budget,
-            stage,
+            context.work_budget,
+            context.stage,
         )?;
         if is_directory {
             let relative_path = manifest
@@ -1123,13 +1136,17 @@ fn accumulate_directory_manifest_guarded(
                 .relative_path
                 .as_path();
             let live_bytes = capture_live_bytes(
-                retained_inventory_bytes,
+                context.retained_inventory_bytes,
                 manifest.inventory_bytes,
                 *physical_file_bytes,
                 component_ancestor_path_bytes,
             )?;
-            let (recursive_path, recursive_path_bytes) =
-                clone_manifest_path_guarded(relative_path, live_bytes, work_budget, stage)?;
+            let (recursive_path, recursive_path_bytes) = clone_manifest_path_guarded(
+                relative_path,
+                live_bytes,
+                context.work_budget,
+                context.stage,
+            )?;
             let nested_ancestor_path_bytes = component_ancestor_path_bytes
                 .checked_add(recursive_path_bytes)
                 .context("owned directory recursive path live byte count overflow")?;
@@ -1138,10 +1155,8 @@ fn accumulate_directory_manifest_guarded(
                 &recursive_path,
                 manifest,
                 physical_file_bytes,
-                retained_inventory_bytes,
                 nested_ancestor_path_bytes,
-                work_budget,
-                stage,
+                context,
                 post_traversal,
             )?;
             revalidate_manifest_directory_namespace(
@@ -1157,7 +1172,7 @@ fn accumulate_directory_manifest_guarded(
     if !directory_relative_path.as_os_str().is_empty() {
         post_traversal(directory_relative_path)?;
     }
-    work_budget.check_deadline(stage)
+    context.work_budget.check_deadline(context.stage)
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -2069,8 +2084,7 @@ fn for_each_directory_component(
     directory: &File,
     mut visit: impl FnMut(&std::ffi::OsStr) -> Result<()>,
 ) -> Result<()> {
-    let current = std::ffi::CStr::from_bytes_with_nul(b".\0")
-        .expect("static current-directory component must be NUL-terminated");
+    let current = c".";
     // SAFETY: opening `.` relative to the retained directory descriptor creates
     // a new open-file description with an independent enumeration offset.
     let stream_fd = unsafe {
@@ -2230,6 +2244,7 @@ impl<'a> SegmentedManifestCursor<'a> {
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 impl OwnedDirectoryManifest {
+    #[cfg(test)]
     fn ensure_matches(
         &self,
         current: &OwnedDirectoryManifest,

@@ -41,7 +41,6 @@ use std::{
 use crate::atomic_artifact_write::{
     atomic_file_create_or_verify_guarded, open_pinned_regular_file,
 };
-use crate::backfill_accepted_tranche::BackfillAcceptedTrancheManifest;
 use crate::backfill_execution_plan::{
     BackfillExecutionPlan, ValidatedBackfillExecutionControls,
     validate_backfill_execution_control_bytes,
@@ -134,6 +133,7 @@ impl SourceUniverseBatchArtifactPin {
         })
     }
 
+    #[cfg(test)]
     fn pin_current_path(path: &Path, max_bytes: u64) -> Result<Self> {
         ensure!(
             max_bytes > 0,
@@ -433,12 +433,14 @@ impl SourceUniverseWorkBudgetClockFactory for SystemSourceUniverseWorkBudgetCloc
 /// cheap across selected records and parallel workers.
 #[derive(Debug, Clone)]
 struct SourceUniverseVerifiedControlArtifacts {
+    #[cfg(test)]
     pub run_spec_path: PathBuf,
     pub run_spec_bytes: Arc<[u8]>,
     pub run_spec: Arc<RunSpec>,
+    #[cfg(test)]
     pub accepted_tranche_path: PathBuf,
     pub accepted_tranche_bytes: Arc<[u8]>,
-    pub accepted_tranche: Arc<BackfillAcceptedTrancheManifest>,
+    #[cfg(test)]
     pub execution_plan_path: PathBuf,
     pub execution_plan_bytes: Arc<[u8]>,
     pub execution_plan: Arc<BackfillExecutionPlan>,
@@ -468,19 +470,10 @@ impl SourceUniverseBatchExecutionRunOutput {
         })
     }
 
+    #[cfg(test)]
     #[must_use]
     const fn canonical_rows(&self) -> u64 {
         self.canonical_rows
-    }
-
-    #[must_use]
-    const fn nt_catalog_rows(&self) -> u64 {
-        self.nt_catalog_rows
-    }
-
-    #[must_use]
-    fn catalog_hash(&self) -> &str {
-        &self.catalog_hash
     }
 
     fn from_summary(summary: crate::operator::OperatorRunSummary) -> Self {
@@ -498,13 +491,6 @@ impl SourceUniverseBatchExecutionRunOutput {
 struct SourceUniverseCommittedRunReceipt {
     output: SourceUniverseBatchExecutionRunOutput,
     durable_completion: DurableCompletionLocator,
-}
-
-impl SourceUniverseCommittedRunReceipt {
-    #[must_use]
-    const fn output(&self) -> &SourceUniverseBatchExecutionRunOutput {
-        &self.output
-    }
 }
 
 /// Runner outcome distinguishes ordinary injected/test results, which remain
@@ -1148,17 +1134,20 @@ pub struct CachingSourceUniverseObjectFetcher<F: SourceUniverseObjectFetcher> {
     run_verification: SourceUniverseCacheRunVerification,
 }
 
+type VerifiedCacheRunEntrySlot = Arc<Mutex<Option<VerifiedCacheRunEntry>>>;
+type VerifiedCacheRunEntryMap = Arc<Mutex<BTreeMap<String, VerifiedCacheRunEntrySlot>>>;
+
 /// Shared per-batch cache verification state. Parallel workers lock only the
 /// same content hash; different objects still verify concurrently.
 #[derive(Clone, Default)]
 pub struct SourceUniverseCacheRunVerification {
-    entries: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<VerifiedCacheRunEntry>>>>>>,
+    entries: VerifiedCacheRunEntryMap,
     #[cfg(test)]
     hash_traversals: Arc<AtomicUsize>,
 }
 
 impl SourceUniverseCacheRunVerification {
-    fn entry(&self, digest: &str) -> Result<Arc<Mutex<Option<VerifiedCacheRunEntry>>>> {
+    fn entry(&self, digest: &str) -> Result<VerifiedCacheRunEntrySlot> {
         let mut entries = self
             .entries
             .lock()
@@ -2573,7 +2562,7 @@ fn spawn_command_with_hard_deadline(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn spawn_command_with_hard_deadline_observed(
     command: &mut Command,
     work_budget: &OperatorWorkBudgetGuard,
@@ -3426,6 +3415,7 @@ fn read_worker_request_payload_guarded(
     Ok(output)
 }
 
+#[cfg(test)]
 fn execute_source_universe_batch_with_pinned_artifacts<F, R>(
     batch_id: &str,
     launch_artifacts: &SourceUniverseBatchLaunchArtifacts,
@@ -3449,6 +3439,7 @@ where
     )
 }
 
+#[cfg(test)]
 fn execute_source_universe_batch_with_clock_factory<F, R, G>(
     batch_id: &str,
     launch_artifacts: &SourceUniverseBatchLaunchArtifacts,
@@ -3561,7 +3552,7 @@ where
                     }
                     let work_item = &work_items[index];
                     let slot = match resolve_work_item(work_item, config, &clock_factory) {
-                        ResolvedBatchWorkItem::Terminal(slot) => slot,
+                        ResolvedBatchWorkItem::Terminal(slot) => *slot,
                         ResolvedBatchWorkItem::Fresh(fresh) => {
                             let record = fresh.record;
                             let execution_record_sha256 = fresh.execution_record_sha256;
@@ -3684,7 +3675,7 @@ struct FreshBatchWorkItem<'pack> {
 }
 
 enum ResolvedBatchWorkItem<'pack> {
-    Terminal(RecordSlot),
+    Terminal(Box<RecordSlot>),
     Fresh(FreshBatchWorkItem<'pack>),
 }
 
@@ -4395,16 +4386,16 @@ fn prepare_batch(
                 &preflight_output_root,
                 &record.operator_run_id,
             )?;
-            verify_pack_control_artifacts(
-                &pack,
-                &pack_base_dir,
+            verify_pack_control_artifacts(PackControlVerificationInput {
+                pack: &pack,
+                pack_base_dir: &pack_base_dir,
                 record,
-                &prospective_output_dir,
-                &control_input_envelope,
-                &mut verified_artifact_cache,
-                &mut verified_registry_cache,
-                launch_artifacts.bootstrap_limits,
-            )
+                record_output_dir: &prospective_output_dir,
+                control_input_envelope: &control_input_envelope,
+                verified_artifact_cache: &mut verified_artifact_cache,
+                verified_registry_cache: &mut verified_registry_cache,
+                limits: launch_artifacts.bootstrap_limits,
+            })
         })();
         match preflight {
             Ok(verified) => {
@@ -4497,11 +4488,13 @@ enum ControlEnvelopeIdentity {
     UnresolvedDeclared(PathBuf),
 }
 
+#[derive(Debug)]
 enum PlannedControlPath {
     Resolved(PathBuf),
     Rejected(String),
 }
 
+#[derive(Debug)]
 struct SelectedControlInputEnvelope {
     paths: BTreeMap<(u64, &'static str), PlannedControlPath>,
 }
@@ -4526,6 +4519,17 @@ impl SelectedControlInputEnvelope {
             ),
         }
     }
+}
+
+struct PackControlVerificationInput<'a> {
+    pack: &'a SourceUniverseExecutionPack,
+    pack_base_dir: &'a Path,
+    record: &'a SourceUniverseExecutionPackRecord,
+    record_output_dir: &'a Path,
+    control_input_envelope: &'a SelectedControlInputEnvelope,
+    verified_artifact_cache: &'a mut BTreeMap<PathBuf, VerifiedArtifactContent>,
+    verified_registry_cache: &'a mut BTreeMap<PathBuf, VerifiedSourceBindingRegistry>,
+    limits: SourceUniverseBatchBootstrapLimits,
 }
 
 fn validate_selected_control_input_envelope(
@@ -4657,16 +4661,19 @@ fn validate_selected_control_input_envelope(
 }
 
 fn verify_pack_control_artifacts(
-    pack: &SourceUniverseExecutionPack,
-    pack_base_dir: &Path,
-    record: &SourceUniverseExecutionPackRecord,
-    record_output_dir: &Path,
-    control_input_envelope: &SelectedControlInputEnvelope,
-    verified_artifact_cache: &mut BTreeMap<PathBuf, VerifiedArtifactContent>,
-    verified_registry_cache: &mut BTreeMap<PathBuf, VerifiedSourceBindingRegistry>,
-    limits: SourceUniverseBatchBootstrapLimits,
+    input: PackControlVerificationInput<'_>,
 ) -> Result<SourceUniverseVerifiedControlArtifacts> {
-    let (run_spec_path, run_spec_bytes) = verify_pack_control_artifact(
+    let PackControlVerificationInput {
+        pack,
+        pack_base_dir,
+        record,
+        record_output_dir,
+        control_input_envelope,
+        verified_artifact_cache,
+        verified_registry_cache,
+        limits,
+    } = input;
+    let verified_run_spec = verify_pack_control_artifact(
         record,
         ControlArtifactPin {
             role: "run_spec",
@@ -4680,7 +4687,10 @@ fn verify_pack_control_artifacts(
         verified_artifact_cache,
         limits,
     )?;
-    let (accepted_tranche_path, accepted_tranche_bytes) = verify_pack_control_artifact(
+    #[cfg(test)]
+    let run_spec_path = verified_run_spec.0.clone();
+    let run_spec_bytes = verified_run_spec.1;
+    let verified_accepted_tranche = verify_pack_control_artifact(
         record,
         ControlArtifactPin {
             role: "accepted_tranche",
@@ -4694,7 +4704,10 @@ fn verify_pack_control_artifacts(
         verified_artifact_cache,
         limits,
     )?;
-    let (execution_plan_path, execution_plan_bytes) = verify_pack_control_artifact(
+    #[cfg(test)]
+    let accepted_tranche_path = verified_accepted_tranche.0.clone();
+    let accepted_tranche_bytes = verified_accepted_tranche.1;
+    let verified_execution_plan = verify_pack_control_artifact(
         record,
         ControlArtifactPin {
             role: "execution_plan",
@@ -4708,6 +4721,9 @@ fn verify_pack_control_artifacts(
         verified_artifact_cache,
         limits,
     )?;
+    #[cfg(test)]
+    let execution_plan_path = verified_execution_plan.0.clone();
+    let execution_plan_bytes = verified_execution_plan.1;
 
     let validated = validate_backfill_execution_control_bytes(
         run_spec_bytes.as_ref(),
@@ -4781,12 +4797,14 @@ fn verify_pack_control_artifacts(
     })?;
 
     Ok(SourceUniverseVerifiedControlArtifacts {
+        #[cfg(test)]
         run_spec_path,
         run_spec_bytes,
         run_spec: Arc::new(validated.run_spec),
+        #[cfg(test)]
         accepted_tranche_path,
         accepted_tranche_bytes,
-        accepted_tranche: Arc::new(validated.accepted_tranche),
+        #[cfg(test)]
         execution_plan_path,
         execution_plan_bytes,
         execution_plan: Arc::new(validated.execution_plan),
@@ -4880,11 +4898,10 @@ fn verify_pack_control_artifact(
         let bytes = read_exact_pinned_file(&mut file, &resolved_path, pin.expected_bytes)?;
         identity.revalidate_path(&resolved_path)?;
         identity.revalidate_handle(&resolved_path, &file)?;
-        let verified = VerifiedArtifactContent {
+        VerifiedArtifactContent {
             sha256: hex::encode(Sha256::digest(&bytes)),
             bytes: Arc::<[u8]>::from(bytes),
-        };
-        verified
+        }
     };
 
     ensure!(
@@ -4996,6 +5013,7 @@ fn reconstructed_discovered_record(
     }
 }
 
+#[cfg(test)]
 fn process_work_item<F, R, G>(
     work_item: &BatchWorkItem<'_>,
     output_root_lease: &BatchOutputRootLease,
@@ -5010,7 +5028,7 @@ where
     G: SourceUniverseWorkBudgetClockFactory,
 {
     match resolve_work_item(work_item, config, clock_factory) {
-        ResolvedBatchWorkItem::Terminal(slot) => slot,
+        ResolvedBatchWorkItem::Terminal(slot) => *slot,
         ResolvedBatchWorkItem::Fresh(fresh) => {
             process_fresh_work_item(fresh, output_root_lease, config, fetcher, runner)
         }
@@ -5031,13 +5049,13 @@ where
             error,
             execution_record_sha256,
         } => {
-            return ResolvedBatchWorkItem::Terminal(record_error_slot(
+            return ResolvedBatchWorkItem::Terminal(Box::new(record_error_slot(
                 record,
                 execution_record_sha256,
                 "verify_control_artifacts",
                 anyhow::anyhow!(error.to_string()),
                 config,
-            ));
+            )));
         }
         BatchWorkItem::NeedsWork {
             record,
@@ -5054,13 +5072,13 @@ where
     ) {
         Ok(work_budget) => work_budget,
         Err(error) => {
-            return ResolvedBatchWorkItem::Terminal(record_error_slot(
+            return ResolvedBatchWorkItem::Terminal(Box::new(record_error_slot(
                 record,
                 execution_record_sha256,
                 "create_work_budget",
                 error,
                 config,
-            ));
+            )));
         }
     };
 
@@ -5335,7 +5353,7 @@ struct CompletedOperatorRun {
 }
 
 #[cfg(test)]
-fn synthetic_test_durable_completion() -> DurableCompletionLocator {
+pub(crate) fn synthetic_test_durable_completion() -> DurableCompletionLocator {
     DurableCompletionLocator {
         object: crate::operator::DurableObjectVersionIdentity {
             uri: "s3://synthetic-test/durable-completion-manifest.json".to_string(),
@@ -6558,7 +6576,7 @@ mod tests {
         manifest.payloads.swap(0, 1);
         let (mut raw, manifest_bytes, manifest_sha256) =
             encode_synthetic_worker_archive(&manifest, &payloads);
-        let plan_offset = worker_request_payload_offset(
+        let plan_offset: usize = worker_request_payload_offset(
             manifest_bytes,
             &manifest,
             WORKER_REQUEST_ROLE_EXECUTION_PLAN,
@@ -7268,7 +7286,7 @@ mod tests {
         let clock = Arc::new(ManualWorkBudgetClock::default());
         let guard = one_second_test_guard(Arc::clone(&clock));
 
-        let error = run_operator_with_terminal_ownership(&guard, || {
+        let Err(error) = run_operator_with_terminal_ownership(&guard, || {
             clock.expire();
             Ok::<_, anyhow::Error>(SourceUniverseOperatorRunOutcome::NonTerminal(
                 SourceUniverseBatchExecutionRunOutput::try_new(
@@ -7277,8 +7295,9 @@ mod tests {
                     crate::hashing::sha256_hex(b"catalog"),
                 )?,
             ))
-        })
-        .expect_err("ordinary runners cannot fabricate a committed late success");
+        }) else {
+            panic!("ordinary runners cannot fabricate a committed late success");
+        };
 
         assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
     }
@@ -7288,11 +7307,12 @@ mod tests {
         let clock = Arc::new(ManualWorkBudgetClock::default());
         let guard = one_second_test_guard(Arc::clone(&clock));
 
-        let error = run_operator_with_terminal_ownership(&guard, || {
+        let Err(error) = run_operator_with_terminal_ownership(&guard, || {
             clock.expire();
             anyhow::bail!("ordinary runner error")
-        })
-        .expect_err("an uncommitted error path must still observe deadline expiry");
+        }) else {
+            panic!("an uncommitted error path must still observe deadline expiry");
+        };
 
         assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
         assert!(
@@ -7306,13 +7326,14 @@ mod tests {
         let clock = Arc::new(ManualWorkBudgetClock::default());
         let guard = one_second_test_guard(Arc::clone(&clock));
 
-        let error = run_operator_with_terminal_ownership(&guard, || {
+        let Err(error) = run_operator_with_terminal_ownership(&guard, || {
             clock.expire();
             Err(committed_indeterminate_worker_error(
                 "synthetic terminal-seal ambiguity",
             ))
-        })
-        .expect_err("terminal-seal ambiguity must remain a hard-stop classification");
+        }) else {
+            panic!("terminal-seal ambiguity must remain a hard-stop classification");
+        };
 
         assert!(is_committed_indeterminate_worker_error(&error));
         assert!(
@@ -7368,7 +7389,7 @@ mod tests {
         clock.expire();
         let invoked = AtomicBool::new(false);
 
-        let error = run_operator_with_terminal_ownership(&guard, || {
+        let Err(error) = run_operator_with_terminal_ownership(&guard, || {
             invoked.store(true, Ordering::SeqCst);
             Ok::<_, anyhow::Error>(SourceUniverseOperatorRunOutcome::NonTerminal(
                 SourceUniverseBatchExecutionRunOutput::try_new(
@@ -7377,8 +7398,9 @@ mod tests {
                     crate::hashing::sha256_hex(b"catalog"),
                 )?,
             ))
-        })
-        .expect_err("an expired record must stop before runner invocation");
+        }) else {
+            panic!("an expired record must stop before runner invocation");
+        };
 
         assert!(!invoked.load(Ordering::SeqCst));
         assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
@@ -7960,7 +7982,6 @@ mod tests {
                 run_spec: Arc::new(run_spec),
                 accepted_tranche_path: PathBuf::from("tranche.json"),
                 accepted_tranche_bytes,
-                accepted_tranche: Arc::new(controls.accepted_tranche),
                 execution_plan_path: PathBuf::from("execution-plan.json"),
                 execution_plan_bytes,
                 execution_plan: Arc::new(controls.execution_plan),

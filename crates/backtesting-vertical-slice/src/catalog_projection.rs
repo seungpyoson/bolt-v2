@@ -383,6 +383,7 @@ pub(crate) struct NtCatalogPreflightSummary {
 
 /// Count actual NT market-data Parquet rows and row groups, excluding only the
 /// exact `data/instruments/**` subtree.
+#[cfg(test)]
 pub(crate) fn actual_nt_market_data_metadata(
     catalog_root: &Path,
 ) -> Result<NtMarketDataParquetMetadata> {
@@ -515,9 +516,9 @@ fn accumulate_catalog_parquet_preflight_guarded(
             "projected catalog entry {} must be a regular file or directory",
             path.display()
         );
-        if !path
+        if path
             .extension()
-            .is_some_and(|extension| extension == "parquet")
+            .is_none_or(|extension| extension != "parquet")
         {
             continue;
         }

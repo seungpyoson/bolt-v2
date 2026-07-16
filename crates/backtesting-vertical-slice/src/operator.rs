@@ -550,16 +550,19 @@ pub struct DurableRunReceipt {
 /// Result of the sole durable execution lane. Exact-current terminal discovery
 /// is a separate read-only operation and never enters this write path.
 pub(crate) struct DurableRunOutcome {
+    #[cfg(test)]
     artifacts: Box<RunArtifacts>,
     receipt: DurableRunReceipt,
 }
 
 impl DurableRunOutcome {
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn receipt(&self) -> &DurableRunReceipt {
         &self.receipt
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn into_artifacts(self) -> Box<RunArtifacts> {
         self.artifacts
@@ -674,14 +677,6 @@ impl DurableCompletionManifest {
             "durable completion manifest object URIs must be distinct"
         );
         Ok(())
-    }
-
-    fn summary(&self) -> OperatorRunSummary {
-        OperatorRunSummary {
-            canonical_rows: self.canonical_rows,
-            nt_catalog_rows: self.nt_catalog_rows,
-            catalog_hash: self.catalog_hash.clone(),
-        }
     }
 }
 
@@ -1696,17 +1691,32 @@ fn insert_expected_catalog_files(
     Ok(())
 }
 
-fn verify_completed_operator_output_against_seal(
-    spec: &RunSpec,
-    expected_source_proof: &SourceProofReport,
-    accepted: &AcceptedDataset,
-    fingerprint: &ConversionFingerprint,
-    output_dir: &Path,
-    seal: &OperatorTerminalSeal,
-    current_files: &[OperatorTerminalSealFile],
+struct CompletedOperatorOutputVerification<'a> {
+    spec: &'a RunSpec,
+    expected_source_proof: &'a SourceProofReport,
+    accepted: &'a AcceptedDataset,
+    fingerprint: &'a ConversionFingerprint,
+    output_dir: &'a Path,
+    seal: &'a OperatorTerminalSeal,
+    current_files: &'a [OperatorTerminalSealFile],
     verify_physical_catalog_view: bool,
-    work_budget: &OperatorWorkBudgetGuard,
+    work_budget: &'a OperatorWorkBudgetGuard,
+}
+
+fn verify_completed_operator_output_against_seal(
+    verification: CompletedOperatorOutputVerification<'_>,
 ) -> Result<OperatorRunSummary> {
+    let CompletedOperatorOutputVerification {
+        spec,
+        expected_source_proof,
+        accepted,
+        fingerprint,
+        output_dir,
+        seal,
+        current_files,
+        verify_physical_catalog_view,
+        work_budget,
+    } = verification;
     work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     seal.validate_for(spec, fingerprint)?;
     ensure!(
@@ -1729,7 +1739,7 @@ fn verify_completed_operator_output_against_seal(
         work_budget,
         OperatorWorkBudgetStage::CatalogProjection,
     )?;
-    checkpoint.validate_for(&fingerprint)?;
+    checkpoint.validate_for(fingerprint)?;
     ensure!(
         checkpoint.stage == ConversionCheckpointStage::Completed,
         "completed-output verifier requires a completed checkpoint"
@@ -1740,7 +1750,7 @@ fn verify_completed_operator_output_against_seal(
         work_budget,
         OperatorWorkBudgetStage::CatalogProjection,
     )?;
-    manifest.validate_for(&fingerprint, &checkpoint_hash)?;
+    manifest.validate_for(fingerprint, &checkpoint_hash)?;
     let manifest_hash = manifest.content_hash()?;
     let metadata: ConversionCatalogMetadata = read_json_artifact_guarded(
         &metadata_path,
@@ -2166,17 +2176,18 @@ fn commit_operator_terminal_seal(
     let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
     let files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
     let seal = OperatorTerminalSeal::new(spec, fingerprint.clone(), expected_summary, files);
-    let verified = verify_completed_operator_output_against_seal(
-        spec,
-        expected_source_proof,
-        accepted,
-        fingerprint,
-        output_dir,
-        &seal,
-        &seal.files,
-        true,
-        work_budget,
-    )?;
+    let verified =
+        verify_completed_operator_output_against_seal(CompletedOperatorOutputVerification {
+            spec,
+            expected_source_proof,
+            accepted,
+            fingerprint,
+            output_dir,
+            seal: &seal,
+            current_files: &seal.files,
+            verify_physical_catalog_view: true,
+            work_budget,
+        })?;
     ensure!(
         verified == *expected_summary,
         "operator terminal seal candidate summary changed during precommit verification"
@@ -2247,36 +2258,6 @@ fn commit_durable_operator_output_candidate(
     )
 }
 
-/// Re-hash and validate a durable run's exact local candidate byte set.
-///
-/// This does not validate or imply remote completion; callers must separately
-/// validate the exact-version [`DurableCompletionLocator`].
-pub(crate) fn verify_durable_operator_output_candidate(
-    spec: &RunSpec,
-    output_dir: &Path,
-    registry: &VerifiedSourceBindingRegistry,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<OperatorRunSummary> {
-    let fingerprint = validated_operator_output_seal_fingerprint(spec, registry)?;
-    let path = output_dir.join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
-    let bytes = read_file_with_budget(&path, work_budget, OperatorWorkBudgetStage::Finalize)?;
-    let candidate: OperatorDurableOutputCandidateSeal =
-        deserialize_json_with_budget(&bytes, work_budget, OperatorWorkBudgetStage::Finalize)
-            .with_context(|| format!("parse {}", path.display()))?;
-    ensure!(
-        serialize_json_to_vec_guarded(&candidate, work_budget, OperatorWorkBudgetStage::Finalize,)?
-            == bytes,
-        "durable output candidate seal bytes are not canonical"
-    );
-    candidate.validate_for(spec, &fingerprint)?;
-    let current_files = collect_durable_output_candidate_seal_files(output_dir, work_budget)?;
-    ensure!(
-        candidate.files.as_slice() == current_files.as_slice(),
-        "durable output candidate seal exact file set or content hash mismatch"
-    );
-    Ok(candidate.summary())
-}
-
 /// Make the in-process test runner model production's durable local boundary
 /// without introducing a second production execution path.
 #[cfg(test)]
@@ -2306,6 +2287,7 @@ pub(crate) fn convert_test_terminal_output_to_durable_candidate(
 
 /// Verify a committed operator output against current frozen controls and
 /// derive its report summary exclusively from sealed completion/catalog bytes.
+#[cfg(test)]
 pub(crate) fn verify_completed_operator_output(
     spec: &RunSpec,
     output_dir: &Path,
@@ -2327,25 +2309,17 @@ pub(crate) fn verify_completed_operator_output(
     )?;
     let current_files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
     let fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
-    verify_completed_operator_output_against_seal(
+    verify_completed_operator_output_against_seal(CompletedOperatorOutputVerification {
         spec,
-        &expected_source_proof,
-        &accepted,
-        &fingerprint,
+        expected_source_proof: &expected_source_proof,
+        accepted: &accepted,
+        fingerprint: &fingerprint,
         output_dir,
-        &seal,
-        &current_files,
-        true,
+        seal: &seal,
+        current_files: &current_files,
+        verify_physical_catalog_view: true,
         work_budget,
-    )
-}
-
-/// Deadline-free, explicitly byte-capped probe used after a child process has
-/// terminated. It reads only the terminal seal and never traverses or hashes
-/// the output files named by that seal.
-pub(crate) enum OperatorTerminalSealProbe {
-    Absent,
-    Committed(OperatorRunSummary),
+    })
 }
 
 /// Deadline-free observation of pre-terminal durable local evidence. A
@@ -2359,7 +2333,6 @@ fn read_canonical_operator_output_seal_capped<T>(
     seal_path: &Path,
     max_seal_bytes: u64,
     role: &str,
-    format: OperatorOutputSealJsonFormat,
 ) -> Result<Option<T>>
 where
     T: DeserializeOwned + Serialize,
@@ -2405,23 +2378,11 @@ where
     identity.revalidate(seal_path, &file)?;
     let seal: T = serde_json::from_slice(&bytes)
         .with_context(|| format!("parse {role} {}", seal_path.display()))?;
-    let canonical = match format {
-        OperatorOutputSealJsonFormat::Pretty => {
-            crate::reference_artifact::canonical_json_bytes(&seal).map_err(anyhow::Error::from)
-        }
-        OperatorOutputSealJsonFormat::Compact => {
-            serde_json::to_vec(&seal).map_err(anyhow::Error::from)
-        }
-    }
-    .with_context(|| format!("serialize canonical {role}"))?;
+    let canonical = serde_json::to_vec(&seal)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("serialize canonical {role}"))?;
     ensure!(canonical == bytes, "{role} bytes are not canonical");
     Ok(Some(seal))
-}
-
-#[derive(Debug, Clone, Copy)]
-enum OperatorOutputSealJsonFormat {
-    Pretty,
-    Compact,
 }
 
 fn validated_operator_output_seal_fingerprint(
@@ -2439,27 +2400,6 @@ fn validated_operator_output_seal_fingerprint(
     conversion_fingerprint_for(spec, &accepted, registry)
 }
 
-pub(crate) fn probe_operator_terminal_seal_summary_capped(
-    spec: &RunSpec,
-    output_dir: &Path,
-    registry: &VerifiedSourceBindingRegistry,
-    max_seal_bytes: u64,
-) -> Result<OperatorTerminalSealProbe> {
-    let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
-    let Some(seal): Option<OperatorTerminalSeal> = read_canonical_operator_output_seal_capped(
-        &seal_path,
-        max_seal_bytes,
-        "terminal seal",
-        OperatorOutputSealJsonFormat::Pretty,
-    )?
-    else {
-        return Ok(OperatorTerminalSealProbe::Absent);
-    };
-    let fingerprint = validated_operator_output_seal_fingerprint(spec, registry)?;
-    seal.validate_for(spec, &fingerprint)?;
-    Ok(OperatorTerminalSealProbe::Committed(seal.summary()))
-}
-
 pub(crate) fn probe_durable_output_candidate_seal_summary_capped(
     spec: &RunSpec,
     output_dir: &Path,
@@ -2472,7 +2412,6 @@ pub(crate) fn probe_durable_output_candidate_seal_summary_capped(
             &candidate_path,
             max_seal_bytes,
             "durable output candidate seal",
-            OperatorOutputSealJsonFormat::Compact,
         )?
     else {
         return Ok(DurableOutputCandidateSealProbe::Absent);
@@ -2531,17 +2470,17 @@ fn preflight_completed_output_before_inspection(
     let seal: OperatorTerminalSeal =
         read_json_artifact_guarded(&seal_path, work_budget, OperatorWorkBudgetStage::Finalize)?;
     let current_files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
-    verify_completed_operator_output_against_seal(
+    verify_completed_operator_output_against_seal(CompletedOperatorOutputVerification {
         spec,
         expected_source_proof,
         accepted,
         fingerprint,
         output_dir,
-        &seal,
-        &current_files,
-        false,
+        seal: &seal,
+        current_files: &current_files,
+        verify_physical_catalog_view: false,
         work_budget,
-    )?;
+    })?;
     Ok(true)
 }
 
@@ -3036,7 +2975,7 @@ async fn read_pinned_durable_object_guarded(
     let result = guarded_async_operation_outcome(
         work_budget,
         OperatorWorkBudgetStage::ObjectVerification,
-        store.get_opts(&path, options),
+        store.get_opts(path, options),
     )
     .await?
     .with_context(|| format!("get exact version {} of {label} at {}", version_id, path))?;
@@ -3185,16 +3124,28 @@ async fn discover_current_durable_completion_guarded(
     Ok(Some((locator, bytes)))
 }
 
+struct DurableCompletionManifestValidation<'a> {
+    spec: &'a RunSpec,
+    fingerprint: &'a ConversionFingerprint,
+    artifact_root: &'a ResolvedArtifactRoot,
+    catalog_dispatch: &'a CatalogDispatchConfig,
+    store: &'a dyn ObjectStore,
+    work_budget: &'a OperatorWorkBudgetGuard,
+}
+
 async fn validate_durable_completion_manifest_bytes_guarded(
-    spec: &RunSpec,
-    fingerprint: &ConversionFingerprint,
-    artifact_root: &ResolvedArtifactRoot,
-    catalog_dispatch: &CatalogDispatchConfig,
-    store: &dyn ObjectStore,
+    validation: DurableCompletionManifestValidation<'_>,
     locator: &DurableCompletionLocator,
     manifest_bytes: Vec<u8>,
-    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DurableRunReceipt> {
+    let DurableCompletionManifestValidation {
+        spec,
+        fingerprint,
+        artifact_root,
+        catalog_dispatch,
+        store,
+        work_budget,
+    } = validation;
     locator.object.validate("durable completion manifest")?;
     ensure!(
         locator.object.uri
@@ -4015,17 +3966,18 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         .parent()
         .context("completed trade catalog root has no output parent")?;
     let current_files = collect_operator_terminal_seal_files(output_dir, inputs.work_budget)?;
-    let sealed_summary = verify_completed_operator_output_against_seal(
-        inputs.spec,
-        &inputs.accepted_source_proof,
-        inputs.accepted,
-        inputs.conversion_fingerprint,
-        output_dir,
-        &seal,
-        &current_files,
-        false,
-        inputs.work_budget,
-    )?;
+    let sealed_summary =
+        verify_completed_operator_output_against_seal(CompletedOperatorOutputVerification {
+            spec: inputs.spec,
+            expected_source_proof: &inputs.accepted_source_proof,
+            accepted: inputs.accepted,
+            fingerprint: inputs.conversion_fingerprint,
+            output_dir,
+            seal: &seal,
+            current_files: &current_files,
+            verify_physical_catalog_view: false,
+            work_budget: inputs.work_budget,
+        })?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
@@ -4305,11 +4257,6 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     })
 }
 
-fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
-}
-
 fn read_json_artifact_guarded<T: DeserializeOwned>(
     path: &Path,
     work_budget: &OperatorWorkBudgetGuard,
@@ -4398,7 +4345,7 @@ pub(crate) fn run_from_run_spec_with_verified_registry(
 }
 
 enum TradeRunPreparation {
-    Completed(RunArtifacts),
+    Completed(Box<RunArtifacts>),
     Prepared(PreparedTradeRunArtifacts),
 }
 
@@ -4437,7 +4384,7 @@ fn run_from_run_spec_inner(
         source_binding_registry,
         work_budget,
     )? {
-        TradeRunPreparation::Completed(artifacts) => Ok(artifacts),
+        TradeRunPreparation::Completed(artifacts) => Ok(*artifacts),
         TradeRunPreparation::Prepared(prepared) => {
             let runtime_manifest = prepared.local_manifest.clone();
             finalize_prepared_trade_run(
@@ -4603,7 +4550,9 @@ fn prepare_run_from_run_spec_inner(
                     work_budget,
                 };
                 return run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-                    run_from_completed_output(completed_inputs).map(TradeRunPreparation::Completed)
+                    run_from_completed_output(completed_inputs)
+                        .map(Box::new)
+                        .map(TradeRunPreparation::Completed)
                 });
             }
             ConversionOutputState::Complete { .. }
@@ -4976,14 +4925,16 @@ pub(crate) async fn discover_current_durable_completion_with_artifact_store_guar
         return Ok(None);
     };
     let receipt = validate_durable_completion_manifest_bytes_guarded(
-        spec,
-        &fingerprint,
-        &artifact_root,
-        catalog_dispatch,
-        store,
+        DurableCompletionManifestValidation {
+            spec,
+            fingerprint: &fingerprint,
+            artifact_root: &artifact_root,
+            catalog_dispatch,
+            store,
+            work_budget,
+        },
         &locator,
         manifest_bytes,
-        work_budget,
     )
     .await?;
     Ok(Some(receipt))
@@ -5338,6 +5289,7 @@ async fn run_from_run_spec_with_verified_registry_guarded(
     // The remote terminal manifest is the only durable completion authority.
     // No I/O or fallible cleanup follows its create-only PUT.
     Ok(DurableRunOutcome {
+        #[cfg(test)]
         artifacts: Box::new(artifacts),
         receipt,
     })
@@ -7272,17 +7224,18 @@ fn run_multi_from_completed_output(
     )?;
     let current_files =
         collect_operator_terminal_seal_files(inputs.output_dir, inputs.work_budget)?;
-    let sealed_summary = verify_completed_operator_output_against_seal(
-        spec,
-        &inputs.accepted_proof,
-        accepted,
-        inputs.conversion_fingerprint,
-        inputs.output_dir,
-        &seal,
-        &current_files,
-        false,
-        inputs.work_budget,
-    )?;
+    let sealed_summary =
+        verify_completed_operator_output_against_seal(CompletedOperatorOutputVerification {
+            spec,
+            expected_source_proof: &inputs.accepted_proof,
+            accepted,
+            fingerprint: inputs.conversion_fingerprint,
+            output_dir: inputs.output_dir,
+            seal: &seal,
+            current_files: &current_files,
+            verify_physical_catalog_view: false,
+            work_budget: inputs.work_budget,
+        })?;
     let planned = inputs.planned;
 
     inputs
@@ -7614,6 +7567,7 @@ mod tests {
     use flate2::{Compression, write::GzEncoder};
 
     use super::*;
+    use crate::backfill_execution_plan::BackfillExecutionWorkBudget;
     use crate::canonical_trades::{
         CsvTimestampUnit, FUNDING_RATES_TRANSFORM_IDENTITY, FUNDING_RATES_TRANSFORM_VERSION,
         REGISTERED_SOURCE_ADAPTERS, RawPayloadConfig, RawPayloadContainer,
@@ -8818,7 +8772,8 @@ mod tests {
         fs::write(&artifacts.contract_path, conflict).expect("plant conflict");
 
         let error = run_from_run_spec(&spec, &gz, dir.path())
-            .expect_err("retry must reject conflicting immutable bytes");
+            .err()
+            .expect("retry must reject conflicting immutable bytes");
         assert!(
             format!("{error:#}").contains("different bytes"),
             "{error:#}"
@@ -9274,7 +9229,8 @@ mod tests {
         let guard = test_work_budget(2, 1);
 
         let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
-            .expect_err("third source record must exceed the two-row budget");
+            .err()
+            .expect("third source record must exceed the two-row budget");
 
         assert!(error.to_string().contains("max_source_rows"), "{error:#}");
         assert!(
@@ -9291,7 +9247,8 @@ mod tests {
         let guard = test_work_budget(100, 0);
 
         let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
-            .expect_err("one projected row group must exceed a zero-row-group budget");
+            .err()
+            .expect("one projected row group must exceed a zero-row-group budget");
 
         assert!(
             error.to_string().contains("max_projected_row_groups"),
@@ -9320,7 +9277,8 @@ mod tests {
         let guard = test_work_budget(2, 1);
 
         let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
-            .expect_err("completed output must not carry across a stricter source budget");
+            .err()
+            .expect("completed output must not carry across a stricter source budget");
 
         assert!(error.to_string().contains("max_source_rows"), "{error:#}");
         assert_eq!(guard.source_rows_consumed(), 3);
@@ -9345,7 +9303,8 @@ mod tests {
         let guard = test_work_budget(100, 0);
 
         let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
-            .expect_err("completed output must be rejected by a zero-row-group budget");
+            .err()
+            .expect("completed output must be rejected by a zero-row-group budget");
 
         assert!(
             error.to_string().contains("max_projected_row_groups"),
@@ -9384,7 +9343,8 @@ mod tests {
         fs::write(&stray, b"not part of the committed exact set").expect("plant stray file");
 
         let error = run_from_run_spec(&spec, &gz, dir.path())
-            .expect_err("completed-output reuse must reject a stray catalog file");
+            .err()
+            .expect("completed-output reuse must reject a stray catalog file");
 
         assert!(error.to_string().contains("unexpected file"), "{error:#}");
         assert!(

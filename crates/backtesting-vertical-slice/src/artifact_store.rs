@@ -974,17 +974,19 @@ impl CatalogProjectionPublicationReceiptRef<'_> {
         stage: OperatorWorkBudgetStage,
     ) -> Result<()> {
         validate_catalog_projection_publication_receipt_parts(
-            self.schema_version,
-            self.catalog_root_uri,
-            self.physical_manifest_sha256,
-            self.physical_manifest,
-            self.binding,
+            CatalogProjectionPublicationReceiptValidation {
+                schema_version: self.schema_version,
+                catalog_root_uri: self.catalog_root_uri,
+                physical_manifest_sha256: self.physical_manifest_sha256,
+                physical_manifest: self.physical_manifest,
+                binding: self.binding,
+                work_budget,
+                stage,
+            },
             self.objects.len(),
             self.objects
                 .iter()
                 .map(CatalogProjectionPublicationObjectView::from),
-            work_budget,
-            stage,
         )
     }
 
@@ -1055,17 +1057,30 @@ impl<'a> From<&'a PersistedCatalogProjectionObject> for CatalogProjectionPublica
     }
 }
 
+struct CatalogProjectionPublicationReceiptValidation<'a> {
+    schema_version: &'a str,
+    catalog_root_uri: &'a str,
+    physical_manifest_sha256: &'a str,
+    physical_manifest: &'a CatalogProjectionManifestDocument,
+    binding: &'a CatalogProjectionBinding,
+    work_budget: &'a OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+}
+
 fn validate_catalog_projection_publication_receipt_parts<'a>(
-    schema_version: &str,
-    catalog_root_uri: &str,
-    physical_manifest_sha256: &str,
-    physical_manifest: &CatalogProjectionManifestDocument,
-    binding: &CatalogProjectionBinding,
+    validation: CatalogProjectionPublicationReceiptValidation<'_>,
     object_count: usize,
     objects: impl Iterator<Item = CatalogProjectionPublicationObjectView<'a>>,
-    work_budget: &OperatorWorkBudgetGuard,
-    stage: OperatorWorkBudgetStage,
 ) -> Result<()> {
+    let CatalogProjectionPublicationReceiptValidation {
+        schema_version,
+        catalog_root_uri,
+        physical_manifest_sha256,
+        physical_manifest,
+        binding,
+        work_budget,
+        stage,
+    } = validation;
     work_budget.check_deadline(stage)?;
     ensure!(
         schema_version == CATALOG_PROJECTION_PUBLICATION_RECEIPT_SCHEMA_VERSION,
@@ -1136,7 +1151,7 @@ fn validate_catalog_projection_publication_receipt_parts<'a>(
                 "catalog publication receipt version_id for {}",
                 physical_object.relative_path
             ),
-            &receipt_object.version_id,
+            receipt_object.version_id,
         )?;
         if let Some(e_tag) = receipt_object.e_tag {
             ensure!(
@@ -1271,17 +1286,19 @@ impl CatalogProjectionPublicationReceipt {
         stage: OperatorWorkBudgetStage,
     ) -> Result<()> {
         validate_catalog_projection_publication_receipt_parts(
-            &self.schema_version,
-            &self.catalog_root_uri,
-            &self.physical_manifest_sha256,
-            &self.physical_manifest,
-            &self.binding,
+            CatalogProjectionPublicationReceiptValidation {
+                schema_version: &self.schema_version,
+                catalog_root_uri: &self.catalog_root_uri,
+                physical_manifest_sha256: &self.physical_manifest_sha256,
+                physical_manifest: &self.physical_manifest,
+                binding: &self.binding,
+                work_budget,
+                stage,
+            },
             self.objects.len(),
             self.objects
                 .iter()
                 .map(CatalogProjectionPublicationObjectView::from),
-            work_budget,
-            stage,
         )
     }
 
@@ -1736,6 +1753,10 @@ impl CatalogDispatchConfig {
 ///
 /// Returns an error if dispatch, local projection validation, immutable object
 /// publication, or the explicit operator work budget fails.
+// Keep the independently validated store, versioning capability, dispatch
+// authority, source identity, physical manifest, and budget explicit at this
+// public security boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_catalog_projection_for_source_binding_guarded(
     store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
@@ -1749,14 +1770,16 @@ pub async fn persist_catalog_projection_for_source_binding_guarded(
 ) -> Result<PersistedCatalogProjection> {
     artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
     catalog_projection_for_source_binding_guarded(
-        store,
-        artifact_root,
-        dispatch,
-        source_binding,
-        expected_market_structure_fixture,
+        CatalogProjectionPublicationRequest {
+            store,
+            artifact_root,
+            dispatch,
+            source_binding,
+            expected_market_structure_fixture,
+            expected_physical_manifest,
+            work_budget,
+        },
         local_catalog_root,
-        expected_physical_manifest,
-        work_budget,
     )
     .await
 }
@@ -1768,6 +1791,9 @@ pub async fn persist_catalog_projection_for_source_binding_guarded(
 /// the exact non-`null` receipt version and every subsequent read uses exact
 /// versions. The receipt must also reproduce the caller's independently
 /// sealed physical manifest and configured source binding byte-for-byte.
+// Recovery has the same explicit authority boundary as publication, plus no
+// local catalog path that could be grouped with the sealed remote inputs.
+#[allow(clippy::too_many_arguments)]
 pub async fn recover_catalog_projection_from_current_receipt_guarded(
     store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
@@ -1875,16 +1901,29 @@ pub async fn recover_catalog_projection_from_current_receipt_guarded(
     }))
 }
 
-async fn catalog_projection_for_source_binding_guarded(
-    store: &dyn ObjectStore,
-    artifact_root: &ResolvedArtifactRoot,
-    dispatch: &CatalogDispatchConfig,
-    source_binding: &str,
+struct CatalogProjectionPublicationRequest<'a> {
+    store: &'a dyn ObjectStore,
+    artifact_root: &'a ResolvedArtifactRoot,
+    dispatch: &'a CatalogDispatchConfig,
+    source_binding: &'a str,
     expected_market_structure_fixture: MarketStructureFixture,
+    expected_physical_manifest: &'a CatalogProjectionManifestDocument,
+    work_budget: &'a OperatorWorkBudgetGuard,
+}
+
+async fn catalog_projection_for_source_binding_guarded(
+    request: CatalogProjectionPublicationRequest<'_>,
     local_catalog_root: &Path,
-    expected_physical_manifest: &CatalogProjectionManifestDocument,
-    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<PersistedCatalogProjection> {
+    let CatalogProjectionPublicationRequest {
+        store,
+        artifact_root,
+        dispatch,
+        source_binding,
+        expected_market_structure_fixture,
+        expected_physical_manifest,
+        work_budget,
+    } = request;
     let (binding, catalog_root_uri, physical_manifest_sha256) = guarded_operation_outcome(
         work_budget,
         OperatorWorkBudgetStage::Publish,

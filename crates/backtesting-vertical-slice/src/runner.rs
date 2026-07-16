@@ -3713,6 +3713,7 @@ pub(crate) fn market_structure_label(manifest: &BacktestingRunManifest) -> &'sta
 /// read-back tick must carry the projected instrument id, and the set of trade
 /// ids must equal the canonical table's, so a projection that silently dropped,
 /// duplicated, or relabelled ticks cannot pass the gate.
+#[cfg(test)]
 pub(crate) fn assert_read_back_matches(
     read_back: &[TradeTick],
     canonical_rows: &[CanonicalTradeRow],
@@ -3860,19 +3861,6 @@ fn aggressor_label(side: AggressorSide) -> &'static str {
 /// specification, and value-equal OHLCV and close-time fields, element-wise in
 /// catalog order against the canonical rows (which `validate()` has already
 /// proven time-monotonic).
-pub(crate) fn assert_bar_read_back_matches(
-    read_back: &[Bar],
-    table: &super::canonical_market_data::CanonicalBarsTable,
-    expected_instrument_id: &str,
-) -> Result<()> {
-    assert_bar_read_back_matches_guarded(
-        read_back,
-        table,
-        expected_instrument_id,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
 pub(crate) fn assert_bar_read_back_matches_guarded(
     read_back: &[Bar],
     table: &super::canonical_market_data::CanonicalBarsTable,
@@ -3959,19 +3947,6 @@ pub(crate) fn assert_bar_read_back_matches_guarded(
 /// canonical action/side/price/size/order-id/flags/sequence/event-time values
 /// (the canonical rows are dense-sequence validated, so positional comparison
 /// plus sequence equality rejects drops, duplicates, and reorders).
-pub(crate) fn assert_delta_read_back_matches(
-    read_back: &[OrderBookDelta],
-    table: &super::canonical_market_data::CanonicalOrderBookDeltasTable,
-    expected_instrument_id: &str,
-) -> Result<()> {
-    assert_delta_read_back_matches_guarded(
-        read_back,
-        table,
-        expected_instrument_id,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
 pub(crate) fn assert_delta_read_back_matches_guarded(
     read_back: &[OrderBookDelta],
     table: &super::canonical_market_data::CanonicalOrderBookDeltasTable,
@@ -4083,19 +4058,6 @@ pub(crate) fn assert_delta_read_back_matches_guarded(
 /// and `ts_init` the availability-or-capture receipt clock derived through the
 /// SAME shared projection owner the seam uses (NO DUAL PATHS) — this is the
 /// load-bearing `ts_init == capture_time` proof for the quote family.
-pub(crate) fn assert_quote_read_back_matches(
-    read_back: &[QuoteTick],
-    table: &super::canonical_market_data::CanonicalQuotesTable,
-    expected_instrument_id: &str,
-) -> Result<()> {
-    assert_quote_read_back_matches_guarded(
-        read_back,
-        table,
-        expected_instrument_id,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
 pub(crate) fn assert_quote_read_back_matches_guarded(
     read_back: &[QuoteTick],
     table: &super::canonical_market_data::CanonicalQuotesTable,
@@ -4160,19 +4122,6 @@ pub(crate) fn assert_quote_read_back_matches_guarded(
 /// `ts_init` the availability-or-capture receipt clock derived through the SAME
 /// shared projection owner the seam uses (NO DUAL PATHS) — this is the
 /// load-bearing `ts_init == capture_time` proof for the index family.
-pub(crate) fn assert_index_read_back_matches(
-    read_back: &[IndexPriceUpdate],
-    table: &super::canonical_market_data::CanonicalIndexPricesTable,
-    expected_instrument_id: &str,
-) -> Result<()> {
-    assert_index_read_back_matches_guarded(
-        read_back,
-        table,
-        expected_instrument_id,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
 pub(crate) fn assert_index_read_back_matches_guarded(
     read_back: &[IndexPriceUpdate],
     table: &super::canonical_market_data::CanonicalIndexPricesTable,
@@ -4231,19 +4180,6 @@ pub(crate) fn assert_index_read_back_matches_guarded(
 /// `ts_init` the availability-or-capture receipt clock derived through the SAME
 /// shared projection owner the seam uses (NO DUAL PATHS) — this is the
 /// load-bearing `ts_init == capture_time` proof for the mark family.
-pub(crate) fn assert_mark_read_back_matches(
-    read_back: &[MarkPriceUpdate],
-    table: &super::canonical_market_data::CanonicalMarkPricesTable,
-    expected_instrument_id: &str,
-) -> Result<()> {
-    assert_mark_read_back_matches_guarded(
-        read_back,
-        table,
-        expected_instrument_id,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
 pub(crate) fn assert_mark_read_back_matches_guarded(
     read_back: &[MarkPriceUpdate],
     table: &super::canonical_market_data::CanonicalMarkPricesTable,
@@ -4308,6 +4244,7 @@ pub(crate) fn assert_mark_read_back_matches_guarded(
 /// discriminator but still checked per element) before the element-wise pass,
 /// so correctness can never silently depend on the canonical table's stored
 /// order matching the read-back's stable sort order.
+#[cfg(test)]
 pub(crate) fn assert_funding_read_back_matches(
     read_back: &[FundingRateUpdate],
     table: &super::canonical_market_data::CanonicalFundingRatesTable,
@@ -4514,6 +4451,7 @@ pub(crate) fn iterations_mismatch(iterations: usize, expected: usize) -> Option<
 /// or if a window bound is negative (mirroring the manifest's own
 /// `manifest_time_to_nanos` rejection), so a malformed clock can never silently
 /// admit or drop data from the engine's expected iteration count.
+#[cfg(test)]
 pub(crate) fn expected_iterations(
     rows: &[CanonicalTradeRow],
     start: Option<i64>,
@@ -4581,17 +4519,6 @@ pub(crate) fn window_bound_nanos(field: &'static str, value: Option<i64>) -> Res
 ///
 /// Returns an error if a row's `ts_init` source clock is missing/non-positive,
 /// if a window bound is negative, or if the window excludes all accepted data.
-pub(crate) fn assert_time_window_overlaps_data(
-    manifest: &BacktestingRunManifest,
-    canonical_table: &CanonicalTradesTable,
-) -> Result<()> {
-    assert_time_window_overlaps_data_guarded(
-        manifest,
-        canonical_table,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
 pub(crate) fn assert_time_window_overlaps_data_guarded(
     manifest: &BacktestingRunManifest,
     canonical_table: &CanonicalTradesTable,
@@ -4694,9 +4621,11 @@ mod tests {
         capture_catalog_directory_identities, capture_catalog_file_identities,
         collect_sorted_cache_ids_guarded, ensure_settlement_currency_funded,
         expected_catalog_directories, expected_iterations, iterations_mismatch,
-        load_bolt_v3_config, mint_local_catalog_run_view_authority_guarded, raw_taker_config,
-        render_debug_guarded, replay_executable_book_at_submission, resolve_existing_input_path,
-        run_nt_backtest_node, run_nt_backtest_node_with_execution_contract,
+        load_bolt_v3_config, logical_catalog_hash_guarded,
+        mint_local_catalog_run_view_authority_guarded, raw_taker_config, render_debug_guarded,
+        replay_executable_book_at_submission, resolve_existing_input_path, run_nt_backtest_node,
+        run_nt_backtest_node_with_execution_contract,
+        seal_and_hash_local_catalog_projection_guarded,
         seal_trusted_local_catalog_permissions_guarded, selector_provenance_hashes,
         time_window_excludes_all_data, try_reserve_exact_guarded,
         validate_trusted_local_catalog_root, verify_catalog_tree_exact,
@@ -5743,7 +5672,7 @@ mod tests {
         let no = maker_smoke_binary_option(MAKER_SMOKE_NO_INSTRUMENT, "No");
         let yes_id = yes.id();
         let no_id = no.id();
-        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
         catalog
             .write_instruments(vec![yes, no])
             .context("write maker smoke instruments")?;
@@ -5774,7 +5703,7 @@ mod tests {
     fn write_execution_contract_smoke_catalog(catalog_root: &Path) -> Result<()> {
         let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
         let instrument_id = instrument.id();
-        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
         catalog
             .write_instruments(vec![instrument])
             .context("write execution-contract smoke instrument")?;

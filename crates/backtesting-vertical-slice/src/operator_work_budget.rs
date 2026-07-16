@@ -948,16 +948,6 @@ impl ExactSizedObjectBuffer {
     }
 }
 
-pub(crate) fn read_exact_sized_open_file_guarded(
-    mut file: fs::File,
-    path: &Path,
-    expected_bytes: u64,
-    work_budget: &OperatorWorkBudgetGuard,
-    stage: OperatorWorkBudgetStage,
-) -> Result<Vec<u8>> {
-    read_exact_sized_open_file_ref_guarded(&mut file, path, expected_bytes, work_budget, stage)
-}
-
 fn read_exact_sized_open_file_ref_guarded(
     file: &mut fs::File,
     path: &Path,
@@ -1285,10 +1275,7 @@ fn stable_sort_sift_down_by<T, F>(
 where
     F: FnMut(&T, &T) -> CmpOrdering,
 {
-    loop {
-        let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
-            break;
-        };
+    while let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) {
         if left >= end {
             break;
         }
@@ -1324,7 +1311,7 @@ where
 /// separately accounts and bounds its one additional `len * size_of::<usize>()`
 /// metadata allocation before reserving it.
 pub fn cooperative_stable_sort_by<T, F>(
-    values: &mut Vec<T>,
+    values: &mut [T],
     mut compare: F,
     work_budget: &OperatorWorkBudgetGuard,
     stage: OperatorWorkBudgetStage,
@@ -1436,9 +1423,7 @@ where
         Some(remaining) => match tokio::time::timeout(remaining, operation).await {
             Ok(outcome) => outcome,
             Err(_) => {
-                if let Err(deadline_error) = work_budget.check_deadline(stage) {
-                    return Err(deadline_error);
-                }
+                work_budget.check_deadline(stage)?;
                 bail!(
                     "max_wall_seconds hard timeout exhausted after waiting {remaining:?} at stage {stage}"
                 );
@@ -1468,9 +1453,7 @@ pub(crate) async fn guarded_blocking_join_outcome<T>(
             Ok(outcome) => outcome,
             Err(_) => {
                 let _quiescence_outcome = task.await;
-                if let Err(deadline_error) = work_budget.check_deadline(stage) {
-                    return Err(deadline_error);
-                }
+                work_budget.check_deadline(stage)?;
                 bail!(
                     "max_wall_seconds deadline elapsed after waiting {remaining:?} at stage {stage}; blocking task was reaped to quiescence"
                 );

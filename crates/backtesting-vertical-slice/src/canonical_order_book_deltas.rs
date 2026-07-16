@@ -431,14 +431,16 @@ pub(crate) fn normalize_jsonl_snapshot_deltas_with_meter(
     let mut accumulator = PhotoGroups::default();
     parse_jsonl_into_groups(&fields, mapping, jsonl_text, &mut accumulator, work_budget)?;
     expand_groups_into_tables(
-        accepted,
-        identities,
-        mapping,
+        DeltaExpansionContext {
+            accepted,
+            identities,
+            mapping,
+            capture_time_nanos,
+            ingest_run_id,
+            work_budget,
+        },
         accumulator,
-        capture_time_nanos,
-        ingest_run_id,
         SnapshotContainer::SingleObject,
-        work_budget,
     )
 }
 
@@ -516,14 +518,16 @@ pub(crate) fn normalize_tar_jsonl_snapshot_deltas_with_meter(
         work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     expand_groups_into_tables(
-        accepted,
-        identities,
-        mapping,
+        DeltaExpansionContext {
+            accepted,
+            identities,
+            mapping,
+            capture_time_nanos,
+            ingest_run_id,
+            work_budget,
+        },
         accumulator,
-        capture_time_nanos,
-        ingest_run_id,
         SnapshotContainer::TarArchive,
-        work_budget,
     )
 }
 
@@ -607,14 +611,16 @@ pub(crate) fn normalize_parquet_event_stream_deltas_with_meter(
     let raw_rows = decode_event_stream_rows(&fields, parquet_bytes, work_budget)?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     expand_event_stream_into_tables(
-        accepted,
-        identities,
-        mapping,
+        DeltaExpansionContext {
+            accepted,
+            identities,
+            mapping,
+            capture_time_nanos,
+            ingest_run_id,
+            work_budget,
+        },
         &fields,
         raw_rows,
-        capture_time_nanos,
-        ingest_run_id,
-        work_budget,
     )
 }
 
@@ -1113,21 +1119,33 @@ struct EventGroups {
     groups: BTreeMap<Option<String>, Vec<RawEventRow>>,
 }
 
+struct DeltaExpansionContext<'a> {
+    accepted: &'a AcceptedDataset,
+    identities: &'a DeltaInstrumentIdentities,
+    mapping: &'a DeltaMappingConfig,
+    capture_time_nanos: i64,
+    ingest_run_id: &'a str,
+    work_budget: &'a OperatorWorkBudgetGuard,
+}
+
 /// Split the decoded rows per instrument (applying the exclusion fence) and run
 /// the dual expansion for every group, returning the deltas and trades families.
 fn expand_event_stream_into_tables(
-    accepted: &AcceptedDataset,
-    identities: &DeltaInstrumentIdentities,
-    mapping: &DeltaMappingConfig,
+    context: DeltaExpansionContext<'_>,
     fields: &EventStreamFields<'_>,
     raw_rows: Vec<RawEventRow>,
-    capture_time_nanos: i64,
-    ingest_run_id: &str,
-    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<(
     Vec<CanonicalOrderBookDeltasTable>,
     Vec<CanonicalTradesTable>,
 )> {
+    let DeltaExpansionContext {
+        accepted,
+        identities,
+        mapping,
+        capture_time_nanos,
+        ingest_run_id,
+        work_budget,
+    } = context;
     let mut accumulator = EventGroups::default();
     // Borrow the two fields separately so the `or_insert_with` closure pushes to
     // `order` while `groups.entry` holds its own disjoint mutable borrow (the same
@@ -1991,15 +2009,18 @@ fn parse_jsonl_into_groups(
 /// time first (archive member order is not a per-instrument time order), then the
 /// identical [`expand_photos`] core and table assembly run for every group.
 fn expand_groups_into_tables(
-    accepted: &AcceptedDataset,
-    identities: &DeltaInstrumentIdentities,
-    mapping: &DeltaMappingConfig,
+    context: DeltaExpansionContext<'_>,
     mut accumulator: PhotoGroups,
-    capture_time_nanos: i64,
-    ingest_run_id: &str,
     container: SnapshotContainer,
-    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
+    let DeltaExpansionContext {
+        accepted,
+        identities,
+        mapping,
+        capture_time_nanos,
+        ingest_run_id,
+        work_budget,
+    } = context;
     ensure!(
         !accumulator.order.is_empty(),
         "{} yielded no in-scope photos",

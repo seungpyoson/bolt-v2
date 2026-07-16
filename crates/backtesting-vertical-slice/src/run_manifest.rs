@@ -1214,6 +1214,7 @@ impl CatalogRunViewAuthority {
     }
 
     /// Terminal binding check against the immutable submitted run specification.
+    #[cfg(test)]
     pub(crate) fn validate_submitted_manifest_identity(
         &self,
         submitted_identity: &SubmittedRunIdentity,

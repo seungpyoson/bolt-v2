@@ -859,10 +859,10 @@ fn validate_exact_date_range(
 fn collect_retired_repo_refs<'a>(value: &'a serde_json::Value, paths: &mut Vec<&'a str>) {
     match value {
         serde_json::Value::String(value) => {
-            if let Some(path) = value.strip_prefix("repo://") {
-                if is_retired_backfill_runtime_path(Path::new(path)) {
-                    paths.push(path);
-                }
+            if let Some(path) = value.strip_prefix("repo://")
+                && is_retired_backfill_runtime_path(Path::new(path))
+            {
+                paths.push(path);
             }
         }
         serde_json::Value::Array(values) => {

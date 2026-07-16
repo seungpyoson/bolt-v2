@@ -414,16 +414,16 @@ pub fn write_source_universe_execution_pack(
         used_source_proof_ids.insert(record.source_proof_id.clone());
 
         let run_dir = output_dir.join("runs").join(run_directory_name(record));
-        let run_spec_text = materialize_run_spec(
-            &template,
+        let run_spec_text = materialize_run_spec(RunSpecMaterializationInput {
+            template: &template,
             record,
             input,
             instrument,
             proof,
-            &operator_inputs,
-            &spec.venue_policy,
-            template_run_spec.manifest.market_structure_fixture,
-        )?;
+            operator_inputs: &operator_inputs,
+            venue_policy: &spec.venue_policy,
+            market_structure_fixture: template_run_spec.manifest.market_structure_fixture,
+        })?;
         let run_spec: RunSpec = toml::from_str(&run_spec_text)
             .context("materialized source-universe run spec does not deserialize")?;
         validate_run_spec_manifest_for_object_hash_with_verified_registry(
@@ -697,16 +697,28 @@ fn selected_records(
     work_order.records.iter().take(limit).collect()
 }
 
-fn materialize_run_spec(
-    template: &Value,
-    record: &SourceUniverseConversionWorkOrderRecord,
-    input: &SourceUniverseOperatorInputRecord,
-    instrument: &SourceUniverseOperatorInstrumentSpecRecord,
-    proof: &SourceProofReport,
-    operator_inputs: &SourceUniverseOperatorInputs,
-    venue_policy: &SourceUniverseExecutionPackVenuePolicy,
+struct RunSpecMaterializationInput<'a> {
+    template: &'a Value,
+    record: &'a SourceUniverseConversionWorkOrderRecord,
+    input: &'a SourceUniverseOperatorInputRecord,
+    instrument: &'a SourceUniverseOperatorInstrumentSpecRecord,
+    proof: &'a SourceProofReport,
+    operator_inputs: &'a SourceUniverseOperatorInputs,
+    venue_policy: &'a SourceUniverseExecutionPackVenuePolicy,
     market_structure_fixture: MarketStructureFixture,
-) -> Result<String> {
+}
+
+fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String> {
+    let RunSpecMaterializationInput {
+        template,
+        record,
+        input,
+        instrument,
+        proof,
+        operator_inputs,
+        venue_policy,
+        market_structure_fixture,
+    } = input;
     let mut value = template.clone();
     set_table_value(
         &mut value,

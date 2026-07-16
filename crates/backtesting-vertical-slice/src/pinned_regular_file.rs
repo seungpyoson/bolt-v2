@@ -220,9 +220,18 @@ fn namespace_identity_at(
             "pinned regular-file namespace reports a negative byte length",
         )
     })?;
+    #[cfg(target_os = "linux")]
+    let device = stat.st_dev;
+    #[cfg(target_vendor = "apple")]
+    let device = u64::try_from(stat.st_dev).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pinned regular-file namespace reports a negative device identifier",
+        )
+    })?;
     Ok(NamespaceIdentity {
-        device: stat.st_dev as u64,
-        inode: stat.st_ino as u64,
+        device,
+        inode: stat.st_ino,
         kind: stat.st_mode & libc::S_IFMT,
         byte_len,
         modified_seconds,
@@ -511,6 +520,7 @@ pub(crate) fn read_exact_pinned_file(
 
 /// Structural helper retained for tests which independently acquire path and
 /// handle metadata. Production openers use the stronger fd-relative capability.
+#[cfg(test)]
 pub(crate) fn validate_pinned_regular_file_identity(
     path: &Path,
     path_metadata: &fs::Metadata,

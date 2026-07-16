@@ -14,7 +14,6 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::catalog::{CatalogPathPrefix, ParquetDataCatalog};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     artifact_store::{
@@ -1666,10 +1665,6 @@ fn ensure_ssm_parameter_ref(field: &'static str, value: &str) -> Result<()> {
         "{field} must not contain current or parent path segments"
     );
     Ok(())
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn is_allowed_storage_option_key(key: &str) -> bool {

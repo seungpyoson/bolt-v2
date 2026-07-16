@@ -762,9 +762,12 @@ def capture_workflow_digest(root: Path, config: ci_provenance.ProvenanceConfig, 
 BOUNDARY_CAPTURE_REMEDIATION = (
     "This is capture-evidence maintenance, not a defect of the failing PR: no change to the PR is "
     "required. Re-dispatch `CI [dispatch:capture-reference-boundary-fixture]` (workflow_dispatch on "
-    ".github/workflows/ci.yml with capture_reference_boundary_fixture=true and the CREDENTIAL-SSM "
-    "confirmation input; live Chainlink credentials are read via SSM), then commit the refreshed "
-    "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml."
+    ".github/workflows/ci.yml with inputs capture_reference_boundary_fixture=true and "
+    "credential_ssm_gate=CREDENTIAL-SSM; live Chainlink credentials are read via SSM), then commit "
+    "the refreshed capture triple together — their digests are coupled, so all three must land in one "
+    "commit: tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml, "
+    "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.bin, and "
+    "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip."
 )
 
 
@@ -805,6 +808,9 @@ def capture_expiry_warning(
         return None
     expiry = created + dt.timedelta(seconds=lookback_age_seconds)
     remaining = (expiry - now).total_seconds()
+    # Exclusive threshold: warn only strictly inside the window. `remaining == expiry_warning_seconds`
+    # (exactly at the threshold) deliberately stays silent — it is the last still-quiet instant, and the
+    # warning begins one second later once `remaining < expiry_warning_seconds`.
     if remaining >= expiry_warning_seconds:
         return None
     expiry_iso = expiry.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -821,7 +827,7 @@ def emit_boundary_warning(message: str) -> None:
         print(f"::warning::{message}")
 
 
-def scan_fixture_origin(root: Path, findings: list[str], *, today: dt.date | None = None) -> None:
+def scan_fixture_origin(root: Path, findings: list[str], *, now: dt.datetime | None = None) -> None:
     directory = root / FIXTURE_DIR
     sidecars = sorted(directory.glob("*.toml")) if directory.exists() else []
     if not sidecars:
@@ -839,11 +845,12 @@ def scan_fixture_origin(root: Path, findings: list[str], *, today: dt.date | Non
         if config.deploy_artifact_lookback_age_seconds is not None
         else config.max_lookback_age_seconds
     )
-    now = dt.datetime.combine(
-        today if today is not None else dt.date.today(),
-        dt.time.min,
-        tzinfo=dt.timezone.utc,
-    )
+    # Age the pre-expiry tripwire against the SAME wall-clock UTC instant and lookback field the
+    # resolver uses (ci_provenance.resolve_exact_sha_evidence: now=datetime.now(utc), cutoff=now-
+    # lookback), so the warning window lines up to the second with when evidence actually crosses the
+    # lookback cutoff — not to a date-midnight proxy that can fire the warning up to ~24h late.
+    if now is None:
+        now = dt.datetime.now(dt.timezone.utc)
     for sidecar in sidecars:
         rel = sidecar.relative_to(root).as_posix()
         data = tomllib.loads(sidecar.read_text(encoding="utf-8"))
@@ -2519,9 +2526,16 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
                 f"{expected_revision} value for each anchored pin claim"
             )
 
-def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
+def scan_root(
+    root: Path, *, today: dt.date | None = None, now: dt.datetime | None = None
+) -> list[str]:
+    # One wall-clock UTC instant is the single source of truth: the date-semantic scanners derive
+    # `today` from it, and the pre-expiry tripwire ages against the instant itself (mirroring the
+    # resolver). Both stay independently injectable for tests.
+    if now is None:
+        now = dt.datetime.now(dt.timezone.utc)
     if today is None:
-        today = dt.date.today()
+        today = now.date()
     findings: list[str] = []
     source_paths = boundary_source_paths(root)
     floor_findings: list[str] = []
@@ -2532,7 +2546,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_exemption_issue_state(root, findings)
     scan_wire_boundary(root, findings, source_paths)
     scan_chainlink_tests(root, findings)
-    scan_fixture_origin(root, findings, today=today)
+    scan_fixture_origin(root, findings, now=now)
     scan_static_wiring(root, findings)
     scan_binance_timestamp_behavioral_contract(root, findings)
     scan_nt_pin_census(root, findings)

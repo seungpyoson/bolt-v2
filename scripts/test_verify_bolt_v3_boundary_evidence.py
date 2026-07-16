@@ -2914,11 +2914,13 @@ fn f(config: ws::WebSocketConfig) {
 # --- #1425 boundary-evidence capture TTL: self-describing failure + pre-expiry tripwire ---
 
 
-def run_remote_resolution_scan(*, resolve_builder, today, github_actions=False):
+def run_remote_resolution_scan(*, resolve_builder, now, github_actions=False):
     """Drive scan_root through the remote capture-provenance resolver with a controlled resolver.
 
-    `resolve_builder(verifier, committed_record)` returns the callable installed as
-    ci_provenance.resolve_exact_sha_evidence. Returns (findings, captured_stdout). Mirrors the
+    `now` is a full timezone-aware UTC instant injected as scan_root's wall clock, so the pre-expiry
+    tripwire ages exactly like ci_provenance.resolve_exact_sha_evidence (to the second, not to a
+    date-midnight proxy). `resolve_builder(verifier, committed_record)` returns the callable installed
+    as ci_provenance.resolve_exact_sha_evidence. Returns (findings, captured_stdout). Mirrors the
     monkeypatch pattern in test_unresolvable_capture_workflow_sha_defers_to_remote_resolver_in_ci.
     """
     verifier = load_verifier()
@@ -2944,7 +2946,7 @@ def run_remote_resolution_scan(*, resolve_builder, today, github_actions=False):
             verifier.remote_fixture_context = fake_remote_context
             verifier.ci_provenance.resolve_exact_sha_evidence = resolve_builder(verifier, committed)
             with contextlib.redirect_stdout(buffer):
-                findings = verifier.scan_root(root, today=today)
+                findings = verifier.scan_root(root, now=now)
         finally:
             verifier.remote_fixture_context = original_remote_context
             verifier.ci_provenance.resolve_exact_sha_evidence = original_resolve
@@ -2982,17 +2984,23 @@ def test_capture_lookback_exhaustion_names_operator_remediation() -> None:
         resolve_builder=_resolve_raising(
             "lookback age limit exhausted before candidate evidence was found"
         ),
-        today=dt.date(2026, 6, 26),
+        now=dt.datetime(2026, 6, 26, tzinfo=dt.timezone.utc),
     )
     assert_finding(findings, "GitHub capture provenance resolution failed")
-    assert_finding(findings, "capture_reference_boundary_fixture=true")
-    assert_finding(findings, "CREDENTIAL-SSM")
-    assert_finding(findings, "chainlink-reference-frame.toml")
     assert_finding(findings, "no change to the PR is required")
+    # Both dispatch inputs must appear as copy-pasteable key=value literals.
+    assert_finding(findings, "capture_reference_boundary_fixture=true")
+    assert_finding(findings, "credential_ssm_gate=CREDENTIAL-SSM")
+    # A real refresh changes exactly three coupled files (proven by PR #1426); the remediation must
+    # name all three, or an operator committing only the .toml still reds the fence on the coupled
+    # digests.
+    assert_finding(findings, "chainlink-reference-frame.toml")
+    assert_finding(findings, "chainlink-reference-frame.bin")
+    assert_finding(findings, "chainlink-reference-capture.zip")
 
     other_findings, _ = run_remote_resolution_scan(
         resolve_builder=_resolve_raising("committed record digest mismatch"),
-        today=dt.date(2026, 6, 26),
+        now=dt.datetime(2026, 6, 26, tzinfo=dt.timezone.utc),
     )
     if any("CREDENTIAL-SSM" in finding for finding in other_findings):
         raise AssertionError(
@@ -3000,32 +3008,47 @@ def test_capture_lookback_exhaustion_names_operator_remediation() -> None:
         )
 
 
-def test_pre_expiry_tripwire_warns_inside_window_and_is_silent_outside() -> None:
+def test_pre_expiry_tripwire_threshold_boundary_is_instant_precise_and_exclusive() -> None:
+    # created 2026-06-14 + 14d lookback => expiry 2026-06-28T00:00:00Z; the 3-day (259200s) warning
+    # window opens at expiry-3d = 2026-06-25T00:00:00Z. The clock is the resolver's wall-clock instant,
+    # so the window is second-precise — a date-midnight proxy could not tell 23:59:59 from 00:00:01.
+    created = "2026-06-14T00:00:00Z"
+
+    # just OUTSIDE the window (remaining = 3d + 1s): silent.
+    _, before_out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at(created),
+        now=dt.datetime(2026, 6, 24, 23, 59, 59, tzinfo=dt.timezone.utc),
+    )
+    if "WARNING:" in before_out:
+        raise AssertionError(f"tripwire must be silent just outside the window: {before_out!r}")
+
+    # EXACTLY at the threshold (remaining == 259200s): still silent (exclusive comparison, edge pin).
+    _, at_out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at(created),
+        now=dt.datetime(2026, 6, 25, 0, 0, 0, tzinfo=dt.timezone.utc),
+    )
+    if "WARNING:" in at_out:
+        raise AssertionError(f"tripwire must stay silent exactly at the threshold: {at_out!r}")
+
+    # just INSIDE the window (remaining = 3d - 1s): warns, naming the expiry instant and remediation.
     inside_findings, inside_out = run_remote_resolution_scan(
-        resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
-        today=dt.date(2026, 6, 27),
+        resolve_builder=_resolve_returning_created_at(created),
+        now=dt.datetime(2026, 6, 25, 0, 0, 1, tzinfo=dt.timezone.utc),
     )
     if inside_findings:
         raise AssertionError(f"pre-expiry tripwire must not add findings: {inside_findings}")
     if "WARNING:" not in inside_out or "expires at 2026-06-28T00:00:00Z" not in inside_out:
-        raise AssertionError(f"expected a loud pre-expiry warning inside the window: {inside_out!r}")
+        raise AssertionError(
+            f"expected a loud pre-expiry warning just inside the window: {inside_out!r}"
+        )
     if "capture_reference_boundary_fixture=true" not in inside_out:
         raise AssertionError(f"pre-expiry warning must name operator remediation: {inside_out!r}")
-
-    _, outside_out = run_remote_resolution_scan(
-        resolve_builder=_resolve_returning_created_at("2026-06-26T00:00:00Z"),
-        today=dt.date(2026, 6, 27),
-    )
-    if "WARNING:" in outside_out:
-        raise AssertionError(
-            f"pre-expiry tripwire must be silent outside the window: {outside_out!r}"
-        )
 
 
 def test_pre_expiry_tripwire_warning_does_not_change_exit_code() -> None:
     findings, out = run_remote_resolution_scan(
         resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
-        today=dt.date(2026, 6, 27),
+        now=dt.datetime(2026, 6, 25, 0, 0, 1, tzinfo=dt.timezone.utc),
     )
     if "WARNING:" not in out:
         raise AssertionError(f"expected the tripwire to warn for this scenario: {out!r}")
@@ -3038,7 +3061,7 @@ def test_pre_expiry_tripwire_warning_does_not_change_exit_code() -> None:
 def test_pre_expiry_tripwire_emits_github_actions_annotation_only_in_ci() -> None:
     _, ci_out = run_remote_resolution_scan(
         resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
-        today=dt.date(2026, 6, 27),
+        now=dt.datetime(2026, 6, 25, 0, 0, 1, tzinfo=dt.timezone.utc),
         github_actions=True,
     )
     if "::warning::" not in ci_out:
@@ -3046,7 +3069,7 @@ def test_pre_expiry_tripwire_emits_github_actions_annotation_only_in_ci() -> Non
 
     _, local_out = run_remote_resolution_scan(
         resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
-        today=dt.date(2026, 6, 27),
+        now=dt.datetime(2026, 6, 25, 0, 0, 1, tzinfo=dt.timezone.utc),
         github_actions=False,
     )
     if "::warning::" in local_out:

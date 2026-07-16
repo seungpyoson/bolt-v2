@@ -92,25 +92,25 @@ struct StrategyRegistrationSettlementResources {
 
 #[derive(Clone)]
 enum StrategyRegistrationSettlementIdentityError {
-    MissingExecutionVenue { execution_client_id: String },
-    MissingAccountId { execution_client_id: String },
-    MissingCurrency { settlement_account_id: String },
+    ExecutionVenue { execution_client_id: String },
+    AccountId { execution_client_id: String },
+    Currency { settlement_account_id: String },
 }
 
 impl StrategyRegistrationSettlementIdentityError {
     fn message(&self) -> String {
         match self {
-            Self::MissingExecutionVenue {
+            Self::ExecutionVenue {
                 execution_client_id,
             } => format!(
                 "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
             ),
-            Self::MissingAccountId {
+            Self::AccountId {
                 execution_client_id,
             } => format!(
                 "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
             ),
-            Self::MissingCurrency {
+            Self::Currency {
                 settlement_account_id,
             } => format!(
                 "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
@@ -178,7 +178,7 @@ fn resolve_settlement_capability(
     let execution_client_id = strategy.config.execution_client_id.as_str();
     let Some(execution_venue) = venue_for_client(&loaded.root, execution_client_id) else {
         return StrategyRegistrationSettlementCapability::Invalid(
-            StrategyRegistrationSettlementIdentityError::MissingExecutionVenue {
+            StrategyRegistrationSettlementIdentityError::ExecutionVenue {
                 execution_client_id: execution_client_id.to_string(),
             },
         );
@@ -186,7 +186,7 @@ fn resolve_settlement_capability(
     let Some(settlement_account_id) = execution_account_id(&loaded.root, execution_client_id)
     else {
         return StrategyRegistrationSettlementCapability::Invalid(
-            StrategyRegistrationSettlementIdentityError::MissingAccountId {
+            StrategyRegistrationSettlementIdentityError::AccountId {
                 execution_client_id: execution_client_id.to_string(),
             },
         );
@@ -197,7 +197,7 @@ fn resolve_settlement_capability(
         settlement_account_id,
     ) else {
         return StrategyRegistrationSettlementCapability::Invalid(
-            StrategyRegistrationSettlementIdentityError::MissingCurrency {
+            StrategyRegistrationSettlementIdentityError::Currency {
                 settlement_account_id: settlement_account_id.to_string(),
             },
         );

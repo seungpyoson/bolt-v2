@@ -2,20 +2,31 @@ use std::cell::Cell;
 
 use anyhow::Result;
 use bolt_v2::bolt_v3_evidence_novelty::{
-    EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceStateOwner,
-    registered_evidence_state, total_owned_state_capacity,
+    EvidenceCanonicalState, EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard,
+    EvidenceOutcomeIdentity, EvidenceStateOwner, registered_evidence_state_by_id,
 };
+
+fn outcome(index: u8, label: &str, token_id: &str) -> EvidenceOutcomeIdentity {
+    EvidenceOutcomeIdentity {
+        index,
+        normalized_outcome: label.to_string(),
+        clob_token_id: token_id.to_string(),
+    }
+}
 
 fn episode_parts(market_id: &str) -> EvidenceEpisodeParts {
     EvidenceEpisodeParts {
         strategy_id: "binary-oracle-btc".to_string(),
         target_id: "btc-updown-5m".to_string(),
         venue_id: "POLYMARKET".to_string(),
-        market_id: market_id.to_string(),
+        gamma_market_id: market_id.to_string(),
         condition_id: format!("condition-{market_id}"),
         question_id: format!("question-{market_id}"),
-        up_token_id: format!("up-{market_id}"),
-        down_token_id: format!("down-{market_id}"),
+        negative_risk: false,
+        outcomes: [
+            outcome(0, "up", &format!("up-{market_id}")),
+            outcome(1, "down", &format!("down-{market_id}")),
+        ],
     }
 }
 
@@ -25,11 +36,30 @@ fn episode(market_id: &str) -> EvidenceEpisodeId {
 }
 
 #[test]
+fn canonical_state_ids_match_the_frozen_registry() {
+    assert_eq!(
+        EvidenceCanonicalState::BlockedStrategyInputAcceptedWatermarkAbsent as usize,
+        144
+    );
+    assert_eq!(
+        EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkPresent as usize,
+        155
+    );
+    assert_eq!(
+        EvidenceCanonicalState::EntrySkipStrategyCoreNotRegistered as usize,
+        156
+    );
+    assert_eq!(
+        EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation as usize,
+        172
+    );
+    assert!(registered_evidence_state_by_id(143).is_err());
+    assert!(registered_evidence_state_by_id(173).is_err());
+}
+
+#[test]
 fn stable_episode_identity_has_no_volatile_constructor_inputs() {
     let first = episode("market-a");
-
-    // These are intentionally not accepted by EvidenceEpisodeParts. Changing every
-    // incident-driving volatile observation therefore cannot re-key the episode.
     let first_volatile_sample = (101_000.0, 1_u64, 2_u64, 3_u64, false, "missing_snapshot");
     let second_volatile_sample = (
         99_000.0,
@@ -39,158 +69,157 @@ fn stable_episode_identity_has_no_volatile_constructor_inputs() {
         true,
         "rejected_stale",
     );
-
-    let second = episode("market-a");
-    assert_eq!(first, second);
+    assert_eq!(first, episode("market-a"));
     assert_ne!(first_volatile_sample, second_volatile_sample);
 }
 
 #[test]
-fn true_market_change_changes_episode_identity() {
+fn every_stable_market_component_changes_episode_identity() {
     let baseline = episode("market-a");
-    let mutations: [(&str, fn(&mut EvidenceEpisodeParts)); 8] = [
-        ("strategy", |parts: &mut EvidenceEpisodeParts| {
-            parts.strategy_id.push_str("-changed");
-        }),
-        ("target", |parts: &mut EvidenceEpisodeParts| {
-            parts.target_id.push_str("-changed");
-        }),
-        ("venue", |parts: &mut EvidenceEpisodeParts| {
-            parts.venue_id.push_str("-changed");
-        }),
-        ("market", |parts: &mut EvidenceEpisodeParts| {
-            parts.market_id.push_str("-changed");
-        }),
-        ("condition", |parts: &mut EvidenceEpisodeParts| {
-            parts.condition_id.push_str("-changed");
-        }),
-        ("question", |parts: &mut EvidenceEpisodeParts| {
-            parts.question_id.push_str("-changed");
-        }),
-        ("up token", |parts: &mut EvidenceEpisodeParts| {
-            parts.up_token_id.push_str("-changed");
-        }),
-        ("down token", |parts: &mut EvidenceEpisodeParts| {
-            parts.down_token_id.push_str("-changed");
-        }),
-    ];
-    for (field, mutate) in mutations {
-        let mut parts = episode_parts("market-a");
-        mutate(&mut parts);
+    let mut mutations = Vec::new();
+
+    let mut parts = episode_parts("market-a");
+    parts.strategy_id.push_str("-changed");
+    mutations.push(("strategy", parts));
+    let mut parts = episode_parts("market-a");
+    parts.target_id.push_str("-changed");
+    mutations.push(("target", parts));
+    let mut parts = episode_parts("market-a");
+    parts.venue_id.push_str("-changed");
+    mutations.push(("venue", parts));
+    let mut parts = episode_parts("market-a");
+    parts.gamma_market_id.push_str("-changed");
+    mutations.push(("Gamma market", parts));
+    let mut parts = episode_parts("market-a");
+    parts.condition_id.push_str("-changed");
+    mutations.push(("condition", parts));
+    let mut parts = episode_parts("market-a");
+    parts.question_id.push_str("-changed");
+    mutations.push(("question", parts));
+    let mut parts = episode_parts("market-a");
+    parts.negative_risk = true;
+    mutations.push(("negative-risk mode", parts));
+    let mut parts = episode_parts("market-a");
+    parts.outcomes[0].index = 2;
+    mutations.push(("outcome index", parts));
+    let mut parts = episode_parts("market-a");
+    parts.outcomes[0].normalized_outcome.push_str("-changed");
+    mutations.push(("normalized outcome", parts));
+    let mut parts = episode_parts("market-a");
+    parts.outcomes[0].clob_token_id.push_str("-changed");
+    mutations.push(("CLOB token", parts));
+
+    for (field, parts) in mutations {
         let changed = EvidenceEpisodeId::try_from(parts).expect("changed identity remains valid");
-        assert_ne!(
-            baseline, changed,
-            "changing {field} must change episode identity"
-        );
+        assert_ne!(baseline, changed, "changing {field} must change identity");
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum TestState {
-    A,
-    B,
+#[test]
+fn invalid_ordered_outcome_identity_is_rejected() {
+    let mut duplicate_index = episode_parts("market-a");
+    duplicate_index.outcomes[1].index = duplicate_index.outcomes[0].index;
+    assert!(EvidenceEpisodeId::try_from(duplicate_index).is_err());
+
+    let mut duplicate_label = episode_parts("market-a");
+    duplicate_label.outcomes[1].normalized_outcome =
+        duplicate_label.outcomes[0].normalized_outcome.clone();
+    assert!(EvidenceEpisodeId::try_from(duplicate_label).is_err());
+
+    let mut duplicate_token = episode_parts("market-a");
+    duplicate_token.outcomes[1].clob_token_id = duplicate_token.outcomes[0].clob_token_id.clone();
+    assert!(EvidenceEpisodeId::try_from(duplicate_token).is_err());
 }
 
 #[test]
-fn one_hundred_thousand_a_b_a_oscillations_reach_a_fixed_ceiling() -> Result<()> {
+fn one_hundred_thousand_semantic_a_b_a_oscillations_reach_a_fixed_ceiling() -> Result<()> {
     let episode = episode("market-a");
-    let mut entry_skip =
-        EvidenceNoveltyGuard::<TestState>::for_owner(EvidenceStateOwner::EntrySkip)?;
-    let mut blocked_snapshot = EvidenceNoveltyGuard::<TestState>::for_owner(
-        EvidenceStateOwner::BlockedStrategyInputSnapshot,
-    )?;
-    let entry_payloads = Cell::new(0_u64);
-    let entry_appends = Cell::new(0_u64);
-    let snapshot_payloads = Cell::new(0_u64);
-    let snapshot_appends = Cell::new(0_u64);
+    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)?;
+    let payloads = Cell::new(0_u64);
+    let appends = Cell::new(0_u64);
+    let state_a = EvidenceCanonicalState::EntrySkipEntryGateBlocked;
+    let state_b = EvidenceCanonicalState::EntrySkipEntryPricingBlocked;
 
     for _ in 0..100_000 {
-        for state in [TestState::A, TestState::B, TestState::A] {
-            entry_skip.emit_once(&episode, state, || {
-                entry_payloads.set(entry_payloads.get() + 1);
-                entry_appends.set(entry_appends.get() + 1);
-                Ok(())
-            })?;
-            blocked_snapshot.emit_once(&episode, state, || {
-                snapshot_payloads.set(snapshot_payloads.get() + 1);
-                snapshot_appends.set(snapshot_appends.get() + 1);
+        for state in [state_a, state_b, state_a] {
+            guard.emit_once(&episode, state, || {
+                payloads.set(payloads.get() + 1);
+                appends.set(appends.get() + 1);
                 Ok(())
             })?;
         }
     }
 
-    assert_eq!(entry_payloads.get(), 2);
-    assert_eq!(entry_appends.get(), 2);
-    assert_eq!(snapshot_payloads.get(), 2);
-    assert_eq!(snapshot_appends.get(), 2);
-    assert_eq!(entry_skip.seen_state_count(), 2);
-    assert_eq!(blocked_snapshot.seen_state_count(), 2);
-    assert_eq!(
-        total_owned_state_capacity(),
-        entry_skip.state_capacity() + blocked_snapshot.state_capacity()
-    );
-    Ok(())
-}
-
-#[test]
-fn duplicate_rejection_skips_payload_construction_and_append() -> Result<()> {
-    let episode = episode("market-a");
-    let mut guard = EvidenceNoveltyGuard::<TestState>::for_owner(EvidenceStateOwner::EntrySkip)?;
-    let payloads = Cell::new(0_u64);
-    let appends = Cell::new(0_u64);
-
-    for _ in 0..10 {
-        guard.emit_once(&episode, TestState::A, || {
-            payloads.set(payloads.get() + 1);
-            appends.set(appends.get() + 1);
-            Ok(())
-        })?;
-    }
-
-    assert_eq!(payloads.get(), 1);
-    assert_eq!(appends.get(), 1);
-    Ok(())
-}
-
-#[test]
-fn true_episode_change_gets_a_fresh_finite_novelty_domain() -> Result<()> {
-    let mut guard = EvidenceNoveltyGuard::<TestState>::for_owner(EvidenceStateOwner::EntrySkip)?;
-    let appends = Cell::new(0_u64);
-    for episode in [episode("market-a"), episode("market-b")] {
-        guard.emit_once(&episode, TestState::A, || {
-            appends.set(appends.get() + 1);
-            Ok(())
-        })?;
-    }
+    assert_eq!(payloads.get(), 2);
     assert_eq!(appends.get(), 2);
-    assert_eq!(guard.seen_state_count(), 1);
+    assert_eq!(guard.seen_episode_count(), 1);
+    assert_eq!(guard.seen_state_count(&episode), 2);
     Ok(())
 }
 
 #[test]
-fn unknown_semantic_state_mapping_fails_closed() {
-    assert!(registered_evidence_state("entry_skip", "unknown_state").is_err());
-    assert!(registered_evidence_state("unknown_producer", "entry_skip.semantic").is_err());
-}
+fn episode_a_b_a_preserves_each_episode_novelty_domain() -> Result<()> {
+    let episode_a = episode("market-a");
+    let episode_b = episode("market-b");
+    let state = EvidenceCanonicalState::EntrySkipEntryGateBlocked;
+    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)?;
+    let appends = Cell::new(0_u64);
 
-#[test]
-fn configured_capacity_exhaustion_fails_before_payload_or_append() -> Result<()> {
-    let episode = episode("market-a");
-    let mut guard = EvidenceNoveltyGuard::<usize>::for_owner(EvidenceStateOwner::EntrySkip)?;
-    let payloads = Cell::new(0_usize);
-    for state in 0..guard.state_capacity() {
-        guard.emit_once(&episode, state, || {
-            payloads.set(payloads.get() + 1);
+    for episode in [&episode_a, &episode_b, &episode_a] {
+        guard.emit_once(episode, state, || {
+            appends.set(appends.get() + 1);
             Ok(())
         })?;
     }
-    let error = guard
-        .emit_once(&episode, guard.state_capacity(), || {
-            payloads.set(payloads.get() + 1);
+
+    assert_eq!(appends.get(), 2);
+    assert_eq!(guard.seen_episode_count(), 2);
+    assert_eq!(guard.seen_state_count(&episode_a), 1);
+    assert_eq!(guard.seen_state_count(&episode_b), 1);
+    Ok(())
+}
+
+#[test]
+fn more_than_retired_episode_ceiling_does_not_evict_seen_novelty() -> Result<()> {
+    let first = episode("market-0");
+    let state = EvidenceCanonicalState::EntrySkipEntryGateBlocked;
+    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)?;
+    let appends = Cell::new(0_u64);
+
+    for index in 0..=4_097 {
+        let current = episode(&format!("market-{index}"));
+        guard.emit_once(&current, state, || {
+            appends.set(appends.get() + 1);
             Ok(())
-        })
-        .expect_err("an unseen state beyond the TOML-generated capacity must fail closed");
-    assert!(error.to_string().contains("capacity exhausted"));
-    assert_eq!(payloads.get(), guard.state_capacity());
+        })?;
+    }
+    guard.emit_once(&first, state, || {
+        appends.set(appends.get() + 1);
+        Ok(())
+    })?;
+
+    assert_eq!(appends.get(), 4_098);
+    assert_eq!(guard.seen_episode_count(), 4_098);
+    assert_eq!(guard.seen_state_count(&first), 1);
+    Ok(())
+}
+
+#[test]
+fn owner_mismatch_fails_before_payload_construction() -> Result<()> {
+    let episode = episode("market-a");
+    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)?;
+    let payloads = Cell::new(0_u64);
+    let error = guard
+        .emit_once(
+            &episode,
+            EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkAbsent,
+            || {
+                payloads.set(payloads.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("a canonical state owned by another producer must fail closed");
+    assert!(error.to_string().contains("owner mismatch"));
+    assert_eq!(payloads.get(), 0);
     Ok(())
 }

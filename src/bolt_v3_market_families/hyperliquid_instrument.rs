@@ -117,9 +117,9 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     };
 
     let mut errors = Vec::new();
-    if block.configured_target_id.is_empty() {
+    if !super::stable_identity_field_is_canonical(block.configured_target_id.as_str()) {
         errors.push(format!(
-            "{context}: target.configured_target_id must not be empty"
+            "{context}: target.configured_target_id must be non-empty without surrounding whitespace"
         ));
     }
     let instrument_id = block.instrument_id.to_string();
@@ -168,6 +168,13 @@ pub fn plan_strategy_target(
             message,
         }
     })?;
+    if !super::stable_identity_field_is_canonical(target.configured_target_id.as_str()) {
+        return Err(InstrumentFilterError::TargetValidationFailure {
+            message: format!(
+                "strategy `{strategy_instance_id}`: target.configured_target_id must be non-empty without surrounding whitespace"
+            ),
+        });
+    }
 
     let TargetKind::StaticInstrument = target.kind;
     let RotatingMarketFamily::HyperliquidInstrument = target.rotating_market_family;
@@ -256,5 +263,30 @@ fn product_surface_key(surface: ProductSurface) -> &'static str {
         ProductSurface::Spot => "spot",
         ProductSurface::Hip3BuilderPerps => "hip3_builder_perps",
         ProductSurface::Hip4Outcomes => "hip4_outcomes",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_whitespace_padded_configured_target_identity() {
+        let target: toml::Value = toml::toml! {
+            configured_target_id = " hl-spot-btc-usdc "
+            kind = "static_instrument"
+            rotating_market_family = "hyperliquid_instrument"
+            product_surface = "spot"
+            instrument_id = "BTC/USDC.HYPERLIQUID"
+            quantity_step = "0.001"
+        }
+        .into();
+
+        let errors = validate_target_block("strategy `fixture`", &target);
+        assert!(errors.iter().any(|error| {
+            error.contains(
+                "target.configured_target_id must be non-empty without surrounding whitespace",
+            )
+        }));
     }
 }

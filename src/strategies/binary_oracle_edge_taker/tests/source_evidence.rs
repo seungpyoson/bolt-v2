@@ -2188,16 +2188,12 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
         .collect::<Vec<_>>();
     assert_eq!(
         blocked_snapshots.len(),
-        2,
-        "identical blocked evaluations must emit once and the RV blocker transition must emit the second record"
+        1,
+        "payload-only RV blocker changes must not bypass canonical-state novelty"
     );
     assert_eq!(
         blocked_snapshots[0].realized_volatility_blockers,
         vec!["quorum_not_ready".to_string()]
-    );
-    assert_eq!(
-        blocked_snapshots[1].realized_volatility_blockers,
-        vec!["source_stale".to_string()]
     );
     let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
         panic!("expected blocked strategy input evidence first; got {events:#?}");

@@ -850,6 +850,7 @@ pub fn selected_market_requirement_from_target_with_bindings(
     selected_at_ms: u64,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    ensure_configured_target_identity("", target)?;
     let dispatch: TargetFamilyDispatch =
         target
             .clone()
@@ -885,6 +886,11 @@ where
 pub(crate) fn selected_market_requirement_from_parts(
     parts: SelectedMarketRequirementParts<'_>,
 ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    if !stable_identity_field_is_canonical(parts.configured_target_id) {
+        return Err(selected_market_requirement_error(
+            "selected-market configured_target_id must be non-empty and unpadded",
+        ));
+    }
     ensure_selected_market_text(
         SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD,
         parts.configured_target_id,
@@ -1956,6 +1962,38 @@ mod tests {
         assert_eq!(
             requirement.instrument_ids,
             vec!["fixture-down.FIXTURE", "fixture-up.FIXTURE"]
+        );
+    }
+
+    #[test]
+    fn selected_market_requirement_rejects_padded_configured_target_identity() {
+        let target = toml::toml! {
+            configured_target_id = " fixture-target"
+            rotating_market_family = "fixture_family"
+        }
+        .into();
+        let selected = fake_selected_binary_option_market();
+        let dispatch_error = selected_market_requirement_from_target_with_bindings(
+            &target,
+            &selected,
+            123,
+            FAKE_FAMILY_BINDINGS,
+        )
+        .expect_err("requirement dispatch must reject a padded configured target identity");
+        assert!(
+            dispatch_error
+                .to_string()
+                .contains("must be a non-empty, unpadded string")
+        );
+
+        let mut parts = fixture_requirement_parts("fixture-market", 123);
+        parts.configured_target_id = "fixture-target ";
+        let parts_error = selected_market_requirement_from_parts(parts)
+            .expect_err("direct requirement construction must reject a padded target identity");
+        assert!(
+            parts_error
+                .to_string()
+                .contains("must be non-empty and unpadded")
         );
     }
 

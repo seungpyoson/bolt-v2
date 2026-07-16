@@ -951,7 +951,8 @@ fn plan_strategy_error(error: BoltV3MarketIdentityError) -> InstrumentFilterErro
             strategy_instance_id,
             message,
         },
-        BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
+        BoltV3MarketIdentityError::InvalidConfiguredTargetId { .. }
+        | BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
         | BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
         | BoltV3MarketIdentityError::CadenceSlugTokenMismatch { .. } => {
             InstrumentFilterError::TargetValidationFailure {
@@ -1393,7 +1394,8 @@ fn market_identity_error_to_instrument_filter_error(
             now_unix_seconds: now_unix_secs,
             cadence_seconds: cadence_secs,
         },
-        BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
+        BoltV3MarketIdentityError::InvalidConfiguredTargetId { .. }
+        | BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
         | BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
         | BoltV3MarketIdentityError::CadenceSlugTokenMismatch { .. }
         | BoltV3MarketIdentityError::TargetParseFailed { .. } => {

@@ -23,7 +23,8 @@ use crate::bolt_v3_decision_evidence::{
     BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
 };
 use crate::bolt_v3_market_families::{
-    self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
+    self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketEvidenceIdentity,
+    SelectedMarketSourceIdentity,
 };
 
 use super::{ActiveMarketState, BinaryOracleEdgeTakerConfig, OutcomeBookSubscriptions};
@@ -46,6 +47,7 @@ pub(super) struct CandidateMarket {
     pub(super) instrument_id: String,
     pub(super) up: CandidateOutcome,
     pub(super) down: CandidateOutcome,
+    pub(super) evidence_identity: SelectedMarketEvidenceIdentity,
     pub(super) source_identity: SelectedMarketSourceIdentity,
     pub(super) selection_outcome: MarketSelectionOutcome,
     pub(super) price_to_beat: Option<f64>,
@@ -244,6 +246,7 @@ pub(super) fn select_configured_market_from_instruments(
         down: CandidateOutcome {
             instrument_id: market.down_instrument_id.to_string(),
         },
+        evidence_identity: market.evidence_identity,
         source_identity: market.source_identity,
         selection_outcome: market.selection_outcome,
         price_to_beat: None,

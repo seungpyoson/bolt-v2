@@ -55,7 +55,8 @@ use crate::{
         realized_volatility_pricing_component_evidence_label,
     },
     bolt_v3_evidence_novelty::{
-        EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceStateOwner,
+        EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceOutcomeIdentity,
+        EvidenceStateOwner,
     },
     bolt_v3_executable_cost::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
@@ -123,7 +124,10 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
     },
-    bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
+    bolt_v3_market_families::{
+        MarketSelectionOutcome, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
+        SelectedMarketSourceIdentity,
+    },
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
@@ -2163,38 +2167,26 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn evidence_episode_id(&self) -> Result<EvidenceEpisodeId> {
-        let source_identity =
-            self.active.source_identity.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("evidence episode requires selected market identity")
+        let identity =
+            self.active.evidence_identity.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("evidence episode requires bound market identity")
             })?;
-        let market_id = self
-            .active
-            .market_id
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("evidence episode requires market id"))?;
-        let up_token_id = self
-            .active
-            .books
-            .up
-            .instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .ok_or_else(|| anyhow::anyhow!("evidence episode requires up outcome token id"))?;
-        let down_token_id = self
-            .active
-            .books
-            .down
-            .instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .ok_or_else(|| anyhow::anyhow!("evidence episode requires down outcome token id"))?;
         EvidenceEpisodeId::try_from(EvidenceEpisodeParts {
             strategy_id: self.config.strategy_id.clone(),
             target_id: self.config.configured_target_id.clone(),
             venue_id: self.context.execution_venue().to_string(),
-            market_id,
-            condition_id: source_identity.condition_id.clone(),
-            question_id: source_identity.question_id.clone(),
-            up_token_id,
-            down_token_id,
+            gamma_market_id: identity.gamma_market_id.clone(),
+            condition_id: identity.condition_id.clone(),
+            question_id: identity.question_id.clone(),
+            negative_risk: identity.negative_risk,
+            outcomes: identity
+                .outcomes
+                .clone()
+                .map(|outcome| EvidenceOutcomeIdentity {
+                    index: outcome.index,
+                    normalized_outcome: outcome.normalized_outcome,
+                    clob_token_id: outcome.clob_token_id,
+                }),
         })
     }
 

@@ -17,8 +17,9 @@ use crate::{
 use super::{
     FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
     MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
-    SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
-    SelectedMarketSourceIdentity, TargetRuntimeFields, selected_market_metadata_provenance_fields,
+    SelectedBinaryOptionMarket, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
+    SelectedMarketRequirement, SelectedMarketRequirementParts, SelectedMarketSourceIdentity,
+    TargetRuntimeFields, selected_market_metadata_provenance_fields,
     selected_market_requirement_error, selected_market_requirement_from_parts,
 };
 
@@ -140,6 +141,9 @@ struct StaticOutcomeInstrument {
     condition_id: String,
     market_slug: String,
     question_id: String,
+    negative_risk: bool,
+    normalized_outcome: String,
+    clob_token_id: String,
     instrument_id: InstrumentId,
     activation_milliseconds: u64,
     expiration_milliseconds: u64,
@@ -262,6 +266,7 @@ pub fn select_binary_option_market(
         instrument_id: market.instrument_id,
         up_instrument_id: market.up_instrument_id,
         down_instrument_id: market.down_instrument_id,
+        evidence_identity: market.evidence_identity,
         selection_outcome: market.selection_outcome,
         start_timestamp_milliseconds: market.start_timestamp_milliseconds,
         expiration_timestamp_milliseconds: market.expiration_timestamp_milliseconds,
@@ -535,6 +540,7 @@ struct SelectedStaticBinaryEventMarket {
     expiration_timestamp_milliseconds: u64,
     seconds_to_end: u64,
     source_identity: SelectedMarketSourceIdentity,
+    evidence_identity: SelectedMarketEvidenceIdentity,
 }
 
 fn select_static_market_from_instruments(
@@ -568,6 +574,9 @@ fn select_static_market_from_instruments(
         || yes.condition_id != no.condition_id
         || yes.market_slug != no.market_slug
         || yes.question_id != no.question_id
+        || yes.negative_risk != no.negative_risk
+        || yes.normalized_outcome == no.normalized_outcome
+        || yes.clob_token_id == no.clob_token_id
     {
         return None;
     }
@@ -578,6 +587,24 @@ fn select_static_market_from_instruments(
     }
     let start_timestamp_milliseconds = yes.activation_milliseconds.max(no.activation_milliseconds);
 
+    let evidence_identity = SelectedMarketEvidenceIdentity {
+        gamma_market_id: yes.market_id.clone(),
+        condition_id: yes.condition_id.clone(),
+        question_id: yes.question_id.clone(),
+        negative_risk: yes.negative_risk,
+        outcomes: [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: yes.normalized_outcome.clone(),
+                clob_token_id: yes.clob_token_id.clone(),
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: no.normalized_outcome.clone(),
+                clob_token_id: no.clob_token_id.clone(),
+            },
+        ],
+    };
     Some(SelectedStaticBinaryEventMarket {
         market_id: yes.market_id,
         source_identity: SelectedMarketSourceIdentity {
@@ -585,6 +612,7 @@ fn select_static_market_from_instruments(
             market_slug: yes.market_slug,
             question_id: yes.question_id,
         },
+        evidence_identity,
         instrument_id: yes.instrument_id,
         up_instrument_id: yes.instrument_id,
         down_instrument_id: no.instrument_id,
@@ -628,6 +656,9 @@ fn static_outcome_instrument(
         condition_id: info.get_str(METADATA_CONDITION_ID_FIELD)?.to_string(),
         market_slug: info.get_str(METADATA_MARKET_SLUG_FIELD)?.to_string(),
         question_id: info.get_str(METADATA_QUESTION_ID_FIELD)?.to_string(),
+        negative_risk: info.get_bool("neg_risk")?,
+        normalized_outcome: outcome_label.trim().to_ascii_lowercase(),
+        clob_token_id: binary.raw_symbol().as_str().to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -1205,6 +1236,24 @@ mod tests {
             instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             up_instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             down_instrument_id: InstrumentId::from("SAMPLE-EVENT-NO.POLYMARKET"),
+            evidence_identity: SelectedMarketEvidenceIdentity {
+                gamma_market_id: TEST_MARKET_ID.to_string(),
+                condition_id: TEST_CONDITION_ID.to_string(),
+                question_id: TEST_QUESTION_ID.to_string(),
+                negative_risk: false,
+                outcomes: [
+                    SelectedMarketEvidenceOutcome {
+                        index: 0,
+                        normalized_outcome: "yes".to_string(),
+                        clob_token_id: "SAMPLE-EVENT-YES".to_string(),
+                    },
+                    SelectedMarketEvidenceOutcome {
+                        index: 1,
+                        normalized_outcome: "no".to_string(),
+                        clob_token_id: "SAMPLE-EVENT-NO".to_string(),
+                    },
+                ],
+            },
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 30_000,
@@ -1259,6 +1308,7 @@ mod tests {
             "question_id".to_string(),
             serde_json::Value::String(question_id.to_string()),
         );
+        info.insert("neg_risk".to_string(), serde_json::Value::Bool(false));
         InstrumentAny::BinaryOption(BinaryOption::new(
             InstrumentId::from(instrument_id),
             Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),

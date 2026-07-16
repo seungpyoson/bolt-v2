@@ -16,16 +16,23 @@ include!("bolt_v3_evidence_novelty_generated.rs");
 /// Prices, timestamps, ages, counters, feed flags, slugs, and diagnostics are
 /// structurally absent. Ordered outcome/token identity is represented by the
 /// explicit up/down token fields rather than a caller-supplied collection.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EvidenceOutcomeIdentity {
+    pub index: u8,
+    pub normalized_outcome: String,
+    pub clob_token_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceEpisodeParts {
     pub strategy_id: String,
     pub target_id: String,
     pub venue_id: String,
-    pub market_id: String,
+    pub gamma_market_id: String,
     pub condition_id: String,
     pub question_id: String,
-    pub up_token_id: String,
-    pub down_token_id: String,
+    pub negative_risk: bool,
+    pub outcomes: [EvidenceOutcomeIdentity; 2],
 }
 
 /// Typed identity for one stable market episode.
@@ -34,11 +41,11 @@ pub struct EvidenceEpisodeId {
     strategy_id: String,
     target_id: String,
     venue_id: String,
-    market_id: String,
+    gamma_market_id: String,
     condition_id: String,
     question_id: String,
-    up_token_id: String,
-    down_token_id: String,
+    negative_risk: bool,
+    outcomes: [EvidenceOutcomeIdentity; 2],
 }
 
 impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
@@ -49,27 +56,47 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
             ("strategy_id", parts.strategy_id.as_str()),
             ("target_id", parts.target_id.as_str()),
             ("venue_id", parts.venue_id.as_str()),
-            ("market_id", parts.market_id.as_str()),
+            ("gamma_market_id", parts.gamma_market_id.as_str()),
             ("condition_id", parts.condition_id.as_str()),
             ("question_id", parts.question_id.as_str()),
-            ("up_token_id", parts.up_token_id.as_str()),
-            ("down_token_id", parts.down_token_id.as_str()),
+            (
+                "outcomes[0].normalized_outcome",
+                parts.outcomes[0].normalized_outcome.as_str(),
+            ),
+            (
+                "outcomes[0].clob_token_id",
+                parts.outcomes[0].clob_token_id.as_str(),
+            ),
+            (
+                "outcomes[1].normalized_outcome",
+                parts.outcomes[1].normalized_outcome.as_str(),
+            ),
+            (
+                "outcomes[1].clob_token_id",
+                parts.outcomes[1].clob_token_id.as_str(),
+            ),
         ];
         if let Some((field, _)) = required.iter().find(|(_, value)| value.is_empty()) {
             bail!("evidence episode requires non-empty stable field `{field}`");
         }
-        if parts.up_token_id == parts.down_token_id {
-            bail!("evidence episode requires distinct ordered outcome token identities");
+        if parts.outcomes[0].index == parts.outcomes[1].index {
+            bail!("evidence episode requires distinct ordered outcome indices");
+        }
+        if parts.outcomes[0].normalized_outcome == parts.outcomes[1].normalized_outcome {
+            bail!("evidence episode requires distinct normalized outcomes");
+        }
+        if parts.outcomes[0].clob_token_id == parts.outcomes[1].clob_token_id {
+            bail!("evidence episode requires distinct CLOB token identities");
         }
         Ok(Self {
             strategy_id: parts.strategy_id,
             target_id: parts.target_id,
             venue_id: parts.venue_id,
-            market_id: parts.market_id,
+            gamma_market_id: parts.gamma_market_id,
             condition_id: parts.condition_id,
             question_id: parts.question_id,
-            up_token_id: parts.up_token_id,
-            down_token_id: parts.down_token_id,
+            negative_risk: parts.negative_risk,
+            outcomes: parts.outcomes,
         })
     }
 }

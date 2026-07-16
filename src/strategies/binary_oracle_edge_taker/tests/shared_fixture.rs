@@ -2126,6 +2126,24 @@ pub(super) fn candidate_market(market_id: &str, interval_start_ms: u64) -> Candi
         down: CandidateOutcome {
             instrument_id: down_instrument_id,
         },
+        evidence_identity: SelectedMarketEvidenceIdentity {
+            gamma_market_id: market_id.to_string(),
+            condition_id: condition_id.clone(),
+            question_id: format!("question-{market_id}"),
+            negative_risk: false,
+            outcomes: [
+                SelectedMarketEvidenceOutcome {
+                    index: 0,
+                    normalized_outcome: "up".to_string(),
+                    clob_token_id: up_token_id,
+                },
+                SelectedMarketEvidenceOutcome {
+                    index: 1,
+                    normalized_outcome: "down".to_string(),
+                    clob_token_id: down_token_id,
+                },
+            ],
+        },
         source_identity: SelectedMarketSourceIdentity {
             condition_id,
             market_slug: format!("slug-{market_id}"),
@@ -2164,6 +2182,7 @@ pub(super) fn updown_binary_option(
         "question_id".to_string(),
         serde_json::Value::String(format!("question-{market_id}")),
     );
+    info.insert("neg_risk".to_string(), serde_json::Value::Bool(false));
     InstrumentAny::BinaryOption(BinaryOption::new(
         InstrumentId::from(instrument_id),
         Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),

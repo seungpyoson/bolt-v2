@@ -1918,13 +1918,13 @@ fn verify_completed_operator_output_against_seal(
                     .checked_add(1)
                     .context("completed primary match count overflow")?;
             }
-            inventories.insert(relative.clone(), inventory);
             canonical_rows = canonical_rows
                 .checked_add(record_rows)
                 .context("completed canonical row total overflow")?;
             nt_catalog_rows = nt_catalog_rows
                 .checked_add(inventory.data_rows)
                 .context("completed NT row total overflow")?;
+            inventories.insert(relative.clone(), inventory);
         }
         ensure!(
             rows_by_data_type == manifest.effective_catalog_rows_by_nt_data_type(),
@@ -7063,7 +7063,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
         .content_hash()
         .context("hash conversion checkpoint")?;
     let conversion_manifest = ConversionManifest::completed(
-        conversion_fingerprint,
+        conversion_fingerprint.clone(),
         primary.table.schema_version().to_string(),
         primary.table.nt_data_type().to_string(),
         primary.nt_instrument_id.clone(),

@@ -693,10 +693,27 @@ mod tests {
             authority.reserved_bytes().unwrap(),
             RISK_CLOSURE_WORKSPACE_CONFIG.arena_bytes
         );
-        let reservations = (usize::default()..RISK_CLOSURE_WORKSPACE_CONFIG.capacity)
+        let mut reservations = (usize::default()..RISK_CLOSURE_WORKSPACE_CONFIG.capacity)
             .map(|_| authority.checkout_new_risk().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(reservations.len(), RISK_CLOSURE_WORKSPACE_CONFIG.capacity);
+        let mut observed_arena_bytes = usize::default();
+        for reservation in &mut reservations {
+            let observed_slot_bytes = reservation
+                .with_workspace_mut(|workspace| {
+                    assert_eq!(workspace.len(), RISK_CLOSURE_WORKSPACE_CONFIG.slot_bytes);
+                    workspace.fill(u8::MAX);
+                    workspace.len()
+                })
+                .unwrap();
+            observed_arena_bytes = observed_arena_bytes
+                .checked_add(observed_slot_bytes)
+                .unwrap();
+        }
+        assert_eq!(
+            observed_arena_bytes,
+            RISK_CLOSURE_WORKSPACE_CONFIG.arena_bytes
+        );
         assert_eq!(
             authority.checkout_new_risk().err(),
             Some(RiskClosureWorkspaceError::CapacityExhausted)

@@ -130,6 +130,16 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
         self.assertEqual(ids, tuple(range(144, 173)))
         self.assertEqual(len(registry.states), 29)
 
+    def test_permanent_ids_cannot_swap_semantic_meanings(self) -> None:
+        text = self.registry_text()
+        text = text.replace("id = 146", "id = 999", 1)
+        text = text.replace("id = 147", "id = 146", 1)
+        text = text.replace("id = 999", "id = 147", 1)
+        with self.assertRaisesRegex(
+            ValueError, "states must match frozen id-to-semantic mappings"
+        ):
+            self.load_text(text)
+
     def test_unassigned_ids_remain_non_emittable(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
         ids = {getattr(row, "id", None) for row in registry.states}

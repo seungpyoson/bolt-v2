@@ -30,6 +30,43 @@ FROZEN_MARKET_ALLOCATIONS = (
     ("terminal_closed_window_skip", 240, 256),
 )
 FROZEN_MARKET_FAMILY_CAPACITY = FROZEN_MARKET_ALLOCATIONS[-1][2]
+FROZEN_MARKET_STATES = (
+    (144, "strategy_input_snapshot.blocked_rv.accepted.watermark_absent"),
+    (145, "strategy_input_snapshot.blocked_rv.accepted.watermark_present"),
+    (146, "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_absent"),
+    (147, "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_present"),
+    (
+        148,
+        "strategy_input_snapshot.blocked_rv.missing_evaluation_event_time.watermark_absent",
+    ),
+    (
+        149,
+        "strategy_input_snapshot.blocked_rv.missing_evaluation_event_time.watermark_present",
+    ),
+    (150, "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_absent"),
+    (151, "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_present"),
+    (152, "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_absent"),
+    (153, "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_present"),
+    (154, "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_absent"),
+    (155, "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_present"),
+    (156, "entry_skip.strategy_core_not_registered"),
+    (157, "entry_skip.entry_gate_blocked"),
+    (158, "entry_skip.entry_pricing_blocked"),
+    (159, "entry_skip.no_side_selected"),
+    (160, "entry_skip.sized_notional_not_positive"),
+    (161, "entry_skip.instrument_id_missing"),
+    (162, "entry_skip.instrument_missing_from_cache"),
+    (163, "entry_skip.entry_price_missing"),
+    (164, "entry_skip.quantity_rounding_failed"),
+    (165, "entry_skip.limit_notional_exceeds_sized_notional"),
+    (166, "entry_skip.entry_quote_notional_below_venue_minimum"),
+    (167, "entry_skip.entry_quote_notional_minimum_unmodeled"),
+    (168, "entry_skip.quantity_not_positive"),
+    (169, "entry_skip.position_contract_invalid"),
+    (170, "entry_skip.entry_position_contract_unsupported"),
+    (171, "entry_skip.historical_entry_fee_unavailable"),
+    (172, "entry_skip.one_position_invariant_violation"),
+)
 OWNER_BY_PRODUCER = {
     "entry_skip": "EntrySkip",
     "strategy_input_snapshot": "BlockedStrategyInputSnapshot",
@@ -159,6 +196,9 @@ def load_registry(path: pathlib.Path) -> Registry:
     if len(set(ids)) != len(ids):
         raise ValueError("registry state ids must be unique")
     ordered = sorted(states, key=lambda row: row.id)
+    actual_states = tuple((row.id, row.semantic_state) for row in ordered)
+    if actual_states != FROZEN_MARKET_STATES:
+        raise ValueError("states must match frozen id-to-semantic mappings")
     return Registry(family_name, family_capacity, tuple(allocations), tuple(ordered))
 
 
@@ -197,9 +237,9 @@ def render_registry(registry: Registry) -> str:
             "}",
             "",
             f"pub const EVIDENCE_NOVELTY_FAMILY_CAPACITY: usize = {registry.family_capacity};",
-            f"pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = {(registry.family_capacity + 63) // 64};",
+            f"pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = {registry.family_capacity}.div_ceil(64);",
             "const _: () = assert!(",
-            "    EVIDENCE_NOVELTY_WORD_COUNT == (EVIDENCE_NOVELTY_FAMILY_CAPACITY + 63) / 64,",
+            "    EVIDENCE_NOVELTY_WORD_COUNT == EVIDENCE_NOVELTY_FAMILY_CAPACITY.div_ceil(64),",
             '    "EVIDENCE_NOVELTY_WORD_COUNT must cover EVIDENCE_NOVELTY_FAMILY_CAPACITY"',
             ");",
             "",

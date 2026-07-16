@@ -2773,7 +2773,7 @@ fn fee_provider_resolution_does_not_warm_during_registration() {
 }
 
 #[test]
-fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
+fn binary_oracle_data_only_client_fails_settlement_identity_before_fee_provider() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-decision-evidence-data-only-exec-client");
@@ -2802,10 +2802,9 @@ fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
             .expect_err("data-only client must not be used for execution");
 
     let message = error.to_string();
-    assert!(message.contains("polymarket_data_only"), "{message}");
-    assert!(
-        message.contains("is required by the existing taker fee-provider boundary"),
-        "{message}"
+    assert_eq!(
+        message,
+        "bolt-v3 strategy registration failed: strategies.configured_updown_main (binary_oracle_edge_taker) registration failed: settlement capability requires execution account id for execution_client_id `polymarket_data_only`"
     );
 }
 

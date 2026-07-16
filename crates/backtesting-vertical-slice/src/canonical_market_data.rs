@@ -44,9 +44,7 @@ use super::{
         utf8_column_guarded, verify_canonical_rows_materialization,
         write_canonical_parquet_guarded,
     },
-    operator_work_budget::{
-        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, guarded_operation_outcome,
-    },
+    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
     source_proof::SourceProofFidelityClass,
 };
 

@@ -63,9 +63,10 @@ use crate::{
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
         normalize_registered_seeded_l2_quote_converter,
         normalize_registered_tar_order_book_delta_converter,
-        normalize_registered_tar_seeded_l2_quote_converter, require_registered_source_adapter,
-        require_registered_source_adapter_for_table_family, verify_canonical_rows_materialization,
-        verify_parquet_file_trailer_preflight, verify_single_parquet_metadata_budget,
+        normalize_registered_tar_seeded_l2_quote_converter, normalize_registered_trade_converter,
+        require_registered_source_adapter, require_registered_source_adapter_for_table_family,
+        verify_canonical_rows_materialization, verify_parquet_file_trailer_preflight,
+        verify_single_parquet_metadata_budget,
     },
     catalog_projection::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
@@ -119,7 +120,7 @@ use crate::{
         execute_prepared_backtest, expected_iterations_guarded, iterations_mismatch,
         market_structure_label, mint_local_catalog_run_view_authority_guarded,
         nt_extension_surface_claim_limits, prepare_backtest, result_contract_feed_labels,
-        result_contract_warnings, run_backtest, run_nt_backtest_node_guarded, run_purpose_label,
+        result_contract_warnings, run_nt_backtest_node_guarded, run_purpose_label,
         time_window_excludes_all_data, verify_catalog_run_view_authority_guarded,
         window_bound_nanos,
     },
@@ -2406,7 +2407,7 @@ where
         .with_context(|| format!("parse {role} {}", seal_path.display()))?;
     let canonical = match format {
         OperatorOutputSealJsonFormat::Pretty => {
-            crate::reference_artifact::canonical_json_bytes(&seal)
+            crate::reference_artifact::canonical_json_bytes(&seal).map_err(anyhow::Error::from)
         }
         OperatorOutputSealJsonFormat::Compact => {
             serde_json::to_vec(&seal).map_err(anyhow::Error::from)
@@ -4282,6 +4283,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         batch_summary == sealed_summary,
         "completed trade summary changed after sealed verification"
     );
+    let catalog_run_view_authority_path = output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE);
     Ok(RunArtifacts {
         verified_sha256: inputs.verified_sha256,
         accepted_source_proof: inputs.accepted_source_proof,
@@ -4293,7 +4295,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_manifest_path: inputs.conversion_manifest_path,
         conversion_checkpoint_path: inputs.conversion_checkpoint_path,
         catalog_metadata_path: inputs.catalog_metadata_path,
-        catalog_run_view_authority_path: output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE),
+        catalog_run_view_authority_path,
         canonical_catalog_uri: None,
         persisted_catalog_projection: None,
         persisted_catalog_objects: Vec::new(),
@@ -6943,19 +6945,19 @@ fn run_multi_table_from_run_spec_with_verified_registry(
         catalog_hashes.push(projection.catalog_hash);
     }
 
-    let (actual_rows, actual_row_groups) =
-        planned
-            .iter()
-            .try_fold((0_u64, 0_u64), |(rows, row_groups), table| {
-                let metadata = actual_nt_market_data_metadata_guarded(&table.subroot, work_budget)?;
-                Ok((
-                    rows.checked_add(metadata.rows)
-                        .context("actual projected row total overflow")?,
-                    row_groups
-                        .checked_add(metadata.row_groups)
-                        .context("actual projected row-group total overflow")?,
-                ))
-            })?;
+    let (actual_rows, actual_row_groups) = planned.iter().try_fold(
+        (0_u64, 0_u64),
+        |(rows, row_groups), table| -> Result<(u64, u64)> {
+            let metadata = actual_nt_market_data_metadata_guarded(&table.subroot, work_budget)?;
+            Ok((
+                rows.checked_add(metadata.rows)
+                    .context("actual projected row total overflow")?,
+                row_groups
+                    .checked_add(metadata.row_groups)
+                    .context("actual projected row-group total overflow")?,
+            ))
+        },
+    )?;
     let expected_rows = planned.iter().try_fold(0_u64, |rows, table| {
         rows.checked_add(
             u64::try_from(table.table.rows_len())
@@ -7351,26 +7353,26 @@ fn run_multi_from_completed_output(
             .work_budget
             .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     }
-    let (actual_rows, actual_row_groups) =
-        planned
-            .iter()
-            .try_fold((0_u64, 0_u64), |(rows, row_groups), table| {
-                inputs
-                    .work_budget
-                    .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-                let metadata =
-                    actual_nt_market_data_metadata_guarded(&table.subroot, inputs.work_budget)?;
-                inputs
-                    .work_budget
-                    .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-                Ok((
-                    rows.checked_add(metadata.rows)
-                        .context("completed actual projected row total overflow")?,
-                    row_groups
-                        .checked_add(metadata.row_groups)
-                        .context("completed actual projected row-group total overflow")?,
-                ))
-            })?;
+    let (actual_rows, actual_row_groups) = planned.iter().try_fold(
+        (0_u64, 0_u64),
+        |(rows, row_groups), table| -> Result<(u64, u64)> {
+            inputs
+                .work_budget
+                .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            let metadata =
+                actual_nt_market_data_metadata_guarded(&table.subroot, inputs.work_budget)?;
+            inputs
+                .work_budget
+                .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok((
+                rows.checked_add(metadata.rows)
+                    .context("completed actual projected row total overflow")?,
+                row_groups
+                    .checked_add(metadata.row_groups)
+                    .context("completed actual projected row-group total overflow")?,
+            ))
+        },
+    )?;
     let expected_rows = planned.iter().try_fold(0_u64, |rows, table| {
         rows.checked_add(
             u64::try_from(table.table.rows_len())

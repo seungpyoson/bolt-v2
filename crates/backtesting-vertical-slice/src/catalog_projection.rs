@@ -4648,7 +4648,7 @@ fn update_optional_params_hash(
         guarded_catalog_operation(work_budget, || {
             let serialized = serde_json::to_string(entry.1)
                 .context("serialize instrument params value for byte preflight")?;
-            let bytes = size_of_val(entry)
+            let bytes = size_of_val(&entry)
                 .checked_add(entry.0.len())
                 .and_then(|bytes| bytes.checked_add(serialized.len()))
                 .context("instrument params materialized byte size overflow")?;

@@ -52,9 +52,9 @@ use crate::operator_work_budget::{
     CooperativeDeadlineWriter, OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard,
     OperatorWorkBudgetStage, guarded_operation_outcome,
 };
-pub(crate) use crate::pinned_regular_file::{
-    PinnedRegularFileIdentity, open_pinned_regular_file, validate_pinned_regular_file_identity,
-};
+pub(crate) use crate::pinned_regular_file::open_pinned_regular_file;
+#[cfg(test)]
+pub(crate) use crate::pinned_regular_file::validate_pinned_regular_file_identity;
 
 enum AtomicWriteInnerError<E> {
     Io(std::io::Error),
@@ -1856,6 +1856,7 @@ fn open_manifest_target_parent_guarded(
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[derive(Debug)]
 struct GuardedManifestComponent {
     bytes: Vec<u8>,
     live_bytes: u64,

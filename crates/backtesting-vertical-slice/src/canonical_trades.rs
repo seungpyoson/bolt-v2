@@ -16,7 +16,7 @@
 use std::{
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom},
-    mem::{size_of, size_of_val},
+    mem::size_of,
     path::Path,
     sync::Arc,
 };
@@ -3284,7 +3284,7 @@ pub(crate) fn write_canonical_parquet_guarded<R>(
             usize::try_from(limit).unwrap_or(usize::MAX)
         });
     let properties = WriterProperties::builder()
-        .set_max_row_group_size(nt_max_row_group_size)
+        .set_max_row_group_row_count(Some(nt_max_row_group_size))
         .build();
     verify_canonical_rows_materialization(
         rows,

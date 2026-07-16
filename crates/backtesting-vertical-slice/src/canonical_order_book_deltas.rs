@@ -1931,7 +1931,7 @@ fn parse_jsonl_into_groups(
                         if let Some(filter) = &mapping.instrument_key.exclusion_filter
                             && filter.excludes(raw)
                         {
-                            continue;
+                            return Ok(());
                         }
                         Some(raw.to_string())
                     }
@@ -3009,7 +3009,6 @@ table_families = ["order_book_snapshot_deltas"]
         datatypes::{DataType, Field, Schema},
     };
     use parquet::arrow::ArrowWriter;
-    use std::sync::Arc;
 
     use crate::canonical_market_data::DeltaAction as DA;
     use crate::canonical_trades::TradeAggressorSide;

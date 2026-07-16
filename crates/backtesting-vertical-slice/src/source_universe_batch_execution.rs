@@ -32,6 +32,7 @@ use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::{
+    io::Read,
     process::{Child, ChildStdout, Command, Stdio},
     sync::mpsc::{RecvTimeoutError, sync_channel},
     time::Instant,
@@ -2333,7 +2334,7 @@ fn commit_worker_request_archive(
 
 fn ensure_real_directory(path: &Path, role: &str) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(_) => validate_real_directory(path, role),
+        Ok(_) => validate_real_directory(path, role)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path)
                 .with_context(|| format!("create {role} {}", path.display()))?;
@@ -3486,7 +3487,7 @@ where
             return Err(lowest_sequence_error(slots));
         }
     }
-    assemble_report(batch_id, &owned_plan, slots, &config)
+    assemble_report(batch_id, &owned_plan, slots)
 }
 
 /// Parallel-capable entry point.
@@ -3522,7 +3523,7 @@ where
     let plan = owned_plan.plan();
     let work_item_count = plan.work_items.len();
     if work_item_count == 0 {
-        return assemble_report(batch_id, &owned_plan, Vec::new(), &config);
+        return assemble_report(batch_id, &owned_plan, Vec::new());
     }
     let worker_count = config
         .max_concurrent_records
@@ -3559,12 +3560,7 @@ where
                         break;
                     }
                     let work_item = &work_items[index];
-                    let slot = match resolve_work_item(
-                        work_item,
-                        output_root_lease,
-                        config,
-                        &clock_factory,
-                    ) {
+                    let slot = match resolve_work_item(work_item, config, &clock_factory) {
                         ResolvedBatchWorkItem::Terminal(slot) => slot,
                         ResolvedBatchWorkItem::Fresh(fresh) => {
                             let record = fresh.record;
@@ -3623,7 +3619,7 @@ where
     {
         return Err(lowest_sequence_error(slots));
     }
-    assemble_report(batch_id, &owned_plan, slots, &config)
+    assemble_report(batch_id, &owned_plan, slots)
 }
 
 /// Sole production batch entry: selected records execute in a pinned
@@ -5013,7 +5009,7 @@ where
     R: SourceUniverseOperatorRunner,
     G: SourceUniverseWorkBudgetClockFactory,
 {
-    match resolve_work_item(work_item, output_root_lease, config, clock_factory) {
+    match resolve_work_item(work_item, config, clock_factory) {
         ResolvedBatchWorkItem::Terminal(slot) => slot,
         ResolvedBatchWorkItem::Fresh(fresh) => {
             process_fresh_work_item(fresh, output_root_lease, config, fetcher, runner)
@@ -5023,7 +5019,6 @@ where
 
 fn resolve_work_item<'pack, G>(
     work_item: &'pack BatchWorkItem<'pack>,
-    output_root_lease: &BatchOutputRootLease,
     config: &SourceUniverseBatchExecutionConfig,
     clock_factory: &G,
 ) -> ResolvedBatchWorkItem<'pack>
@@ -5466,7 +5461,6 @@ fn assemble_report(
     batch_id: &str,
     owned_plan: &OwnedBatchPlan,
     slots: Vec<Option<RecordSlot>>,
-    config: &SourceUniverseBatchExecutionConfig,
 ) -> Result<SourceUniverseBatchExecutionReport> {
     let expected_slot_count = owned_plan
         .pack
@@ -8077,16 +8071,8 @@ mod tests {
         ));
         fs::remove_dir_all(&output_dir).expect("remove sealed output after resolution");
 
-        let report = assemble_report(
-            "batch",
-            &owned_plan,
-            vec![Some(slot)],
-            &SourceUniverseBatchExecutionConfig {
-                continue_on_error: true,
-                ..SourceUniverseBatchExecutionConfig::default()
-            },
-        )
-        .expect("sealed result assembly performs no post-terminal I/O");
+        let report = assemble_report("batch", &owned_plan, vec![Some(slot)])
+            .expect("sealed result assembly performs no post-terminal I/O");
 
         assert_eq!(
             report.status,
@@ -8097,22 +8083,14 @@ mod tests {
     }
 
     #[test]
-    fn final_assembly_rejects_a_missing_slot_even_with_continue_on_error() {
+    fn final_assembly_rejects_a_missing_slot_unconditionally() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-discovered");
         fs::create_dir_all(&output_dir).expect("create output dir");
         let record = discovered_record_with_output(output_dir, "f".repeat(64));
         let owned_plan = owned_plan_for_record(&record);
-        let error = assemble_report(
-            "batch",
-            &owned_plan,
-            vec![None],
-            &SourceUniverseBatchExecutionConfig {
-                continue_on_error: true,
-                ..SourceUniverseBatchExecutionConfig::default()
-            },
-        )
-        .expect_err("a missing slot is an invariant failure, not a record failure");
+        let error = assemble_report("batch", &owned_plan, vec![None])
+            .expect_err("a missing slot is an invariant failure, not a record failure");
         assert!(error.to_string().contains("slot 0 is missing"), "{error:#}");
     }
 
@@ -8123,13 +8101,8 @@ mod tests {
         fs::create_dir_all(&output_dir).expect("create output dir");
         let record = discovered_record_with_output(output_dir, "f".repeat(64));
         let owned_plan = owned_plan_for_record(&record);
-        let error = assemble_report(
-            "batch",
-            &owned_plan,
-            Vec::new(),
-            &SourceUniverseBatchExecutionConfig::default(),
-        )
-        .expect_err("slot cardinality drift must fail before report construction");
+        let error = assemble_report("batch", &owned_plan, Vec::new())
+            .expect_err("slot cardinality drift must fail before report construction");
         assert!(
             error.to_string().contains("slot cardinality mismatch"),
             "{error:#}"

@@ -93,9 +93,9 @@ use super::{
     catalog_projection::{
         CatalogInstrumentSpecSource, CatalogProjection, actual_nt_market_data_metadata_guarded,
         assert_row_pair_equality_guarded, logical_catalog_hash_guarded,
-        preflight_nt_catalog_parquet_guarded, project_canonical_trades_to_catalog,
-        project_canonical_trades_to_catalog_guarded, projected_nt_market_data_row_groups,
-        read_back_trade_ticks_guarded, ts_event_nanos, ts_init_nanos,
+        preflight_nt_catalog_parquet_guarded, project_canonical_trades_to_catalog_guarded,
+        projected_nt_market_data_row_groups, read_back_trade_ticks_guarded, ts_event_nanos,
+        ts_init_nanos,
     },
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,

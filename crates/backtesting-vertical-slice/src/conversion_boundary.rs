@@ -565,7 +565,7 @@ impl ConversionCatalogMetadata {
         }
     }
 
-    fn validate_against(
+    pub(crate) fn validate_against(
         &self,
         manifest: &ConversionManifest,
         manifest_hash: &str,

@@ -3647,11 +3647,9 @@ impl VerifiedSourceBindingRegistry {
         version: &str,
         table_family: &str,
     ) -> Result<()> {
-        let match_count = self.registry.durable_operator_capability_match_count(
-            identity,
-            version,
-            table_family,
-        );
+        let match_count =
+            self.registry
+                .durable_operator_capability_match_count(identity, version, table_family);
         ensure!(
             match_count == 1,
             "durable operator capability requires exactly one configured tuple for adapter {identity:?} version {version:?} table_family {table_family:?}; found {match_count}"

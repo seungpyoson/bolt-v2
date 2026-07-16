@@ -4400,16 +4400,13 @@ fn prepare_batch(
         })();
         match preflight {
             Ok(verified) => {
-                validate_durable_run_spec_preflight(
-                    &verified.run_spec,
-                    &verified.source_bindings,
-                )
-                .with_context(|| {
-                    format!(
-                        "durable preflight for selected pack record {} ({})",
-                        record.sequence, record.operator_run_id
-                    )
-                })?;
+                validate_durable_run_spec_preflight(&verified.run_spec, &verified.source_bindings)
+                    .with_context(|| {
+                        format!(
+                            "durable preflight for selected pack record {} ({})",
+                            record.sequence, record.operator_run_id
+                        )
+                    })?;
                 verified_control_artifacts.insert(record.sequence, verified);
             }
             Err(error) if config.continue_on_error => {
@@ -7081,24 +7078,20 @@ mod tests {
         let synthetic_pack_root =
             tempfile::tempdir_in(&synthetic_parent).expect("synthetic execution-pack root");
 
-        let seed_run_spec_path = resolve_pack_control_path(
-            seed_base_dir,
-            &seed_record.run_spec_path,
-        )
-        .expect("resolve seed run spec");
-        let seed_execution_plan_path = resolve_pack_control_path(
-            seed_base_dir,
-            &seed_record.execution_plan_path,
-        )
-        .expect("resolve seed execution plan");
+        let seed_run_spec_path =
+            resolve_pack_control_path(seed_base_dir, &seed_record.run_spec_path)
+                .expect("resolve seed run spec");
+        let seed_execution_plan_path =
+            resolve_pack_control_path(seed_base_dir, &seed_record.execution_plan_path)
+                .expect("resolve seed execution plan");
         let synthetic_run_spec_bytes = fs::read_to_string(&seed_run_spec_path)
             .expect("read seed run spec")
             .replace(&seed_record.operator_run_id, &second_operator_run_id)
             .into_bytes();
         let mut synthetic_execution_plan: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(&seed_execution_plan_path)
-            .expect("read seed execution plan")
-            .replace(&seed_record.operator_run_id, &second_operator_run_id),
+                .expect("read seed execution plan")
+                .replace(&seed_record.operator_run_id, &second_operator_run_id),
         )
         .expect("parse synthetic execution plan");
         synthetic_execution_plan["run_spec_hash"] =
@@ -7106,8 +7099,9 @@ mod tests {
         let synthetic_execution_plan_bytes = serde_json::to_vec_pretty(&synthetic_execution_plan)
             .expect("serialize synthetic execution plan");
         let synthetic_run_spec_path = synthetic_pack_root.path().join("second-run-spec.toml");
-        let synthetic_execution_plan_path =
-            synthetic_pack_root.path().join("second-execution-plan.json");
+        let synthetic_execution_plan_path = synthetic_pack_root
+            .path()
+            .join("second-execution-plan.json");
         fs::write(&synthetic_run_spec_path, &synthetic_run_spec_bytes)
             .expect("write synthetic run spec");
         fs::write(

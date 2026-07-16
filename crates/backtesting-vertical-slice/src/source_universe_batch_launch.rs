@@ -115,7 +115,10 @@ impl PinnedDirectoryLease {
             );
         }
         let canonical_path = path.canonicalize().with_context(|| {
-            format!("canonicalize committed registry directory {}", path.display())
+            format!(
+                "canonicalize committed registry directory {}",
+                path.display()
+            )
         })?;
         #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
         {
@@ -242,17 +245,20 @@ fn inventory_committed_registry_scopes(
                     registry.canonical_path.display()
                 )
             })?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("committed execution-pack scope name must be UTF-8"))?;
+            let name = entry.file_name().into_string().map_err(|_| {
+                anyhow::anyhow!("committed execution-pack scope name must be UTF-8")
+            })?;
             validate_portable_path_component("committed_execution_pack_scope", &name)?;
             let path = entry.path();
-            let metadata = fs::symlink_metadata(&path)
-                .with_context(|| format!("lstat committed execution-pack scope {}", path.display()))?;
+            let metadata = fs::symlink_metadata(&path).with_context(|| {
+                format!("lstat committed execution-pack scope {}", path.display())
+            })?;
             let identity = DirectoryIdentitySnapshot::capture(&path, &metadata)?;
             let canonical_path = path.canonicalize().with_context(|| {
-                format!("canonicalize committed execution-pack scope {}", path.display())
+                format!(
+                    "canonicalize committed execution-pack scope {}",
+                    path.display()
+                )
             })?;
             ensure!(
                 canonical_path.starts_with(&registry.canonical_path),
@@ -500,10 +506,8 @@ pub fn discover_committed_source_universe_execution_packs(
 
         let (mut summary_file, summary_identity) = open_pinned_regular_file(&summary_path)
             .with_context(|| format!("pin execution-pack summary {}", summary_path.display()))?;
-        summary_identity.revalidate_expected_parent(
-            &canonical_output_dir,
-            &output_lease.metadata,
-        )?;
+        summary_identity
+            .revalidate_expected_parent(&canonical_output_dir, &output_lease.metadata)?;
         ensure!(
             launch_spec.execution_pack.bytes == summary_identity.byte_len,
             "batch launch spec {} execution-pack byte length mismatch: expected {}, got {}",
@@ -661,8 +665,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT, SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_FILE,
-        SOURCE_UNIVERSE_EXECUTION_PACK_GENERATOR_SPEC_FILE, PinnedDirectoryLease,
+        COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT, PinnedDirectoryLease,
+        SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_FILE, SOURCE_UNIVERSE_EXECUTION_PACK_GENERATOR_SPEC_FILE,
         discover_committed_source_universe_execution_packs, inventory_committed_registry_scopes,
     };
     use crate::{

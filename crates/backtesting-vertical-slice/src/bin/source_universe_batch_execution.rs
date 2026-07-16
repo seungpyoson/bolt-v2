@@ -272,9 +272,7 @@ mod tests {
         SourceUniverseCacheRunVerification,
     };
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    use backtesting_vertical_slice::source_universe_batch_launch::{
-        discover_committed_source_universe_execution_packs,
-    };
+    use backtesting_vertical_slice::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
     use clap::Parser;
 
     #[test]
@@ -753,9 +751,8 @@ max_retained_control_input_bytes = 4096
     #[test]
     fn committed_one_record_launch_profiles_select_exact_staged_s3_packs() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let committed_packs =
-            discover_committed_source_universe_execution_packs(&repository_root)
-                .expect("discover committed execution packs");
+        let committed_packs = discover_committed_source_universe_execution_packs(&repository_root)
+            .expect("discover committed execution packs");
         for committed_pack in committed_packs {
             let spec = &committed_pack.launch_spec;
             assert_eq!(spec.start_sequence, Some(0));

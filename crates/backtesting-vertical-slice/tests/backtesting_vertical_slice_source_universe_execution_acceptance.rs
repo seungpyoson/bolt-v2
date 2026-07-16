@@ -11,10 +11,10 @@ use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH, TIER1_PMXT_CONVERSION_QUEUE_PATH,
     repo_root_from_manifest_dir,
 };
-use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
-use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use backtesting_vertical_slice::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
+use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
+use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
     SourceUniverseExecutionAcceptanceLedger, SourceUniverseExecutionAcceptanceLedgerSpec,
     SourceUniverseExecutionAcceptanceLedgerStatus, SourceUniverseExecutionAcceptanceUniverseStatus,
@@ -528,15 +528,16 @@ fn committed_execution_pack_registry_and_acceptance_ledger_are_an_exact_set() {
             "execution-acceptance ledger summary path must be repository-relative: {}",
             summary_path.display()
         );
-        let canonical_summary_path = repo_root
-            .join(summary_path)
-            .canonicalize()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "canonicalize execution-acceptance ledger summary {}: {error}",
-                    summary_path.display()
-                )
-            });
+        let canonical_summary_path =
+            repo_root
+                .join(summary_path)
+                .canonicalize()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "canonicalize execution-acceptance ledger summary {}: {error}",
+                        summary_path.display()
+                    )
+                });
         assert!(
             ledger_summary_paths.insert(canonical_summary_path.clone()),
             "duplicate execution-pack summary reference in acceptance ledger: {}",

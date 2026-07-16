@@ -262,12 +262,12 @@ mod tests {
     };
 
     use super::{read_staged_s3_exact_current_version, staged_s3_read_plan};
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    use crate::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
     use crate::{
         operator::RunSpec, operator_work_budget::OperatorWorkBudgetGuard,
         source_universe_execution_pack::SourceUniverseExecutionPack,
     };
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    use crate::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
 
     #[derive(Debug)]
     struct ExactVersionReadStore {
@@ -508,9 +508,8 @@ mod tests {
     #[test]
     fn committed_tracers_plan_only_their_staged_s3_object() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let committed_packs =
-            discover_committed_source_universe_execution_packs(&repository_root)
-                .expect("discover committed execution packs");
+        let committed_packs = discover_committed_source_universe_execution_packs(&repository_root)
+            .expect("discover committed execution packs");
         for committed_pack in committed_packs {
             let pack: SourceUniverseExecutionPack = serde_json::from_slice(
                 &fs::read(&committed_pack.summary_path).unwrap_or_else(|error| {

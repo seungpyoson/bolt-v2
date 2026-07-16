@@ -66,13 +66,8 @@ jobs:
   gate:
     name: ${{ needs.ci-policy.outputs.gate_name }}
     steps:
-      - if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
-        run: python3 "$verdict_script" resolve-gate-carry-forward
       - run: |
-          if [[ "${{ needs.ci-policy.outputs.ci_policy_path }}" == "noop" ]]; then
-            echo noop
-          fi
-          python3 "$verdict_script" check-ci-gate --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          python3 "$verdict_script" check-ci-gate
 """
 
 
@@ -100,7 +95,7 @@ jobs:
 
   clippy:
     name: bvs-clippy
-    if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     steps:
       - run: just bte-clippy
 
@@ -109,8 +104,7 @@ jobs:
     steps:
       - run: |
           python3 "$verdict_script" check-backtester-gate \\
-            --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \\
-            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"
+            --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
 """
 
 
@@ -803,11 +797,9 @@ def assert_r2_derivation_mismatch_fails() -> None:
         "runs_on_tags = true",
     ).replace(
         "[ci_provenance.required_checks.actionlint.proof_rule]\n"
-        "fresh = [\"docs\", \"full\", \"iteration\", \"noop\"]\n"
-        "carry_forward = []",
+        "fresh = [\"docs\", \"full\", \"iteration\"]",
         "[ci_provenance.required_checks.actionlint.proof_rule]\n"
-        "fresh = [\"docs\", \"full\", \"iteration\", \"noop\", \"tag_reuse\"]\n"
-        "carry_forward = []",
+        "fresh = [\"docs\", \"full\", \"iteration\", \"tag_reuse\"]",
     )
     result, fake = run_enforcer(
         [[check_run(context) for context in ("gate", "backtester-gate", "host-health", "actionlint")]],
@@ -937,14 +929,14 @@ def assert_real_registry_derivation_matches_current_workflows() -> None:
     checks = module.load_registry_checks(CONFIG_PATH)
     derived = module.derive_registry_workflow_flags(checks, REPO_ROOT / ".github" / "workflows")
     expected = {
-        "gate": (True, True),
-        "backtester-gate": (True, False),
-        "host-health": (False, False),
-        "actionlint": (False, False),
-        "coverage-enforcer": (False, False),
+        "gate": True,
+        "backtester-gate": True,
+        "host-health": False,
+        "actionlint": False,
+        "coverage-enforcer": False,
     }
     actual = {
-        context: (flags.runs_on_tags, flags.supports_carry_forward)
+        context: flags.runs_on_tags
         for context, flags in derived.items()
     }
     if actual != expected:

@@ -35,14 +35,10 @@ proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 gate_required = "gate"
-gate_defer = "gate-deferred"
 gate_iteration = "gate-iteration"
-gate_noop = "gate-noop"
 gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
-backtester_defer = "backtester-gate-deferred"
 backtester_iteration = "backtester-gate-iteration"
-backtester_noop = "backtester-gate-noop"
 backtester_dispatch_full = "backtester-gate-dispatch"
 
 [ci_provenance.docs]
@@ -77,14 +73,14 @@ max_lookback_age_seconds = 1209600
 retention_days = 14
 
 [ci_provenance.policy]
-draft_pr_synchronize = "defer"
-draft_pr_opened = "defer"
-draft_pr_reopened = "defer"
-draft_pr_edited = "defer"
-converted_to_draft = "defer"
+draft_pr_synchronize = "iteration"
+draft_pr_opened = "iteration"
+draft_pr_reopened = "iteration"
+draft_pr_edited = "iteration"
+converted_to_draft = "iteration"
 ready_pr = "full"
-ready_pr_edited_no_base = "noop"
-ready_pr_reopened = "noop"
+ready_pr_edited_no_base = "iteration"
+ready_pr_reopened = "full"
 ready_for_review = "full"
 docs = "docs"
 workflow_dispatch = "iteration"

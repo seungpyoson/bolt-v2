@@ -78,6 +78,7 @@ pub mod bolt_v3_realized_volatility;
 pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_reference_price;
 pub mod bolt_v3_reference_price_health;
+pub mod bolt_v3_risk_closure_workspace;
 pub mod bolt_v3_risk_reservation_substrate;
 // Re-exported at crate root so backtesting consumers can name these
 // reconstruction types without writing the snake_case module path. The

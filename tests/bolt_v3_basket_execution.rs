@@ -1093,6 +1093,138 @@ fn restart_reconciliation_rejects_duplicate_or_negative_reports() {
 }
 
 #[test]
+fn restart_reconciliation_stucks_positive_quantity_zero_cost_report() {
+    // Differential (#1431 C1): a cumulative restart report with positive filled_quantity but zero
+    // filled_cost violates the sign-consistency contract (a filled leg must have both positive).
+    // Pre-change the cost arm was `filled_cost < Decimal::ZERO`, so (1.0, 0) passed the guard and,
+    // paired with a valid second leg, the basket reconciled to Complete (NOT Stuck); the new
+    // sign-mismatch arm fails it closed to Stuck. Both legs are reported so the outcome is decided
+    // by the guard, not by the incomplete-report path.
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-ZERO-COST-RESTART",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+
+    basket
+        .reconcile_restart(&[
+            BoltV3BasketRestartReport {
+                instrument_id: "YES.POLYMARKET".to_string(),
+                client_order_id: Some("COID-YES".to_string()),
+                venue_order_id: None,
+                filled_quantity: dec("1.0"),
+                filled_cost: Decimal::ZERO,
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+            BoltV3BasketRestartReport {
+                instrument_id: "NO.POLYMARKET".to_string(),
+                client_order_id: Some("COID-NO".to_string()),
+                venue_order_id: None,
+                filled_quantity: dec("1.0"),
+                filled_cost: dec("0.46"),
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+        ])
+        .expect("zero-cost report should classify without panicking");
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(basket.unresolved_real_exposure());
+    assert!(basket.reservation_held());
+}
+
+#[test]
+fn restart_reconciliation_stucks_zero_quantity_positive_cost_report() {
+    // Differential (#1431 C1, mirror anomaly): a cumulative report with zero filled_quantity but
+    // positive filled_cost is equally inconsistent (cost without quantity). Pre-change the guard was
+    // `filled_quantity < ZERO || filled_cost < ZERO`, so (0, 0.44) passed and, paired with a valid
+    // second leg, the basket reconciled to Partial (NOT Stuck); the new sign-mismatch arm fails it
+    // closed to Stuck.
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-COST-NO-QTY-RESTART",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+
+    basket
+        .reconcile_restart(&[
+            BoltV3BasketRestartReport {
+                instrument_id: "YES.POLYMARKET".to_string(),
+                client_order_id: Some("COID-YES".to_string()),
+                venue_order_id: None,
+                filled_quantity: Decimal::ZERO,
+                filled_cost: dec("0.44"),
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+            BoltV3BasketRestartReport {
+                instrument_id: "NO.POLYMARKET".to_string(),
+                client_order_id: Some("COID-NO".to_string()),
+                venue_order_id: None,
+                filled_quantity: dec("1.0"),
+                filled_cost: dec("0.46"),
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+        ])
+        .expect("cost-without-quantity report should classify without panicking");
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(basket.unresolved_real_exposure());
+    assert!(basket.reservation_held());
+}
+
+#[test]
+fn restart_reconciliation_reconciles_both_zero_unfilled_leg_report() {
+    // Contract pin (#1431 C1): both-zero is a legitimate not-yet-filled leg under cumulative
+    // semantics and must NOT fail closed. Behavior is identical pre/post-change; this pins the
+    // benign case so the cost arm can never be blanket-tightened to `<= Decimal::ZERO` later (which
+    // would false-positive here). All legs report both-zero, so all match and the basket stays
+    // Submitting rather than tripping the incomplete-report path.
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-UNFILLED-RESTART",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+
+    basket
+        .reconcile_restart(&[
+            BoltV3BasketRestartReport {
+                instrument_id: "YES.POLYMARKET".to_string(),
+                client_order_id: Some("COID-YES".to_string()),
+                venue_order_id: None,
+                filled_quantity: Decimal::ZERO,
+                filled_cost: Decimal::ZERO,
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+            BoltV3BasketRestartReport {
+                instrument_id: "NO.POLYMARKET".to_string(),
+                client_order_id: Some("COID-NO".to_string()),
+                venue_order_id: None,
+                filled_quantity: Decimal::ZERO,
+                filled_cost: Decimal::ZERO,
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+        ])
+        .expect("both-zero unfilled-leg reports should reconcile");
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Submitting);
+    assert!(!basket.unresolved_real_exposure());
+}
+
+#[test]
 fn stuck_basket_trips_dedicated_kill_switch_and_blocks_new_admission() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let kill_store = KillSwitchStore::new(

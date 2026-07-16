@@ -3982,6 +3982,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
 
     let expected_decision_blockers = vec![
         crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::InvalidConfig,
+        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::ProviderCapabilityUnavailable,
         crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::QuorumNotReady,
         crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::SourceStale,
         crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::CoverageBelowMinimum,
@@ -3994,6 +3995,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
     ];
     let expected_evaluation_blockers = [
         "invalid_config",
+        "provider_capability_unavailable",
         "quorum_not_ready",
         "source_stale",
         "coverage_below_minimum",

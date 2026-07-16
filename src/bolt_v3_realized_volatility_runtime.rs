@@ -206,11 +206,13 @@ impl RealizedVolSurfaceRuntime {
         let unavailable_sources = configs
             .iter()
             .flat_map(|(surface_id, config)| {
-                config.sources.iter().filter_map(|source| {
-                    unavailable_client_ids
-                        .contains(source.data_client_id.as_str())
-                        .then(|| (surface_id.clone(), source.source_id.clone()))
-                })
+                config
+                    .sources
+                    .iter()
+                    .filter(|source| {
+                        unavailable_client_ids.contains(source.data_client_id.as_str())
+                    })
+                    .map(|source| (surface_id.clone(), source.source_id.clone()))
             })
             .collect();
         Self::from_configs_with_unavailable_sources(configs, unavailable_sources)
